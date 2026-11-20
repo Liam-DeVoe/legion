@@ -1348,29 +1348,52 @@ const ISSUE_LESS =
  *  message aimed at one session, and its other forms are written on other messages. */
 const ON_ANOTHER_MESSAGE = (written: string) =>
   `Go writes it ${written}; the fixture's message is a root message aimed at one session, which carries none`;
+/** A string whose schema states no length: the reason it takes "", which the fixture does not
+ *  hold. */
+const NO_LENGTH =
+  'the reader states no length for the string, as Go\'s string has none, so it takes "", which the fixture does not hold';
 
-/** Each form - a key absent, a value null, a value of a kind of JSON, any value - that a reading
- *  schema of the targeted-delivery fixture takes and the fixture does not hold, by the schema's
- *  key (`<place>[]` for a list's element) and the form, with the reason the schema takes it.
+/** Each form - a key absent, a value null, a string, an empty one, a number of each form, a
+ *  boolean, an object, a list, any value - that a reading schema of the targeted-delivery fixture
+ *  takes and the fixture does not hold, as zod's parse of each probe says (`takenForms`), by the
+ *  schema's key (`<place>[]` for a list's element) and the form, with the reason the schema takes
+ *  it.
  *  Every other form a reading schema takes must be the fixture's (the walk's `widenings`), so a
  *  key a reader makes optional or nullable where Dispatch always writes it, or gives another
  *  type, or an entry here for a form the fixture holds or the schema refuses, fails here by name. */
 const TARGETED_WIDER: Wider = {
-  "DispatchEventSchema.issue_key": { null: `Go's model.Event.IssueKey is ${ISSUE_LESS}` },
+  "DispatchEventSchema.issue_key": {
+    null: `Go's model.Event.IssueKey is ${ISSUE_LESS}`,
+    "empty string": NO_LENGTH,
+  },
   "DispatchEventSchema.artifact_id": {
     absent: FRAME_TOLERANT,
     string:
       "DispatchEventSchema reads every event's frame: Go's model.Event.ArtifactID is a string on an event an unlinked document owns (api.documentOwner), and null on a message's",
+    "empty string": NO_LENGTH,
   },
-  "DispatchEventSchema.project": { absent: FRAME_TOLERANT },
-  "DispatchEventSchema.actor.id": { absent: FRAME_TOLERANT },
+  "DispatchEventSchema.project": {
+    absent: FRAME_TOLERANT,
+    string:
+      'Go writes the key of the project that owns the event (model.Event.Project); the fixture\'s frame was recorded with none, so it holds ""',
+  },
+  "DispatchEventSchema.type": { "empty string": NO_LENGTH },
+  "DispatchEventSchema.actor.kind": { "empty string": NO_LENGTH },
+  "DispatchEventSchema.actor.id": { absent: FRAME_TOLERANT, "empty string": NO_LENGTH },
   "DispatchTargetedMessagePayloadSchema.issue_key": {
     null: `Go's model.Message.IssueKey is ${ISSUE_LESS}`,
+    "empty string": NO_LENGTH,
   },
+  "DispatchTargetedMessagePayloadSchema.author.kind": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.author.id": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.body": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.target": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.created_at": { "empty string": NO_LENGTH },
   "DispatchTargetedMessagePayloadSchema.in_reply_to": {
     string: ON_ANOTHER_MESSAGE(
       "on a reply, naming the message it answers (model.Message.InReplyTo)"
     ),
+    "empty string": NO_LENGTH,
   },
   "DispatchTargetedMessagePayloadSchema.broadcast_id": {
     absent:
@@ -1378,6 +1401,7 @@ const TARGETED_WIDER: Wider = {
     string: ON_ANOTHER_MESSAGE(
       "on a broadcast's copy, naming the broadcast (model.Message.BroadcastID)"
     ),
+    "empty string": NO_LENGTH,
   },
   "DispatchTargetedMessagePayloadSchema.reply_block": {
     absent:
@@ -1390,11 +1414,13 @@ const TARGETED_WIDER: Wider = {
     string: ON_ANOTHER_MESSAGE(
       "on a reply, the start of what it answers (model.MessageEventPayload.ReplyBody)"
     ),
+    "empty string": NO_LENGTH,
   },
   "DispatchTargetedMessagePayloadSchema.thread_target": {
     string: ON_ANOTHER_MESSAGE(
       "on a reply, its thread root's target (model.MessageEventPayload.ThreadTarget)"
     ),
+    "empty string": NO_LENGTH,
   },
   "DispatchTargetedMessagePayloadSchema.thread_logins": {
     array:
@@ -1419,7 +1445,13 @@ const TARGETED_WIDER: Wider = {
 const TARGETED_CLOSED: readonly string[] = ["DispatchTargetedMessageDeliverySchema.mode"];
 
 test("the targeted-delivery fixture carries every key its reading schemas declare", () => {
-  const walk = new ExampleWalk({ never: {}, labels: new Map(), absentTable: "TARGETED_ABSENT" });
+  // Each walk below is a reader's, so no schema is asked to refuse an undeclared key (LOOSE).
+  const walk = new ExampleWalk({
+    never: {},
+    labels: new Map(),
+    absentTable: "TARGETED_ABSENT",
+    loose: {},
+  });
   const fixture = { name: "the targeted-delivery fixture", absent: TARGETED_ABSENT };
   // Each schema is a reader's, which keeps the keys it declares and passes the others over.
   const reader = { tolerant: true };

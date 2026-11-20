@@ -23,7 +23,8 @@ const sharedIssueExamples = "../../../../daemon/internal/intake/testdata/dispatc
 // the example's write was made with - a first claim and the holder's release under a token the
 // secrets broker issued a session acting for its person, a forced takeover under a person's
 // personal token, a takeover of a session that ended under a broker token an operator's entry
-// scoped to the issue's project, and a person's close at a browser - and the event it records must
+// scoped to the issue's project, a claim under the shared agent token every Dispatch takes, whose
+// actor is the session its body names, and a person's close at a browser - and the event it records must
 // carry its example's type, reason, claim and previous claim, as null or not, and notify mark, and
 // an actor of the example's kind and proven mark with the example's keys at every depth. So a
 // handler's reason renamed, or an actor written with a key more or less than its example's, fails
@@ -153,8 +154,19 @@ func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 	brokerWrite("the holder's release", http.MethodDelete, releasing, map[string]any{})
 	requireLike("the holder's release", "issue-released-null-claim.json")
 
-	brokerWrite("claim again", http.MethodPost, releasing, map[string]any{})
-	recorded++
+	// The shared agent token claims for the session its body names, from where its body says the
+	// session runs: the token proves no person, service, project or session, so the actor carries
+	// none of them (bearerSessionActor).
+	if response := bearerRequest(t, handler, http.MethodPost, path+"/claim", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "session-one", "origin": map[string]any{
+			"host": "worker-7", "machine": "worker-7", "cwd": "/work/widgets", "tmux": "legion", "pane": "%5",
+			"session_title": "CAPTURE-7 implementer",
+		}},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("a claim under the shared agent token: status=%d body=%s", response.Code, response.Body.String())
+	}
+	requireLike("a claim under the shared agent token", "issue-claimed-agent-token.json")
+
 	// A person at a browser closes the issue, which releases the claim.
 	if response := dispatchRequest(t, handler, http.MethodPatch, path, map[string]string{"status": "done"}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("a person's close: status=%d body=%s", response.Code, response.Body.String())

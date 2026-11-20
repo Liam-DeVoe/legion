@@ -1,12 +1,16 @@
 import {
-  closedValues,
-  type JsonKind,
-  jsonKinds,
+  FORM_PROBES,
+  type Form,
+  formOf,
   objectSchema,
-  objectShape,
   schemaNode,
+  takenForms,
   takes,
+  VALUE_FORMS,
+  valueSet,
 } from "./schema-inspection.testing";
+
+export type { Form } from "./schema-inspection.testing";
 
 /**
  * How the Dispatch contract tests hold a shared example file to the schemas that read it: the one
@@ -19,8 +23,10 @@ import {
  * - **Keys.** Each object of an example must hold every key its schema declares, except a key
  *   `never` names for that object (one the writer never writes there) or the example's `absent`
  *   names for that key's path (one that write leaves out), and must hold no key `never` names.
- *   An object a writer's strict schema reads must hold no key that schema does not declare. An
- *   exception no walk used is stale, and fails too (`staleExceptions`).
+ *   An object a writer's strict schema reads must hold no key that schema does not declare, and
+ *   the schema itself must refuse an object holding one, unless `loose` names the object with
+ *   the reason it takes one (`object`). An exception no walk used is stale, and fails too
+ *   (`staleExceptions`).
  * - **Values** (`unheldValues`). Each closed set of values a walked schema declares - an enum, a
  *   literal, a union of them, a boolean - must have each of its values held by some example,
  *   unless the test's table names the value at one of the places the set is read, with the
@@ -32,14 +38,28 @@ import {
  *   a closed set alone and refuse a value outside it. So a set that is opened - turned into a
  *   string, or joined with one, or given a fallback that takes any value - fails here by its
  *   place, and so does a new closed set until the list names it.
- * - **Forms** (`widenings`). Each key of every object a walk reads, each element of a list it
- *   reads and each value of a map must be refused by its schema in every form no example holds
- *   there - a key absent, a value null, a value of each other kind of JSON (a string, a number, a
- *   boolean, an object, a list), or any value at all - unless the test's table names the form
- *   with the reason the schema takes it. So a schema that starts taking a form its writer never
- *   writes - a required key made optional, a value made nullable, a number that takes a string, a
- *   list whose element takes null - fails here, whichever schema it is: an envelope's, an
+ * - **Forms** (`widenings`). The value each walk starts at, each key of every object a walk
+ *   reads, each element of a list it reads and each value of a map must be refused by its schema
+ *   in every form no example holds there - a key absent, a value null, a string, an empty string,
+ *   a whole number above zero, zero, a negative one, a fraction, a whole number past the exact
+ *   range, a boolean, an object, a list, or any value at all - unless the test's table names the
+ *   form with the reason the schema takes it. Which forms a schema takes is asked of zod's own
+ *   parse of the place's probe values (`takenForms`), never read from its definition, so a schema
+ *   that starts taking a form its writer never writes - a required key made optional, a value
+ *   made nullable, a number that takes a string, a list whose element takes null, a refinement
+ *   dropped, a fallback that takes anything, and each of these written as a coercion or a
+ *   preprocess as well as a union - fails here, whichever schema it is: an envelope's, an
  *   event's, a payload's or a tolerant reader's.
+ * - **The daemon's decoder** (`daemonAgreement`). For a test whose examples a Go reader decodes,
+ *   each form a schema takes at a place an example holds must be one that reader's decoder takes
+ *   there, and each form the decoder takes must be one the schema takes, unless the test's table
+ *   names the form at that place with the reason the two differ. A place where the decoder takes
+ *   every form a value holds is one it reads nothing of, and asks nothing; a key left out is
+ *   compared at a key alone.
+ * - **Union members no example takes** are walked with a value built from their own schema
+ *   (`untaken`): their keys, values, closed sets and forms are held as an example's are, none of
+ *   the built value's forms counting as held. So a member's key made nullable, or a closed set
+ *   added at any depth of it, fails as it would in a member an example takes.
  *
  * Every exception is by the name of the object it is for (`labels`, or the place the walk reaches
  * an unnamed object at), so each name must be one schema's: two schemas the walk reads under one
@@ -63,6 +83,9 @@ export interface WalkRules {
   readonly labels: ReadonlyMap<unknown, string>;
   /** What the test calls its table of `absent` entries, as the problems name it. */
   readonly absentTable: string;
+  /** Each object a strict walk reads whose schema takes a key it does not declare, by its name,
+   *  with the reason; every other such object's schema must refuse one. */
+  readonly loose: Readonly<Record<string, string>>;
 }
 
 /** How a walk reads its value: `tolerant` for a reader's schema, which keeps the keys it declares
@@ -71,17 +94,31 @@ export interface WalkMode {
   readonly tolerant: boolean;
 }
 
-/** A form a value takes at a place: the key left out (`absent`), or a value of one kind of JSON;
- *  `any` is a schema's taking a value of every kind. */
-export type Form = "absent" | JsonKind;
-
 /** A test's table of the forms its schemas take that no example holds, by the place
- *  (`<object>.<key>`, `<place>[]` for a list's element, `<place>.*` for a map's value), then by
- *  the form, each with the reason the schema takes it. */
+ *  (`<object>.<key>`, `<place>[]` for a list's element, `<place>.*` for a map's value, the object's
+ *  name alone for the value a walk starts at), then by the form, each with the reason the schema
+ *  takes it. `daemonAgreement` reads one of these too, by the same places, for the forms the
+ *  schema and the daemon's decoder differ on; an entry there may also name `<place> @ <path>`. */
 export type Wider = Readonly<Record<string, Readonly<Partial<Record<Form, string>>>>>;
 
-/** The forms of a value besides `absent` that `widenings` reads, `any` apart: each kind of JSON. */
-const KINDS: readonly Form[] = ["null", "string", "number", "boolean", "object", "array"];
+/** What the Legion daemon's decoder takes, as its own test wrote it
+ *  (`packages/daemon/internal/intake/testdata/dispatch/daemon-verdicts.json`): the probe values of
+ *  each form, and for each example and each place it holds (`<example> <path>`), each form the
+ *  decoder takes there. */
+export interface DaemonVerdicts {
+  readonly probes: Readonly<Record<string, readonly unknown[]>>;
+  readonly verdicts: Readonly<Record<string, readonly string[]>>;
+}
+
+/** The values a built value of a union member no example takes holds, by the JSON kind its
+ *  schema declares: the first its schema takes is used. */
+const BUILT: Readonly<Record<string, readonly unknown[]>> = {
+  string: ["x", "1"],
+  number: [1],
+  boolean: [true],
+  null: [null],
+  any: [{}],
+};
 
 /** One closed set of values a schema declares: its values, the places it is read at, and the
  *  values the examples hold there, each as its JSON. */
@@ -105,16 +142,19 @@ interface PlaceSet {
   readonly outside: Set<string>;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+/** The forms one place's schema takes at one path of one example that holds it, for the
+ *  daemon's verdicts at that path. */
+interface PlaceRow {
+  readonly place: string;
+  readonly example: string;
+  readonly path: string;
+  /** Whether the place is a key an object's schema declares, which can be left out. */
+  readonly key: boolean;
+  readonly taken: Set<Form>;
 }
 
-/** The kind of JSON value a value is. */
-function kindOf(value: unknown): JsonKind {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  const kind = typeof value;
-  return kind === "string" || kind === "number" || kind === "boolean" ? kind : "object";
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /** One value of each kind a closed set holds that is not in the set: a string and a number
@@ -144,48 +184,26 @@ function described(form: Form): string {
       return "any value";
     case "object":
     case "array":
+    case "empty string":
       return `an ${form}`;
+    case "number":
+      return "a whole number above zero";
+    case "zero":
+      return "zero";
+    case "negative":
+      return "a negative whole number";
+    case "past range":
+      return "a whole number past the exact range";
     default:
       return `a ${form}`;
-  }
-}
-
-/** The closed set of values a schema reads a value as, through its wrappers, and the schema that
- *  declares it: an enum's or a literal's values, `true` and `false` for a boolean, and every
- *  member's for a union of such sets. Undefined for any other schema. */
-function valueSet(
-  schema: unknown,
-  where: string
-): { readonly schema: unknown; readonly values: readonly unknown[] } | undefined {
-  const node = schemaNode(schema, where);
-  switch (node.kind) {
-    case "wrapper":
-      return valueSet(node.inner, where);
-    case "leaf":
-      if (node.closed) return { schema, values: node.values };
-      return node.json.length === 1 && node.json[0] === "boolean"
-        ? { schema, values: [true, false] }
-        : undefined;
-    case "union": {
-      const sets = node.options.map((option) => valueSet(option, where));
-      if (sets.length === 0) return undefined;
-      const values: unknown[] = [];
-      for (const set of sets) {
-        if (set === undefined) return undefined;
-        values.push(...set.values);
-      }
-      return { schema, values };
-    }
-    default:
-      return undefined;
   }
 }
 
 /**
  * The walks of one test over its examples, and the problems they found. `walk` reads one value of
  * an example with the schema it is read by; once every value is walked, `staleExceptions`,
- * `closedSets` and `widenings`, and for a test that asks for them `unheldValues`, add what only
- * every walk together can show.
+ * `closedSets` and `widenings`, and for a test that asks for them `unheldValues` and
+ * `daemonAgreement`, add what only every walk together can show.
  */
 export class ExampleWalk {
   /** Each problem the walks found, in the order they found it. */
@@ -195,18 +213,27 @@ export class ExampleWalk {
   private readonly values = new Map<unknown, ValueSet>();
   private readonly forms = new Map<string, PlaceForms>();
   private readonly sets = new Map<string, PlaceSet>();
+  private readonly rows = new Map<string, PlaceRow>();
   /** The schema each name stands for, as the walks met it, and each name met for two. */
   private readonly named = new Map<string, unknown>();
   private readonly namedTwice = new Set<string>();
+  /** The objects a strict walk asked whether their schema takes an undeclared key, and the
+   *  `loose` entries that answered for one. */
+  private readonly strictJudged = new Set<string>();
+  private readonly looseUsed = new Set<string>();
+  /** The unions a member of which no value could be built for, each reported once. */
+  private readonly unbuilt = new Set<string>();
 
   constructor(private readonly rules: WalkRules) {}
 
   /**
    * Walks one value of an example at `path` (its place in the example) with the schema it is read
-   * by, `name` naming the object there when `labels` does not. A union is read by the member that
-   * takes the value, as a reader reads it, and a null holds no key to walk (the schema's own parse
-   * took it). A schema kind the inspection does not read is an error, so no part of an example
-   * goes unread.
+   * by, `name` naming the object there when `labels` does not. The value itself is held to the
+   * forms the examples hold at that start (a schema made nullable, or given a fallback, at its
+   * root fails as one a key down does). A union is read by the member that takes the value, as a
+   * reader reads it, and each other member by a value built from its own schema; a null holds no
+   * key to walk (the schema's own parse took it). A schema kind the inspection does not read is
+   * an error, so no part of an example goes unread.
    */
   walk(
     schema: unknown,
@@ -217,30 +244,72 @@ export class ExampleWalk {
     mode: WalkMode
   ): void {
     const where = `${example.name} ${path}`;
+    const place = this.rules.labels.get(objectSchema(schema, where)) ?? name;
+    const take = (probe: unknown) => takes(schema, probe);
+    this.record(
+      place,
+      example,
+      path,
+      takenForms(take, [value]),
+      this.builtForm(schema, take, where, place),
+      [formOf(value)],
+      "value"
+    );
+    this.visit(schema, value, example, path, name, mode, false);
+  }
+
+  /** Walks one value at `path`; `built` is a value built for a union member no example takes,
+   *  whose forms and values count as no example's. */
+  private visit(
+    schema: unknown,
+    value: unknown,
+    example: WalkedExample,
+    path: string,
+    name: string,
+    mode: WalkMode,
+    built: boolean
+  ): void {
+    const where = `${example.name} ${path}`;
     const set = valueSet(schema, where);
     if (set !== undefined) {
-      this.hold(set, name, value);
+      this.hold(set, name, built ? undefined : value);
       return;
     }
     if (value === null) return;
     const node = schemaNode(schema, where);
     switch (node.kind) {
       case "wrapper":
-        this.walk(node.inner, value, example, path, name, mode);
+        this.visit(node.inner, value, example, path, name, mode, built);
         return;
       case "array":
         if (Array.isArray(value)) {
-          this.inside(node.element, value, `${name}[]`, `${where}[]`);
+          this.inside(
+            node.element,
+            (probe) => takes(schema, [probe]),
+            value,
+            `${name}[]`,
+            example,
+            `${path}[]`,
+            built
+          );
           value.forEach((item, index) => {
-            this.walk(node.element, item, example, `${path}[${index}]`, `${name}[]`, mode);
+            this.visit(node.element, item, example, `${path}[${index}]`, `${name}[]`, mode, built);
           });
         }
         return;
       case "record":
         if (isObject(value)) {
-          this.inside(node.value, Object.values(value), `${name}.*`, `${where}.*`);
           for (const [key, entry] of Object.entries(value)) {
-            this.walk(node.value, entry, example, `${path}.${key}`, `${name}.*`, mode);
+            this.inside(
+              node.value,
+              (probe) => takes(schema, { ...value, [key]: probe }),
+              [entry],
+              `${name}.*`,
+              example,
+              `${path}.${key}`,
+              built
+            );
+            this.visit(node.value, entry, example, `${path}.${key}`, `${name}.*`, mode, built);
           }
         }
         return;
@@ -251,9 +320,9 @@ export class ExampleWalk {
           return;
         }
         for (const option of node.options) {
-          if (option !== member) this.declareValues(option, name);
+          if (option !== member) this.untaken(option, example, path, name, mode);
         }
-        this.walk(member, value, example, path, name, mode);
+        this.visit(member, value, example, path, name, mode, built);
         return;
       }
       case "intersection":
@@ -265,7 +334,7 @@ export class ExampleWalk {
       case "leaf":
         return;
       case "object":
-        this.object(schema, node.shape, value, example, path, name, mode);
+        this.object(schema, node.shape, value, example, path, name, mode, built);
     }
   }
 
@@ -276,7 +345,8 @@ export class ExampleWalk {
     example: WalkedExample,
     path: string,
     name: string,
-    mode: WalkMode
+    mode: WalkMode,
+    built: boolean
   ): void {
     if (!isObject(value)) return;
     const label = this.rules.labels.get(schema) ?? name;
@@ -289,6 +359,7 @@ export class ExampleWalk {
         `two schemas are read as the ${label}, so an exception for one would excuse the other: give each a name of its own`
       );
     }
+    if (!mode.tolerant) this.strict(schema, shape, value, label);
     const declared = this.declared.get(label) ?? new Set<string>();
     this.declared.set(label, declared);
     const never = this.rules.never[label] ?? {};
@@ -296,20 +367,23 @@ export class ExampleWalk {
       declared.add(key);
       const at = `${path}.${key}`;
       const written = never[key] === undefined;
-      if (written) this.form(schema, field, value, `${label}.${key}`, key, `${example.name} ${at}`);
+      if (written) {
+        this.form(schema, field, value, `${label}.${key}`, key, example, at, built);
+      }
       if (key in value) {
         if (!written) {
           this.problems.push(
             `${example.name}'s ${at} is the ${label}'s "${key}", which NEVER says is never written`
           );
         }
-        this.walk(field, value[key], example, at, `${label}.${key}`, mode);
+        this.visit(field, value[key], example, at, `${label}.${key}`, mode, built);
         continue;
       }
       if (written) {
         const set = valueSet(field, `${example.name} ${at}`);
         if (set !== undefined) this.hold(set, `${label}.${key}`, undefined);
       }
+      if (built) continue;
       if (example.absent[at] !== undefined) {
         const excused = this.excused.get(example.name) ?? new Set<string>();
         this.excused.set(example.name, excused);
@@ -331,6 +405,110 @@ export class ExampleWalk {
     }
   }
 
+  /** Asks, once per object a strict walk reads, whether its schema takes the object with one key
+   *  added that it does not declare: its writer writes no such key, so the schema must refuse
+   *  one, unless `loose` names the object with the reason it takes one. */
+  private strict(
+    schema: unknown,
+    shape: Readonly<Record<string, unknown>>,
+    value: Readonly<Record<string, unknown>>,
+    label: string
+  ): void {
+    if (this.strictJudged.has(label)) return;
+    this.strictJudged.add(label);
+    let fresh = "undeclared";
+    while (fresh in shape || fresh in value) fresh += "_";
+    const takesOne = takes(schema, { ...value, [fresh]: "x" });
+    if (this.rules.loose[label] !== undefined) {
+      this.looseUsed.add(label);
+      if (!takesOne) {
+        this.problems.push(
+          `LOOSE names the ${label}, whose schema refuses a key it does not declare`
+        );
+      }
+    } else if (takesOne) {
+      this.problems.push(
+        `the schema of the ${label} takes a key it does not declare ("${fresh}"), which its writer never writes, and LOOSE gives no reason it may`
+      );
+    }
+  }
+
+  /** Walks a union member no example's value took with a value built from its own schema, so
+   *  its keys, values, closed sets and forms at every depth are held as a taken member's are; a
+   *  member that is a set of values is recorded as that set, read at the union's place. */
+  private untaken(
+    option: unknown,
+    example: WalkedExample,
+    path: string,
+    name: string,
+    mode: WalkMode
+  ): void {
+    const where = `${example.name} ${path}`;
+    const own = valueSet(option, where);
+    if (own !== undefined) {
+      this.hold(own, name, undefined);
+      this.readSet(option, name, where, (outside) => takes(option, outside));
+      return;
+    }
+    const value = this.build(option, where, name);
+    if (value === undefined || !takes(option, value)) {
+      if (!this.unbuilt.has(name)) {
+        this.unbuilt.add(name);
+        this.problems.push(
+          `no value could be built of a member of the union at ${where} that no example takes, so its forms are held by nothing`
+        );
+      }
+      return;
+    }
+    this.visit(option, value, example, path, name, mode, true);
+  }
+
+  /** A value of `schema` built from its own declarations: an object holding every key its name's
+   *  NEVER entry does not name, a list and a map of one, a union's first member that takes one,
+   *  and for a leaf its first value, or the first of `BUILT`'s values of its kinds it takes.
+   *  Undefined when no such value is found. */
+  private build(schema: unknown, where: string, name: string): unknown {
+    const node = schemaNode(schema, where);
+    switch (node.kind) {
+      case "wrapper":
+        return this.build(node.inner, where, name);
+      case "leaf": {
+        const candidates = node.closed
+          ? node.values
+          : node.json.flatMap((kind) => BUILT[kind] ?? []);
+        return candidates.find((candidate) => takes(schema, candidate));
+      }
+      case "object": {
+        const label = this.rules.labels.get(schema) ?? name;
+        const never = this.rules.never[label] ?? {};
+        const built: Record<string, unknown> = {};
+        for (const [key, field] of Object.entries(node.shape)) {
+          if (never[key] !== undefined) continue;
+          const value = this.build(field, `${where}.${key}`, `${label}.${key}`);
+          if (value === undefined) return undefined;
+          built[key] = value;
+        }
+        return built;
+      }
+      case "array": {
+        const element = this.build(node.element, `${where}[]`, `${name}[]`);
+        return element === undefined ? undefined : [element];
+      }
+      case "record": {
+        const entry = this.build(node.value, `${where}.*`, `${name}.*`);
+        return entry === undefined ? undefined : { key: entry };
+      }
+      case "union":
+        for (const option of node.options) {
+          const value = this.build(option, where, name);
+          if (value !== undefined && takes(option, value)) return value;
+        }
+        return undefined;
+      case "intersection":
+        return undefined;
+    }
+  }
+
   /** Records that `place` reads `set`, and holds `value` there when it is a value. */
   private hold(
     set: { readonly schema: unknown; readonly values: readonly unknown[] },
@@ -347,33 +525,58 @@ export class ExampleWalk {
     if (value !== null && value !== undefined) entry.held.add(JSON.stringify(value));
   }
 
-  /** Records the value sets of a union member no example's value took: its own set, or each set
-   *  its object's keys read, so a value of a member no example holds is not passed over, and a
-   *  closed set of it is read as `closedSets` reads every other. */
-  private declareValues(option: unknown, name: string): void {
-    const own = valueSet(option, name);
-    if (own !== undefined) {
-      this.hold(own, name, undefined);
-      this.readSet(option, name, name, (outside) => takes(option, outside));
-      return;
-    }
-    const shape = objectShape(option, name);
-    if (shape === undefined) return;
-    const label = this.rules.labels.get(objectSchema(option, name)) ?? name;
-    for (const [key, field] of Object.entries(shape)) {
-      if (this.rules.never[label]?.[key] !== undefined) continue;
-      const place = `${label}.${key}`;
-      const set = valueSet(field, place);
-      if (set !== undefined) this.hold(set, place, undefined);
-      this.readSet(field, place, place, (outside) => takes(field, outside));
-    }
-  }
-
   /** The forms one place's record holds. */
   private placeForms(place: string): PlaceForms {
     const forms = this.forms.get(place) ?? { taken: new Set<Form>(), held: new Set<Form>() };
     this.forms.set(place, forms);
     return forms;
+  }
+
+  /** The form of a value built from the schema at a place (`build`) where zod's parse of the
+   *  place (`take`) takes it: a probe of the form the schema declares there whatever refinements
+   *  it states, which a fixed probe may miss (an object with required keys, a closed set's
+   *  value). Undefined when no value is built or the parse refuses it. */
+  private builtForm(
+    schema: unknown,
+    take: (probe: unknown) => boolean,
+    where: string,
+    name: string
+  ): Form | undefined {
+    const value = this.build(schema, where, name);
+    return value !== undefined && take(value) ? formOf(value) : undefined;
+  }
+
+  /** Records the forms `place`'s schema takes - `taken`, of the fixed probes and those the held
+   *  values add, and the form of a value built from its own schema - and those an example holds
+   *  there; and, where `row` says the example holds the place (as an object's `key`, which can be
+   *  left out, or as another `value`), the forms `taken` alone finds at that example's `path`,
+   *  which are the probes the daemon's verdicts asked too. */
+  private record(
+    place: string,
+    example: WalkedExample,
+    path: string,
+    taken: ReadonlySet<Form>,
+    built: Form | undefined,
+    held: readonly Form[],
+    row: "key" | "value" | "none"
+  ): void {
+    const forms = this.placeForms(place);
+    for (const form of taken) forms.taken.add(form);
+    if (built !== undefined) forms.taken.add(built);
+    for (const form of held) forms.held.add(form);
+    if (row === "none") return;
+    // Each list index is written `[]`, as the daemon's verdicts name a place.
+    const at = path.replace(/\[[0-9]+\]/g, "[]");
+    const key = `${place}\t${example.name}\t${at}`;
+    const entry = this.rows.get(key) ?? {
+      place,
+      example: example.name,
+      path: at,
+      key: row === "key",
+      taken: new Set<Form>(),
+    };
+    this.rows.set(key, entry);
+    for (const form of taken) entry.taken.add(form);
   }
 
   /** Records the set of values `field` reads at `place`, and each value outside a closed set of
@@ -384,7 +587,8 @@ export class ExampleWalk {
     where: string,
     takesOutside: (outside: unknown) => boolean
   ): void {
-    const values = closedValues(field, where);
+    const set = valueSet(field, where);
+    const values = set?.closed ? set.values : undefined;
     const entry = this.sets.get(place) ?? { values, outside: new Set<string>() };
     this.sets.set(place, entry);
     for (const outside of values === undefined ? [] : outsideValues(values)) {
@@ -392,52 +596,59 @@ export class ExampleWalk {
     }
   }
 
-  /** Records what one object shows of its key's forms - the form it holds the key in, and
-   *  whether its schema would take the object with the key absent or null - and each kind of
-   *  JSON the key's own schema takes besides null, with the set of values it reads. */
+  /** Records what one object shows of its key's forms - each form zod's parse of the object takes
+   *  with a probe of it at the key, or with the key left out, and the form the object holds - and
+   *  the set of values the key reads. */
   private form(
     schema: unknown,
     field: unknown,
     value: Readonly<Record<string, unknown>>,
     place: string,
     key: string,
-    where: string
+    example: WalkedExample,
+    at: string,
+    built: boolean
   ): void {
-    const forms = this.placeForms(place);
-    for (const kind of jsonKinds(field, where)) {
-      if (kind !== "null") forms.taken.add(kind);
-    }
-    this.readSet(
-      field,
-      place,
-      where,
-      (outside) => key in value && takes(schema, { ...value, [key]: outside })
-    );
-    if (!(key in value)) {
-      forms.held.add("absent");
-      return;
-    }
+    const present = key in value;
+    const where = `${example.name} ${at}`;
+    const take = (probe: unknown) => takes(schema, { ...value, [key]: probe });
+    const taken = takenForms(take, present ? [value[key]] : []);
     const without = Object.fromEntries(Object.entries(value).filter(([held]) => held !== key));
-    if (takes(schema, without)) forms.taken.add("absent");
-    forms.held.add(kindOf(value[key]));
-    if (value[key] !== null && takes(schema, { ...value, [key]: null })) {
-      forms.taken.add("null");
-    }
+    if (takes(schema, without)) taken.add("absent");
+    const held: Form[] = built ? [] : [present ? formOf(value[key]) : "absent"];
+    const own = this.builtForm(field, take, where, place);
+    this.record(place, example, at, taken, own, held, present && !built ? "key" : "none");
+    this.readSet(field, place, where, (outside) => present && take(outside));
   }
 
-  /** Records what a list's elements or a map's values show at `place`: each kind of JSON their
-   *  schema `element` takes, null among them, each kind they hold, and the set of values it
-   *  reads. */
-  private inside(element: unknown, items: readonly unknown[], place: string, where: string): void {
-    const forms = this.placeForms(place);
-    for (const kind of jsonKinds(element, where)) forms.taken.add(kind);
-    for (const item of items) forms.held.add(kindOf(item));
+  /** Records what a list's elements or a map's value shows at `place`: each form zod's parse of
+   *  the list or map takes with a probe there (`take`), each form the items hold, and the set of
+   *  values `element` reads. */
+  private inside(
+    element: unknown,
+    take: (probe: unknown) => boolean,
+    items: readonly unknown[],
+    place: string,
+    example: WalkedExample,
+    path: string,
+    built: boolean
+  ): void {
+    const where = `${example.name} ${path}`;
+    this.record(
+      place,
+      example,
+      path,
+      takenForms(take, items),
+      this.builtForm(element, take, where, place),
+      built ? [] : items.map(formOf),
+      built ? "none" : "value"
+    );
     this.readSet(element, place, where, (outside) => takes(element, outside));
   }
 
   /** Adds a problem for each exception no walk used: an example's `absent` entry for a key the
-   *  example holds or a path no schema reaches, and a `never` entry for a key no schema these
-   *  examples are read by declares. */
+   *  example holds or a path no schema reaches, a `never` entry for a key no schema these examples
+   *  are read by declares, and a `loose` entry for an object no strict walk read. */
   staleExceptions(examples: readonly WalkedExample[]): void {
     for (const example of examples) {
       const excused = this.excused.get(example.name);
@@ -456,6 +667,11 @@ export class ExampleWalk {
             `NEVER names the ${label}'s "${key}", which no schema these examples are read by declares`
           );
         }
+      }
+    }
+    for (const label of Object.keys(this.rules.loose)) {
+      if (!this.looseUsed.has(label)) {
+        this.problems.push(`LOOSE names the ${label}, which no strict walk read`);
       }
     }
   }
@@ -527,16 +743,16 @@ export class ExampleWalk {
   }
 
   /**
-   * Adds a problem for each form - a key absent, a value null, a value of another kind of JSON,
-   * any value - that the schema of a place some walk read takes, that no example holds, and that
-   * `wider` gives no reason for; and for each `wider` entry for a form its schema refuses, an
-   * example holds, or no walk read. A schema that takes any value at a place is read as that one
-   * form, `any`, there.
+   * Adds a problem for each form - a key absent, a value null, a value of another form, any value
+   * - that the schema of a place some walk read takes, that no example holds, and that `wider`
+   * gives no reason for; and for each `wider` entry for a form its schema refuses, an example
+   * holds, or no walk read. A schema that takes any value at a place is read as that one form,
+   * `any`, there.
    */
   widenings(wider: Wider): void {
     const used = new Set<string>();
     for (const [place, forms] of [...this.forms].sort(([a], [b]) => a.localeCompare(b))) {
-      const kinds: readonly Form[] = forms.taken.has("any") ? ["any"] : KINDS;
+      const kinds: readonly Form[] = forms.taken.has("any") ? ["any"] : VALUE_FORMS;
       for (const form of ["absent", ...kinds] as const) {
         const taken = forms.taken.has(form);
         const held = forms.held.has(form);
@@ -560,6 +776,82 @@ export class ExampleWalk {
         if (!used.has(`${place} ${form}`)) {
           this.problems.push(`WIDER names ${place} ${form}, which no walk read`);
         }
+      }
+    }
+  }
+
+  /**
+   * Adds a problem for each form at a place an example holds - each value a walk read there, the
+   * walk's start among them - on which the schema reading it and the daemon's decoder disagree,
+   * the schema taking it and the decoder not or the decoder taking it and the schema not, and
+   * `differ` gives no reason; for each `differ` entry no such disagreement used; for each such
+   * place the verdicts hold no row for; and for each row of the verdicts no walk compared. The
+   * verdicts' probes must be `FORM_PROBES`, so both sides asked the same values. A place where the
+   * decoder takes every form a value holds is one it reads nothing of, and is compared with
+   * nothing; a key left out is compared at a key alone, since a list's element and a map's value
+   * cannot be. `differ` names a place as `widenings` does, or as `<place> @ <path>` for one path of
+   * it; its `any` entry answers for every form a schema that takes any value takes and the
+   * decoder refuses.
+   */
+  daemonAgreement(daemon: DaemonVerdicts, differ: Wider): void {
+    const shown = (probes: Readonly<Record<string, readonly unknown[]>>) =>
+      JSON.stringify(Object.entries(probes).sort(([a], [b]) => a.localeCompare(b)));
+    if (shown(daemon.probes) !== shown(FORM_PROBES)) {
+      this.problems.push(
+        `the daemon's verdicts were made with the probes ${shown(daemon.probes)}, and the walk's are ${shown(FORM_PROBES)}`
+      );
+    }
+    const compared = new Set<string>();
+    const used = new Set<string>();
+    for (const row of [...this.rows.values()].sort((a, b) =>
+      `${a.example} ${a.path} ${a.place}`.localeCompare(`${b.example} ${b.path} ${b.place}`)
+    )) {
+      const at = `${row.example} ${row.path}`;
+      const verdict = daemon.verdicts[at];
+      if (verdict === undefined) {
+        this.problems.push(
+          `the daemon's verdicts hold no row for ${row.example}'s ${row.path}, which the schema of ${row.place} reads`
+        );
+        continue;
+      }
+      compared.add(at);
+      const decoded = new Set<string>(verdict);
+      if (VALUE_FORMS.every((form) => decoded.has(form))) continue;
+      for (const form of row.key ? ["absent" as const, ...VALUE_FORMS] : VALUE_FORMS) {
+        const schema = row.taken.has(form) || (form !== "absent" && row.taken.has("any"));
+        if (schema === decoded.has(form)) continue;
+        const named = [`${row.place} @ ${row.path}`, row.place].flatMap((key) => {
+          if (differ[key]?.[form] !== undefined) return [`${key} ${form}`];
+          if (schema && row.taken.has("any") && differ[key]?.any !== undefined) {
+            return [`${key} any`];
+          }
+          return [];
+        })[0];
+        if (named !== undefined) {
+          used.add(named);
+          continue;
+        }
+        this.problems.push(
+          schema
+            ? `the schema of ${row.place} takes ${described(form)} at ${row.example}'s ${row.path}, which the daemon's decoder refuses, and DAEMON gives no reason`
+            : `the daemon's decoder takes ${described(form)} at ${row.example}'s ${row.path}, which the schema of ${row.place} refuses, and DAEMON gives no reason`
+        );
+      }
+    }
+    for (const [place, forms] of Object.entries(differ)) {
+      for (const form of Object.keys(forms)) {
+        if (!used.has(`${place} ${form}`)) {
+          this.problems.push(
+            `DAEMON names ${place} ${form}, where the schema and the daemon's decoder do not differ`
+          );
+        }
+      }
+    }
+    for (const at of Object.keys(daemon.verdicts).sort()) {
+      if (!compared.has(at)) {
+        this.problems.push(
+          `the daemon's verdicts hold ${at}, which no schema these examples are read by reads`
+        );
       }
     }
   }

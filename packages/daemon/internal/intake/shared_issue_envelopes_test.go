@@ -16,6 +16,65 @@ import (
 	"time"
 )
 
+// sharedIssueEnvelopes is each shared issue event envelope, with the type the daemon reads its
+// event's payload into, the fact it decodes and the label's setter LabelSetter reads from it: the
+// files TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads and
+// TestTheDaemonDecoderTakesWhatItsVerdictsSay read.
+var sharedIssueEnvelopes = []struct {
+	file   string
+	reads  reflect.Type
+	want   Fact
+	setter string
+}{
+	{
+		file: "testdata/dispatch/issue-updated-every-field.json", reads: reflect.TypeFor[dispatchIssuePayload](), setter: "session",
+		want: DispatchIssue{Key: "CAPTURE-7", Seq: 9, Type: "issue.updated", Status: "in_progress", Title: "Read every field Dispatch writes",
+			Parent: "CAPTURE-1", Rank: "UUUk", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer7", ResolvedRepo: "acme/widgets",
+			Blockers: []string{"CAPTURE-2", "CAPTURE-5"}, ClaimedBy: "session:ses_implementer7", ClaimKnown: true},
+	},
+	{
+		file: "testdata/dispatch/issue-claimed-every-field.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-7", Seq: 10, ClaimedBy: "session:ses_implementer8"},
+	},
+	{
+		// A forced takeover's holder is the session its body names, proven or not.
+		file: "testdata/dispatch/issue-claimed-forced.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-7", Seq: 11, ClaimedBy: "session:ses_reviewer4"},
+	},
+	{
+		// A closed issue's claim is nobody's: the close released it.
+		file: "testdata/dispatch/issue-updated-no-field-moved.json", reads: reflect.TypeFor[dispatchIssuePayload](), setter: "session",
+		want: DispatchIssue{Key: "CAPTURE-3", Seq: 12, Type: "issue.updated", Status: "done", Title: "Name the outbox's components",
+			Parent: "CAPTURE-1", Rank: "UUUj", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer8", ResolvedRepo: "acme/widgets",
+			Blockers: []string{}, ClaimKnown: true},
+	},
+	{
+		// A close's release leaves the claim nobody's.
+		file: "testdata/dispatch/issue-released-closed.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-3", Seq: 11},
+	},
+	{
+		// A null resolved_repo is a root no repository resolves for, not one an older Dispatch
+		// left out, and a null claim is nobody's, not unknown.
+		file: "testdata/dispatch/issue-updated-null-fields.json", reads: reflect.TypeFor[dispatchIssuePayload](),
+		want: DispatchIssue{Key: "CAPTURE-9", Seq: 4, Type: "issue.updated", Status: "todo", Title: "Reopen a root nobody holds",
+			Rank: "UUUm", Labels: []string{}, Blockers: []string{}, ClaimKnown: true},
+	},
+	{
+		file: "testdata/dispatch/issue-claimed-first.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-9", Seq: 5, ClaimedBy: "session:ses_architect3"},
+	},
+	{
+		file: "testdata/dispatch/issue-released-null-claim.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-9", Seq: 6},
+	},
+	{
+		// A claim under the shared agent token is held by the session its body names.
+		file: "testdata/dispatch/issue-claimed-agent-token.json", reads: reflect.TypeFor[dispatchClaimPayload](),
+		want: DispatchClaim{Key: "CAPTURE-9", Seq: 7, ClaimedBy: "session:ses_operator2"},
+	},
+}
+
 // The issue event envelopes Dispatch's outbox builds, field for field
 // (packages/envoy/internal/dispatch/outbox's TestTheBuiltIssueEnvelopesAreTheSharedFixtures), and
 // packages/contracts parses with the schemas it declares for their types. Together they hold every
@@ -30,58 +89,7 @@ import (
 // payload, reads the label's setter from it too. So a field Dispatch dropped or renamed, or one
 // the daemon starts reading that Dispatch never wrote, fails here and not in production.
 func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
-	issue := reflect.TypeFor[dispatchIssuePayload]()
-	claimed := reflect.TypeFor[dispatchClaimPayload]()
-	blockers := []string{"CAPTURE-2", "CAPTURE-5"}
-	for _, tc := range []struct {
-		file   string
-		reads  reflect.Type
-		want   Fact
-		setter string
-	}{
-		{
-			file: "testdata/dispatch/issue-updated-every-field.json", reads: issue, setter: "session",
-			want: DispatchIssue{Key: "CAPTURE-7", Seq: 9, Type: "issue.updated", Status: "in_progress", Title: "Read every field Dispatch writes",
-				Parent: "CAPTURE-1", Rank: "UUUk", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer7", ResolvedRepo: "acme/widgets",
-				Blockers: blockers, ClaimedBy: "session:ses_implementer7", ClaimKnown: true},
-		},
-		{
-			file: "testdata/dispatch/issue-claimed-every-field.json", reads: claimed,
-			want: DispatchClaim{Key: "CAPTURE-7", Seq: 10, ClaimedBy: "session:ses_implementer8"},
-		},
-		{
-			// A forced takeover's holder is the session its body names, proven or not.
-			file: "testdata/dispatch/issue-claimed-forced.json", reads: claimed,
-			want: DispatchClaim{Key: "CAPTURE-7", Seq: 11, ClaimedBy: "session:ses_reviewer4"},
-		},
-		{
-			// A closed issue's claim is nobody's: the close released it.
-			file: "testdata/dispatch/issue-updated-no-field-moved.json", reads: issue, setter: "session",
-			want: DispatchIssue{Key: "CAPTURE-3", Seq: 12, Type: "issue.updated", Status: "done", Title: "Name the outbox's components",
-				Parent: "CAPTURE-1", Rank: "UUUj", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer8", ResolvedRepo: "acme/widgets",
-				Blockers: []string{}, ClaimKnown: true},
-		},
-		{
-			// A close's release leaves the claim nobody's.
-			file: "testdata/dispatch/issue-released-closed.json", reads: claimed,
-			want: DispatchClaim{Key: "CAPTURE-3", Seq: 11},
-		},
-		{
-			// A null resolved_repo is a root no repository resolves for, not one an older Dispatch
-			// left out, and a null claim is nobody's, not unknown.
-			file: "testdata/dispatch/issue-updated-null-fields.json", reads: issue,
-			want: DispatchIssue{Key: "CAPTURE-9", Seq: 4, Type: "issue.updated", Status: "todo", Title: "Reopen a root nobody holds",
-				Rank: "UUUm", Labels: []string{}, Blockers: []string{}, ClaimKnown: true},
-		},
-		{
-			file: "testdata/dispatch/issue-claimed-first.json", reads: claimed,
-			want: DispatchClaim{Key: "CAPTURE-9", Seq: 5, ClaimedBy: "session:ses_architect3"},
-		},
-		{
-			file: "testdata/dispatch/issue-released-null-claim.json", reads: claimed,
-			want: DispatchClaim{Key: "CAPTURE-9", Seq: 6},
-		},
-	} {
+	for _, tc := range sharedIssueEnvelopes {
 		t.Run(path.Base(tc.file), func(t *testing.T) {
 			data, err := os.ReadFile(tc.file)
 			if err != nil {
@@ -182,9 +190,10 @@ type (
 )
 
 // The holders TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads embeds, each reading a
-// "lane" key no example carries: tagged, unexported and exported, one level deeper, untagged, and
-// a struct that two embedded structs at one depth both embed (laneLeftForTest and
-// laneRightForTest, each embedding laneMidForTest).
+// "lane" key no example carries: tagged, unexported and exported, one level deeper, untagged, a
+// struct that two embedded structs at one depth both embed (laneLeftForTest and laneRightForTest,
+// each embedding laneMidForTest), and a field tagged "Lane" (laneTaggedForTest), which beside an
+// untagged Lane at one depth is the one encoding/json reads.
 type (
 	laneHolderForTest struct {
 		Lane string `json:"lane"`
@@ -198,6 +207,9 @@ type (
 	laneMidForTest      struct{ laneHolderForTest }
 	laneLeftForTest     struct{ laneMidForTest }
 	laneRightForTest    struct{ laneMidForTest }
+	laneTaggedForTest   struct {
+		Other string `json:"Lane"`
+	}
 )
 
 // recordedErrors is a testing.TB that keeps each error a walk reports, so a test can require the
@@ -298,6 +310,20 @@ func TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes(t *testing.T) {
 	if len(recorded.errors) != 0 {
 		t.Fatalf("the walk of a field kept raw reported %q, want it walked as rawReads says", recorded.errors)
 	}
+	// The question to encoding/json is asked of every name a struct's fields and embedded structs
+	// hold, whatever readFields lists: a readFields that passes over a name encoding/json reads is
+	// refused by name.
+	recorded = &recordedErrors{TB: t}
+	listed := readFieldsOf
+	readFieldsOf = func(typ reflect.Type) []readField {
+		return slices.DeleteFunc(listed(typ), func(field readField) bool { return field.name == "lane" })
+	}
+	requireReadFields(recorded, "holder", map[string]json.RawMessage{}, reflect.TypeFor[laneHolderForTest](), nil)
+	readFieldsOf = listed
+	if len(recorded.errors) != 1 || !strings.Contains(recorded.errors[0], `encoding/json reads "lane"`) ||
+		!strings.Contains(recorded.errors[0], "which readFields passes over") {
+		t.Fatalf("the walk with a readFields that passes over \"lane\" reported %q, want one refusal naming it", recorded.errors)
+	}
 	// A field the daemon reads as a plain struct of its own is read now, not kept for later: a
 	// rawReads entry for it is refused by name, and the field is walked as the type it is, so its
 	// "other" is required and the target's "lane" is not.
@@ -355,6 +381,13 @@ func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) 
 			laneLeftForTest
 			laneRightForTest
 		}]()},
+		{"a tagged field over an untagged one at one depth", reflect.TypeFor[struct {
+			laneUntaggedForTest
+			laneTaggedForTest
+		}]()},
+		{"an embedded struct tagged with options alone", reflect.TypeFor[struct {
+			laneHolderForTest `json:",omitempty"`
+		}]()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded := reflect.New(tc.holder)
@@ -362,6 +395,17 @@ func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) 
 				t.Fatalf("encoding/json's decode of a holder of %s: %v", tc.name, err)
 			}
 			read := !decoded.Elem().IsZero()
+			// The field encoding/json filled is the one readFields says it reads the name into.
+			filled := filledPath(decoded.Elem(), "")
+			listedPath := ""
+			for _, field := range readFieldsOf(tc.holder) {
+				if strings.EqualFold(field.name, "lane") {
+					listedPath = field.path
+				}
+			}
+			if filled != listedPath {
+				t.Fatalf("encoding/json reads \"lane\" into %q of a holder of %s, and readFields says %q", filled, tc.name, listedPath)
+			}
 			recorded := &recordedErrors{TB: t}
 			requireReadFields(recorded, "holder", map[string]json.RawMessage{}, tc.holder, nil)
 			refused, disagreed := 0, 0
@@ -418,18 +462,21 @@ func uninspectedReadType(typ reflect.Type) string {
 // (json.RawMessage), or holding the text of a JSON value (a string), is read into later. The walk
 // asks each field's own type first, so a decoder of its own is refused even where into names a
 // target. A map, an interface or a custom decoder has no declared field to walk, so it is refused
-// by name rather than silently skipped (uninspectedReadType). And a name of reads that readFields
-// and encoding/json itself (readByEncodingJSON) answer differently fails by name.
+// by name rather than silently skipped (uninspectedReadType). And encoding/json itself
+// (readByEncodingJSON) is asked of every name a field of reads or of any struct it embeds holds
+// (heldNames), whatever readFields lists: a name the two answer differently fails by name.
 func requireReadFields(t testing.TB, what string, object map[string]json.RawMessage, reads reflect.Type, into map[string]reflect.Type) {
 	t.Helper()
-	fields, passed := readFields(reads)
+	fields := readFieldsOf(reads)
+	listed := map[string]bool{}
 	for _, field := range fields {
-		if !readByEncodingJSON(reads, field.name) {
-			t.Errorf("readFields reads %q into %s, which encoding/json passes over", field.name, reads)
-		}
+		listed[field.name] = true
 	}
-	for _, name := range passed {
-		if readByEncodingJSON(reads, name) {
+	for _, name := range heldNames(reads) {
+		switch byEncodingJSON := readByEncodingJSON(reads, name); {
+		case listed[name] && !byEncodingJSON:
+			t.Errorf("readFields reads %q into %s, which encoding/json passes over", name, reads)
+		case !listed[name] && byEncodingJSON:
 			t.Errorf("encoding/json reads %q into %s, which readFields passes over", name, reads)
 		}
 	}
@@ -540,11 +587,10 @@ type readField struct {
 // fields alone, not for its embedded structs' again, so a struct two paths reach at one depth
 // promotes the fields of the structs it embeds once. Of the fields one name reaches, the one
 // nearest typ is read; of two at that level, the one tagged where the other is not, and neither
-// when both or neither are. It also returns each name a field holds that no field is read under,
-// so requireReadFields can ask encoding/json of every name a field of typ holds
-// (readByEncodingJSON), and TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads holds
-// both to encoding/json's own decode.
-func readFields(typ reflect.Type) (read []readField, passed []string) {
+// when both or neither are. requireReadFields asks encoding/json of every name typ's fields hold
+// (heldNames, readByEncodingJSON), and TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads
+// holds both, and the field each fills, to encoding/json's own decode.
+func readFields(typ reflect.Type) (read []readField) {
 	type candidate struct {
 		readField
 		depth  int
@@ -610,12 +656,76 @@ func readFields(typ reflect.Type) (read []readField, passed []string) {
 			return 1
 		})
 		if len(candidates) > 1 && candidates[0].depth == candidates[1].depth && candidates[0].tagged == candidates[1].tagged {
-			passed = append(passed, name)
 			continue
 		}
 		read = append(read, candidates[0].readField)
 	}
-	return read, passed
+	return read
+}
+
+// readFieldsOf is readFields, which TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes replaces
+// with one that passes over a name, so that requireReadFields' question to encoding/json is shown
+// to refuse it.
+var readFieldsOf = readFields
+
+// heldNames is every JSON name a field of typ, or of any struct typ embeds at any depth, exported
+// or not, tagged or not, could be read under: each field's tag name, else its Go name, and an
+// embedded struct's own. It follows no rule of encoding/json's, so that requireReadFields asks
+// encoding/json of each, and a name readFields' rules pass over is asked all the same.
+func heldNames(typ reflect.Type) []string {
+	var names []string
+	seen := map[reflect.Type]bool{}
+	held := map[string]bool{}
+	var walk func(reflect.Type)
+	walk = func(holder reflect.Type) {
+		if seen[holder] {
+			return
+		}
+		seen[holder] = true
+		for field := range holder.Fields() {
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "" || name == "-" {
+				name = field.Name
+			}
+			if !held[name] {
+				held[name] = true
+				names = append(names, name)
+			}
+			base := field.Type
+			for base.Kind() == reflect.Pointer {
+				base = base.Elem()
+			}
+			if field.Anonymous && base.Kind() == reflect.Struct {
+				walk(base)
+			}
+		}
+	}
+	walk(typ)
+	return names
+}
+
+// filledPath is the Go path of the string field of value holding "fast", through every struct
+// field, embedded or not, exported or not, and every pointer that is set; "" for none.
+func filledPath(value reflect.Value, prefix string) string {
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	switch value.Kind() {
+	case reflect.String:
+		if value.String() == "fast" {
+			return strings.TrimSuffix(prefix, ".")
+		}
+	case reflect.Struct:
+		for index := range value.NumField() {
+			if path := filledPath(value.Field(index), prefix+value.Type().Field(index).Name+"."); path != "" {
+				return path
+			}
+		}
+	}
+	return ""
 }
 
 // readByEncodingJSON reports whether encoding/json decodes the JSON name into a value of typ: it

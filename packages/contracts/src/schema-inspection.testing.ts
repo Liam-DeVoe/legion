@@ -22,8 +22,11 @@ import { z } from "zod";
  *   `undefined` and `void`), `closed` when it takes a closed set of values (an `enum` or a
  *   `literal`, whose kinds are their values'), and that set's `values` (none for an open one).
  *
- * On that reading, `jsonKinds` says which kinds of JSON value a schema takes, and `closedValues`
- * which closed set of values it reads a value as, if any.
+ * On that reading, `valueSet` says which set of values (an enum's, a literal's, a boolean's, a
+ * union of them) a schema reads a value as, if any. Which forms of value a schema takes at a place
+ * is never read from its definition: `takenForms` asks zod's own parse of each probe value
+ * (`FORM_PROBES`), so a coercion, a preprocess, a fallback or a refinement is judged by what it
+ * takes, however it is spelled.
  *
  * Any other kind (`tuple`, `map`, `set`, a bare `transform`, ...) is an error naming it and where
  * it is: a schema these tests cannot read is reported, never taken as read.
@@ -162,93 +165,136 @@ export function takes(schema: unknown, value: unknown): boolean {
   return z.safeParse(schema, value).success;
 }
 
-/** A value of each kind of JSON value, by which `jsonKinds` reads a schema whose definition does
- *  not say which values it takes. */
-const KIND_PROBES: Readonly<Record<Exclude<JsonKind, "any">, readonly unknown[]>> = {
-  string: ["x"],
-  number: [0],
-  boolean: [true, false],
+/** A form a value takes at a place, by which the contract tests compare what a schema takes with
+ *  what its writer writes and with what the Legion daemon's decoder takes: the key left out
+ *  (`absent`), a JSON null, a string (the `empty string` apart), a number - a whole one above
+ *  zero (`number`), `zero`, a `negative` whole one, a `fraction`, or a whole one `past range` of
+ *  the integers a JavaScript number holds exactly (and so of Go's int64) - a boolean, an object or
+ *  a list. `any` is a schema's taking every probe of every form but `absent`. */
+export type Form =
+  | "absent"
+  | "null"
+  | "string"
+  | "empty string"
+  | "number"
+  | "zero"
+  | "negative"
+  | "fraction"
+  | "past range"
+  | "boolean"
+  | "object"
+  | "array"
+  | "any";
+
+/** A form a value holds: every form but `absent` and `any`. */
+export type ValueForm = Exclude<Form, "absent" | "any">;
+
+/** The fixed values that probe each form a value holds. The Legion daemon's verdicts were made
+ *  with the same values (`daemon-verdicts.json`'s `probes`, which the issue events test holds
+ *  equal to these). */
+export const FORM_PROBES: Readonly<Record<ValueForm, readonly unknown[]>> = {
   null: [null],
+  string: ["x", "1", "true"],
+  "empty string": [""],
+  number: [1, 7],
+  zero: [0],
+  negative: [-1],
+  fraction: [1.5],
+  "past range": [1e20],
+  boolean: [true, false],
   object: [{}],
   array: [[]],
 };
 
-/** The kinds of JSON value zod's own parse of a schema takes, of one probe value of each kind;
- *  `any` alone when it takes every kind. */
-function probedKinds(schema: unknown): ReadonlySet<JsonKind> {
-  const kinds = (Object.keys(KIND_PROBES) as Exclude<JsonKind, "any">[]).filter((kind) =>
-    KIND_PROBES[kind].some((value) => takes(schema, value))
-  );
-  return new Set<JsonKind>(kinds.length === Object.keys(KIND_PROBES).length ? ["any"] : kinds);
-}
+/** The forms a value holds, in the order the problems and the daemon's verdicts list them. */
+export const VALUE_FORMS = Object.keys(FORM_PROBES) as readonly ValueForm[];
 
-/**
- * The kinds of JSON value a schema takes, read at `where`: those its definition declares through
- * its wrappers (a `nullable` adds `null`), every member's of a union, the kinds both parts of an
- * intersection take, `object` for an object or a map and `array` for a list, whatever their
- * contents; `any` alone for a schema that takes a value of every kind. A refinement does not
- * narrow a kind, so a string with a format still takes the kind `string`. Where a definition
- * does not say which values pass - a `custom` check, `unknown` and `any`, a `catch` (which
- * answers its fallback for every value it refuses), a `success`, and a pipe whose input is a
- * transform (`z.preprocess`) - zod's own parse of one value of each kind says.
- */
-export function jsonKinds(schema: unknown, where: string): ReadonlySet<JsonKind> {
-  const node = schemaNode(schema, where);
-  const def = (schema as z.core.$ZodType)._zod.def;
-  if (
-    def.type === "catch" ||
-    def.type === "success" ||
-    (schema instanceof z.core.$ZodPipe && schema._zod.def.in._zod.def.type === "transform")
-  ) {
-    return probedKinds(schema);
-  }
-  switch (node.kind) {
-    case "object":
-    case "record":
-      return new Set<JsonKind>(["object"]);
-    case "array":
-      return new Set<JsonKind>(["array"]);
-    case "union": {
-      const kinds = new Set<JsonKind>();
-      for (const option of node.options) {
-        for (const kind of jsonKinds(option, where)) kinds.add(kind);
-      }
-      return kinds.has("any") ? new Set<JsonKind>(["any"]) : kinds;
-    }
-    case "intersection": {
-      const [left, right] = node.parts.map((part) => jsonKinds(part, where));
-      if (left === undefined || right === undefined || left.has("any")) return right ?? new Set();
-      if (right.has("any")) return left;
-      return new Set([...left].filter((kind) => right.has(kind)));
-    }
-    case "wrapper": {
-      const inner = jsonKinds(node.inner, where);
-      if (def.type !== "nullable" || inner.has("any")) return inner;
-      return new Set<JsonKind>([...inner, "null"]);
-    }
-    case "leaf":
-      return node.json.includes("any") ? probedKinds(schema) : new Set(node.json);
+/** The form a JSON value holds. */
+export function formOf(value: unknown): ValueForm {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  switch (typeof value) {
+    case "string":
+      return value === "" ? "empty string" : "string";
+    case "boolean":
+      return "boolean";
+    case "number":
+      if (!Number.isInteger(value)) return "fraction";
+      if (!Number.isSafeInteger(value)) return "past range";
+      if (value === 0) return "zero";
+      return value < 0 ? "negative" : "number";
+    default:
+      return "object";
   }
 }
 
-/** The closed set of values a schema reads a value as, through its wrappers: an enum's or a
- *  literal's values, or every member's of a union of such sets. Undefined for a schema any part
- *  of which takes an open set of values (a string, a number, a boolean, an object, ...). */
-export function closedValues(schema: unknown, where: string): readonly unknown[] | undefined {
+/** The text of a JSON number, which a string probe of a number place spells. */
+const NUMBER_TEXT = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+
+/** The probes a value held at a place adds to the fixed ones: the value itself, its text where it
+ *  is a number or a boolean, the number a string spells where it spells one, and a list holding
+ *  it. So a coercion or a preprocess that takes the held value in another form is asked of that
+ *  form with a value its refinements take (a positive timestamp's text, say), not only with the
+ *  fixed probes. The daemon's verdicts add the same probes (`heldProbes` in its
+ *  `daemon_verdicts_test.go`). */
+export function heldProbes(value: unknown): readonly unknown[] {
+  const probes: unknown[] = [value];
+  if (typeof value === "number" || typeof value === "boolean") probes.push(String(value));
+  if (typeof value === "string" && NUMBER_TEXT.test(value)) probes.push(Number(value));
+  probes.push([value]);
+  return probes;
+}
+
+/** The forms `take` - zod's parse of the place's schema with the probe there - takes, of the
+ *  fixed probes and of the probes the values the place holds add; `any` alone when it takes every
+ *  fixed probe of every form. */
+export function takenForms(take: (probe: unknown) => boolean, held: readonly unknown[]): Set<Form> {
+  const taken = new Set<Form>();
+  let every = true;
+  for (const form of VALUE_FORMS) {
+    const took = FORM_PROBES[form].filter(take);
+    if (took.length > 0) taken.add(form);
+    if (took.length < FORM_PROBES[form].length) every = false;
+  }
+  if (every) return new Set<Form>(["any"]);
+  for (const probe of held.flatMap(heldProbes)) {
+    if (take(probe)) taken.add(formOf(probe));
+  }
+  return taken;
+}
+
+/** The set of values a schema reads a value as, through its wrappers, and the schema that
+ *  declares it: an enum's or a literal's values, `true` and `false` for a boolean, and every
+ *  member's for a union of such sets. `closed` is whether no part of it is a boolean, so that the
+ *  set is one the schema's writer closed (an enum, a literal or a union of them). Undefined for any
+ *  other schema. It is the one reading of a schema's values both the examples' value coverage and
+ *  the closed-set rule read (`example-walk.testing.ts`). */
+export function valueSet(
+  schema: unknown,
+  where: string
+):
+  | { readonly schema: unknown; readonly values: readonly unknown[]; readonly closed: boolean }
+  | undefined {
   const node = schemaNode(schema, where);
   switch (node.kind) {
     case "wrapper":
-      return closedValues(node.inner, where);
+      return valueSet(node.inner, where);
     case "leaf":
-      return node.closed ? node.values : undefined;
+      if (node.closed) return { schema, values: node.values, closed: true };
+      return node.json.length === 1 && node.json[0] === "boolean"
+        ? { schema, values: [true, false], closed: false }
+        : undefined;
     case "union": {
+      if (node.options.length === 0) return undefined;
       const values: unknown[] = [];
+      let closed = true;
       for (const option of node.options) {
-        const set = closedValues(option, where);
+        const set = valueSet(option, where);
         if (set === undefined) return undefined;
-        values.push(...set);
+        values.push(...set.values);
+        closed &&= set.closed;
       }
-      return node.options.length === 0 ? undefined : values;
+      return { schema, values, closed };
     }
     default:
       return undefined;

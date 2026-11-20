@@ -59,6 +59,8 @@ type sharedIssueEnvelope struct {
 //     reopen's own insert reads, [] for an issue with no open ask.
 //   - issue-claimed-first.json: the first claim of that root, so it replaces no claim.
 //   - issue-released-null-claim.json: its holder's release of that root, so the claim is null.
+//   - issue-claimed-agent-token.json: a claim of that root under the shared agent token, whose
+//     actor is the session its body names, from where its body says it runs, and nothing else.
 //
 // So the claim events hold each reason Dispatch writes (api.claimIssue, releaseIssueClaim and
 // patchIssue's close): claimed, takeover, forced, released and closed.
@@ -73,7 +75,9 @@ type sharedIssueEnvelope struct {
 // names (api.bearerSessionActor): the token proves its person, recorded as the actor's owner, and
 // no session, so the actor carries no `proven` mark. The person who reopens the root and closes the
 // child, and the issues' creator, is a person at a browser, whom the cookie proves; a person's
-// write notifies.
+// write notifies. The shared agent token every Dispatch takes (DISPATCH_AGENT_TOKEN) proves no
+// person, service, project or session: its actor is the session its body names, with the origin
+// its body sends (api.bearerSessionActor), and no `owner`, `service`, `project` or `proven`.
 func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	at := func(value string) time.Time {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -96,6 +100,8 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	taken := &model.IssueClaim{Actor: implementer8, At: at("2026-11-19T06:31:00.654321Z")}
 	forced := &model.IssueClaim{Actor: reviewer4, At: at("2026-11-19T06:45:00.5Z")}
 	rootClaim := &model.IssueClaim{Actor: architect3, At: at("2026-11-19T05:15:00Z")}
+	operator2 := model.Actor{Kind: "session", ID: "ses_operator2", Origin: origin("%5")}
+	sharedTokenClaim := &model.IssueClaim{Actor: operator2, At: at("2026-11-19T05:25:00.5Z")}
 	// updated is an issue.updated's payload for a write that took before to after:
 	// IssueEventPayload as api.newIssueEventPayload builds it, with the changed list the patch
 	// writes.
@@ -246,6 +252,13 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 			event: model.Event{ID: 4803, IssueKey: new("CAPTURE-9"), Type: "issue.released", Actor: architect3,
 				CreatedAt: at("2026-11-19T05:20:00.75Z"), Payload: model.IssueClaimEventPayload{
 					Key: "CAPTURE-9", Status: "todo", Previous: rootClaim, Reason: "released",
+				}},
+		},
+		{
+			file: "issue-claimed-agent-token.json", number: 9, lastSeq: 6,
+			event: model.Event{ID: 4804, IssueKey: new("CAPTURE-9"), Type: "issue.claimed", Actor: operator2,
+				CreatedAt: sharedTokenClaim.At, Payload: model.IssueClaimEventPayload{
+					Key: "CAPTURE-9", Status: "todo", Claim: sharedTokenClaim, Reason: "claimed",
 				}},
 		},
 	}
