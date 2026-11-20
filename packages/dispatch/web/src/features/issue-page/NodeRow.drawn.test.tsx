@@ -416,6 +416,54 @@ test("an answered ask draws the answer in its own row, word for word", () => {
   }
 });
 
+// R6 over the row above: an answer the read sent with its reading is drawn by the one renderer
+// from that reading, and what the person wrote and chose still reads word for word: each
+// paragraph of the answer's text is the paragraph the store holds, and each chosen option is
+// the option's name as the answer took it, where the ask offers no list to mark it in.
+test("an answer drawn through the renderer reads word for word, its text and its choices", async () => {
+  const paragraphs = [
+    "The preset row keeps its labels above that width.",
+    "Below it, one control, and the rail folds.",
+  ];
+  const text = paragraphs.join("\n\n");
+  const selected = ["1280 px, the rail fits", "Keep the labels"];
+  const asked = node({
+    answer: {
+      at: "2026-11-06T00:00:00Z",
+      by: { id: "alice", kind: "user" },
+      selected,
+      selectedTrees: selected.map((one) => displayTree(one)),
+      text,
+      textTree: displayTree(text),
+    },
+    id: "ask-1",
+    state: "answered",
+    text: "At which width does the identity block condense?",
+    type: "ask",
+  });
+  const view = renderRow(asked, { answerer: "alice" });
+  try {
+    const answer = view.container.querySelector("[data-node-answer]");
+    await waitFor(() => {
+      const drawn = [...(answer?.querySelectorAll("[data-answer-text] p") ?? [])];
+      expect(
+        drawn.map((one) => one.textContent),
+        "each paragraph of the answer is the paragraph stored"
+      ).toEqual(paragraphs);
+    });
+    expect(
+      [...(answer?.querySelectorAll("[data-answer-choice]") ?? [])].map((one) => one.textContent),
+      "each chosen option is the name the answer took"
+    ).toEqual(selected);
+    expect(
+      answer?.querySelector("[data-answer-choice] .dispatch-markdown"),
+      "a choice is drawn by the renderer"
+    ).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // R9: a decision the model marks unsure says so in one word on its own row, and a decision it
 // does not mark says nothing of the kind.
 test("a decision the model marks unsure says so in one word", () => {

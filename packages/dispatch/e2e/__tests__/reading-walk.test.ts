@@ -35,9 +35,9 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  * and fails one that names no proof (`web/src/features/refs/surface-lists.test.ts`).
  */
 
-/** The project the references lane runs the reading specs in (`.github/workflows/
- *  dispatch-browser.yaml`, `lane: references`), and the file filter that names those specs and
- *  no other: Playwright matches it against each spec's path, where `inbox-reading-pane.e2e.ts`
+/** The project the references lane runs the reading specs in (the `references)` arm of
+ *  `.github/scripts/dispatch-browser-shard-suite.sh`), and the file filter that names those specs
+ *  and no other: Playwright matches it against each spec's path, where `inbox-reading-pane.e2e.ts`
  *  holds `reading-` but not `e2e/reading-`. */
 const READING_LISTING_ARGUMENTS = [...projectArguments(["chromium"]), "e2e/reading-"];
 
@@ -276,32 +276,27 @@ test("a proof is held to a test its file declares and runs", () => {
   );
 });
 
-/** The workflow whose `references` lane runs the reading specs on a pull request. */
-const BROWSER_WORKFLOW = fileURLToPath(
-  new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
+/** The script whose `references)` arm names the spec files the references lane runs on a pull
+ *  request: `.github/workflows/dispatch-browser.yaml`'s shard job runs it for its browser step. */
+const LANE_SCRIPT = fileURLToPath(
+  new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url)
 );
 
 /**
- * The spec files the references lane runs: the entries of the `lane_files="..."` a step of the
- * workflow sets in the `references)` arm of its script, read as
- * `.github/scripts/ci_filter_coverage.py`'s `check_references_lane` reads them, with the
- * script's comments and blank lines aside, so a comment that spells an assignment is no entry.
+ * The spec files the references lane runs: the entries of the `lane_files="..."` the script sets
+ * in its `references)` arm, read as `.github/scripts/ci_filter_coverage.py`'s
+ * `check_references_lane` reads them, with the script's comments and blank lines aside, so a
+ * comment that spells an assignment is no entry.
  */
 function referencesLaneFiles(): string[] {
-  const workflow = Bun.YAML.parse(readFileSync(BROWSER_WORKFLOW, "utf8")) as {
-    jobs?: Record<string, { steps?: { run?: string }[] } | null>;
-  };
-  return Object.values(workflow.jobs ?? {})
-    .flatMap((job) => job?.steps ?? [])
-    .flatMap((step) => {
-      const script = (step.run ?? "")
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "" && !line.startsWith("#"))
-        .join("\n");
-      const arm = /^references\)$(.*?)^;;$/msu.exec(script)?.[1] ?? "";
-      return (/^lane_files="([^"]*)"/mu.exec(arm)?.[1] ?? "").split(/\s+/u);
-    })
+  const script = readFileSync(LANE_SCRIPT, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .join("\n");
+  const arm = /^references\)$(.*?)^;;$/msu.exec(script)?.[1] ?? "";
+  return (/^lane_files="([^"]*)"/mu.exec(arm)?.[1] ?? "")
+    .split(/\s+/u)
     .filter((entry) => entry !== "");
 }
 
