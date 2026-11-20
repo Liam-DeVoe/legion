@@ -292,10 +292,11 @@ test("the owner notice is kept", async () => {
 });
 
 // A listener answers 404 with nothing kept when its keep failed for a reason other than the stream
-// lacking the kept lane's subject, or an earlier release sees a holder that is not live. The
-// former stream refusal instead answers 503 with Retry-After. The 404 is the answer this sender's
-// retry exists for. Nobody was told, so the next delivered reminder publishes again under the same
-// key, and the worker's transcript gets no warning for something that is not its doing.
+// lacking the kept lane's subject, or an earlier release sees a holder that is not live. A keep the
+// stream refuses for want of the kept lane's subject answers 503 with Retry-After instead. The 404
+// is the answer this sender's retry exists for. Nobody was told, so the next delivered reminder
+// publishes again under the same key, and the worker's transcript gets no warning for something
+// that is not its doing.
 test("a notice no session held the architect role for is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
   const { reminder, timers, entries, published, warned } = rig({

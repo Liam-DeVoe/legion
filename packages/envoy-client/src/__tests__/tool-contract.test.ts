@@ -134,12 +134,11 @@ describe("envoyToolSpecs", () => {
       expect(description).not.toContain("live only");
     }
     // The ways a role publish ends in an error: the holder's refusal (403), the window the
-    // listener spends waiting for the stream (504), a kept lane the stream refuses (503), or a
-    // keep that failed for another reason (404). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that the stream refuses for want of the kept lane's subject answers
-    // 503 with Retry-After; an earlier release answers a holder that is not live with 404
-    // holder_lapsed.
+    // listener spends waiting for the stream (504), a keep the stream refuses for want of the kept
+    // lane's subject (503, with Retry-After), or a keep that failed for another reason (404). On a
+    // listener of this release whose keep succeeded, no live holder is not one of them: the
+    // listener keeps the message for the role's next live holder. An earlier release answers a
+    // holder that is not live with 404 holder_lapsed.
     expect(publish?.description).toContain(
       "the holder refuses the message, or the forward is not stored within four seconds"
     );

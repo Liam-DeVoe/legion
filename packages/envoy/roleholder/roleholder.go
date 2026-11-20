@@ -1,11 +1,11 @@
 // Package roleholder names the reasons the Envoy listener gives when it refuses a role publish
 // after keeping nothing. A no-holder publish answers 202 when the listener keeps it; it answers
-// 404 with one of them only when the publish sent `keep: false`, its role token names no claim, or
-// its keep failed for another reason. A stream that lacks the kept lane's subject answers 503
-// instead. The listener raises one role-lane exception carrying the same 404 `reason`
-// (cmd/listener, publishRefusalException). The Legion daemon reads them on both: its notice
-// publisher takes a 404 naming one as "no holder yet" and keeps the notice to retry
-// (packages/daemon/internal/notify), and its exception consumer
+// 404 with one of them only when the publish sent `keep: false`, its role token is one no claim
+// can name (`roles.Valid`), or its keep failed for another reason. A stream that lacks the kept
+// lane's subject answers 503 instead. The listener raises one role-lane exception carrying the
+// same 404 `reason` (cmd/listener, publishRefusalException). The Legion daemon reads them on
+// both: its notice publisher takes a 404 naming one as "no holder yet" and keeps the notice to
+// retry (packages/daemon/internal/notify), and its exception consumer
 // re-holds nothing for an exception naming one, since that publisher still holds the notice
 // (packages/daemon/internal/daemon, notice_exceptions.go). Both modules read this one list so they
 // cannot drift apart: a reason the listener gives that the daemon does not know reads as a broken

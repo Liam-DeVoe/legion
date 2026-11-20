@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -1005,6 +1006,41 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 	if claimRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("claim of %s: status %d, body %s; want the 400 that refuses the token", role, claimRecorder.Code, claimRecorder.Body.String())
 	}
+}
+
+// A keep that fails for a reason other than the stream lacking the kept lane's subject keeps
+// nothing, so the publish is answered as a publish that kept nothing is (roleSend.noHolder): the
+// 404 that names the role's state, recorded role_unclaimed for a role nobody claims, with nothing
+// on the kept lane. A full stream is such a reason: the stream captures the kept lane and refuses
+// the copy because it holds its byte limit (bus.ErrStreamFull). Only a keep the stream refuses for
+// want of the kept lane's subject is answered 503 at once
+// (TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOnce).
+func TestAPublishWhoseKeepTheFullStreamRefusesIsRefusedAndKeepsNothing(t *testing.T) {
+	client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
+	harness := newListenerDeliveryHarnessOn(t, client)
+	deps := harness.publishDeps(t)
+	const role = "kept-full-stream"
+	bustest.FillStream(t, client, 64)
+
+	recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) },
+		postJSON("/v1/messages/publish", `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this and the stream is full"}`))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("publish to an unheld role whose keep the full stream refused: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); body != "{\"error\":\"no holder for role "+role+"\",\"reason\":\"unclaimed\",\"claim_revision\":0}\n" {
+		t.Fatalf("body = %q", body)
+	}
+	assertRecordFields(t, record, map[string]any{"outcome": string(outcomeRoleUnclaimed), "status": float64(http.StatusNotFound)})
+	assertNothingKept(t, client, role)
+
+	// The keep was made, and the full stream refused it: without this line, a publish that never
+	// tried to keep would answer the same 404.
+	for _, line := range strings.Split(harness.logs.String(), "\n") {
+		if strings.Contains(line, roleKeepFailedLine) && strings.Contains(line, `"role":"`+role+`"`) && strings.Contains(line, bus.ErrStreamFull.Error()) {
+			return
+		}
+	}
+	t.Fatalf("no %q line names role %s and %q; the listener log:\n%s", roleKeepFailedLine, role, bus.ErrStreamFull, harness.logs.String())
 }
 
 // A keep that lands after a concurrent claim's drain has read the lane still reaches that holder:
