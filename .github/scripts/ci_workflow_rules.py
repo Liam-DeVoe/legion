@@ -813,6 +813,10 @@ def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
                                 listed = None
                             continue
                         words = token.split()
+                        if not words:
+                            # A quoted empty argument is a word Bash passes but no command. It
+                            # cannot move the directory, run a test or be a test binary.
+                            continue
                         before = tokens[at - 1] if at else ""
                         after = tokens[at + 1] if at + 1 < len(tokens) else ""
                         if words[0] in ("cd", "pushd", "popd"):

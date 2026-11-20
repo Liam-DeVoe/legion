@@ -2622,6 +2622,15 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the daemon test after the closing parenthesis" \
   "$(has "$out" "step \"Test the daemon\" runs \`go test ./...\` in packages/daemon $rule21")"
+
+echo "case: a quoted empty command before an unwrapped daemon test"
+root=$(fixture daemon-empty-command)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon" $'""\ngo test ./...' packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the daemon test after the empty command" \
+  "$(has "$out" "step \"Test the daemon\" runs \`go test ./...\` in packages/daemon $rule21")"
 echo "case: the forms beside those that run no daemon test binary outside the wrapper pass rule 21"
 root=$(fixture daemon-quiet-forms)
 daemon_workspace "$root"
@@ -3509,5 +3518,44 @@ check "names the step, the size and the cap" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
+
+echo "case: the files a table lists from a directory are the repository's, not the disk's"
+# ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no
+# glob can write. A local e2e run leaves build outputs git ignores in packages/envoy (the
+# harness's lock, out/dispatch-e2e-broker); no checkout CI makes has them, and rule 9 refused the
+# envoy_smoke gate's read of each as matching no file. So the list is repo_files(): the tracked
+# files still on disk and the untracked ones git does not ignore, in the order a walk visits them.
+root="$work/files-but-tests"
+mkdir -p "$root/pkg/sub" "$root/pkg/testdata" "$root/pkg/out"
+printf 'pkg/out/\n' > "$root/.gitignore"
+for f in a.go a_test.go z.go notes.txt sub/b.go testdata/c.go gone.go out/build.go new.go; do
+  printf 'package x\n' > "$root/pkg/$f"
+done
+git -C "$root" init -q
+git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/sub/b.go pkg/testdata/c.go pkg/gone.go
+rm "$root/pkg/gone.go"
+# listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
+# runs from the repository's, skipping testdata.
+listed_files() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
+' "$@")
+}
+check "lists the tracked and the new files, a directory's own before its subdirectory's" \
+  "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
+check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
+  "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
+check "and without the tree, the directory's own files" \
+  "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
