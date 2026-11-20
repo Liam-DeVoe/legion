@@ -268,9 +268,10 @@ func (r *StoreReport) Refused() bool {
 // with that table; the two after them are the runs of the command bar and their frames, which
 // going_requests and going_events project; the four after those are the people and the agents,
 // which no table projects; the eight after those are the ties of decisions, readings and asks
-// that block_refs, document_blocks, asks and ask_followers project; and the last six are the
-// visibility and the state of each run, lens, finding, risk, constraint and lens kind, held to
-// the store's own record of them (baseAttributeCensus).
+// that block_refs, document_blocks, asks and ask_followers project; the six after those are the
+// same ties as graph_edges answers them (edgeProjection), each one that view answers; and the last
+// six are the visibility and the state of each run, lens, finding, risk, constraint and lens kind,
+// held to the store's own record of them (baseAttributeCensus).
 //
 // Each of the first five holds a row to the tuples that answer it as well as to its node row.
 // A row that names its node is answered from the tuples by graph_edges, refs.Edges and
@@ -645,6 +646,35 @@ var projections = []projection{{
 		pastBound:   askPastBound,
 		emptyAgrees: true,
 	},
+	edgeProjection(refs.TupleShaped+edgeSuffix, refs.TupleShaped,
+		"graph_edges' shaped: the row side is every shaped edge graph_edges answers out of a block or ask node not"+
+			" gone, read node by node, as the triple of that node, shaped and its far end, against every shaped tuple"+
+			" a live block or ask node states now", "", "", refs.BlockNodeKind, graphstore.KindAsk),
+	edgeProjection(refs.TupleFromAsk+edgeSuffix, refs.TupleFromAsk,
+		"graph_edges' from_ask: the row side is every from_ask edge graph_edges answers out of a block node not"+
+			" gone, read node by node, as the triple of that node, from_ask and its ask, against every from_ask a"+
+			" live block node states now", "", "", refs.BlockNodeKind),
+	edgeProjection(graphstore.TupleDecidedBy+edgeSuffix, graphstore.TupleDecidedBy,
+		"graph_edges' decided_by: the row side is every decided_by edge graph_edges answers out of a block node"+
+			" not gone, read node by node, as the triple of that node, decided_by and its person or session, against"+
+			" every decided_by a live block node states now", "", "", refs.BlockNodeKind),
+	edgeProjection(graphstore.TupleFollowedBy+edgeSuffix, graphstore.TupleFollowedBy,
+		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
+			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
+			" followed_by a live ask node states now, an edge the old arm answers from an unmarked row aside",
+		followerRowUnmarked, `
+		select count(*) from ask_followers f where octet_length(f.session_id) > `+addressBound, graphstore.KindAsk),
+	edgeProjection("ask_parent"+edgeSuffix, graphstore.TupleOwnedBy,
+		"graph_edges' half of an ask's placement, its owned_by: the row side is every owned_by edge graph_edges"+
+			" answers out of an ask node not gone, read node by node, as the triple of that node, owned_by and the"+
+			" document owning it, against every owned_by a live ask node states now; no arm of graph_edges answers"+
+			" an ask's part_of, which ask_parent holds against asks alone; an edge the old arm answers from an unmarked"+
+			" row aside", askRowUnmarked, askPastBound, graphstore.KindAsk),
+	edgeProjection("ask_anchor"+edgeSuffix, graphstore.TupleAnchoredTo,
+		"graph_edges' anchor of an ask: the row side is every anchored_to edge graph_edges answers out of an ask"+
+			" node not gone, read node by node, as the triple of that node, anchored_to and its document, against"+
+			" every anchored_to a live ask node states now, an edge the old arm answers from an unmarked row aside",
+		askRowUnmarked, askPastBound, graphstore.KindAsk),
 	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),
 	baseAttributeCensus(graphstore.KindLens, graphstore.KindLens, nil, ""),
 	baseAttributeCensus("finding", refs.BlockNodeKind, graphstore.FindingIDSQL, ""),
@@ -917,6 +947,83 @@ func tieProjection(kind, note string, holders ...string) projection {
 		select count(*) from block_refs r
 		where r.kind = '` + kind + `' and not (` + inBound + `)`,
 	}
+}
+
+// edgeSuffix ends the name of a kind edgeProjection holds, after the name of the kind of the same
+// tie that a table projects: shaped_edge beside shaped.
+const edgeSuffix = "_edge"
+
+// edgeProjection is one tie of decisions, readings and asks as graph_edges answers it, held
+// triple by triple (projection.tuples) as tieProjection holds block_refs: each row is an edge the
+// view answers out of a node of one of holders (graphEdgesOut), as the triple of that node, kind
+// and its far end, against every tuple of kind a live node of one of holders states now. So an
+// edge the view answers that no tuple states is a row no tuple states, a tuple the view answers no
+// edge for is a tuple no row projects, and an edge that reaches the wrong node reads as both.
+//
+// The view's newest definition (store/migrations/20261116094101_graph_edges_asks.up.sql) answers
+// each of these ties from one arm, which the projection row decides. For a row that names its
+// node, the tuple arm answers the newest tuple of the triple while it asserts, out of a node not
+// gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while
+// a block_refs row of that node, kind and far end stands (a block's pointer only while its target
+// is of a type the attribute lists, and shaped, from_ask and decided_by list none); anchored_to
+// and owned_by out of an ask's node while an asks row names that node; and followed_by while the
+// ask_followers row of that ask and that session names it. For a row that names no node, which a
+// process of the release before wrote, an old arm answers the row alone: the block_refs arm its
+// link, the two asks arms its anchored_to and owned_by, and the ask_followers arm its
+// followed_by. No arm answers a reading's part_of or an ask's part_of (the tuple arm answers a
+// block's in_document, as its part_of to its document), so the parent of a reading has no kind
+// here, and an ask's placement is held by its owned_by alone (ask_parent_edge).
+//
+// unmarked is a predicate over the node n and its edge that holds where an old arm answers the
+// edge from a row that names no node - an asks or ask_followers row a process of the release
+// before wrote, or one the ask's writer leaves unmarked on purpose because a document it names is
+// past the store's bound, while it writes the ask's node all the same - and is empty for a kind no
+// old arm answers that way. Such an edge is no row here, as such a row is no row of the ask kinds
+// (unmarked_rows, addresses_past_bound); pastBound is the class the ask kinds count beside it.
+func edgeProjection(name, kind, note, unmarked, pastBound string, holders ...string) projection {
+	return projection{
+		name: name, nodeKind: strings.Join(holders, ", "), table: "graph_edges", note: note, emptyAgrees: true,
+		rows:      graphEdgesOut(kind, unmarked, holders...),
+		tuples:    heldTuples(`t.kind = '`+kind+`'`, holders...),
+		pastBound: pastBound,
+	}
+}
+
+// askRowUnmarked and followerRowUnmarked are edgeProjection's unmarked predicates of the ask's
+// own relations and of its followers: the asks row of the node, or the ask_followers row of the
+// node and the edge's session, names no node, so the view answers the edge from its old arm. Each
+// probes the index graph_edges' old arms are probed through (asks_id_text, ask_followers_ask_id_text).
+const (
+	askRowUnmarked      = `exists (select 1 from asks k where k.id::text = n.id and k.node_kind is null)`
+	followerRowUnmarked = `exists (select 1 from ask_followers f
+		where f.ask_id::text = n.id and f.session_id = edge.to_id and f.node_kind is null)`
+)
+
+// graphEdgesOut is the row side of an edgeProjection kind: every edge of kind graph_edges answers
+// out of a node of one of holders that is not gone - the nodes its tuple arm answers out of -
+// read node by node, the view probed with the node's kind and id, as refs.Edges probes it with
+// both bound, but an edge unmarked (a predicate over n and edge, empty for none) says an old arm
+// answers from a row that names no node. The probe ends in `offset 0`, the fence the view's own
+// probes take: without it the planner pulls the probe up into the join, and an arm that is a
+// subquery - the tuple arm's newest tuple of each triple - takes the node's kind and id as a
+// filter over every tuple of that kind rather than as the keys of its index, read again for each
+// node. Fenced, each arm keys its own index with the node's kind and id. An edge an old arm
+// answers out of a row whose ask the store holds no node of yet is no row of this read either.
+func graphEdgesOut(kind, unmarked string, holders ...string) string {
+	read := `
+		select 'graph_edges ' || n.kind || ':' || n.id, n.kind, n.id, edge.kind, edge.to_kind, edge.to_id
+		from graph_nodes n
+		cross join lateral (
+			select e.kind, e.to_kind, e.to_id from graph_edges e
+			where e.from_kind = n.kind and e.from_id = n.id and e.kind = '` + kind + `'
+			offset 0
+		) edge
+		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'`
+	if unmarked != "" {
+		read += `
+		  and not ` + unmarked
+	}
+	return read
 }
 
 // askDocuments are the three documents an asks row k names, joined as the ask's writer reads
@@ -1663,15 +1770,15 @@ func currentOutOfNodes(name string, nearKinds, kinds []string) string {
 // was copied from, graphstore.TupleCopiedFrom) resolves to an ask node that is not gone; a
 // moved_to (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row
 // holds, reached at once or through more moved_to tuples, a cycle reaching none, or to an ask
-// whose row stands, which ends a chain (the heading of a section that cites an answered ask a
-// person removed from its spec); and a removed_by (graphstore.TupleRemovedBy, an ask's node to the
-// person who took its block out) to a person node of the store. A far end is followed through one
-// tuple fewer than graphstore.MovedToHops, since the tuple that names it is the first of the chain
-// a citation of its near end is read through (graphstore.MovedTo), so a far end that resolves here
-// is one every resolver reaches from that near end. A moved_to from a document's address - the
-// pre-mortem conversion's, from the document it retires to the lens it wrote in its place -
-// resolves to that lens where it is not gone, as graphstore.MovedTo reads it, and moves no
-// further.
+// node that is not gone, as a copied_from does, which ends a chain (the heading of a section that
+// cites an answered ask a person removed from its spec); and a removed_by
+// (graphstore.TupleRemovedBy, an ask's node to the person who took its block out) to a person node
+// of the store. A far end is followed through one tuple fewer than graphstore.MovedToHops, since
+// the tuple that names it is the first of the chain a citation of its near end is read through
+// (graphstore.MovedTo), so a far end that resolves here is one every resolver reaches from that
+// near end. A moved_to from a document's address - the pre-mortem conversion's, from the document
+// it retires to the lens it wrote in its place - resolves to that lens where it is not gone, as
+// graphstore.MovedTo reads it, and moves no further.
 //
 // A moved_to whose chain reaches no block that stands but reaches an address in a document that
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
@@ -1702,8 +1809,8 @@ var storeOnlyRead = `
 		select distinct f.start from followed f
 		where f.kind = '` + refs.BlockNodeKind + `' and exists (select 1 from document_blocks d where d.node_id = f.address)
 		   or f.kind = '` + graphstore.KindAsk + `' and exists (
-			select 1 from asks k
-			where k.id = case when f.address ~ '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' then f.address::uuid end)
+			select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = f.address
+			  and ask.state <> '` + graphstore.StateGone + `')
 	),
 	owing as (
 		select distinct f.start from followed f

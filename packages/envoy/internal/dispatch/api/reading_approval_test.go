@@ -254,6 +254,7 @@ func writeReadingSpec(t *testing.T, handler http.Handler, fixture readingFixture
 	if upload {
 		uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
 			"actor": sessionActor(), "name": "spec.md", "content": write.upload(t, documentMarkdown(t, handler, fixture.artifactID)),
+			"precondition": uploadBase(t, handler, fixture.artifactID),
 		})
 		advice = adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 		waitForArtifactVersion(t, handler, fixture.artifactID, version)

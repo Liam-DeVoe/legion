@@ -1399,9 +1399,10 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
-		case slices.Contains(decisionCensusKinds, kind.kind):
-			// The decision tie kinds, which this run writes no decision for and which a store
-			// may hold none of: no row and no node of one is no refusal, and a difference is.
+		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind):
+			// The decision tie kinds and graph_edges' answers of them, which this run writes no
+			// decision for and which a store may hold none of: no row and no node of one is no
+			// refusal, and a difference is.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
 					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)

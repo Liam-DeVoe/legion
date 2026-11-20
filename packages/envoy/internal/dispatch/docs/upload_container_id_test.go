@@ -156,16 +156,18 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 }
 
 // uploadDocumentVersion writes markdown as the document's next version as the upload route writes
-// one (api's storeArtifact): the document's text replaced by Docs.ReplaceText, the version
-// row, and the version's references indexed by Docs.IndexDocumentReferences, whose store write the
-// route appends under the event it records, all in one transaction. This helper records no event,
-// so the store write carries the store's sentinel, as writeIndexedDocument's does. The document's
-// settlement is cleared after it, as the version it wrote settles it.
+// one (api's storeArtifact): the document's text replaced by Docs.ReplaceText, naming the token
+// the document stands at as an upload does, the version row, and the version's references
+// indexed by Docs.IndexDocumentReferences, whose store write the route appends under the event it
+// records, all in one transaction. This helper records no event, so the store write carries the
+// store's sentinel, as writeIndexedDocument's does. The document's settlement is cleared after
+// it, as the version it wrote settles it.
 func uploadDocumentVersion(t *testing.T, database *store.Store, service *Service, artifactID, markdown string) {
 	t.Helper()
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	base := liveDocumentToken(t, service, artifactID)
 	if err := joinedWrite(service, func(ctx context.Context) error {
-		written, err := service.ReplaceText(ctx, artifactID, markdown, alice)
+		written, err := service.ReplaceText(ctx, artifactID, markdown, alice, base)
 		if err != nil {
 			return err
 		}

@@ -1070,6 +1070,39 @@ func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) 
 	}
 }
 
+// CarriedFromVersion reads the version out of the sentence each carry writes, over those very
+// sentences, and reports nothing for a reason a person wrote. It is driven from
+// carriedReasonPrefix, restoreReason and restoreCarriedReason themselves, so a change to any of
+// them that the parser no longer reads fails here rather than leaving every carried review to
+// read as a person's own.
+func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	carry := func(version int) string {
+		return fmt.Sprintf(carriedReasonPrefix, version) + readingCase.change + carriedReasonEnd
+	}
+	for _, test := range []struct {
+		name    string
+		reason  string
+		version int
+		carried bool
+	}{
+		{name: "a carry case's sentence", reason: carry(2), version: 2, carried: true},
+		{name: "the restore's sentence", reason: fmt.Sprintf(restoreReason, 11), version: 11, carried: true},
+		{name: "the restore of a carried version's sentence", reason: fmt.Sprintf(restoreCarriedReason, 3, 7), version: 3, carried: true},
+		{name: "a reviewer's own reason", reason: "The rollback path is named."},
+		{name: "no reason at all", reason: ""},
+		{name: "the prefix with no version after it", reason: CarriedReviewReasonPrefix + ": unchanged."},
+		{name: "the prefix later in the reason", reason: "Not " + carry(2)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			version, carried := CarriedFromVersion(test.reason)
+			if carried != test.carried || version != test.version {
+				t.Fatalf("CarriedFromVersion(%q) = %d, %t; want %d, %t",
+					test.reason, version, carried, test.version, test.carried)
+			}
+		})
+	}
+}
+
 // A transaction carries one document's approval at most once (errApprovalCarriedTwice, whose doc
 // carries the reason). Here the agent names a version whose text is the approved text, which
 // carries alice's approval, and both routes into the carry are then refused in that same

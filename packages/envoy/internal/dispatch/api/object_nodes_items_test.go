@@ -64,7 +64,8 @@ func TestEveryAskCreateStoresItsNode(t *testing.T) {
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md",
-		"content": "Before\n\n:::ask{#node-ask urgency=\"high\" multiple=\"false\"}\nShip the decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
+		"content":      "Before\n\n:::ask{#node-ask urgency=\"high\" multiple=\"false\"}\nShip the decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "spec.md"),
 	})
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload a spec holding an ask block: status=%d body=%s", uploaded.Code, uploaded.Body.String())

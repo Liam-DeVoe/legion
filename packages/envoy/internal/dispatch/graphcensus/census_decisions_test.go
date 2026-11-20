@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -216,6 +217,69 @@ func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 	}
 }
 
+// A moved_to into an ask resolves only to a live ask node, as a copied_from does: the heading of a
+// section that cites an answered ask a person removed from its spec takes one moved_to to that
+// ask's node (R9), and a citation of the heading resolves through it. Over the agreeing store and
+// one ask the backfill marked, a moved_to from a heading address into that ask's live node reads
+// tuples=1 unresolved=0 left_out=0, and the census passes. Once the ask's node is stated gone
+// through the store's writer, its asks row still standing, the same far end does not resolve, and
+// the census refuses. A census that resolved such a far end by the asks row alone would read it
+// resolved both times.
+func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	var ask string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into asks (issue_key, author, question) values ('CORE-1', '{"kind":"user","id":"alice"}', 'Which shelf?')
+		returning id::text
+	`).Scan(&ask); err != nil {
+		t.Fatalf("write the ask: %v", err)
+	}
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the ask: %v", err)
+	}
+	requireTheCensusAgrees(t, "the census of the agreeing store and the marked ask", storeCensusOf(t, database))
+	heading := seeded.document.refKey + "#removed-heading"
+	writeTestTuples(t, database, nil, []graphstore.Tuple{{
+		FromKind: refs.BlockNodeKind, FromID: heading, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindAsk, ToID: ask,
+		At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}})
+
+	report := storeCensusOf(t, database)
+	var printed strings.Builder
+	report.Write(&printed)
+	moved := storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	line := "census: store-only kind=moved_to tuples=1 unresolved=0 left_out=0\n"
+	if moved.Tuples != 1 || moved.Unresolved != 0 || moved.LeftOut != 0 || report.Refused() || !strings.Contains(printed.String(), line) {
+		t.Fatalf("a moved_to into a live ask node reads %+v and refused=%t, want %q and a pass:\n%s",
+			moved, report.Refused(), line, printed.String())
+	}
+
+	gone := graphstore.AskNode(ask, "CORE", nil, censusWriter, time.Now().UTC())
+	// An ask's own writer restates its node and keeps the state the store holds (graphstore.Node's
+	// Restates), so the move to gone is a write of the state, as the state route writes one.
+	gone.State, gone.Restates = graphstore.StateGone, false
+	writeTestTuples(t, database, []graphstore.Node{gone}, nil)
+	var state string
+	if err := database.Pool.QueryRow(ctx, `select state from graph_nodes where kind = 'ask' and id = $1`, ask).Scan(&state); err != nil || state != graphstore.StateGone {
+		t.Fatalf("the ask's node reads state %q (%v), want gone, so this test would prove nothing", state, err)
+	}
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from asks where id = $1::uuid`, ask).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("the ask's row reads %d rows (%v), want it standing, so this test would prove nothing", rows, err)
+	}
+	report = storeCensusOf(t, database)
+	printed.Reset()
+	report.Write(&printed)
+	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	line = "census: store-only kind=moved_to tuples=1 unresolved=1 left_out=0\n"
+	if moved.Tuples != 1 || moved.Unresolved != 1 || moved.LeftOut != 0 || !report.Refused() || !strings.Contains(printed.String(), line) {
+		t.Fatalf("a moved_to into a gone ask node whose row stands reads %+v and refused=%t, want %q and a refusal:\n%s",
+			moved, report.Refused(), line, printed.String())
+	}
+}
+
 // planWithoutSeqScans is the plan Postgres builds for statement with sequential scans off, in a
 // transaction of its own, as api's helper of the same name builds one: a fixture's handful of rows
 // is read fastest whole however the statement is written, so only with that setting does the plan
@@ -274,7 +338,10 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // and the dangling-citation counter's moved_to sources read their tuples out of the nodes the log
 // holds (currentOutOfNodes) through graph_tuples_current alone, an index of the store's set, in
 // three keyed scans: the walk's first node of each kind, the walk's next node past each one, and
-// the probe of each node's tuples of those kinds.
+// the probe of each node's tuples of those kinds. graph_edges' answer of each tie the census holds
+// it to (graphEdgesOut) is read node by node, so the view's tuple arm reads graph_tuples through
+// one scan keyed by the node's kind and its id: a plan that keys the kind alone reads every tuple
+// of that kind, and reads them again for each node.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -307,5 +374,27 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 			t.Errorf("%s reads graph_tuples through %d keyed scan(s), want 3: the walk's first node of each kind, its next node and the probe of each node's tuples",
 				read.name, keyed)
 		}
+	}
+
+	var edges []string
+	for _, held := range projections {
+		if held.table != "graph_edges" {
+			continue
+		}
+		edges = append(edges, held.name)
+		plan := planWithoutSeqScans(t, database, held.rows)
+		if keyed := requireKeyedTupleReads(t, keys, "graph_edges' "+held.name, plan); keyed != 1 {
+			t.Errorf("graph_edges' %s reads graph_tuples through %d keyed scan(s), want 1: the probe of each node's tuples",
+				held.name, keyed)
+		}
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if strings.HasPrefix(scan.Index, "graph_tuples") && !strings.Contains(scan.Cond, "from_id = n.id") {
+				t.Errorf("graph_edges' %s reads %s under the condition %q, want it keyed by each node's id: %s",
+					held.name, scan, scan.Cond, plan)
+			}
+		}
+	}
+	if len(edges) != 6 {
+		t.Errorf("the census holds graph_edges' answer of %v, want the six ties it answers", edges)
 	}
 }

@@ -388,9 +388,10 @@ func TestTheConversionLeavesASectionHoldingAnUnindexedAskBlockForTheNextPass(t *
 	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
 	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+plain)
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	base := liveDocumentToken(t, issue.service, decisions)
 	if err := joinedWrite(issue.service, func(ctx context.Context) error {
 		_, err := issue.service.ReplaceText(ctx, decisions, "# Decisions\n\n"+plain+"\n## "+title+"\n\n"+
-			":::ask{#q-late urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n:::\n\nWe lean east until someone rules.\n", alice)
+			":::ask{#q-late urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n:::\n\nWe lean east until someone rules.\n", alice, base)
 		return err
 	}); err != nil {
 		t.Fatalf("write the live edit: %v", err)

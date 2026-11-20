@@ -91,14 +91,20 @@ func shapedLink(t *testing.T, entry decisionEntry, target string) model.Decision
 }
 
 // agentUploadAs uploads content as the issue's document name through the agent's session,
-// carrying body's other members beside name, content and actor.
+// carrying body's other members beside name, content and actor. An upload over a document the
+// issue already holds under name names the token of the version it replaces, and a first upload
+// names none (uploadBaseNamed).
 func agentUploadAs(t *testing.T, handler http.Handler, issueKey, name, content string, body map[string]any) {
 	t.Helper()
-	request := map[string]any{"name": name, "content": content, "actor": sessionActor()}
+	path := "/api/v1/issues/" + issueKey + "/artifacts"
+	request := map[string]any{
+		"name": name, "content": content, "actor": sessionActor(),
+		"precondition": uploadBaseNamed(t, handler, path, name),
+	}
 	for member, value := range body {
 		request[member] = value
 	}
-	requireAgentWrite(t, "the agent's "+name, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", request), http.StatusCreated)
+	requireAgentWrite(t, "the agent's "+name, sessionRequest(t, handler, http.MethodPost, path, request), http.StatusCreated)
 }
 
 // versionCreatedAt is when version number of the document was written, by the database's clock.
@@ -705,7 +711,7 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	// A reading inside the open ask, which holds no answer, is refused and writes no version.
 	asksVersion := latestVersion(t, database, asks.id).Number
 	refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
-		"name": "asks.md", "actor": sessionActor(),
+		"name": "asks.md", "actor": sessionActor(), "precondition": uploadBase(t, handler, asks.id),
 		"content": "::::" + readingA1 + "\n:::reading{#g3}\nThe agent reads the answer as REST for every service.\n:::\n::::\n\n" +
 			"::::ask{#a2 urgency=\"med\" multiple=\"false\"}\nShip on Friday?\n\n- Yes: Ship it\n- No: Wait a week\n\n:::reading{#g4}\nThe agent reads it as shipping.\n:::\n::::\n",
 	})

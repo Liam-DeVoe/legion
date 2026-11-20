@@ -107,10 +107,19 @@ pointer() {
   send POST "/api/v1/issues/$key/nodes/$(q "$1")/pointers" "$(jq -c --argjson a "$(actor)" '. + {actor: $a}' <<<"$2")"
 }
 
-# upload SECTION WHAT NAME FILE: writes FILE as the next version of the issue's document NAME.
+# upload SECTION WHAT NAME FILE: writes FILE as the next version of the issue's document NAME. A
+# version that replaces one names the token of the version it replaces, as every upload must; the
+# first version names none.
 upload() {
-  send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "$3" --rawfile c "$4" --argjson a "$(actor)" \
-    '{name: $n, content: $c, actor: $a}')"
+  local token=""
+  send GET "/api/v1/issues/$key/artifacts/${3//./-}/text"
+  case "$status" in
+    200) token="$(jq -er '.token' "$work/body")" || fail "$1" "$2" "the document $3 holds no token: $(body)" ;;
+    404) ;;
+    *) fail "$1" "$2" "read the token of $3: HTTP $status: $(body)" ;;
+  esac
+  send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "$3" --rawfile c "$4" --arg t "$token" --argjson a "$(actor)" \
+    '{name: $n, content: $c, actor: $a} + (if $t == "" then {} else {precondition: {document: $t}} end)')"
   want_status 201 "$1" "$2"
 }
 
