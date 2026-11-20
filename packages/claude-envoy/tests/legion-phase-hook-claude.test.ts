@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
@@ -444,6 +445,7 @@ async function runWorker(options: {
     {
       cwd: workspace,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: root,
         // `claudelaunch.Environment`.
