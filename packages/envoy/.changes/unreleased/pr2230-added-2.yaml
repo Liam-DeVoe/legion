@@ -12,7 +12,10 @@ body: |-
   hand-off reads. Such a session is the attempt's session whatever the delivery mode (the
   capability check is skipped), the send goes to it through the listener, which hands it to the
   agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
-  that attempt is accepted. A target the registry does not name, or names for a project that
+  that attempt is accepted. That send carries no role mark, a role's route included: the
+  listener keeps a send marked with a role whose claim does not name its target on the role's
+  kept lane, for a next holder a finished role does not have, rather than hand it to the daemon.
+  A target the registry does not name, or names for a project that
   does not answer (its daemon runs without `answers`, or it never said it does), keeps the
   listener's own answer and is sent nothing: a mention fails `no live session <id>`, a role
   message gets the listener's no-holder text naming no session, and a targeted message to a

@@ -1230,11 +1230,11 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 183): a plugin before it reads the state with a strict schema that knows
+// the state (version.go's 191): a plugin before it reads the state with a strict schema that knows
 // no such key and refuses the whole body for it, empty as surely as naming a question.
 // pauseContract stands below it with no row of stateNarrowings between the two, so a caller in a
 // pod at or above pauseContract and below this contract is served the pause and not the questions.
-const questionsForControllerContract = 183
+const questionsForControllerContract = 191
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

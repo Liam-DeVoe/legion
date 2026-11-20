@@ -3,6 +3,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
+  STORE_UNCONFIRMED_CAUSE,
 } from "@legion/contracts";
 
 import {
@@ -159,12 +160,14 @@ test("the guidance is separated from a cause that has no trailing punctuation", 
 // "Sending in a different mode delivers it again" is only true of a send that may already have
 // reached the recipient. For a failure that never got there, nothing was delivered to deliver
 // "again"; and the mention surface has no mode-change button to name at all.
-test("the mode-change clause is offered only for a receipt timeout, and never on a mention", () => {
+test("the mode-change clause is offered only for a send that may have landed, and never on a mention", () => {
   const modeChange = "sending in a different mode delivers it again";
   expect(safeRetryGuidance("card", RECEIPT_TIMEOUT_CAUSE)).toContain(modeChange);
+  expect(safeRetryGuidance("card", STORE_UNCONFIRMED_CAUSE)).toContain(modeChange);
   expect(safeRetryGuidance("card", `${NO_LIVE_SESSION} s1`)).not.toContain(modeChange);
   expect(safeRetryGuidance("card", null)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", RECEIPT_TIMEOUT_CAUSE)).not.toContain(modeChange);
+  expect(safeRetryGuidance("mention", STORE_UNCONFIRMED_CAUSE)).not.toContain(modeChange);
 });
 
 // A host holds the keys it was handed in memory, so a session that restarted after the first

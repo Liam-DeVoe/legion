@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The dashboard reads a failed attempt row that carries an envelope id as one its session answered
@@ -93,7 +96,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			}
 			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
 			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+				context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = %+v, want envelope %v, duplicate %v, queued %v, failure %v",
@@ -117,8 +120,9 @@ func keptForPlanner() ResolvedMention {
 }
 
 // A role kept for its next holder is published with the failures a send's are worded with: the
-// listener's own text for a publish it kept nothing of, and the receipt-timeout cause for one
-// whose answer missed the window, since the listener keeps the copy before it answers.
+// listener's own text for a publish it kept nothing of, the receipt-timeout cause for one whose
+// answer missed the window, since the listener keeps the copy before it answers, and the
+// unconfirmed-store cause for a 503 coded maybe_stored (listenerwire.CodeMaybeStored).
 func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -137,13 +141,18 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"service starting"}`))
 		}, failure: listenerUnreachablePrefix + "listener returned 503: service starting"},
+		{name: "a keep the listener could not confirm stored", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"maybe_stored","error":"envoy: the message bus did not answer: publish unacknowledged"}`))
+		}, failure: storeUnconfirmedText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := httptest.NewServer(tc.answer)
 			t.Cleanup(listener.Close)
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(150*time.Millisecond))}}
 			outcome := s.sendResolvedDelivery(
-				context.Background(), keptForPlanner(), "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+				context.Background(), keptForPlanner(), "role:planner", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
 				t.Fatalf("sendResolvedDelivery = %+v, want failure %q with no envelope", outcome, tc.failure)
 			}
@@ -163,7 +172,7 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 	s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
 	kept := keptForPlanner()
 	outcome := s.sendResolvedDelivery(
-		context.Background(), kept, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
+		context.Background(), kept, "role:planner", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
 	if outcome.failure != "no holder for role planner" || outcome.refused != &kept.redirect.listenerAnswer ||
 		outcome.envelopeID != nil || outcome.queued {
 		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
@@ -178,6 +187,12 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 // refused, with no envelope and nothing queued, and so does a take-over's repeat of it, which the
 // stream recognises as a duplicate. A session the listener resolved itself and stored the send for
 // is queued as ever ("the listener stored the send for a stopped session" above).
+//
+// Each send is made on its own route, a role's included, and carries no role mark: the registry
+// names a role's session only once the role's issue has finished, and the listener keeps a send
+// marked with a role whose claim does not name its target for the role's next holder rather than
+// hand it to the stopped agent's daemon (answerRoleSend in cmd/listener). A client that presents
+// no identity, as this one, refuses a marked send outright (envoy.ErrNoListenerIdentity).
 func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
 	stopped := "stopped-2"
 	registered := func(answer ResolvedMention) ResolvedMention {
@@ -207,12 +222,16 @@ func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAns
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/send" {
 					t.Errorf("unexpected request %s %s, want the send", r.Method, r.URL.Path)
 				}
+				var sent listenerwire.SendRequest
+				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || sent.Role != "" {
+					t.Errorf("the send carried role %q (decode: %v), want no role mark on a send to a session the registry named", sent.Role, err)
+				}
 				_, _ = w.Write([]byte(tc.answer))
 			}))
 			t.Cleanup(listener.Close)
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
 			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+				context.Background(), tc.target, tc.target.Target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if !tc.refused {
 				if outcome.failure != "" || outcome.refused != nil || outcome.queued || outcome.envelopeID == nil ||
 					*outcome.envelopeID != "handed-off-1" {
@@ -227,5 +246,37 @@ func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAns
 					outcome, answer.ResolveError)
 			}
 		})
+	}
+}
+
+// A listener 503 coded maybe_stored (listenerwire.CodeMaybeStored) is a send it published and could
+// not confirm stored, which may have reached the session: the attempt records that cause in its own
+// words (storeUnconfirmedText), not the receipt timeout's, and it is retryable under its key, as a
+// receipt timeout is. The control is the same 503 with no code: an ordinary unreachable failure.
+func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *testing.T) {
+	session := "s1"
+	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
+	send := func(body string) sendOutcome {
+		t.Helper()
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(listener.Close)
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+		return s.sendResolvedDelivery(
+			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+	}
+	maybe := send(`{"code":"maybe_stored","error":"envoy: the message bus did not answer: publish unacknowledged"}`)
+	if maybe.failure != storeUnconfirmedText || maybe.failure == receiptTimeoutText || maybe.envelopeID != nil {
+		t.Fatalf("a 503 coded maybe_stored = %+v, want the failure %q and no envelope", maybe, storeUnconfirmedText)
+	}
+	if !retryableDeliveryFailure(maybe.failure) {
+		t.Fatalf("%q is not retryable, want it retried under its key as a receipt timeout is", maybe.failure)
+	}
+	plain := send(`{"error":"envoy: the message bus did not answer: no responders"}`)
+	if plain.failure == storeUnconfirmedText || !strings.HasPrefix(plain.failure, listenerUnreachablePrefix) {
+		t.Fatalf("control: a 503 with no code = %+v, want an ordinary %q failure", plain, listenerUnreachablePrefix)
 	}
 }

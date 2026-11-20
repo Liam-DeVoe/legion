@@ -160,7 +160,10 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // the worker that stopped - so its message is kept on the role's kept lane for the next holder
 // (INFRA-514's 202, roleSend.noHolder), which is what it was before the hand-off existed. A
 // session addressed by id is answered for whether its issue is finished or not: that session has
-// stopped, and the message is for it, not for a role another session will take.
+// stopped, and the message is for it. A send that carries a role's mark (Dispatch's send to a
+// `role:` route) is held to that role's claim before it reaches this (#4387's keep for the next
+// holder); Dispatch sends a role's message it redirected to a stopped agent's session unmarked
+// (sendResolvedDelivery), so it reaches this as a message for that session.
 //
 // Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
 // released that session's idle issue pod and keeps its claim to resume, so the message is a wake

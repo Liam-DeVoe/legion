@@ -3,6 +3,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
+  STORE_UNCONFIRMED_CAUSE,
 } from "@legion/contracts";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -163,6 +164,33 @@ test("a receipt timeout is told what a mode change would do", () => {
     expect(screen.getByText(/sending in a different mode delivers it again/)).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A send the listener answered 503 because it could not confirm the store may have been delivered
+// too. Its card names that cause in its own words, not the receipt timeout's, and gives it the same
+// mode-change warning. The control is a cause that cannot have landed: no warning.
+test("a send whose store the listener could not confirm is named as such and told what a mode change would do", () => {
+  const view = render(card({ attempts: [attempt({ error: STORE_UNCONFIRMED_CAUSE })] }));
+  try {
+    expect(
+      screen.getByText(
+        `Failed: ${STORE_UNCONFIRMED_CAUSE} ${safeRetryGuidance("card", STORE_UNCONFIRMED_CAUSE)}`
+      )
+    ).toBeTruthy();
+    expect(screen.getByText(/could not confirm it was stored/)).toBeTruthy();
+    expect(screen.queryByText(/didn't answer within the send window/)).not.toBeInTheDocument();
+    expect(screen.getByText(/sending in a different mode delivers it again/)).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+  const control = render(card({ attempts: [attempt({ error: `${NO_LIVE_SESSION} s1` })] }));
+  try {
+    expect(
+      screen.queryByText(/sending in a different mode delivers it again/)
+    ).not.toBeInTheDocument();
+  } finally {
+    control.unmount();
   }
 });
 

@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,17 +2454,27 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 183: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 191: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never
-// null, and a caller from a pod whose claims record a contract under 183 is served the state
+// null, and a caller from a pod whose claims record a contract under 191 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
-// before 183 refuses it. The bands compose with the pause's: a caller below 178 is served neither
-// the pause's keys nor this one, and a caller from 178 to 182 the pause's alone. The 183 reader
-// takes it as optional for that body alone, as it takes `wakesWaiting`; a daemon below 183 is not
+// before 191 refuses it. The bands compose with the pause's: a caller below 178 is served neither
+// the pause's keys nor this one, and a caller from 178 to 190 the pause's alone. The 191 reader
+// takes it as optional for that body alone, as it takes `wakesWaiting`; a daemon below 191 is not
 // what serves it a body without the key, since the boot gate and `legion probe-image` refuse that
 // mixed pair. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
@@ -2474,10 +2483,11 @@ package api
 // while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
 // then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
 // at 160, then 170 while main stood at 160, then 171 while main stood at 168, then 183 while main
-// stood at 178. It takes 183 because open pull requests declared 179 (#4392, #4540), 180 (#4049,
-// #4175), 181 (#4273, #4553) and 182 (#4495) at 2026-11-20T01:15Z, read with the
-// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, so 183
-// is the lowest number above main's that no open pull request declares. main held 178 at the
-// forward merge that last read this number, main's c7e1cbd5; read main's own number and every
-// open pull request's again at the next merge rather than from this line.)
-const DaemonAPIVersion = 183
+// stood at 178, then 191 while main stood at 188. It takes 191 because open pull requests
+// declared 189 (#3831, #4592, #4596) and 190 (#4493, #4578), with 184 to 187 declared too, at
+// 2026-11-20T10:20Z, read with the `declared_by_open_pull_requests` of main's
+// .github/scripts/check-daemon-api-contract.sh, so 191 is the lowest number above main's that no
+// open pull request declares. main held 188 at the forward merge that last read this number,
+// main's 1c7c8253; read main's own number and every open pull request's again at the next merge
+// rather than from this line.)
+const DaemonAPIVersion = 191

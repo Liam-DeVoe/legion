@@ -518,7 +518,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, the contract 183
+		// answer loop passed to the controller (questionsForControllerContract, the contract 191
 		// added), so a pod at it or above is served the key, `[]` where no question was passed,
 		// and a pod still running an older plugin is served no key at all.
 		questions bool
@@ -693,7 +693,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
 			// with the project's pause gone, the `paused` contract 178 added (withoutPause), and
-			// with `questionsForController` gone, the key contract 183 added, which a reader
+			// with `questionsForController` gone, the key contract 191 added, which a reader
 			// before it refuses empty as surely as filled (withoutQuestionsForController). Every row
 			// that reaches here is below all of them, so every one of them goes whatever the row
 			// is; contract 132's strip takes a word of the line's `kind` and no key, and this
