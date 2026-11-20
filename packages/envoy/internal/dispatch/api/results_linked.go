@@ -284,8 +284,8 @@ type linkedRepository struct {
 // linkedRepositories is every repository that the issue does not resolve to and in which the
 // external links of issueKey name a GitHub pull request, each once with the numbers of its
 // linked pull requests, in the order the issue lists its links. It groups
-// delivery.LinkedPullRequests, the list whose heads the results read compares a `before_merge`
-// check with, so the route and the read take one list. A link to a pull request of the issue's
+// delivery.LinkedPullRequests, read from the links themselves, since Dispatch may hold no row of a
+// pull request a link names yet. A link to a pull request of the issue's
 // own repository names nothing here: that repository is asked about the commit before any link
 // is read.
 func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([]linkedRepository, error) {
@@ -482,12 +482,11 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 
 // baseBranchMergedIn is the branch the newest pull request the check's issue links in repo, a
 // linked repository, merged into (delivery.BaseBranchMergedIn), read once per issue and
-// repository per read of the results, and whether the read answered at all. The links name the
-// issue's merge there for every issue that links the pull request, while the attribution gives
-// such a pull request to one issue alone and only once a writer judged its row
-// (attributionHeldFor), and baseBranchMergedFor reads only the pull requests attributed to the
-// issue in the repository it resolves to. The key is the issue and the repository: an issue
-// whose work spans two repositories merged once in each. The memo keeps a failed read as
+// repository per read of the results, and whether the read answered at all. The attribution
+// gives the issue such a pull request (R19 of the spec of several open pull requests), unless its
+// head is in a fork, and baseBranchMergedFor reads only the pull requests attributed to the issue
+// in the repository it resolves to. The key is the issue and the repository: an issue whose work
+// spans two repositories merged once in each. The memo keeps a failed read as
 // baseBranchMergedFor's does, for the same reason.
 func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
 	memo := [2]string{issueKey, repo}

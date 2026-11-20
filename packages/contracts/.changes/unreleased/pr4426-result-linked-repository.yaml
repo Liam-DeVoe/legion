@@ -11,7 +11,8 @@ body: |-
   generated
   `POST /api/v1/issues/{key}/results` description states the same rule, and the
   generated `GET /api/v1/issues/{key}/results` description says that a `before_merge` check is
-  compared with the heads of those linked pull requests too. Two generated types carry an
+  compared with the heads of those linked pull requests too, where the attribution gives each to
+  the check's issue: one whose head is in a fork is none. Two generated types carry an
   optional `repo`, the `owner/name` of a linked repository: `CheckBasis`, for the head of a pull
   request the issue links there or a branch of it that a result stands at, and
   `ResultCommitStands`, for the linked repository an `other_commit` or `unknown` answer is about.

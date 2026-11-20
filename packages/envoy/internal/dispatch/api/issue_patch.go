@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -451,8 +454,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The pull requests whose own URL this change of the links added or removed: a pull request is
+	// the issue's while the issue links it (R19 of the spec of several open pull requests), so
+	// each is judged again (delivery.LinksChanged), in this transaction where the links alone
+	// decide it and from GitHub after the commit (readHeadsOfChangedLinks).
+	var changedHeads []delivery.HeadOfChangedLink
 	if input.ExternalLinks != nil {
-		if _, err := tx.Exec(r.Context(), `delete from issue_external_links where issue_key = $1`, key); err != nil {
+		deleted, err := tx.Query(r.Context(), `delete from issue_external_links where issue_key = $1 returning url`, key)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		removed, err := pgx.CollectRows(deleted, pgx.RowTo[string])
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -486,6 +500,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
+		}
+		changedHeads, err = delivery.LinksChanged(r.Context(), tx, key, changedLinkURLs(removed, *input.ExternalLinks))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		changed = true
 	}
@@ -605,6 +624,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appended = append(appended, event)
+	// A pull request the change of the links took from the issue: the move on the issue's own
+	// timeline, after the update that made it, as a head write appends it (delivery.AttributionEventType).
+	for _, head := range changedHeads {
+		if !head.Uncredited {
+			continue
+		}
+		moved, err := s.queueEvent(ledger, head.AttributionEvent(key))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		appended = append(appended, moved)
+	}
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {
@@ -687,7 +719,63 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}
+	s.readHeadsOfChangedLinks(r.Context(), changedHeads)
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
+}
+
+// changedLinkURLs is the URL of each link the change of an issue's links added or removed: in
+// removed, the issue's links before the change, and not in links, its links after it, or the
+// other way round, compared without case, as the attribution compares a link with a pull
+// request's URL (delivery's attributionCandidates).
+func changedLinkURLs(removed []string, links []model.ExternalLink) []string {
+	before := make(map[string]bool, len(removed))
+	for _, url := range removed {
+		before[strings.ToLower(url)] = true
+	}
+	after := make(map[string]bool, len(links))
+	for _, link := range links {
+		after[strings.ToLower(link.URL)] = true
+	}
+	var changed []string
+	for url := range before {
+		if !after[url] {
+			changed = append(changed, url)
+		}
+	}
+	for url := range after {
+		if !before[url] {
+			changed = append(changed, url)
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// linkChangeReads is the most pull requests one change of an issue's links reads again from
+// GitHub after its commit (readHeadsOfChangedLinks). Each read is two or three GitHub calls the
+// PATCH makes before it answers, and the PATCH bounds no number of links, so ten holds one edit
+// to at most about thirty calls; the reconcile judges every row past the bound on its own, since
+// delivery.LinksChanged marked each.
+const linkChangeReads = 10
+
+// readHeadsOfChangedLinks reads each pull request a change of the issue's links named again from
+// GitHub, at most linkChangeReads of them, and writes its row with the issue the attribution
+// gives it now (delivery.RefreshPullRequestHead), so a pull request the issue linked is the
+// issue's at once, and one it no longer links is given to whichever issue its other sources name.
+// A deployment with no App key reads nothing. It never fails the PATCH, which has committed: a read
+// that fails is logged, and the reconcile judges the row on its own pass, since
+// delivery.LinksChanged marked it.
+func (s *server) readHeadsOfChangedLinks(ctx context.Context, heads []delivery.HeadOfChangedLink) {
+	if len(heads) == 0 || s.deps.GitHub == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return
+	}
+	for _, head := range heads[:min(len(heads), linkChangeReads)] {
+		if err := delivery.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events,
+			head.Repo, head.Number, time.Now()); err != nil {
+			slog.Info("dispatch: read a pull request whose link changed again",
+				"repo", head.Repo, "number", head.Number, "error", err)
+		}
+	}
 }
 
 // appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the

@@ -1,12 +1,16 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -17,23 +21,25 @@ import (
 // repository lowercased, as refs.ExternalRepo spells a mapping, and under the canonical name
 // it is called today (refs.CanonicalRepoSQL).
 //
-// Such a pull request is one of the issue's heads when the results are read, as a pull request
-// attributed to the issue is (HeadAttributedTo, HeadsAttributedTo). An issue whose work spans two
-// repositories links the pull request it has in the second one. The attribution gives that pull
-// request to an issue whose link is its own URL (attributionHeldFor), but to one issue alone, the
-// first its ranked sources name, and only once a writer has judged the row by that rule; every
-// other source holds an issue to the repository it resolves to (attributionHeld), and the pull
-// request is in another. So the link stands in for the attribution there, for every issue that
-// links the pull request and whatever the row's last judgement, and only there. A link to a pull
-// request of the repository the issue resolves to adds nothing, since the attribution, of which
-// that link is the first source, alone decides which of that repository's pull requests are the
-// issue's. The terms hold the issue to a repository by the attribution's own rule, so the two
-// cannot disagree about which repository is the issue's.
+// The record route reads them to say which repositories a result of the issue may name a commit
+// of (LinkedPullRequests, api/results_linked.go's refuseUnknownCommit): an issue whose work spans
+// two repositories links the pull request it has in the second one, and a result at that pull
+// request's head names a commit of the second repository. They are read from the links
+// themselves, since the route asks GitHub about each pull request they name, and Dispatch may hold
+// no row of it yet. The results read takes no head from them. A pull request is one of the issue's
+// heads only where the attribution gives it the issue (HeadAttributedTo, HeadsAttributedTo): a
+// link of a pull request's own URL gives it to the issue in any repository (attributionHeldFor),
+// but not a pull request whose head is in a fork, which anyone may open at any commit
+// (headAttribution), and only once a writer has judged its row by that rule, which a change of the
+// links asks for at once (LinksChanged). The terms name the repository of such a head
+// (AttributedHead.LinkedRepo) and the merge BaseBranchMergedIn walks, which is why they are read
+// beside the attribution there. A link to a pull request of the repository the issue resolves to
+// names nothing here, since that repository is asked about the commit before any link is read. The
+// terms hold the issue to a repository by the attribution's own rule, so the two cannot disagree
+// about which repository is the issue's.
 //
-// The link names the pull request and not its head: the head is the stored row's, matched by the
-// repository and the number, so a push that moves the head moves the basis with it, as it does
-// for an attributed pull request. A pull request that closed without a merge is no head, by the
-// state of its row, exactly as an attributed one that closed without a merge is no head.
+// The link names the pull request and not its head: a head is the stored row's, matched by the
+// repository and the number, so a push that moves the head moves the basis with it.
 //
 // The owner and the name are held to the patterns of GitHub's names that refs reads a name with
 // (refs.GitHubOwnerPattern, refs.GitHubNamePattern): an owner of a letter or digit and then up to
@@ -67,7 +73,7 @@ var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.Iss
 // linkedHeadJoin joins each linked_pulls row, l, to the stored head row of the pull request it
 // names, h: the same number in the same repository, compared without case, since a row written
 // from a `pull_request` envelope carries GitHub's own spelling of the repository and a link is
-// read lowercased. Every read of the linked heads joins them so.
+// read lowercased.
 const linkedHeadJoin = `join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number`
 
 // LinkedPullRequest is one pull request an issue's external links name in a repository the
@@ -84,7 +90,7 @@ var linkedPullRequestsQuery = `with recursive ` + linkedPullRequestTerms + `
 // LinkedPullRequests is every pull request the external links of issueKey name in a repository
 // the issue does not resolve to, in the order the issue lists its links. The result route reads
 // it to say which repositories a result of the issue may name a commit of (api/results_linked.go,
-// refuseUnknownCommit), so the route and the results read take one list.
+// refuseUnknownCommit).
 func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([]LinkedPullRequest, error) {
 	rows, err := q.Query(ctx, linkedPullRequestsQuery, issueKey)
 	if err != nil {
@@ -105,64 +111,134 @@ func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([
 	return linked, nil
 }
 
-// headAttributedQuery is HeadAttributedTo's statement: its first arm the attributed rows, read
-// through pull_request_heads_issue_head, and its second the linked ones, read through
-// pull_request_heads_repo_head (`lower(repo), head_sha`).
-var headAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
-	select exists (
-		select 1 from pull_request_heads
-		where issue_key = $1 and head_sha = $2 and state in ('open', 'merged')
-	) or exists (
-		select 1 from linked_pulls l
-		` + linkedHeadJoin + `
-		where h.head_sha = $2 and h.state in ('open', 'merged')
-	)`
-
-// HeadAttributedTo reports whether sha is the head of an open or merged pull request that is
-// issueKey's: attributed to it, or linked from it in a repository it does not resolve to
-// (linkedPullRequestTerms). It is the test a `before_merge` result's commit passes to stand at
-// one of the heads its check is compared with. A closed-unmerged pull request's head proves
-// nothing. A pull request attributed to another issue never answers for this one; the results
-// read asks this about the check's own issue, so a child's pull request never answers for a
-// check above it (api/results_comparison.go's comparisonReader).
-func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
-	var found bool
-	if err := pool.QueryRow(ctx, headAttributedQuery, issueKey, sha).Scan(&found); err != nil {
-		return false, fmt.Errorf("read the pull request heads of %s at %s: %w", issueKey, sha, err)
-	}
-	return found, nil
+// HeadOfChangedLink is one stored pull request whose own URL a change of an issue's links added
+// or removed (LinksChanged): the key of its row, its URL, and whether the change took the pull
+// request from the issue at once (Uncredited).
+type HeadOfChangedLink struct {
+	Repo       string
+	Number     int
+	URL        string
+	Uncredited bool
 }
 
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the linked rows of
-// headsAttributedQuery's second arm, held to one repository and to the merged state, in
+// AttributionEvent is the issue.pull_request_attribution_changed event an uncredited pull request
+// appends on issueKey, the issue it left: the event a head write appends for the same move
+// (appendAttributionChange), from issueKey to nobody, with the source "none".
+func (head HeadOfChangedLink) AttributionEvent(issueKey string) model.Event {
+	left := issueKey
+	return model.Event{
+		IssueKey: &left, Type: AttributionEventType, Actor: AttributionEventActor,
+		Payload: IssuePullRequestAttributionEventPayload{
+			Repo: head.Repo, Number: head.Number, URL: head.URL, From: &left, To: nil,
+			Source: string(sourceNone),
+		},
+	}
+}
+
+// linksChangedQuery is LinksChanged's statement. The inner select locks each row whose URL a
+// changed link names before it reads whether the change took the row's issue away, so a writer of
+// the same row waits for this transaction rather than having its issue read before its write and
+// overwritten after it. No index serves `lower(url)`: a change of an issue's links is a person's
+// edit, rare beside the reads of the table, and one scan of a row per pull request Dispatch has
+// seen costs that edit a few milliseconds.
+var linksChangedQuery = `
+	update pull_request_heads h set
+		attribution_rule = 0,
+		issue_key = case when o.gone then null else h.issue_key end,
+		attribution_source = case when o.gone then '` + string(sourceNone) + `' else h.attribution_source end
+	from (
+		select p.repo, p.number,
+			p.issue_key is not distinct from $1::text and p.attribution_source = '` + string(sourceExternalLink) + `'
+				and not exists (
+					select 1 from issue_external_links l where l.issue_key = $1 and lower(l.url) = lower(p.url)
+				) as gone
+		from pull_request_heads p
+		where lower(p.url) = any($2::text[])
+		for no key update
+	) o
+	where h.repo = o.repo and h.number = o.number
+	returning h.repo, h.number, h.url, o.gone`
+
+// LinksChanged is what a change of issueKey's external links does to the stored pull requests
+// whose own URL a link it added or removed names, urls being those links' URLs, run in the
+// transaction that writes the links, after the write (api/issue_patch.go). A link of a pull
+// request's own URL is the attribution's first source, held in any repository (attributionHeldFor,
+// R19 of the spec of several open pull requests), so a pull request is the issue's while the
+// issue links it, and its stored issue was judged with links it no longer has. It answers each
+// such pull request, for the caller to read again from GitHub at once (RefreshPullRequestHead).
+//
+// A pull request whose issue was issueKey by the link this change removed is that issue's no
+// longer, at once: the row is credited to nobody in this transaction, so no read of the issue's
+// results counts its head after the change commits, and the caller appends the move on the issue
+// (HeadOfChangedLink.AttributionEvent). Which issue its other sources give it is the read's to
+// say: the body and the commit messages are on no stored row, so only GitHub's answer can judge
+// it. A pull request the change linked keeps its stored issue until that read: whether its head
+// is in a fork, which gives it no issue, linked or not (headAttribution), is on no stored row
+// either.
+//
+// Each such row's attribution_rule is set to 0, a rule older than every rule that judges a row
+// now, so the reconcile judges the row again on its own where the caller's read did not answer or
+// was never made: the merged arm takes a merged row of an older rule (ListStalePullRequestHeads),
+// and an open row is read again within PullRequestHeadStaleAfter whatever its rule. Without it a
+// merged row would keep the judgement of links it no longer has for good, since nothing else
+// revisits a merged row the current rule judged.
+func LinksChanged(ctx context.Context, q refs.Queryer, issueKey string, urls []string) ([]HeadOfChangedLink, error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+	lowered := make([]string, 0, len(urls))
+	for _, url := range urls {
+		lowered = append(lowered, strings.ToLower(url))
+	}
+	rows, err := q.Query(ctx, linksChangedQuery, issueKey, lowered)
+	if err != nil {
+		return nil, fmt.Errorf("judge again the pull requests whose links of %s changed: %w", issueKey, err)
+	}
+	defer rows.Close()
+	var changed []HeadOfChangedLink
+	for rows.Next() {
+		var head HeadOfChangedLink
+		if err := rows.Scan(&head.Repo, &head.Number, &head.URL, &head.Uncredited); err != nil {
+			return nil, fmt.Errorf("judge again the pull requests whose links of %s changed: %w", issueKey, err)
+		}
+		changed = append(changed, head)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("judge again the pull requests whose links of %s changed: %w", issueKey, err)
+	}
+	slices.SortFunc(changed, func(a, b HeadOfChangedLink) int {
+		return cmp.Or(strings.Compare(a.Repo, b.Repo), cmp.Compare(a.Number, b.Number))
+	})
+	return changed, nil
+}
+
+// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the merged rows attributed to the
+// issue that its links name in a repository it does not resolve to, held to one repository, in
 // BaseBranchMergedFor's order.
 var baseBranchMergedInQuery = `with recursive ` + linkedPullRequestTerms + `
 	select h.base_ref from linked_pulls l
 	` + linkedHeadJoin + `
-	where lower(l.repo) = lower($2) and h.state = 'merged'
+	where h.issue_key = $1 and lower(l.repo) = lower($2) and h.state = 'merged'
 	order by h.event_at desc nulls last, h.number desc
 	limit 1`
 
 // BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
-// branch the merged pull request that the issue's external links name in repoFull merged into
-// (linkedPullRequestTerms), and "" where Dispatch holds no merge of such a pull request. An
-// issue whose work spans two repositories links the pull request it has in the second one. The
-// attribution gives that pull request to one issue alone, and only once a writer judged its row
-// (attributionHeldFor), and BaseBranchMergedFor reads the attributed rows of the repository the
-// issue resolves to alone, so it never names that merge: the links name it here, for every issue
-// that links the pull request. The results read measures an `after_merge` result whose commit
-// the second repository holds against the branch answered here, in that repository
-// (api/results_linked.go, linkedBranchBases).
+// branch the merged pull request that the issue links by its URL in repoFull merged into, and ""
+// where Dispatch holds no merge of such a pull request that the attribution gives the issue. An
+// issue whose work spans two repositories links the pull request it has in the second one, and
+// the attribution gives it that pull request (attributionHeldFor), unless its head is in a fork
+// (headAttribution). The results read measures an `after_merge` result whose commit the second
+// repository holds against the branch answered here, in that repository (api/results_linked.go,
+// linkedBranchBases), and BaseBranchMergedFor answers the repository the issue resolves to.
 //
 // The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
 // empty answer means: no branch to measure against. A link to a pull request of the
-// repository the issue resolves to names nothing here, as it names nothing in
-// HeadsAttributedTo, so a repoFull the issue resolves to answers "". repoFull is compared
-// without case with the canonical name each link is read under, as every other comparison of
-// a repository here is.
+// repository the issue resolves to names nothing here, so a repoFull the issue resolves to
+// answers "". repoFull is compared without case with the canonical name each link is read under,
+// as every other comparison of a repository here is.
 //
 // The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are.
+// repository's rows for each linked pull request.
 func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
 	var branch string
 	err := pool.QueryRow(ctx, baseBranchMergedInQuery, issueKey, repoFull).Scan(&branch)

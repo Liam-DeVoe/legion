@@ -29,10 +29,10 @@ body: |-
   repository the commit is taken to be of.
 
   `GET /api/v1/issues/{key}/results` compares a `before_merge` check with the heads of those
-  linked pull requests too, open or merged, as it does with the pull requests attributed to the
-  check's issue. A result at such a head stands `at_basis`, and a push that moves the head leaves
-  it at `other_commit`. A link to a pull request of the issue's own repository adds nothing: the
-  attribution alone decides which pull requests of that repository are the issue's. A result
+  linked pull requests too, open or merged, as the attribution gives each to the check's issue: a
+  pull request whose head is in a fork is no head, linked or not, and a merged one an older
+  attribution rule judged is a head once the reconcile judges it again. A result at such a head
+  stands `at_basis`, and a push that moves the head leaves it at `other_commit`. A result
   whose commit is taken to be of a linked repository is decided by that repository: a
   `before_merge` one stands `unknown` where Dispatch cannot read it and `other_commit` where no
   compared head is its commit, and an `after_merge` or `default_branch` one is compared with that

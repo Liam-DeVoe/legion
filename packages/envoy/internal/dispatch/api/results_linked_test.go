@@ -75,7 +75,8 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/9")
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
+	// acme/tools#9 as the attribution leaves it: the issue's, since the issue links it.
+	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", issue, "main")
 
 	_, toolsAsksBefore := linked.counts("acme/tools")
 	_, widgetsAsksBefore := linked.counts("acme/widgets")
@@ -183,7 +184,7 @@ func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T
 	issue := issueInRepository(t, handler, "RELO", "acme/widgets", "Decided by the linked repository").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-	writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+	writeHead(t, database, "acme/tools", 7, headCommit, "open", issue)
 
 	result := recordStored(t, handler, issue, "k1", oldCommit)
 	if repo := storedCommitRepo(t, database, result); repo == nil || *repo != "acme/tools" {

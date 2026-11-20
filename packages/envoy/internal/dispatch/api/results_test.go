@@ -1292,14 +1292,13 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 }
 
 // A pull request the issue links, open or merged, in a repository the issue does not resolve to
-// is one of the heads its `before_merge` checks compare their results with, as a pull request
-// attributed to the issue is (delivery.HeadsAttributedTo). The link is matched to the stored
-// row by the row's repository and number, so the head the row holds is the head the read uses,
-// however a push moved it. A result at that head stands at it; a push that moves the head
-// leaves that result at another commit, as it does in the issue's own repository; and a result
-// at the new head stands at the new head. A linked pull request that closed without a merge is
-// no head. A link to a pull request of the issue's own repository adds nothing, since the
-// attribution alone decides which pull requests of that repository are the issue's.
+// is one of the heads its `before_merge` checks compare their results with, as the attribution
+// gives it to the issue (R19 of the spec of several open pull requests, delivery.HeadsAttributedTo).
+// The head the stored row holds is the head the read uses, however a push moved it. A result at
+// that head stands at it; a push that moves the head leaves that result at another commit, as it
+// does in the issue's own repository; and a result at the new head stands at the new head. A
+// linked pull request that closed without a merge is no head. A link alone adds no head, in the
+// issue's own repository or another: a row no writer has judged since the link is not the issue's.
 func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 	const (
 		// linkedCommit, movedCommit and closedCommit are commits acme/tools holds, and ownCommit
@@ -1324,13 +1323,14 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 		"https://github.com/acme/tools/pull/7",
 		"https://github.com/acme/tools/pull/8",
 		"https://github.com/acme/widgets/pull/9")
-	// Two rows Dispatch already holds, neither attributed to the issue: the linked pull request
-	// that closed without a merge, and an open pull request of the issue's own repository.
+	// Two rows Dispatch already holds, neither attributed to the issue, since no writer has judged
+	// either since the link: the linked pull request that closed without a merge, and an open pull
+	// request of the issue's own repository.
 	writeHead(t, database, "acme/tools", 8, closedCommit, "closed", "")
 	writeHead(t, database, "acme/widgets", 9, ownCommit, "open", "")
 
 	// The record reads the pull requests of the commit through acme/tools, which stores #7 at
-	// that head, attributed to no issue; the read compares k1 with it all the same, and names
+	// that head, attributed to the issue that links it; the read compares k1 with it, and names
 	// acme/tools beside the number, which alone would read as a pull request of acme/widgets.
 	first := recordStored(t, handler, issue.Key, "k1", linkedCommit)
 	stands := standsAt(t, readResults(t, handler, issue.Key), "k1", first.ID,
@@ -1341,11 +1341,11 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 	}
 
 	// A push moves the linked pull request's head, which the reconcile or a `pull_request` event
-	// writes to its row, and GitHub moves with it: it names #7 for the new head and no longer
-	// heads it at the old one. The read asks acme/tools about the result at the old head, the
-	// repository the record stored with it, and a fixture still heading #7 there would be a
-	// GitHub that never saw the push.
-	writeHead(t, database, "acme/tools", 7, movedCommit, "open", "")
+	// writes to its row, with the issue the link gives it, and GitHub moves with it: it names #7
+	// for the new head and no longer heads it at the old one. The read asks acme/tools about the
+	// result at the old head, the repository the record stored with it, and a fixture still
+	// heading #7 there would be a GitHub that never saw the push.
+	writeHead(t, database, "acme/tools", 7, movedCommit, "open", issue.Key)
 	linked.mu.Lock()
 	delete(linked.heads, "acme/tools@"+linkedCommit)
 	linked.heads["acme/tools@"+movedCommit] = 7
@@ -1419,10 +1419,11 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	} {
 		linkPullRequests(t, handler, issue, url)
 	}
-	// The two merges as Dispatch holds them: rows of acme/tools attributed to no issue, which
-	// only the links name as the issues'.
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
-	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", "", "integration/x")
+	// The two merges as Dispatch holds them: rows of acme/tools the attribution gives the issue
+	// that links each by its URL (R19 of the spec of several open pull requests). A link names
+	// no merge the attribution did not give the issue.
+	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", trunk, "main")
+	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", integration, "integration/x")
 
 	linkedAfter := recordStored(t, handler, trunk, "k4", toolsMerge)
 	linkedDefault := recordStored(t, handler, trunk, "k5", toolsMerge)
@@ -4230,7 +4231,8 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		issue := issueInRepository(t, handler, "RELS", "acme/widgets", "Answers that name the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+		// acme/tools#7 as the attribution leaves it: the issue's, since the issue links it.
+		writeHead(t, database, "acme/tools", 7, headCommit, "open", issue)
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 		own := recordStored(t, handler, issue, "k1", ownCommit)
@@ -4260,7 +4262,7 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		issue := issueInRepository(t, handler, "RELH", "acme/widgets", "An unknown answer that names the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+		writeHead(t, database, "acme/tools", 7, headCommit, "open", issue)
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 

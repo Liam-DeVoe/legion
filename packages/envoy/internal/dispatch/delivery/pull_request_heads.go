@@ -20,16 +20,15 @@ import (
 
 // A pull request's head is what a recorded check result is measured against: a `before_merge`
 // result's commit is compared with the head of an open pull request, or the final head of a
-// merged one, attributed to the check's own issue or linked from it in another repository
-// (linkedPullRequestTerms). pull_request_heads holds that head for every pull request Dispatch
-// has seen an event for, in any repository and by any author — not the merged population
-// delivery_pull_requests keeps — and the issue Dispatch's own attribution picks for it
-// (attribution.go): the first issue its ranked sources name that is held to it — the issue that
-// links the pull request's own URL in any repository, any other only where it resolves to the
-// repository the pull request is in (attributionHeldFor) — and only where the head branch is in
-// the pull request's own repository, never a fork's (headAttribution). A child's pull request is
-// attributed to the child, so it answers for the child's own checks alone and never for a check of
-// an issue above it.
+// merged one, attributed to the check's own issue. pull_request_heads holds that head for every
+// pull request Dispatch has seen an event for, in any repository and by any author — not the
+// merged population delivery_pull_requests keeps — and the issue Dispatch's own attribution picks
+// for it (attribution.go): the first issue its ranked sources name that is held to it — the issue
+// that links the pull request's own URL in any repository, any other only where it resolves to
+// the repository the pull request is in (attributionHeldFor) — and only where the head branch is
+// in the pull request's own repository, never a fork's (headAttribution). A child's pull request
+// is attributed to the child, so it answers for the child's own checks alone and never for a check
+// of an issue above it.
 //
 // Three writers keep it: the `pull_request` envelope (intake.go, every action), the read-through
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
@@ -37,13 +36,16 @@ import (
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer than five minutes ago and every merged row the rule
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads).
+// ListStalePullRequestHeads). A change of an issue's links takes a pull request it no longer
+// links from it at once, and has the reconcile judge again each pull request whose URL the change
+// named (LinksChanged), which the issue PATCH also reads again from GitHub at once.
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
-// reached, in the transaction that writes the row (upsertHeadRow, UpsertPullRequestHead): what
-// an issue's `before_merge` results are measured against is the heads attributed to it, so no
-// issue's measurement changes without a record of it on its own timeline.
+// reached, in the transaction that writes the row (upsertHeadRow, UpsertPullRequestHead, and the
+// issue PATCH for LinksChanged): what an issue's `before_merge` results are measured against is
+// the heads attributed to it, so no issue's measurement changes without a record of it on its own
+// timeline.
 
 // PullRequestHead is one pull request's current head, as pull_request_heads stores it, and the
 // one shape every writer of that row fills in (UpsertPullRequestHead).
@@ -443,6 +445,27 @@ func upsertHeadUnderCanonicalName(
 	return nil
 }
 
+// HeadAttributedTo reports whether sha is the head of a pull request attributed to issueKey that
+// is open or merged: the test a `before_merge` result's commit passes to stand at one of the
+// heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
+// pull request attributed to another issue never answers for this one; the results read asks
+// this about the check's own issue, so a child's pull request never answers for a check above
+// it (api/results_comparison.go's comparisonReader). A pull request the issue links by its URL
+// answers for it in any repository, since the attribution gives it the issue (attributionHeldFor),
+// unless its head is in a fork (headAttribution): HeadsAttributedTo keeps the same rule.
+func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
+	var found bool
+	if err := pool.QueryRow(ctx, `
+		select exists (
+			select 1 from pull_request_heads
+			where issue_key = $1 and head_sha = $2 and state in ('open', 'merged')
+		)
+	`, issueKey, sha).Scan(&found); err != nil {
+		return false, fmt.Errorf("read the pull request heads of %s at %s: %w", issueKey, sha, err)
+	}
+	return found, nil
+}
+
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
 // among the heads a `before_merge` check compares its results with: the repository its row is
 // stored under, the pull request's number, whether it is open, the commit its head is, and the
@@ -452,10 +475,10 @@ func upsertHeadUnderCanonicalName(
 // and EventAt is the pull request's own update time as its newest webhook event carried it; each
 // is nil where no writer has carried it. The reader shows the later of the two and names which it
 // is (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). LinkedRepo is the repository of a
-// pull request the issue links in a repository it does not resolve to (linkedPullRequestTerms),
-// under the canonical name those terms read, and "" for a pull request attributed to it: the
-// reader names that repository beside the number, which alone would read as a pull request of
-// the issue's own repository.
+// pull request the issue links by its URL in a repository it does not resolve to
+// (linkedPullRequestTerms), under the canonical name those terms read, and "" for every other
+// pull request: the reader names that repository beside the number, which alone would read as a
+// pull request of the issue's own repository.
 type AttributedHead struct {
 	Repo    string
 	Number  int
@@ -467,46 +490,39 @@ type AttributedHead struct {
 	LinkedRepo string
 }
 
-// headsAttributedQuery is HeadsAttributedTo's statement, its two arms HeadAttributedTo's: the
-// attributed rows and the linked ones, the linked ones naming their repository. Each arm carries
-// the row's own repository and whether it is open (AttributedHead.Repo, AttributedHead.Open).
-// `distinct on` the row's repository, compared without case, and the four columns other than
-// linked_repo drops a row both arms read — the attribution gives the issue whose link is a pull
-// request's own URL that pull request in any repository (attributionHeldFor), and a stale
-// attribution, one judged while the issue resolved to the pull request's repository, can make
-// one too — and `linked_repo desc` keeps the linked arm's copy: the row is of a repository the
-// issue does not resolve to, which is what the name says. The repository is in the key because
-// an issue may hold pull requests of several repositories, and two of them may share a number.
+// headsAttributedQuery is HeadsAttributedTo's statement: the rows attributed to the issue, each
+// naming the repository of the link that names it in a repository the issue does not resolve to
+// (linked_repo, "" where no such link names it). The repository is the link's and not the row's
+// spelling, the canonical name the terms read; `limit 1` keeps one where two links of the issue
+// name one pull request, spelled apart.
 var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
-	select repo, number, head_sha, open, checked_at, event_at, linked_repo from (
-		select distinct on (lower(repo), number, head_sha, checked_at, event_at)
-			repo, number, head_sha, open, checked_at, event_at, linked_repo
-		from (
-			select repo, number, head_sha, state = 'open' as open, checked_at, event_at, '' as linked_repo from pull_request_heads
-			where issue_key = $1 and state in ('open', 'merged')
-			union all
-			select h.repo, h.number, h.head_sha, h.state = 'open', h.checked_at, h.event_at, l.repo from linked_pulls l
-			` + linkedHeadJoin + `
-			where h.state in ('open', 'merged')
-		) arms
-		order by lower(repo), number, head_sha, checked_at, event_at, linked_repo desc
-	) heads
-	order by greatest(checked_at, event_at) desc nulls last, number desc`
+	select h.repo, h.number, h.head_sha, h.state = 'open', h.checked_at, h.event_at,
+		coalesce((
+			select l.repo from linked_pulls l
+			where lower(l.repo) = lower(h.repo) and l.number = h.number
+			order by l.url limit 1
+		), '')
+	from pull_request_heads h
+	where h.issue_key = $1 and h.state in ('open', 'merged')
+	order by greatest(h.checked_at, h.event_at) desc nulls last, h.number desc`
 
-// HeadsAttributedTo is every open or merged pull request that is issueKey's — attributed to it,
-// or linked from it in a repository it does not resolve to (linkedPullRequestTerms) — newest
-// learned first: the whole list HeadAttributedTo answers one commit of, which the results read
-// names as what a `before_merge` check's results are compared with (R3). The two reads keep one
-// rule, so a commit HeadAttributedTo answers yes for is a commit this list holds.
+// HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
+// first: the whole list HeadAttributedTo answers one commit of, which the results read names as
+// what a `before_merge` check's results are compared with (R3). The two reads keep one rule, so
+// a commit HeadAttributedTo answers yes for is a commit this list holds. A pull request the issue
+// links by its URL is in it in any repository, since the attribution gives it the issue
+// (attributionHeldFor, R19 of the spec of several open pull requests), and such a pull request of
+// a repository the issue does not resolve to names that repository (LinkedRepo). A link alone
+// makes no head: a pull request whose head is in a fork is no issue's, linked or not
+// (headAttribution), and a row no writer has judged by that rule yet is not the issue's until one
+// does (LinksChanged asks for that judgement when the links change).
 //
 // The order is by the later of the two times either way, with a row carrying neither last and
 // the pull request's own number breaking a tie, so the list does not turn on whichever row the
 // planner returned first. A reader taking the first head takes the one Dispatch learned last.
 //
-// The attributed rows are read through pull_request_heads_issue_head's leading column, as
-// BaseBranchMergedFor's are: the rows one issue's key holds are the handful of pull requests
-// attributed to that issue. The linked rows are read through pull_request_heads_repo_head's
-// leading column, one repository's rows for each linked pull request.
+// The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
+// the rows one issue's key holds are the handful of pull requests attributed to that issue.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
 	rows, err := pool.Query(ctx, headsAttributedQuery, issueKey)
 	if err != nil {
