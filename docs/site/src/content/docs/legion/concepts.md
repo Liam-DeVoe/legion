@@ -495,7 +495,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
   unnoticed.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
-  opened, Legion's reviewer) accepts the reply.
+  opened, Legion's reviewer, or the implementer on a task with no reviewer step) accepts the reply.
 - One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
   posts a message on the issue and tells the architect; it stops no worker.
   It says so once for each value the cap holds, not on every round past it: a cap raised in

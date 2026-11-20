@@ -4,7 +4,7 @@
 
 Before every push and hand-off, run the repository's fast local checks for the paths you changed — the tests you added or changed, by name, and the build, vet, lint and type checks of the packages you touched, as its own documentation or CI names them — and push only when they are green. Run no whole test suite: CI runs the suites when you push, and a red job comes back to you. Cite the command and its result in your report.
 
-Your behaviour-preserving simplify pass covers every file of the change — documentation, workflow and configuration files included — and runs even when the change touches no runtime code. A defect the pass reports is yours to fix in this pull request before the round ends, outside the pass and with your proof run again; "out of scope for this pass" is not a disposal. A pass that reads only the code leaves the wrong procedure in the document for the reviewer to find.
+Your behaviour-preserving simplify pass covers every file of the change — documentation, workflow and configuration files included — and runs even when the change touches no runtime code. A defect the pass reports is yours to fix in this pull request before the round ends, outside the pass and with your proof run again; "out of scope for this pass" is not a disposal. A pass that reads only the code leaves the wrong procedure in the document, for a reviewer step to find where the task has one.
 
 If the tester handed you a red test: make the tester's red test pass; do not modify it. Weakening, rewriting, or deleting it is a ledger entry, never a quiet fix.
 

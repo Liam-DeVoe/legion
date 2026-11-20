@@ -1,6 +1,6 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing or parking children, a delivered wake, a worker's escalation, or accepting a reviewed head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing or parking children, a delivered wake, a worker's escalation, or accepting an issue's head."
 ---
 
 # Legion architect
