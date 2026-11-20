@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -470,6 +471,77 @@ func TestALateReportCountsByItsTurnWhereverTheRunHasGotTo(t *testing.T) {
 	h.wantRefusedRun(2)
 	h.report(14, true, "overloaded_error") // a repeat from before the late clean turn
 	h.wantRefusedRun(2)
+}
+
+// ownTurnEndsInFrontOfATask is a turn no daemon prompt ran (a phase reminder's) during which a
+// task is delivered: the daemon queues the task, and the turn's end sends it at once, so that
+// turn's own report, an HTTP call that races the stream, can reach the daemon after the send,
+// while the task's prompt is awaited.
+func (h *harness) ownTurnEndsInFrontOfATask() {
+	h.t.Helper()
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if !h.m.promptAwaited() {
+		h.t.Fatal("the turn's end sent no task, so no prompt is awaited and the case tests nothing")
+	}
+}
+
+// A report decides the turn it ends, whenever it arrives. A phase reminder's turn is refused with
+// a 400 and the task delivered during it is sent at its end, before the turn's report lands: the
+// report is left to the task prompt's result, since the turn it ends may be that prompt's. The
+// result shows it was not — the prompt's turn ended clean, or in an error of another status — so
+// the 400 is decided on its own status then, and the claim fails with the issue held. Before, the
+// clean result cleared the mark and nothing ever decided the 400.
+func TestARefusalReportedAfterTheNextTasksSendIsDecidedByItsOwnStatus(t *testing.T) {
+	t.Run("the task's turn ends clean", func(t *testing.T) {
+		var notices []string
+		h := idleClaimTold(t, &notices)
+		h.ownTurnEndsInFrontOfATask()
+		h.reportRefused(1, "API Error: 400 invalid_request_error: prompt is too long", 400)
+		h.wantState(StateIdle)
+
+		h.must(StreamTurnStart{Claim: h.token})
+		h.must(StreamTurnEnd{Claim: h.token}) // the harness posts the prompt's clean result
+
+		c := h.claim()
+		if want := "a provider error that cannot clear ended this claim's turn: a provider error (HTTP 400)"; c.State != StateFailed || c.FailureCause != CauseProviderError || c.Failure != want {
+			t.Fatalf("the claim is %s with cause %q and failure %q, want failed by the reminder turn's 400: %q", c.State, c.FailureCause, c.Failure, want)
+		}
+	})
+	t.Run("the task's turn ends in an error of another status", func(t *testing.T) {
+		var notices []string
+		h := idleClaimTold(t, &notices)
+		h.ownTurnEndsInFrontOfATask()
+		h.reportRefused(1, "API Error: 400 invalid_request_error", 400)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+
+		c := h.claim()
+		if c.State != StateFailed || c.FailureCause != CauseProviderError {
+			t.Fatalf("the claim is %s with cause %q after the reminder turn's 400 and the task turn's 529, want failed by the 400", c.State, c.FailureCause)
+		}
+		if p := c.Pending; p == nil || p.Task != "implement the plan" {
+			t.Fatalf("the failed claim holds %+v, want the task the 529 took back", p)
+		}
+	})
+}
+
+// The prompt's turn is the newest turn, so of two refused reports that arrive while one prompt is
+// awaited the older ended an earlier turn: it is decided on its own status as the newer one
+// lands, and the newer is left to the prompt's result.
+func TestANewerReportWhileAPromptIsAwaitedDecidesTheOlderRefusal(t *testing.T) {
+	var notices []string
+	h := idleClaimTold(t, &notices)
+	h.ownTurnEndsInFrontOfATask()
+	h.reportRefused(1, "API Error: 400 invalid_request_error", 400)
+	h.wantState(StateIdle)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.reportRefused(2, "overloaded_error", 529)
+
+	if c := h.claim(); c.State != StateFailed || c.FailureCause != CauseProviderError {
+		t.Fatalf("the claim is %s with cause %q once the prompt turn's report landed, want failed by the older 400", c.State, c.FailureCause)
+	}
 }
 
 // The reports survive a daemon restart. A later refusal remains a report and does not fail the

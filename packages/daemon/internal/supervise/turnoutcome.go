@@ -123,6 +123,14 @@ func (c Claim) RefusedRun() int {
 // stands alone. The controller's notice reads it (tellControllerOfProviderErrors).
 func (c Claim) errorRun() int { return max(c.ProviderErrorRun, c.RefusedRun()) }
 
+// reachedNotice is whether the turn just counted took the claim's run of provider-error turns
+// (errorRun) to the length the project's controller is told at, from before, the run as it stood
+// before that count. A turn with no error puts the run back to zero, and only a run that reaches
+// the length again reaches it a second time.
+func (c Claim) reachedNotice(before int) bool {
+	return before < providerErrorRunTold && c.errorRun() >= providerErrorRunTold
+}
+
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when
 // it keeps none or the provider said nothing.
 func (c Claim) LastRefusal() string {
@@ -136,8 +144,22 @@ func (c Claim) LastRefusal() string {
 
 // freshRun drops every turn the claim has reports for. The reports belong to the session that
 // produced them: a claim that forgets its session drops them, and so does a compaction that ran,
-// which starts the session's run of refused turns again (compactEnded).
-func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
+// which starts the session's run of refused turns again (compactEnded). A refusal left to a
+// prompt's result (Machine.awaitingRefusal) goes with them.
+func (m *Machine) freshRun() {
+	m.claim.TurnOutcomes = nil
+	m.awaitingRefusal = nil
+}
+
+// awaitingRefusal is a refused report whose decision waits on the result of the prompt in flight,
+// because the turn it ends may be that prompt's (turnOutcome): the turn's key, the HTTP status the
+// report names, and whether counting it took the claim's run of provider-error turns to the length
+// the controller is told at (Claim.reachedNotice), a notice it then owes whoever decides it.
+type awaitingRefusal struct {
+	generation, sequence uint64
+	status               int
+	reached              bool
+}
 
 // turnOutcome keeps the turn its producer reported as a record, and decides a refused one from
 // the HTTP status its report carries, by the rule a prompt result is decided by
@@ -148,34 +170,84 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // long the run; it counts toward the run the project's controller is told of at six
 // (tellControllerOfProviderErrors), as a turn a prompt ran does.
 //
-// A report that arrives while a prompt of the claim's task is in flight or waits on its result
-// (promptAwaited) is that prompt's turn's, since the pinned Oh My Pi and the Claude bridge each
-// run one prompt at a time: the prompt's own result decides it (providerErrored), with what only
-// it carries — Oh My Pi's retryable flag, the model, and the task it takes back — so the report
-// leaves the decision and the controller's notice to it rather than racing it, and marks that it
-// has counted the turn (Machine.refusalAwaitsResult). A report that arrives after that result
-// finds the decision made: a failed claim takes no report, and a status that can clear fails
-// nothing.
+// A report decides the turn it ends, whenever it arrives. One that arrives while a prompt of the
+// claim's task is in flight or waits on its result (promptAwaited) may be that prompt's turn's —
+// the pinned Oh My Pi and the Claude bridge each run one prompt at a time, and the prompt's turn
+// is the newest — so it is left to that result (Machine.awaitingRefusal), which decides the
+// prompt's turn with what only it carries: Oh My Pi's retryable flag, the model, and the task it
+// takes back. It may instead be an earlier turn's, sent before the prompt and landing after it,
+// as a phase reminder's turn does when the task it ended in front of is sent at its end. So the
+// refusal left to the result is decided on its own status as soon as the claim learns its turn
+// was another: a newer report arrives while the prompt is awaited (the prompt's turn is the newest
+// one), no prompt is awaited any more when the next report arrives, or the result shows a turn
+// other than the report's (decideLeftRefusal). A report that arrives after the prompt's result
+// is decided on its own status at once: a failed claim takes no report, and a status that can
+// clear fails nothing.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	before := m.claim.errorRun()
-	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
+	report := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
 	awaited := m.promptAwaited()
+	if left := m.awaitingRefusal; left != nil && (!awaited || compareTurnOutcomes(left.turn(), report) < 0) {
+		m.awaitingRefusal = nil
+		if held, err := m.decideRefusal(ctx, left.status, left.reached); held || err != nil {
+			return err
+		}
+	}
+	before := m.claim.errorRun()
+	m.recordTurnOutcome(report)
+	left := m.awaitingRefusal
+	leaves := r.Refused && awaited && (left == nil || compareTurnOutcomes(left.turn(), report) == 0)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun(), "promptResultDecides", awaited)
-	m.refusalAwaitsResult = r.Refused && awaited
-	if r.Refused && !awaited {
-		m.tellControllerOfProviderErrors(before, "", providerErrorCause(r.HTTPStatus))
-		if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun(), "promptResultDecides", leaves)
+	switch {
+	case leaves && left == nil:
+		m.awaitingRefusal = &awaitingRefusal{
+			generation: r.Generation, sequence: r.Sequence, status: r.HTTPStatus, reached: m.claim.reachedNotice(before),
+		}
+	case r.Refused && !leaves:
+		if held, err := m.decideRefusal(ctx, r.HTTPStatus, m.claim.reachedNotice(before)); held || err != nil {
 			return err
 		}
 	}
 	return m.persist(ctx)
 }
 
+// turn is the key of the turn the refusal ends, in the shape the reports are ordered by.
+func (a *awaitingRefusal) turn() TurnOutcome {
+	return TurnOutcome{Generation: a.generation, Sequence: a.sequence}
+}
+
+// decideRefusal is the decision a refused report makes on its own status, for a turn no prompt's
+// result decides: the controller is told when counting the turn took the run to six (reached),
+// and a status that cannot clear fails the claim (holdOnProviderError), which this reports.
+func (m *Machine) decideRefusal(ctx context.Context, status int, reached bool) (bool, error) {
+	cause := providerErrorCause(status)
+	m.tellControllerOfProviderErrors(reached, "", cause)
+	return m.holdOnProviderError(ctx, status)
+}
+
+// decideLeftRefusal decides, on its own status, the refusal left to a prompt's result
+// (Machine.awaitingRefusal) once that result has shown the refusal's turn was not the prompt's:
+// it ended clean, it named another status (providerErrored keeps the refusal for this), or Oh My
+// Pi ran no turn for it. It is left alone while the result was Oh My Pi running no turn for this
+// prompt because the turn of an earlier prompt of the task is still running, since that turn is
+// the one the refusal may end, and that prompt's result settles it.
+func (m *Machine) decideLeftRefusal(ctx context.Context, r StreamPromptResult) error {
+	left := m.awaitingRefusal
+	if left == nil || (!r.AgentInvoked && m.awaitsResult()) {
+		return nil
+	}
+	m.awaitingRefusal = nil
+	if m.claim.State == StateFailed {
+		return nil
+	}
+	_, err := m.decideRefusal(ctx, left.status, left.reached)
+	return err
+}
+
 // promptAwaited is whether a prompt of the claim's task is in flight (Machine.send) or
-// acknowledged and waiting on its result (awaitsResult): the turn running or just ended is that
-// prompt's, and its result is still to come.
+// acknowledged and waiting on its result (awaitsResult): the turn running or just ended may be
+// that prompt's, and its result is still to come.
 func (m *Machine) promptAwaited() bool { return m.send != nil || m.awaitsResult() }
 
 // freshSession is whether a retry explicitly asks to start a new session, and why, for the line it

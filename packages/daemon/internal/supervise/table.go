@@ -2244,8 +2244,20 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
 // the task: a refused task taken back is one the stop owes the role a launch for, and a finished
 // one is retired by the settle that follows every decision (Handle).
+//
+// A refused turn-outcome report left to this result whose turn the result shows was another is
+// decided on its own status once the result has decided the task (decideLeftRefusal), so the
+// report decides its own turn whenever it arrived.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
+	if err := resultDecides(m, ctx, r); err != nil {
+		return err
+	}
+	return m.decideLeftRefusal(ctx, r)
+}
+
+// resultDecides is promptResulted's decision of the task from the result alone.
+func resultDecides(m *Machine, ctx context.Context, r StreamPromptResult) error {
 	if !r.AgentInvoked {
 		busy := agentBusy(r.Error)
 		why := "acknowledged, and Oh My Pi ran no turn for it"
@@ -2275,7 +2287,6 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return m.stopAtResult(ctx)
 	}
-	m.refusalAwaitsResult = false
 	if m.claim.ProviderErrorRun != 0 {
 		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
 			"delivery", r.DeliveryID, "providerErrorRun", m.claim.ProviderErrorRun)
