@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // The daemon's own lines the checkpoints read.
@@ -1050,26 +1051,38 @@ func (r *stage4bLive) podShape() {
 	if err := json.Unmarshal([]byte(out), &secrets); err != nil {
 		t.Fatal(err)
 	}
-	judged := 0
+	judged, hostTokens := 0, 0
 	for _, secret := range secrets.Items {
 		if !strings.Contains(secret.Metadata.Name, r.project) {
 			continue
 		}
 		for key, encoded := range secret.Data {
 			value, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil || len(value) < 8 {
+			if err != nil {
 				continue
 			}
-			judged++
-			for _, pod := range pods {
-				for _, container := range append(slices.Clone(pod.Spec.Containers), pod.Spec.InitContainers...) {
-					text := strings.Join(append(append(slices.Clone(container.Command), container.Args...), stage4bEnvValues(container)...), "\n")
-					if strings.Contains(text, string(value)) {
-						t.Errorf("pod %s's container %s carries the value of Secret %s's %s", pod.Metadata.Name, container.Name, secret.Metadata.Name, key)
+			for _, credential := range stage4bCredentials(key, string(value)) {
+				if len(credential) < 8 {
+					continue
+				}
+				judged++
+				if _, hosts := sandbox.GitHubHostsDir(key); hosts {
+					hostTokens++
+				}
+				for _, pod := range pods {
+					for _, container := range append(slices.Clone(pod.Spec.Containers), pod.Spec.InitContainers...) {
+						text := strings.Join(append(append(slices.Clone(container.Command), container.Args...), stage4bEnvValues(container)...), "\n")
+						if strings.Contains(text, credential) {
+							t.Errorf("pod %s's container %s carries a credential of Secret %s's %s", pod.Metadata.Name, container.Name, secret.Metadata.Name, key)
+						}
 					}
 				}
 			}
 		}
+	}
+	// The reader above must find the App tokens, or the check judges nothing it exists for.
+	if hostTokens == 0 {
+		t.Errorf("no role Secret of %s held an oauth_token in a gh hosts.yml key: the credential check judged %d values and no GitHub token", r.project, judged)
 	}
 	stream := streams[last.Metadata.UID]
 	bursting := last
@@ -1098,7 +1111,30 @@ func (r *stage4bLive) podShape() {
 	if len(stage4bPodShape(wrong, stream)) == 0 {
 		t.Errorf("the pod shape did not refuse a pod under the runc runtime class")
 	}
-	r.note("%d issue pods judged from the pod watch's record, deleted ones included; %d Secret values held to every container, none carried", len(pods), judged)
+	r.note("%d issue pods judged from the pod watch's record, deleted ones included; %d Secret credentials held to every container, none carried", len(pods), judged)
+}
+
+// stage4bCredentials is what of a claim Secret's key value is a credential, as the devbox proof
+// judged it (stage4b-sandbox-tree.sh's check_pod_shape): each oauth_token of a bundle directory's
+// hosts.yml (sandbox.GitHubHostsKey), never the rest of that file, which names the host and the
+// login; nothing of its config.yml, of the default owner (sandbox.GitHubDefaultKey) or of the
+// renames (sandbox.GitHubPairsKey), which name owners and repositories every init container's
+// arguments name too; and every other key's whole value: the launcher, boot, provisioning,
+// Dispatch and cache tokens.
+func stage4bCredentials(key, value string) []string {
+	if _, hosts := sandbox.GitHubHostsDir(key); hosts {
+		var tokens []string
+		for _, line := range strings.Split(value, "\n") {
+			if _, token, ok := strings.Cut(line, "oauth_token: "); ok {
+				tokens = append(tokens, strings.TrimSpace(token))
+			}
+		}
+		return tokens
+	}
+	if strings.HasPrefix(key, sandbox.GitHubConfigKey("")) || key == sandbox.GitHubDefaultKey || key == sandbox.GitHubPairsKey {
+		return nil
+	}
+	return []string{value}
 }
 
 // stage4bEnvValues is the literal values of container's environment.

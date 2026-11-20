@@ -262,16 +262,20 @@ func (r *kindTreeRig) swapPorts() {
 // are the lines go test printed above it.
 func (r *kindTreeRig) checkpoint(name string, body func()) {
 	started := time.Now()
-	if !r.parent.Run(name, func(t *testing.T) {
+	// Run's answer, not the body's return, says whether the checkpoint passed: a t.Errorf lets
+	// the body return and still fails the subtest.
+	passed := r.parent.Run(name, func(t *testing.T) {
 		r.use(t)
 		defer r.use(r.parent)
 		body()
+	})
+	if passed {
 		fmt.Printf("CHECK %s: PASS (%ds)\n", name, int(time.Since(started).Seconds()))
-	}) {
-		fmt.Printf("CHECK %s: FAIL: the checkpoint failed after %ds; its failure messages are the lines above\n",
-			name, int(time.Since(started).Seconds()))
-		r.parent.FailNow()
+		return
 	}
+	fmt.Printf("CHECK %s: FAIL: the checkpoint failed after %ds; its failure messages are the lines above\n",
+		name, int(time.Since(started).Seconds()))
+	r.parent.FailNow()
 }
 
 // operatorRoute creates what the operator route's pod block names (deploy/kubernetes/

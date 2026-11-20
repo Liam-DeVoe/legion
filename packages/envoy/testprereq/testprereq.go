@@ -28,9 +28,14 @@ func Require(t testing.TB, present bool, job, format string, args ...any) {
 	if present {
 		return
 	}
-	if os.Getenv("GITHUB_ACTIONS") != "true" {
+	if !Enforced() {
 		t.Skipf(format, args...)
 		return
 	}
 	t.Fatalf("a prerequisite that ci.yaml's %s job must give on GitHub Actions is missing: %s", job, fmt.Sprintf(format, args...))
 }
+
+// Enforced says whether a missing prerequisite fails the test rather than skips it: under
+// GITHUB_ACTIONS=true. A test that prints its own verdict line before it calls Require reads it,
+// so the line says FAIL where Require fails.
+func Enforced() bool { return os.Getenv("GITHUB_ACTIONS") == "true" }

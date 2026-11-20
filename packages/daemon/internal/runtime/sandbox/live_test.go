@@ -969,12 +969,17 @@ func runLiveGroup(t *testing.T, group liveGroup) {
 	fmt.Printf("stage 4a harness: every check of %s passed\n", group.name)
 }
 
-// run runs check as t. A check the run cannot support prints SKIPPED-BLOCKED with the reason, and
-// fails t under GitHub Actions, where the kind job gives the run all it needs (testprereq).
+// run runs check as t. A check the run cannot support prints its reason and fails t under GitHub
+// Actions, where the kind job gives the run all it needs (testprereq), and prints SKIPPED-BLOCKED
+// and skips elsewhere.
 func (r *liveRig) run(t *testing.T, check liveCheck) {
 	if check.blocked != nil {
 		if reason := check.blocked(r); reason != "" {
-			fmt.Printf("CHECK %s: SKIPPED-BLOCKED: %s\n", check.name, reason)
+			if testprereq.Enforced() {
+				fmt.Printf("CHECK %s: FAIL: blocked: %s\n", check.name, reason)
+			} else {
+				fmt.Printf("CHECK %s: SKIPPED-BLOCKED: %s\n", check.name, reason)
+			}
 			testprereq.Require(t, false, "kind", "%s is blocked: %s", check.name, reason)
 			return
 		}
