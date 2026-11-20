@@ -1682,6 +1682,10 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/workflow/steps.go",
     "daemon/internal/workflow/plan.go",
     "envoy/internal/dispatch/api/routes_table.go",
+    "daemon/internal/api/server.go",
+    "daemon/internal/api/shaping.go",
+    "daemon/internal/api/version.go",
+    "daemon/internal/api/updatestate.go",
   ];
   const EFFECTS = "daemon/internal/workflow/effects.go";
   const ROUND_WORDS = "daemon/internal/reviewround/reviewround.go";
@@ -1691,14 +1695,20 @@ describe("the shapes of a label's daemon source", () => {
   /** A checkout holding SOURCES of `from` alone, with `marker` written as `renamed` in `file`,
    * which must hold it. */
   function copyOf(from: string, file = "", marker = "", renamed = ""): string {
+    return copyWith(from, file === "" ? [] : [[file, marker, renamed]]);
+  }
+  /** A checkout holding SOURCES of `from` alone, with each edit `[file, marker, renamed]` of
+   * `edits` made in turn, each file holding its marker when its edit is made. */
+  function copyWith(from: string, edits: readonly (readonly [string, string, string])[]): string {
     const dir = path.join(rig, `source-shapes-${++copies}`);
     for (const one of SOURCES) {
       const source = path.join(from, "packages", one);
-      // main ff2a10ef predates review_round.go, reviewround.go, storable_text.go and plan.go, so
-      // a copy of it has none of them.
+      // main ff2a10ef predates review_round.go, reviewround.go, storable_text.go, plan.go,
+      // shaping.go and updatestate.go, so a copy of it has none of them.
       if (!existsSync(source)) continue;
       let text = readFileSync(source, "utf8");
-      if (one === file) {
+      for (const [file, marker, renamed] of edits) {
+        if (one !== file) continue;
         expect(text).toContain(marker);
         text = text.replaceAll(marker, renamed);
       }
@@ -1713,6 +1723,13 @@ describe("the shapes of a label's daemon source", () => {
     "%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD";
   const NUL_UNSTORABLE =
     "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store";
+  /** The contract this checkout's daemon declares (its api's version.go), the one its answers
+   * state. */
+  const DAEMON_API_VERSION = Number(
+    /^const DaemonAPIVersion = (\d+)$/m.exec(
+      readFileSync(path.join(CHECKOUT, "packages", "daemon/internal/api/version.go"), "utf8")
+    )?.[1]
+  );
   const MAIN = {
     postsBackward: true,
     refusesReason: true,
@@ -1724,6 +1741,8 @@ describe("the shapes of a label's daemon source", () => {
     refusesRating: true,
     nulRefusal: NUL_REFUSED,
     servesFixAttempts: false,
+    statesContract: DAEMON_API_VERSION,
+    retiresReady: true,
   };
   const OLDER = {
     postsBackward: false,
@@ -1736,6 +1755,8 @@ describe("the shapes of a label's daemon source", () => {
     refusesRating: false,
     nulRefusal: undefined,
     servesFixAttempts: true,
+    statesContract: undefined,
+    retiresReady: false,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 
@@ -1743,10 +1764,12 @@ describe("the shapes of a label's daemon source", () => {
   // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal,
   // no publication, a reviewer's task with no sentence of its round, a review of the review App
   // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
-  // the daemon refuses it, a body holding U+0000 taken or refused in #4488's words, and a pull
-  // request counting fix attempts main's daemon keeps no count of; and a reader that needs a file
-  // the nineteen are not.
-  test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000 in main's words since #4463, and counts no fix attempt", () => {
+  // the daemon refuses it, a body holding U+0000 taken or refused in #4488's words, a pull
+  // request counting fix attempts main's daemon keeps no count of, answers stating no contract
+  // and a completion's `ready: true` taken; and a reader that needs a file the twenty-three are
+  // not.
+  test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000 in main's words since #4463, counts no fix attempt, states its contract and refuses ready", () => {
+    expect(DAEMON_API_VERSION).toBeGreaterThan(188);
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
   });
@@ -1878,15 +1901,18 @@ describe("the shapes of a label's daemon source", () => {
     'var footer struct {\n\t\tSession string `json:"session"`\n\t}\n\tif err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {';
   const ON_COMMIT_ID =
     "reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: fact.CommitID}";
-  // The route's verdict rule, every daemon's the rig runs (daemon-pane.ts's `VERDICT_RULE`).
+  // The route's verdict rule, every daemon's the rig runs, in the writer of main's since #3659 and
+  // in the one before it (daemon-pane.ts's `verdictRule`, `FAILURE_WRITERS`).
   const TESTER_VERDICT =
-    'if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\twriteFailure(w, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")';
+    'if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\ts.writeFailure(w, r, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")';
   const OTHER_VERDICT =
-    'if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\twriteFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")';
+    'if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\ts.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")';
+  const TESTER_VERDICT_BEFORE = TESTER_VERDICT.replace("s.writeFailure(w, r, ", "writeFailure(w, ");
+  const OTHER_VERDICT_BEFORE = OTHER_VERDICT.replace("s.writeFailure(w, r, ", "writeFailure(w, ");
   // The refusal of a rating the completion does not take, main's since #4488 (daemon-pane.ts's
   // `REFUSES_RATING`).
   const RATING_FIELDS =
-    'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`\n}';
+    'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`';
   const RATING_ON_FACT = "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})";
   const RATING_UNSPENT =
     "if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {\n\t\treturn intake.Result{Refusal: refusal, Unspent: true}, nil\n\t}";
@@ -1903,12 +1929,36 @@ describe("the shapes of a label's daemon source", () => {
   const NUL_WALK = "place, value, found := dispatchbody.NulInJSON(body)";
   const NUL_WORDS = `return fmt.Errorf("${NUL_REFUSED}", place, utf8.RuneCountInString(value[:at])+1)`;
   const UNSTORABLE_WORDS = NUL_WORDS.replace(NUL_REFUSED, NUL_UNSTORABLE);
-  const BAD_BODY =
+  const BAD_BODY = 's.refuse(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())';
+  const BAD_BODY_BEFORE =
     'writeJSON(w, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))';
-  // The state's pull request with no count of fix attempts, main's since contract 59
-  // (daemon-pane.ts's `PULL_REQUEST_UNCOUNTED`).
+  // The state's pull request with no count of fix attempts but for a caller below contract 59,
+  // main's since #3659 (daemon-pane.ts's `PULL_REQUEST_SHOWN_BELOW`), and with none at all, main's
+  // from contract 59 until #3659 (`PULL_REQUEST_UNCOUNTED`).
+  const SHOWN_BELOW =
+    'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n\t// fixAttemptsShown is set on the copy the state route serves a caller below the contract\n';
   const UNCOUNTED =
     'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n}';
+  // What main's daemon since #3659 holds of its answers (daemon-pane.ts's `STATES_CONTRACT`) and of
+  // a completion's `ready` (`RETIRES_READY`), and what its health route was before it
+  // (`HEALTH_UNSTATED`).
+  const SERVER = "daemon/internal/api/server.go";
+  const CONTRACT_HEADER = 'const daemonContractHeader = "Legion-Daemon-Contract"';
+  const STATING =
+    "Handler:           statingContract{handler: trackTransactions(noteRequesters(mux))},";
+  const HEALTH_PROJECT =
+    's.writeAnswer(w, r, AnswerHealth, http.StatusOK, Health{Status: "ok", Project: s.project})';
+  const HEALTH_BEFORE = 'writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})';
+  const RECORD_REFUSED =
+    'issue, recorded := state.Issues[key]\n\tif !recorded {\n\t\ts.writeFailure(w, r, http.StatusNotFound, recordNotFound, "The daemon has no record for "+key)';
+  const OWN_BODY = "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}";
+  const CONTRACT_MARK = "state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}";
+  const UPDATE_NONE = 'UpdateStateNone UpdateState = "none"';
+  const READY_FIELD = 'Ready *bool `json:"ready,omitempty"`\n}';
+  const READY_REFUSED =
+    'if req.Ready != nil && *req.Ready {\n\t\ts.writeFailure(w, r, http.StatusBadRequest, "READY_RETIRED", readyRetired)\n\t\treturn\n\t}';
+  const READY_WORDS =
+    'const readyRetired = "this completion sends ready: true, which at contract 85 and below armed the daemon\'s merge of the pull request. " +\n\t"No daemon at contract 86 or later acts on READY: the merger merges the pull request itself, and the daemon closes " +\n\t"the issue when it reads that merge. Nothing was recorded. Merge the pull request, then complete again without ready"';
 
   // Catches: a marker renamed in the label's source, read as a daemon that lacks what it names,
   // which answers the label as an older daemon and names no shape; and a refusal that names
@@ -2010,9 +2060,23 @@ describe("the shapes of a label's daemon source", () => {
     ],
     [
       "daemon/internal/api/state.go",
-      UNCOUNTED,
-      UNCOUNTED.replace("reviewDecision,omitempty", "reviewDecision"),
+      SHOWN_BELOW,
+      SHOWN_BELOW.replace("a caller below the contract", "every caller"),
     ],
+    [SERVER, CONTRACT_HEADER, CONTRACT_HEADER.replace("Legion-Daemon-Contract", "Legion-Contract")],
+    [SERVER, STATING, STATING.replace(/statingContract\{handler: (.*)\},/, "$1,")],
+    [SERVER, HEALTH_PROJECT, HEALTH_PROJECT.replace(", Project: s.project", "")],
+    [SERVER, RECORD_REFUSED, RECORD_REFUSED.replace("has no record for", "records nothing of")],
+    ["daemon/internal/api/shaping.go", OWN_BODY, OWN_BODY.replace("strip: DaemonAPIVersion", "")],
+    ["daemon/internal/api/shaping.go", CONTRACT_MARK, CONTRACT_MARK.replace("strip", "restore")],
+    ["daemon/internal/api/updatestate.go", UPDATE_NONE, UPDATE_NONE.replace('"none"', '""')],
+    ["daemon/internal/api/handoff.go", READY_FIELD, READY_FIELD.replace("*bool", "bool ")],
+    [
+      "daemon/internal/api/handoff.go",
+      READY_REFUSED,
+      READY_REFUSED.replace("req.Ready != nil && *req.Ready", "req.Ready != nil"),
+    ],
+    ["daemon/internal/api/handoff.go", READY_WORDS, READY_WORDS.replace("acts on", "reads")],
   ] as const)
     test(`this checkout's source with ${marker} renamed is refused, naming it and its file`, () => {
       expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
@@ -2038,6 +2102,94 @@ describe("the shapes of a label's daemon source", () => {
     expect(() => labelShapes(both)).toThrow(
       "it holds the markers of two shapes at once, main's daemon since #4463, and main's daemon from #4488 until #4463"
     );
+  });
+
+  /** A source of main's shape from #4488 until #3659, the base label's at main 5570d0ac: this
+   * checkout's with what #3659 changed of the answers the stand-in models put back as it stood —
+   * the health route answering its status alone, the completion request ending at the rating,
+   * each refusal written as a body of its own, and the pull request ending at the round's
+   * decision. */
+  function beforeAnswers(): string {
+    const handoff = "daemon/internal/api/handoff.go";
+    const state = "daemon/internal/api/state.go";
+    const read = (file: string) => readFileSync(path.join(CHECKOUT, "packages", file), "utf8");
+    const readyBlock =
+      /\tPlanReason {5}\*string {4}`json:"planReason,omitempty"`\n[\s\S]*?\tReady \*bool `json:"ready,omitempty"`\n\}/.exec(
+        read(handoff)
+      )?.[0] ?? "";
+    const shownTail =
+      /MergeState {5}string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n\t\/\/ fixAttemptsShown[\s\S]*?\tfixAttemptsShown bool\n\}/.exec(
+        read(state)
+      )?.[0] ?? "";
+    expect([readyBlock === "", shownTail === ""]).toEqual([false, false]);
+    return copyWith(CHECKOUT, [
+      [SERVER, HEALTH_PROJECT, HEALTH_BEFORE],
+      [handoff, readyBlock, '\tPlanReason     *string    `json:"planReason,omitempty"`\n}'],
+      [handoff, TESTER_VERDICT, TESTER_VERDICT_BEFORE],
+      [handoff, OTHER_VERDICT, OTHER_VERDICT_BEFORE],
+      ["daemon/internal/api/claims.go", BAD_BODY, BAD_BODY_BEFORE],
+      [state, shownTail, UNCOUNTED],
+    ]);
+  }
+
+  // Catches: a label of main's before #3659, the base label's at 5570d0ac, answered as a daemon
+  // that states a contract, names its project on `GET /healthz` and refuses `ready: true`, which
+  // it never did, or refused as no shape because its refusals are written by the writer before
+  // #3659's or its pull request ends at the round's decision; and the same source with any of
+  // those four put back read otherwise than as main's since #3659.
+  test("a daemon source before #3659 states no contract and refuses no ready, and its refusals are read in the writer it has", () => {
+    const before = beforeAnswers();
+    expect(labelShapes(before)).toEqual({
+      ...MAIN,
+      statesContract: undefined,
+      retiresReady: false,
+    });
+    expect(
+      labelShapes(
+        copyWith(before, [
+          ["daemon/internal/api/handoff.go", TESTER_VERDICT_BEFORE, TESTER_VERDICT],
+          ["daemon/internal/api/handoff.go", OTHER_VERDICT_BEFORE, OTHER_VERDICT],
+          ["daemon/internal/api/claims.go", BAD_BODY_BEFORE, BAD_BODY],
+        ])
+      )
+    ).toEqual({ ...MAIN, statesContract: undefined, retiresReady: false });
+    expect(() =>
+      labelShapes(copyOf(before, "daemon/internal/api/handoff.go", TESTER_VERDICT_BEFORE, ""))
+    ).toThrow(
+      `${JSON.stringify(TESTER_VERDICT_BEFORE)} in packages/daemon/internal/api/handoff.go, and this source does not`
+    );
+    expect(() =>
+      labelShapes(copyOf(before, "daemon/internal/api/claims.go", BAD_BODY_BEFORE, ""))
+    ).toThrow(
+      `the 400 a body holding U+0000 is refused in this rig reads: main's daemon since #3659, whose refusals go through its answer writer holds ${JSON.stringify(BAD_BODY)} in packages/daemon/internal/api/claims.go, and this source does not; main's daemon from #4488 until #3659 holds ${JSON.stringify(BAD_BODY_BEFORE)} in packages/daemon/internal/api/claims.go, and this source does not`
+    );
+    expect(() => labelShapes(copyOf(before, SERVER, HEALTH_BEFORE, ""))).toThrow(
+      `${JSON.stringify(HEALTH_BEFORE)} in packages/${SERVER}, and this source does not`
+    );
+  });
+
+  // Catches: a source holding #3659's answers and the health route before it, read as either; and
+  // one whose version.go declares no number for its answers to state, answered with a contract
+  // read from elsewhere or none.
+  test("a daemon source that states its contract states the one its version.go declares, and one of both shapes is refused", () => {
+    expect(() =>
+      labelShapes(
+        copyOf(CHECKOUT, SERVER, HEALTH_PROJECT, `${HEALTH_PROJECT}\n\t// ${HEALTH_BEFORE}`)
+      )
+    ).toThrow(
+      "the contract its answers state this rig reads: it holds the markers of two shapes at once, main's daemon since #3659, and every daemon the rig runs before #3659, whose health route answers its status alone"
+    );
+    const declared = `const DaemonAPIVersion = ${DAEMON_API_VERSION}`;
+    expect(() =>
+      labelShapes(copyOf(CHECKOUT, "daemon/internal/api/version.go", declared, `${declared} + 0`))
+    ).toThrow(
+      "packages/daemon/internal/api/version.go declares no `const DaemonAPIVersion = <n>` for it to state"
+    );
+    expect(
+      labelShapes(
+        copyOf(CHECKOUT, "daemon/internal/api/version.go", declared, "const DaemonAPIVersion = 207")
+      ).statesContract
+    ).toBe(207);
   });
 
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as

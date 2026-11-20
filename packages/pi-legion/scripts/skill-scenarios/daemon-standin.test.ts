@@ -13,7 +13,9 @@ import {
   labelDaemon,
   notCurrentPhase,
   postRefusal,
+  READY_RETIRED,
   refusalIn,
+  statesContract,
 } from "./daemon-pane";
 import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
 import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
@@ -397,8 +399,16 @@ async function standin(
   const url = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(printed)?.[1];
   if (url === undefined) throw new Error(`no address in ${printed}`);
   /** The state body as the stand-in serves it, read through no schema: what a label's own
-   * contract is handed, which is the thing a row below reads with two of them. */
-  const body = async (): Promise<unknown> => await (await fetch(`${url}/legion/v1/state`)).json();
+   * contract is handed, which is the thing a row below reads with two of them. It is read as the
+   * label's plugin reads it, stating in `Legion-Plugin-Contract` the contract that plugin speaks,
+   * its daemon's own, for a label whose daemon states one (`statesContract`), a checkout's plugin
+   * and daemon declaring one number; a row that reads it otherwise asks for it itself. */
+  const body = async (): Promise<unknown> => {
+    const contract = statesContract(checkout);
+    const headers: Record<string, string> =
+      contract === undefined ? {} : { "Legion-Plugin-Contract": String(contract) };
+    return await (await fetch(`${url}/legion/v1/state`, { headers })).json();
+  };
   const record = async () => {
     const state = LegionStateResponse.parse(await body());
     return { issue: state.issues["LWEVAL-1"], repositories: state.repositories };
@@ -979,10 +989,12 @@ test.skipIf(skip)(
 // #2539 took it out of this checkout's strict request, so every base completion of 2026-11-12 was
 // answered 400 `unrecognized_keys` and that arm measured a world of its own (review 5887659447,
 // finding 1). A key no label sends is still refused, as the daemon refuses an undecodable body.
+// The label is one whose daemon predates #3659, which reads `ready` again only to refuse `true`
+// (the row of READY_RETIRED below holds this checkout's to that).
 test.skipIf(skip)(
   "a completion carrying an older label's ready is answered as that label's daemon answered it",
   async () => {
-    const daemon = await standin("reviewer");
+    const daemon = await standin("reviewer", "", undefined, { checkout: unstatedCheckout() });
     try {
       expect((await daemon.complete(true, { ready: true })).status).toBe(200);
       expect((await daemon.complete(true, { pushed: true })).status).toBe(400);
@@ -1790,6 +1802,243 @@ test.skipIf(skip)(
   600_000
 );
 
+let unstated: string | undefined;
+/** A copy of this checkout's daemon module standing in for a daemon before #3659 (dc1bbc995e), the
+ * base label's at main 5570d0ac, where the stand-in answers by what #3659 changed: it registers no
+ * `GET /legion/v1/issues/{key}/record`, its health route answers its status alone, written as
+ * that daemon wrote it (daemon-pane.ts's `HEALTH_UNSTATED`, kept in a comment beside a call that
+ * compiles, since the copy's module is compiled), and its completion request ends at the rating of
+ * the plan, `ready` read ahead of it (`REQUEST_WITHOUT_READY`). Made once for the file. */
+function unstatedCheckout(): string {
+  if (unstated !== undefined) return unstated;
+  const checkout = path.join(work, "unstated-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const edit = (file: string, from: string | RegExp, to: string) => {
+    const at = path.join(daemon, "internal", "api", file);
+    const text = readFileSync(at, "utf8");
+    const edited = text.replace(from, to);
+    expect(edited).not.toBe(text);
+    writeFileSync(at, edited);
+  };
+  edit("server.go", '\t\t{"GET /legion/v1/issues/{key}/record", s.issueRecordRoute},\n', "");
+  edit(
+    "server.go",
+    's.writeAnswer(w, r, AnswerHealth, http.StatusOK, Health{Status: "ok", Project: s.project})',
+    's.writeAnswer(w, r, AnswerHealth, http.StatusOK, Health{Status: "ok"}) // writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})'
+  );
+  edit(
+    "handoff.go",
+    /(\tPlanRating {5}\*int {7}`json:"planRating,omitempty"`\n\tPlanReason {5}\*string {4}`json:"planReason,omitempty"`\n)([\s\S]*?\tReady \*bool `json:"ready,omitempty"`\n)\}/,
+    "$2$1}"
+  );
+  expect(statesContract(checkout)).toBeUndefined();
+  unstated = checkout;
+  return checkout;
+}
+
+/** The header a daemon since #3659 states its contract in on every answer, and the one a caller
+ * states its plugin's in. */
+const DAEMON_CONTRACT = "Legion-Daemon-Contract";
+const PLUGIN_CONTRACT = "Legion-Plugin-Contract";
+/** The state body as far as the rows of #3659's answers read it: the contract mark, the claims'
+ * lowest contract and the issue's record, through no contract. */
+const MarkedState = z.looseObject({
+  contract: z.unknown().optional(),
+  lowestPluginContract: z.unknown().optional(),
+  issues: z.record(z.string(), z.record(z.string(), z.unknown())),
+});
+
+// Catches: a stand-in of a label whose daemon states its contract (main's since #3659, this
+// checkout's) that states none, states it on some answers alone (main's #3659 stand-in stated it
+// on `GET /healthz` and nowhere else) or states this build's plugin's number rather than the
+// label daemon's; a health route that names no project; a record route that answers another key
+// than the run's issue, or refuses it in other words than the daemon's; a state served without
+// the daemon's contract mark, the claims' lowest contract or a claim's update state; and a read
+// placed below the daemon's contract, by its header or by the claims of its pod, answered with
+// the daemon's own body, which that daemon would have shaped down, where this stand-in models no
+// shaping.
+test.skipIf(skip)(
+  "on a label whose daemon states its contract, every answer states it, and the health, the record and the state are that daemon's",
+  async () => {
+    const contract = statesContract(CHECKOUT) ?? 0;
+    expect(contract).toBeGreaterThan(188);
+    const stated = String(contract);
+    const daemon = await standin("reviewer");
+    try {
+      // The claim registers under the contract the label's plugin declares, its daemon's own.
+      const register = (pluginContract: number) =>
+        daemon.post("/legion/v1/claims/register", {
+          bootToken: BOOT_TOKEN,
+          sessionId: AGENT,
+          pluginContract,
+        });
+      expect((await register(contract)).status).toBe(200);
+      const answered = async (answer: Response) => [
+        answer.status,
+        answer.headers.get(DAEMON_CONTRACT),
+        answer.status === 204 ? null : await answer.json(),
+      ];
+      expect(await answered(await fetch(`${daemon.url}/healthz`))).toEqual([
+        200,
+        stated,
+        { status: "ok", project: "skills1" },
+      ]);
+      expect(await answered(await daemon.post("/legion/v1/claims/ready", { secret: "x" }))).toEqual(
+        [403, stated, { error: expect.any(String) }]
+      );
+      expect(await answered(await fetch(`${daemon.url}/legion/v1/claims`))).toEqual([
+        404,
+        stated,
+        { error: "no route" },
+      ]);
+      expect(
+        await answered(await daemon.post("/legion/v1/claims/ready", { secret: SECRET }))
+      ).toEqual([204, stated, null]);
+      const read = (route: string, caller?: string) =>
+        fetch(`${daemon.url}${route}`, {
+          headers: caller === undefined ? {} : { [PLUGIN_CONTRACT]: caller },
+        });
+      const state = await read("/legion/v1/state", stated);
+      expect([state.status, state.headers.get(DAEMON_CONTRACT)]).toEqual([200, stated]);
+      const body = MarkedState.parse(await state.json());
+      const issue = body.issues["LWEVAL-1"] ?? {};
+      expect([body.contract, body.lowestPluginContract]).toEqual([
+        { daemon: contract, caller: contract },
+        contract,
+      ]);
+      expect(
+        z
+          .object({ workers: z.record(z.string(), z.object({ claim: z.looseObject({}) })) })
+          .parse(issue).workers.reviewer?.claim
+      ).toMatchObject({ updateState: "none" });
+      // The record route answers the issue the state holds, whose quiet time is of its own read.
+      const record = await read("/legion/v1/issues/LWEVAL-1/record", stated);
+      expect([record.status, record.headers.get(DAEMON_CONTRACT)]).toEqual([200, stated]);
+      expect(await record.json()).toEqual({ ...issue, quietHours: expect.any(Number) });
+      expect(await answered(await read("/legion/v1/issues/LWEVAL-2/record", stated))).toEqual([
+        404,
+        stated,
+        { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LWEVAL-2" },
+      ]);
+      // A caller stating no contract, or no number, is placed by the claims of its pod, which
+      // record the daemon's own; one stating a contract above the daemon's is served its own too.
+      for (const caller of [undefined, String(contract + 1), "a lot"]) {
+        const own = await read("/legion/v1/state", caller);
+        expect([caller, own.status, MarkedState.parse(await own.json()).contract]).toEqual([
+          caller,
+          200,
+          { daemon: contract, caller: contract },
+        ]);
+      }
+      const unshaped = (below: number) => [
+        500,
+        stated,
+        {
+          error: `daemon-standin models no body shaped down to contract ${below}: the label's daemon speaks ${contract}, and this stand-in serves its own body alone`,
+        },
+      ];
+      expect(await answered(await read("/legion/v1/state", String(contract - 1)))).toEqual(
+        unshaped(contract - 1)
+      );
+      expect(
+        await answered(await read("/legion/v1/issues/LWEVAL-1/record", String(contract - 1)))
+      ).toEqual(unshaped(contract - 1));
+      // Claims recording a lower contract place a caller that states none, or no number, there.
+      expect((await register(146)).status).toBe(200);
+      expect(await answered(await read("/legion/v1/state"))).toEqual(unshaped(146));
+      expect(await answered(await read("/legion/v1/state", "a lot"))).toEqual(unshaped(146));
+      const marked = await read("/legion/v1/state", stated);
+      expect(MarkedState.parse(await marked.json()).lowestPluginContract).toBe(146);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in of a label whose daemon predates #3659, the base label's at main 5570d0ac,
+// answered as #3659's daemon: a contract stated on its answers, a project on its health route, a
+// record route it never registered, a state marked with a contract and a claim's update state, or
+// a read shaped by the contract its caller states, which that daemon never read.
+test.skipIf(skip)(
+  "on a label whose daemon predates #3659, no answer states a contract, and the health, the record and the state are that daemon's",
+  async () => {
+    const daemon = await standin("reviewer", "", undefined, { checkout: unstatedCheckout() });
+    try {
+      await boots(daemon.post);
+      const answered = async (answer: Response) => [
+        answer.status,
+        answer.headers.get(DAEMON_CONTRACT),
+        answer.status === 204 ? null : await answer.json(),
+      ];
+      expect(await answered(await fetch(`${daemon.url}/healthz`))).toEqual([
+        200,
+        null,
+        { status: "ok" },
+      ]);
+      expect(await answered(await daemon.post("/legion/v1/claims/ready", { secret: "x" }))).toEqual(
+        [403, null, { error: expect.any(String) }]
+      );
+      expect(
+        await answered(await daemon.post("/legion/v1/claims/activity", { secret: SECRET }))
+      ).toEqual([204, null, null]);
+      expect(await answered(await fetch(`${daemon.url}/legion/v1/issues/LWEVAL-1/record`))).toEqual(
+        [404, null, { error: "no route" }]
+      );
+      const state = await fetch(`${daemon.url}/legion/v1/state`, {
+        headers: { [PLUGIN_CONTRACT]: "1" },
+      });
+      expect([state.status, state.headers.get(DAEMON_CONTRACT)]).toEqual([200, null]);
+      const body = MarkedState.parse(await state.json());
+      const reviewer = z
+        .object({ workers: z.record(z.string(), z.object({ claim: z.looseObject({}) })) })
+        .parse(body.issues["LWEVAL-1"]).workers.reviewer?.claim;
+      expect([
+        "contract" in body,
+        "lowestPluginContract" in body,
+        "updateState" in (reviewer ?? {}),
+      ]).toEqual([false, false, false]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a completion sending `ready: true` taken by a label whose daemon refuses it (main's
+// since #3659, which reads `ready` again only to refuse `true`: no daemon from contract 86 on
+// merges), or refused by one whose daemon never refused it; and `ready: false` refused.
+test.skipIf(skip)(
+  "a completion's ready: true is refused READY_RETIRED where the label's daemon retires it, and taken where it does not",
+  async () => {
+    const retiring = await standin("reviewer");
+    try {
+      const refused = await retiring.complete(true, { ready: true });
+      expect([refused.status, refused.headers.get(DAEMON_CONTRACT), await refused.json()]).toEqual([
+        400,
+        String(statesContract(CHECKOUT)),
+        { code: READY_RETIRED.code, error: READY_RETIRED.message },
+      ]);
+      expect("handoffRecord" in ((await served(retiring.body)).issue.workers.reviewer ?? {})).toBe(
+        false
+      );
+      expect((await retiring.complete(true, { ready: false })).status).toBe(200);
+    } finally {
+      retiring.stop();
+    }
+    const taking = await standin("reviewer", "", undefined, { checkout: unstatedCheckout() });
+    try {
+      expect((await taking.complete(true, { ready: true })).status).toBe(200);
+    } finally {
+      taking.stop();
+    }
+  },
+  600_000
+);
+
 // Catches: a stand-in that goes on taking a claim's reports after the daemon failed it. The
 // daemon fails the claim when its run of refused turns reaches the launch failure limit, and
 // every write of a failed claim clears the capability its secret authenticated (supervise's
@@ -2029,8 +2278,8 @@ test.skipIf(skip)(
       const { issue, repositories } = await daemon.record();
       expect(issue?.repo).toBe("widgets-org/widgets");
       expect(issue?.defaultBranch).toBe("trunk");
-      expect(repositories.mapped).toEqual([{ repo: "widgets-org/widgets", default: true }]);
-      expect(repositories.owners).toEqual(["widgets-org"]);
+      expect(repositories?.mapped).toEqual([{ repo: "widgets-org/widgets", default: true }]);
+      expect(repositories?.owners).toEqual(["widgets-org"]);
     } finally {
       daemon.stop();
     }
@@ -2390,6 +2639,11 @@ const WORLD_NEVER_HOLDS = [
   ".architect.step",
   ".workers[].claim.step",
 ];
+/** The members the stand-in serves that production's record held none of when the pin was read,
+ * each a member main's daemon wrote first after it: each claim's `updateState`, which the record
+ * of a daemon since #3659 (2026-11-20) carries on every claim and the pin, read on 2026-11-17,
+ * predates (daemon-pane.ts's `statesContract`, standin-record.ts's `daemonContract`). */
+const SINCE_PIN = [".architect.updateState", ".workers[].claim.updateState"];
 /** The session a row's agent registers under, and the report of its capabilities a session
  * sends on a `claims/ready` of its own (`claim.CapabilityReport`). */
 const AGENT = "01a2d000-0000-7000-8000-00000000f006";
@@ -2444,9 +2698,12 @@ async function served(body: () => Promise<unknown>) {
   return { issue, active: state.admission.active };
 }
 /** Every path and every word of a kind a contract holds to an enum that the contract check hands
- * a label (standin-record.ts's `sampleFacts`), and what of `issue` is in neither: a member or a
- * word the stand-in serves that no label's contract was held to before its runs began. */
-const SAMPLED = sampleFacts().map(({ facts }) => rolesListed(issueRecord(facts)));
+ * a label (standin-record.ts's `sampleFacts`, marked as this checkout's daemon marks them:
+ * `statesContract`), and what of `issue` is in neither: a member or a word the stand-in serves
+ * that no label's contract was held to before its runs began. */
+const SAMPLED = sampleFacts(undefined, statesContract(CHECKOUT)).map(({ facts }) =>
+  rolesListed(issueRecord(facts))
+);
 const ENUMS = ["state", "status", "phase", "mergeState", "reviewDecision", "runtime", "step"];
 function words(value: unknown, key = ""): string[] {
   if (typeof value === "string") return ENUMS.includes(key) ? [`${key}=${value}`] : [];
@@ -2607,7 +2864,7 @@ test.skipIf(skip)(
           ".workers[].claim.step",
           ".workers[].backwardMoves",
         ],
-        extra: [".mergeWait"],
+        extra: [...SINCE_PIN, ".mergeWait"],
         kinds: [],
       });
       expect(unsampled(issue)).toEqual(ALL_SAMPLED);
@@ -2710,7 +2967,7 @@ test.skipIf(skip)(
       ]).toEqual([false, false, false, true]);
       expect(shapeDiff(rolesListed(issue), PINNED_RECORD)).toEqual({
         missing: WORLD_NEVER_HOLDS,
-        extra: [],
+        extra: SINCE_PIN,
         kinds: [],
       });
       expect(unsampled(issue)).toEqual(ALL_SAMPLED);
@@ -3328,12 +3585,15 @@ function countingCheckout(): string {
   counting = checkout;
   return checkout;
 }
-/** The end of the state's pull request view as main's daemon writes it since contract 59, and as
- * main `ff2a10ef`'s wrote it, with the count of fix attempts (daemon-pane.ts's
- * `PULL_REQUEST_UNCOUNTED` and `PULL_REQUEST_COUNTED`). */
-const COUNTLESS_VIEW = '\tReviewDecision string `json:"reviewDecision,omitempty"`\n}';
+/** The end of the state's pull request view as main's daemon writes it since #3659, its round's
+ * decision and then the flag of the one copy a caller below contract 59 is served the count on
+ * (daemon-pane.ts's `PULL_REQUEST_SHOWN_BELOW`), and as main `ff2a10ef`'s ends it, with the count
+ * of fix attempts for every caller (`PULL_REQUEST_COUNTED`): the flag stays a field of the view,
+ * ahead of the decision, since the copy's module is compiled and its MarshalJSON reads it. */
+const COUNTLESS_VIEW =
+  /\tReviewDecision string `json:"reviewDecision,omitempty"`\n\t\/\/ fixAttemptsShown [\s\S]*?\tfixAttemptsShown bool\n\}/;
 const COUNTED_VIEW =
-  '\tReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}';
+  '\tfixAttemptsShown bool\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}';
 
 // Catches: a stand-in that serves a label of main `ff2a10ef`'s shape a pull request with no count
 // of fix attempts, which that label's contract requires (its legion-api.ts's `fixAttempts`), so
@@ -3996,9 +4256,10 @@ test.skipIf(skip)(
 );
 
 /** A checkout holding a contract, `packages/contracts/src/legion-api.ts` with `source`, and the
- * daemon source the bodies a label is handed are built by, `packages/daemon/internal/api/state.go`
- * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts`), under
- * this file's work directory. */
+ * daemon source the bodies a label is handed are built by: `packages/daemon/internal/api/state.go`
+ * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts`), and
+ * this checkout's api sources the contract its answers state is read from beside it
+ * (`statesContract`), under this file's work directory. */
 function contractCheckout(name: string, source: string, state?: string): string {
   const checkout = path.join(work, name);
   const dir = path.join(checkout, "packages", "contracts", "src");
@@ -4006,10 +4267,12 @@ function contractCheckout(name: string, source: string, state?: string): string 
   writeFileSync(path.join(dir, "legion-api.ts"), source);
   const api = path.join(checkout, "packages", "daemon", "internal", "api");
   mkdirSync(api, { recursive: true });
+  const own = path.join(CHECKOUT, "packages", "daemon", "internal", "api");
+  for (const file of ["server.go", "shaping.go", "version.go", "updatestate.go"])
+    cpSync(path.join(own, file), path.join(api, file));
   writeFileSync(
     path.join(api, "state.go"),
-    state ??
-      readFileSync(path.join(CHECKOUT, "packages", "daemon", "internal", "api", "state.go"), "utf8")
+    state ?? readFileSync(path.join(own, "state.go"), "utf8")
   );
   return checkout;
 }

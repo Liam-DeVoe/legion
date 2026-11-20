@@ -833,15 +833,28 @@ export interface LabelShapes {
    * string's place and where the character stands in it (claims.go's `decodeJSON` and
    * `refuseBadBody`, storable_text.go's `unstorableJSON`): `NUL_REFUSAL.refused` for main's daemon
    * since #4463, `NUL_REFUSAL.unstorable` for main's from #4488 until #4463, each read by its own
-   * words (`refusesNul`). Undefined for main `ff2a10ef`'s daemon, whose decoder reads no string of
-   * a body and whose apply of a completion or a backward move it takes fails on such text where it
-   * writes it into a text or jsonb column, answered 500 `FACT_APPLY_FAILED` (`STORES_NUL`). */
+   * words (`refusesNul`) and either written in `{"error"}` (`NUL_WRITERS`). Undefined for main
+   * `ff2a10ef`'s daemon, whose decoder reads no string of a body and whose apply of a completion or
+   * a backward move it takes fails on such text where it writes it into a text or jsonb column,
+   * answered 500 `FACT_APPLY_FAILED` (`STORES_NUL`). */
   readonly nulRefusal: string | undefined;
   /** The state's pull request carries `fixAttempts`, the count of heads pushed onto a red check
    * verdict (api's `PullRequestView.FixAttempts`, main `ff2a10ef`'s), which that label's contract
    * requires. False for main's daemon since contract 59 (#2780, 7e7bcf212f), which keeps no such
    * count (`servesFixAttempts`). */
   readonly servesFixAttempts: boolean;
+  /** The contract the daemon states in `Legion-Daemon-Contract` on every answer and shapes its
+   * bodies to, its `DaemonAPIVersion`, where it serves the answers that came with that (main's
+   * since #3659, dc1bbc995e, `statesContract`): `GET /healthz` naming the project, the per-issue
+   * record and its RECORD_NOT_FOUND, and a state marked with the contract and the claims' lowest,
+   * each claim with its update state. Undefined for a daemon before it, whose health route
+   * answers its status alone and whose answers state no contract. */
+  readonly statesContract: number | undefined;
+  /** A completion that sends `ready: true` is refused 400 READY_RETIRED, in the words
+   * `READY_RETIRED` restates, once its grant is redeemed, and `ready: false` is ignored
+   * (handoff.go's `readyRetired`, main's since #3659). False for main's daemon before it, whose
+   * completion request has no `ready` (`REQUEST_WITHOUT_READY`), and for main `ff2a10ef`'s. */
+  readonly retiresReady: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -856,23 +869,38 @@ const COMPLETION_REFUSALS = [
 /** The completion route's refusals of a completion's verdict, in the words every daemon the rig
  * runs gives them (handoff.go's `answerCompletion`, this checkout's and main `ff2a10ef`'s alike):
  * a tester's that is neither `pass` nor `fail`, and one any other role reports. The daemon
- * stand-in answers by them; `labelShapes` holds a label's source to them (`VERDICT_RULE`). */
+ * stand-in answers by them; `labelShapes` holds a label's source to them (`verdictRule`). */
 export const VERDICT_REFUSALS = {
   tester: { code: "TESTER_VERDICT_REQUIRED", message: "tester verdict must be pass or fail" },
   other: { code: "VERDICT_ROLE_FORBIDDEN", message: "only a tester may report a verdict" },
 } as const;
-/** The route's verdict rule as every daemon the rig runs has it: each condition, then its 400 in
- * the words `VERDICT_REFUSALS` restates. */
-const VERDICT_RULE: readonly Marker[] = [
+/** How a daemon writes a coded refusal, `{code, error}` in each: main's since #3659 (dc1bbc995e)
+ * hands the request to the one writer that shapes every answer to its caller's contract
+ * (`s.writeFailure(w, r, <status>, …)`, credentials.go), and every daemon before it writes the body
+ * itself (`writeFailure(w, <status>, …)`). A plain refusal is the same body at every contract
+ * (shaping.go's `placedByPod`), so a reader of a refusal's words holds a source to either writer. */
+const FAILURE_WRITERS = [
   {
-    file: "daemon/internal/api/handoff.go",
-    text: `if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\twriteFailure(w, http.StatusBadRequest, "${VERDICT_REFUSALS.tester.code}", "${VERDICT_REFUSALS.tester.message}")`,
+    name: "main's daemon since #3659, whose refusals go through its answer writer",
+    writer: "s.writeFailure(w, r, ",
   },
-  {
-    file: "daemon/internal/api/handoff.go",
-    text: `if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\twriteFailure(w, http.StatusBadRequest, "${VERDICT_REFUSALS.other.code}", "${VERDICT_REFUSALS.other.message}")`,
-  },
-];
+  { name: "every daemon the rig runs before #3659", writer: "writeFailure(w, " },
+] as const;
+/** The route's verdict rule as every daemon the rig runs has it, its refusals written by
+ * `writer` (`FAILURE_WRITERS`): each condition, then its 400 in the words `VERDICT_REFUSALS`
+ * restates. */
+function verdictRule(writer: string): readonly Marker[] {
+  return [
+    {
+      file: "daemon/internal/api/handoff.go",
+      text: `if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\t${writer}http.StatusBadRequest, "${VERDICT_REFUSALS.tester.code}", "${VERDICT_REFUSALS.tester.message}")`,
+    },
+    {
+      file: "daemon/internal/api/handoff.go",
+      text: `if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\t${writer}http.StatusBadRequest, "${VERDICT_REFUSALS.other.code}", "${VERDICT_REFUSALS.other.message}")`,
+    },
+  ];
+}
 /** The workflow's status write as main `ff2a10ef`'s daemon has it, with no message to post: what
  * that older daemon has in the place of each sentence a move posts on the issue, and so of the
  * refusal of a backward move's reason that sentence would carry. */
@@ -1121,11 +1149,13 @@ export const PLAN_RATING_UNEXPECTED = {
 /** What a daemon that refuses such a completion holds: the route's request taking both members and
  * handing the rating to the fact; the workflow's refusal past HANDOFF_NOT_NEW with its fact left
  * unspent, of every completion that does not end the retro; and its description and message in
- * the words `PLAN_RATING_UNEXPECTED` restates. */
+ * the words `PLAN_RATING_UNEXPECTED` restates. The request's members end at the rating in main's
+ * daemon from #4488 until #3659, and #3659 reads `ready` after them (`RETIRES_READY`), so the
+ * marker names the two members and not the end of the request. */
 const REFUSES_RATING: readonly Marker[] = [
   {
     file: "daemon/internal/api/handoff.go",
-    text: 'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`\n}',
+    text: 'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`',
   },
   {
     file: "daemon/internal/api/handoff.go",
@@ -1155,6 +1185,40 @@ const REQUEST_WITHOUT_RATING: Marker = {
   text: 'WakeAt         *time.Time `json:"wakeAt,omitempty"`\n}',
 };
 
+/** The refusal of a completion that sends `ready: true`, as main's daemon since #3659 words it
+ * (handoff.go's `readyRetired`, three Go literals joined): `ready` armed the daemon's merge at
+ * contract 85 and below, and no daemon from 86 on merges. The daemon stand-in answers by it;
+ * `labelShapes` holds a label's source to it (`RETIRES_READY`). */
+const READY_RETIRED_PARTS = [
+  "this completion sends ready: true, which at contract 85 and below armed the daemon's merge of the pull request. ",
+  "No daemon at contract 86 or later acts on READY: the merger merges the pull request itself, and the daemon closes ",
+  "the issue when it reads that merge. Nothing was recorded. Merge the pull request, then complete again without ready",
+] as const;
+export const READY_RETIRED = {
+  code: "READY_RETIRED",
+  message: READY_RETIRED_PARTS.join(""),
+} as const;
+/** What a daemon that refuses `ready: true` holds: the request reading `ready` by name, last of
+ * its members, the 400 the route writes for `true` once the grant is redeemed, and the sentence
+ * as `READY_RETIRED` restates it. `false` and no `ready` at all are ignored. */
+const RETIRES_READY: readonly Marker[] = [
+  { file: "daemon/internal/api/handoff.go", text: 'Ready *bool `json:"ready,omitempty"`\n}' },
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: `if req.Ready != nil && *req.Ready {\n\t\ts.writeFailure(w, r, http.StatusBadRequest, "${READY_RETIRED.code}", readyRetired)\n\t\treturn\n\t}`,
+  },
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: `const readyRetired = ${READY_RETIRED_PARTS.map((part) => JSON.stringify(part)).join(" +\n\t")}`,
+  },
+];
+/** The completion request as main's route decodes it from #4488 until #3659, ending at the rating
+ * of the plan with no `ready`: what that daemon has in the place of the refusal. */
+const REQUEST_WITHOUT_READY: Marker = {
+  file: "daemon/internal/api/handoff.go",
+  text: 'PlanReason     *string    `json:"planReason,omitempty"`\n}',
+};
+
 /** The refusal of a request body holding U+0000 in a string: the sentence every undecodable body
  * is refused 400 with (claims.go's `refuseBadBody`), around the decoder's error, which names the
  * first such string's place in the body and where the first U+0000 stands in it, counted from 1 in
@@ -1173,8 +1237,7 @@ export const NUL_REFUSAL = {
 } as const;
 /** What a daemon that refuses such a body in the words `format` holds: the decoder of every
  * request body ending in the walk of its strings (`decodeJSON`'s `unstorableJSON`, through
- * Dispatch's own walk, `dispatchbody.NulInJSON`), the error in those words, and the 400 it is
- * written in. */
+ * Dispatch's own walk, `dispatchbody.NulInJSON`) and the error in those words. */
 function refusesNul(format: string): readonly Marker[] {
   return [
     { file: "daemon/internal/api/claims.go", text: "\treturn body, unstorableJSON(body)\n}" },
@@ -1186,12 +1249,34 @@ function refusesNul(format: string): readonly Marker[] {
       file: "daemon/internal/api/storable_text.go",
       text: `return fmt.Errorf("${format}", place, utf8.RuneCountInString(value[:at])+1)`,
     },
-    {
-      file: "daemon/internal/api/claims.go",
-      text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
-    },
   ];
 }
+/** The 400 a daemon that refuses such a body writes the error in, `{"error"}` in each: main's since
+ * #3659 through the writer that shapes every answer (`s.refuse`, credentials.go), and every daemon
+ * from #4488 until it as a body of its own (`errorBody`). Read beside the words, whichever they
+ * are, since #3659 moved the writer and kept them. */
+const NUL_WRITERS = [
+  {
+    name: "main's daemon since #3659, whose refusals go through its answer writer",
+    markers: [
+      {
+        file: "daemon/internal/api/claims.go",
+        text: `s.refuse(w, r, http.StatusBadRequest, "${NUL_REFUSAL.prefix}"+err.Error())`,
+      },
+    ],
+    value: true,
+  },
+  {
+    name: "main's daemon from #4488 until #3659",
+    markers: [
+      {
+        file: "daemon/internal/api/claims.go",
+        text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
+      },
+    ],
+    value: true,
+  },
+];
 /** What main `ff2a10ef`'s daemon answers a request whose apply fails, by route: a completion's and
  * any other fact's (its api's handoff.go and architect.go `applyFact`). */
 export const FACT_APPLY_FAILED = {
@@ -1260,23 +1345,45 @@ const PULL_REQUEST_COUNTED: Marker = {
   file: STATE_GO,
   text: 'ReviewDecision string `json:"reviewDecision,omitempty"`\n\tFixAttempts    int    `json:"fixAttempts"`\n}',
 };
-/** The same as main's daemon writes it since contract 59, ending at the round's decision. */
+/** The same as main's daemon writes it from contract 59 until #3659, ending at the round's
+ * decision. */
 const PULL_REQUEST_UNCOUNTED: Marker = {
   file: STATE_GO,
   text: 'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n}',
 };
+/** The same as main's daemon writes it since #3659, which ends it at the round's decision for
+ * every caller but one below contract 59, whose copy alone writes the count back, 0 (its
+ * MarshalJSON on `fixAttemptsShown`, shaping.go's `withFixAttempts`): the rig's callers state
+ * their own label's contract, which is that daemon's own, so none of them is served the count. */
+const PULL_REQUEST_SHOWN_BELOW: readonly Marker[] = [
+  {
+    file: STATE_GO,
+    text: 'MergeState     string `json:"mergeState,omitempty"`\n\tReviewDecision string `json:"reviewDecision,omitempty"`\n\t// fixAttemptsShown is set on the copy the state route serves a caller below the contract\n',
+  },
+  { file: STATE_GO, text: "\tfixAttemptsShown bool\n}" },
+];
 
 /** Whether the state the daemon of `checkout` answers carries the count of fix attempts on its
  * pull request (`LabelShapes`' `servesFixAttempts`): main `ff2a10ef`'s by `PULL_REQUEST_COUNTED`,
- * none for main's since contract 59 by `PULL_REQUEST_UNCOUNTED`. The count rises only at a push
- * onto a head whose check verdict is red (that daemon's classify's `advance`), and every check of
- * every world's head concludes `success` (rig.sh's `concluded_checks`), so a world's count is 0.
- * standin-record.ts's `contractRefusal` reads it to build the state bodies a label's contract is
- * handed, as the stand-in serves them. Throws, naming each marker and its file, for a source of
- * neither shape or both. */
+ * none for main's from contract 59 by `PULL_REQUEST_UNCOUNTED`, and none for main's since #3659
+ * by `PULL_REQUEST_SHOWN_BELOW`, which writes it back to a caller below 59 alone. The count rises
+ * only at a push onto a head whose check verdict is red (that daemon's classify's `advance`), and
+ * every check of every world's head concludes `success` (rig.sh's `concluded_checks`), so a
+ * world's count is 0. standin-record.ts's `contractRefusal` reads it to build the state bodies a
+ * label's contract is handed, as the stand-in serves them. Throws, naming each marker and its
+ * file, for a source of no shape or of two. */
 export function servesFixAttempts(checkout: string): boolean {
   return sourceShape(checkout, "the state's pull request", [
-    { name: "main's daemon since contract 59", markers: [PULL_REQUEST_UNCOUNTED], value: false },
+    {
+      name: "main's daemon since #3659, which counts for a caller below contract 59 alone",
+      markers: PULL_REQUEST_SHOWN_BELOW,
+      value: false,
+    },
+    {
+      name: "main's daemon from contract 59 until #3659",
+      markers: [PULL_REQUEST_UNCOUNTED],
+      value: false,
+    },
     {
       name: "main ff2a10ef's daemon, whose pull request counts its fix attempts",
       markers: [PULL_REQUEST_COUNTED],
@@ -1285,25 +1392,142 @@ export function servesFixAttempts(checkout: string): boolean {
   ]);
 }
 
+/** The files the daemon's answers are written and shaped in, its contract declared in, and its
+ * claims' update state read in. */
+const SERVER_GO = "daemon/internal/api/server.go";
+const SHAPING_GO = "daemon/internal/api/shaping.go";
+const VERSION_GO = "daemon/internal/api/version.go";
+const UPDATE_STATE_GO = "daemon/internal/api/updatestate.go";
+/** The refusal of the per-issue record of an issue the daemon records nothing of, as main's
+ * daemon since #3659 words it: its code, and the sentence the issue's key ends (server.go's
+ * `issueRecordRoute`). The daemon stand-in answers by it; `labelShapes` holds a label's source to
+ * it (`STATES_CONTRACT`). */
+export const RECORD_NOT_FOUND = {
+  code: "RECORD_NOT_FOUND",
+  message: "The daemon has no record for ",
+} as const;
+/** What a daemon that states its contract on every answer and shapes its bodies to its caller's
+ * holds (main's since #3659, dc1bbc995e): the handler around the whole mux that sets
+ * `Legion-Daemon-Contract` to its `DaemonAPIVersion` before any route answers, the catch-all's
+ * 404 and every refusal among them (server.go's `statingContract`); `GET /healthz` answering the
+ * project beside its status (`Health`, `healthRoute`); `GET /legion/v1/issues/{key}/record`
+ * answering the issue the state holds under that key, and 404 RECORD_NOT_FOUND in the words
+ * `RECORD_NOT_FOUND` restates for any other (`issueRecordRoute`); and the state shaped to the
+ * caller's contract (shaping.go): a caller placed by its `Legion-Plugin-Contract` header, or with
+ * none by the claims of its pod, of which a claim recording this daemon's contract counts for
+ * nothing, so such a caller is served this daemon's own body (`ownBody`); that body marked with
+ * the daemon's contract and the caller's (`contract`), the lowest contract the claims that hold a
+ * process record (`lowestPluginContract`, `recordsContract`), and each claim's update state,
+ * `none` for a claim no update round is open over (`updateState`, updatestate.go's
+ * `UpdateStateOf`). */
+const STATES_CONTRACT: readonly Marker[] = [
+  { file: SERVER_GO, text: 'const daemonContractHeader = "Legion-Daemon-Contract"' },
+  {
+    file: SERVER_GO,
+    text: "Handler:           statingContract{handler: trackTransactions(noteRequesters(mux))},",
+  },
+  {
+    file: SERVER_GO,
+    text: "\tw.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))\n\ts.handler.ServeHTTP(w, r)\n}",
+  },
+  {
+    file: SERVER_GO,
+    text: 'type Health struct {\n\tStatus  string `json:"status"`\n\tProject string `json:"project"`\n}',
+  },
+  {
+    file: SERVER_GO,
+    text: 's.writeAnswer(w, r, AnswerHealth, http.StatusOK, Health{Status: "ok", Project: s.project})',
+  },
+  { file: SERVER_GO, text: `const recordNotFound = "${RECORD_NOT_FOUND.code}"` },
+  {
+    file: SERVER_GO,
+    text: `issue, recorded := state.Issues[key]\n\tif !recorded {\n\t\ts.writeFailure(w, r, http.StatusNotFound, recordNotFound, "${RECORD_NOT_FOUND.message}"+key)`,
+  },
+  {
+    file: SERVER_GO,
+    text: "s.writeAnswerFrom(w, r, AnswerIssueRecord, http.StatusOK, issue, claims)",
+  },
+  { file: SERVER_GO, text: "state.LowestPluginContract = lowestPluginContract(claims)" },
+  { file: SHAPING_GO, text: 'const pluginContractHeader = "Legion-Plugin-Contract"' },
+  {
+    file: SHAPING_GO,
+    text: "var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}",
+  },
+  {
+    file: SHAPING_GO,
+    text: "return c.Locator != nil && c.Locator.Sandbox != nil && c.PluginContract != 0",
+  },
+  { file: STATE_GO, text: 'UpdateState UpdateState `json:"updateState,omitempty"`' },
+  {
+    file: UPDATE_STATE_GO,
+    text: '\tswitch {\n\tcase c.UpdateSignalledAt != nil:\n\t\treturn UpdateStateAnswered\n\tcase c.UpdateRound == "":\n\t\treturn UpdateStateNone',
+  },
+  { file: UPDATE_STATE_GO, text: 'UpdateStateNone UpdateState = "none"' },
+];
+/** What every daemon before #3659 has in their place: `GET /healthz` answering `{"status":"ok"}`
+ * and nothing else, written as a body of its own, which no handler around it marks with a
+ * contract. */
+const HEALTH_UNSTATED: Marker = {
+  file: SERVER_GO,
+  text: 'writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})',
+};
+
+/** The contract the daemon of `checkout` states on every answer and shapes its bodies to
+ * (`LabelShapes`' `statesContract`): its `DaemonAPIVersion` (version.go) for a source of main's
+ * shape since #3659, by `STATES_CONTRACT`, and undefined for one before it, by `HEALTH_UNSTATED`.
+ * standin-record.ts's `contractRefusal` reads it to build the state bodies a label's contract is
+ * handed, as the stand-in serves them. Throws, naming each marker and its file, for a source of
+ * neither shape or both, and for a source of main's that declares no contract. */
+export function statesContract(checkout: string): number | undefined {
+  const states = sourceShape(checkout, "the contract its answers state", [
+    { name: "main's daemon since #3659", markers: STATES_CONTRACT, value: true },
+    {
+      name: "every daemon the rig runs before #3659, whose health route answers its status alone",
+      markers: [HEALTH_UNSTATED],
+      value: false,
+    },
+  ]);
+  if (!states) return undefined;
+  const file = path.join(checkout, "packages", VERSION_GO);
+  const declared = existsSync(file)
+    ? /^const DaemonAPIVersion = ([1-9]\d*)$/m.exec(readFileSync(file, "utf8"))?.[1]
+    : undefined;
+  if (declared === undefined)
+    throw new Error(
+      `the daemon source of ${checkout} states a contract on every answer, and packages/${VERSION_GO} declares no \`const DaemonAPIVersion = <n>\` for it to state`
+    );
+  return Number(declared);
+}
+
 /** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with,
- * takes a review of the review App for, records of each run of a step and serves on its pull
- * request, each read as one of two shapes: main's since the change that brought it, by its own
- * marker, or main `ff2a10ef`'s, which predates every one of those changes, by the code it has in
- * their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`, `ROW_AS_QUEUED`,
- * `BY_ROW_SESSION`, `BY_COMMIT_ID`, `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`). The refusal
- * of a body holding U+0000 has a third: main's words since #4463, #4488's before them, and main
- * `ff2a10ef`'s store in their place (`STORES_NUL`). The completion refusals and the route's
- * verdict rule have one shape, every daemon the rig runs holding them. Throws, naming each marker
- * and its file, for a source of no shape or of more than one (`sourceShape`), which refuses the
- * batch at rig.sh's label_facts and a stand-in's boot. */
+ * takes a review of the review App for, records of each run of a step, serves on its pull
+ * request, states on its answers and refuses of a completion's `ready`, each read as one of two
+ * shapes: main's since the change that brought it, by its own marker, or main `ff2a10ef`'s, which
+ * predates every one of those changes, by the code it has in their place (`STATUS_WITHOUT_MESSAGE`,
+ * `OUTBOX_WITHOUT_HOLDERS`, `ROW_AS_QUEUED`, `BY_ROW_SESSION`, `BY_COMMIT_ID`,
+ * `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`, `HEALTH_UNSTATED`). The refusal of `ready` has
+ * a third, main's from #4488 until #3659, whose request ends at the rating
+ * (`REQUEST_WITHOUT_READY`). The refusal of a body holding U+0000 has four: main's words since
+ * #4463 written through the answer writer since #3659 and as a body of their own before it,
+ * #4488's words before them, and main `ff2a10ef`'s store in their place (`STORES_NUL`). The
+ * completion refusals have one shape, every daemon the rig runs holding them, and the route's
+ * verdict rule one in each writer of a refusal (`FAILURE_WRITERS`). Throws, naming each marker and
+ * its file, for a source of no shape or of more than one (`sourceShape`), which refuses the batch
+ * at rig.sh's label_facts and a stand-in's boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
     sourceShape(checkout, `the completion refusal ${code}`, [
       { name: "every daemon the rig runs", markers: [{ file, text: `"${code}"` }], value: true },
     ]);
-  sourceShape(checkout, "the completion route's verdict rule", [
-    { name: "every daemon the rig runs", markers: VERDICT_RULE, value: true },
-  ]);
+  sourceShape(
+    checkout,
+    "the completion route's verdict rule",
+    FAILURE_WRITERS.map(({ name, writer }) => ({ name, markers: verdictRule(writer), value: true }))
+  );
   const older = {
     name: "main ff2a10ef's daemon, whose status write posts no message",
     markers: [STATUS_WITHOUT_MESSAGE],
@@ -1314,6 +1538,29 @@ export function labelShapes(checkout: string): LabelShapes {
       { name: `main's daemon since ${since}`, markers: [{ file: EFFECTS, text }], value: true },
       older,
     ]);
+  const nulRefusal = sourceShape<string | undefined>(
+    checkout,
+    "the refusal of a body holding U+0000",
+    [
+      {
+        name: "main's daemon since #4463",
+        markers: refusesNul(NUL_REFUSAL.refused),
+        value: NUL_REFUSAL.refused,
+      },
+      {
+        name: "main's daemon from #4488 until #4463",
+        markers: refusesNul(NUL_REFUSAL.unstorable),
+        value: NUL_REFUSAL.unstorable,
+      },
+      {
+        name: "main ff2a10ef's daemon, whose decoder reads no string of a body and whose store fails on U+0000",
+        markers: STORES_NUL,
+        value: undefined,
+      },
+    ]
+  );
+  if (nulRefusal !== undefined)
+    sourceShape(checkout, "the 400 a body holding U+0000 is refused in", NUL_WRITERS);
   return {
     postsBackward: posted("a backward move's sentence", "#4309", "func backwardMoveReason("),
     refusesReason: posted(
@@ -1389,24 +1636,22 @@ export function labelShapes(checkout: string): LabelShapes {
         value: false,
       },
     ]),
-    nulRefusal: sourceShape<string | undefined>(checkout, "the refusal of a body holding U+0000", [
+    nulRefusal,
+    servesFixAttempts: servesFixAttempts(checkout),
+    statesContract: statesContract(checkout),
+    retiresReady: sourceShape(checkout, "the refusal of a completion's ready", [
+      { name: "main's daemon since #3659", markers: RETIRES_READY, value: true },
       {
-        name: "main's daemon since #4463",
-        markers: refusesNul(NUL_REFUSAL.refused),
-        value: NUL_REFUSAL.refused,
+        name: "main's daemon from #4488 until #3659, whose completion request ends at planReason",
+        markers: [REQUEST_WITHOUT_READY],
+        value: false,
       },
       {
-        name: "main's daemon from #4488 until #4463",
-        markers: refusesNul(NUL_REFUSAL.unstorable),
-        value: NUL_REFUSAL.unstorable,
-      },
-      {
-        name: "main ff2a10ef's daemon, whose decoder reads no string of a body and whose store fails on U+0000",
-        markers: STORES_NUL,
-        value: undefined,
+        name: "main ff2a10ef's daemon, whose completion request ends at wakeAt",
+        markers: [REQUEST_WITHOUT_RATING],
+        value: false,
       },
     ]),
-    servesFixAttempts: servesFixAttempts(checkout),
   };
 }
 

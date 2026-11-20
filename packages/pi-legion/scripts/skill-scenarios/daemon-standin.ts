@@ -193,6 +193,23 @@
  * refusal, and a ready keeps no character of the kind (capabilities' `cleanDetail`), so each is
  * taken as any other.
  *
+ * Where the label's daemon source is main's since #3659 (dc1bbc995e: daemon-pane.ts's
+ * `statesContract` and `retiresReady`, held to that source by `labelShapes`), every answer carries
+ * `Legion-Daemon-Contract`, the daemon's own `DaemonAPIVersion` read off that source
+ * (`DAEMON_CONTRACT`), a refusal, the catch-all's 404 and a 204 as much as a success; `GET
+ * /healthz` answers the project beside its status (`HEALTH`); `GET
+ * /legion/v1/issues/{key}/record` answers the issue's record as the state holds it, and 404
+ * RECORD_NOT_FOUND in that daemon's words for any other key (`recordAnswer`); the state and the
+ * record are the body that daemon serves a caller at its own contract, marked with that contract
+ * as the daemon's and the caller's, the lowest contract its claims record, and each claim's update
+ * state (`servedState`); and a completion sending `ready: true` is refused 400 READY_RETIRED once
+ * its grant is redeemed (`RETIRES_READY`). The shaping of a body down to a contract a caller
+ * states below the daemon's is not modelled (`unshaped` says why it is unreachable). A daemon
+ * before #3659, main `ff2a10ef`'s and the labels' before it, states no contract, answers `GET
+ * /healthz` with `{"status":"ok"}` alone, registers no record route, so `ROUTES` answers it 404,
+ * serves the state as this served it before, and has its completion's `ready` taken as this took
+ * every label's (`CompleteRequest`).
+ *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
  * outbox.go's `publishRoleHolders`, `queueHolders` here): at the stand-in's boot, at the agent's
@@ -281,7 +298,6 @@ import {
   LegionTurnOutcomeRequest,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
-import pkg from "../../package.json";
 import { COMPLETE_PATH } from "./completion-answers";
 import {
   FACT_APPLY_FAILED,
@@ -292,6 +308,8 @@ import {
   PLAN_RATING_UNEXPECTED,
   type PostRefusal,
   postRefusal,
+  READY_RETIRED,
+  RECORD_NOT_FOUND,
   RECORD_PHASES,
   serves,
   standinFacts,
@@ -508,6 +526,14 @@ function storeFails(...texts: readonly (string | undefined)[]): boolean {
  * daemon serves the count (main `ff2a10ef`'s), and none where it serves none, main's since
  * contract 59 (daemon-pane.ts's `servesFixAttempts`, standin-record.ts's `WORLD_FIX_ATTEMPTS`). */
 const FIX_ATTEMPTS = SHAPES.servesFixAttempts ? WORLD_FIX_ATTEMPTS : undefined;
+/** The contract the label's daemon states on every answer and shapes its bodies to, its
+ * `DaemonAPIVersion` read off its source (main's since #3659: daemon-pane.ts's `statesContract`),
+ * or undefined for a daemon before it, whose answers state none and whose bodies are its own
+ * whoever asks. */
+const DAEMON_CONTRACT = SHAPES.statesContract;
+/** Whether the label's daemon refuses a completion's `ready: true` (main's since #3659:
+ * daemon-pane.ts's `READY_RETIRED`, held to the label's source by `labelShapes`). */
+const RETIRES_READY = SHAPES.retiresReady;
 /** The engine's refusals of a backward move whose posted sentence Dispatch would refuse
  * (effects.go's `backwardReasonRefusal`): a decision block, and a message past Dispatch's bounds,
  * each filled with Dispatch's own sentence for it. */
@@ -804,15 +830,24 @@ function roundOutcome(pull: PullRequestFacts): "accepting" | "implementing" | un
     : undefined;
 }
 
-/** `GET /healthz`: that this stand-in is serving, and the project its state names, which is the
- * one word the controller's boot check reads. The contract goes in the header beside it
- * (below), where the tool's `read_build` reads it. */
-const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
+/** `GET /healthz` as the label's daemon answers it: that it is serving, and, where it states its
+ * contract (`DAEMON_CONTRACT`), the project it serves, the one word the controller's boot check
+ * reads (server.go's `Health`, read through this checkout's own contract); a daemon before #3659
+ * answers `{"status":"ok"}` alone (daemon-pane.ts's `HEALTH_UNSTATED`). */
+const HEALTH =
+  DAEMON_CONTRACT === undefined
+    ? { status: "ok" }
+    : LegionHealthResponse.parse({ status: "ok", project });
 
-/** The response header the daemon states its own contract in
- * (`packages/daemon/internal/api/server.go`). The number is this plugin build's own
- * `legion.daemonApiVersion`, which is the contract a daemon this build pairs with speaks. */
+/** The response header the daemon states its own contract in, on every answer, a refusal, the
+ * catch-all's 404 and a 204 as much as a success (server.go's `statingContract`): the tool's
+ * `read_build` reads it off `GET /healthz` beside its plugin's own. Set to `DAEMON_CONTRACT`
+ * where the label's daemon states one, and on no answer of a daemon that states none. */
 const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
+/** The request header a caller states its plugin's contract in, which a daemon that shapes its
+ * bodies places the caller by (shaping.go's `pluginContractHeader`, `statedContract`): a header
+ * that is no positive whole number is read as none. */
+const PLUGIN_CONTRACT_HEADER = "Legion-Plugin-Contract";
 
 interface LogLine {
   readonly at: string;
@@ -1880,7 +1915,10 @@ async function gateNow(): Promise<GateFacts | undefined> {
 
 /** The state document of the run's issue as the world stands now (standin-record.ts's
  * `stateBody`), read through this checkout's own contract so a body it does not describe is never
- * served. Throws where the world cannot be read — the run's Dispatch not answering for the spec. */
+ * served. Where the label's daemon shapes its bodies (`DAEMON_CONTRACT`) it is the body that daemon
+ * serves a caller at its own contract, marked with that contract and the claims' lowest and each
+ * claim with its update state (`RecordFacts`' `daemonContract`). Throws where the world cannot be
+ * read — the run's Dispatch not answering for the spec. */
 const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
   const pullRequest = settled();
   await runOutbox();
@@ -1900,6 +1938,7 @@ const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
       repo,
       defaultBranch: base,
       pluginContract,
+      daemonContract: DAEMON_CONTRACT,
       architect: CLAIMS.get("architect"),
       workers,
       pass,
@@ -1932,8 +1971,40 @@ function unbuilt(error: unknown): Response {
   });
 }
 
-/** `GET /legion/v1/state`: the whole state document (`servedState`). */
-const stateAnswer = async (): Promise<Response> => {
+/** The answer to a read of the state or the record whose caller states `stated` in
+ * `Legion-Plugin-Contract`, where the label's daemon would shape the body below its own and this
+ * stand-in does not: undefined where it serves the daemon's own body. A daemon that shapes nothing
+ * (`DAEMON_CONTRACT` undefined) serves every caller its own. One that shapes places a caller
+ * (shaping.go's `contractsFor`) by the contract its header states, and one that states none, or no
+ * positive whole number, by the contract the claims of its pod record (`podContracts`), here the
+ * one every claim of the issue records (`pluginContract`); a caller placed at or above the
+ * daemon's own contract, or by claims recording none, is served the daemon's own body. The
+ * shaping of a body down to a lower contract (shaping.go's `shapeAnswer`, its bands and the
+ * records of contract-shapes.json) is not modelled, and such a read is answered 500 in this
+ * stand-in's own words, never with a body of the daemon's own contract. So is a headerless read
+ * whose claims record a contract below the daemon's that the daemon counts for nothing, one at or
+ * above `shapedAnswersContract`, where the daemon serves its own body: this refuses rather than
+ * reads that bound. Unreachable from a run: every agent of a run loads its own label's plugin,
+ * whose client states that label's contract on every request (pi-shared's daemon-client.ts) and
+ * registers it, and a checkout's plugin and daemon declare one number. */
+function unshaped(stated: string | null): Response | undefined {
+  if (DAEMON_CONTRACT === undefined) return undefined;
+  // As Go's strconv.Atoi reads it: digits with an optional sign; no positive whole number is no
+  // statement at all (`statedContract`), and the caller is placed by its pod.
+  const declared = stated !== null && /^[+-]?\d+$/.test(stated) ? Number(stated) : Number.NaN;
+  const contract =
+    Number.isSafeInteger(declared) && declared > 0 ? declared : pluginContract || DAEMON_CONTRACT;
+  if (contract >= DAEMON_CONTRACT) return undefined;
+  return json(500, {
+    error: `daemon-standin models no body shaped down to contract ${contract}: the label's daemon speaks ${DAEMON_CONTRACT}, and this stand-in serves its own body alone`,
+  });
+}
+
+/** `GET /legion/v1/state` for a caller stating `stated`: the whole state document
+ * (`servedState`). */
+const stateAnswer = async (stated: string | null): Promise<Response> => {
+  const refused = unshaped(stated);
+  if (refused !== undefined) return refused;
   try {
     return json(200, await servedState());
   } catch (error) {
@@ -1941,10 +2012,15 @@ const stateAnswer = async (): Promise<Response> => {
   }
 };
 
-/** `GET /legion/v1/issues/<key>/record`, `key` as the path writes it: the one issue's record the
- * state holds under `issues.<key>` (server.go's `issueRecordRoute`), and 404 RECORD_NOT_FOUND in
- * the daemon's words for a key it holds no record of, every key but the run's issue. */
-const recordAnswer = async (key: string): Promise<Response> => {
+/** `GET /legion/v1/issues/<key>/record` for a caller stating `stated`, `key` as the path writes
+ * it: the one issue's record the state holds under `issues.<key>` (server.go's
+ * `issueRecordRoute`), and 404 RECORD_NOT_FOUND in the words daemon-pane.ts's `RECORD_NOT_FOUND`
+ * restates for a key it holds no record of, every key but the run's issue. Only a label whose
+ * daemon states its contract registers the route (`ROUTES`), and `labelShapes` holds its source
+ * to those words. */
+const recordAnswer = async (key: string, stated: string | null): Promise<Response> => {
+  const refused = unshaped(stated);
+  if (refused !== undefined) return refused;
   let named = key;
   try {
     named = decodeURIComponent(key);
@@ -1954,7 +2030,7 @@ const recordAnswer = async (key: string): Promise<Response> => {
   try {
     const held = (await servedState()).issues[named];
     return held === undefined
-      ? failure(404, "RECORD_NOT_FOUND", `The daemon has no record for ${named}`)
+      ? failure(404, RECORD_NOT_FOUND.code, `${RECORD_NOT_FOUND.message}${named}`)
       : json(200, held);
   } catch (error) {
     return unbuilt(error);
@@ -2209,6 +2285,12 @@ async function handle(
       if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
       const refused = resolveGrant(parsed.data.grantId);
       if (refused) return { response: refused };
+      // A label whose daemon reads `ready` again only to refuse it (`RETIRES_READY`, main's since
+      // #3659) refuses `ready: true` once the grant is redeemed, before it reads the issue, in its
+      // own words (handoff.go's `readyRetired`), and ignores `ready: false`. A daemon before it is
+      // answered as this answered every label's `ready` (`CompleteRequest`).
+      if (RETIRES_READY && parsed.data.ready === true)
+        return { response: failure(400, READY_RETIRED.code, READY_RETIRED.message) };
       // Both the route and the workflow read the phase the issue stands in now, the one a state
       // read serves, and never the phase this role was booted in. The earlier HANDOFF_NO_RUN
       // fence of the route is not reached: a rig half is a live registered worker serving
@@ -2522,25 +2604,21 @@ function nulIn(value: unknown, place: string): { place: string; text: string } |
 const ISSUE_RECORD_PATH = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
 
 /** The answer to one request of a route the label's daemon registers (`ROUTES`): the POST routes
- * `handle` serves, then the three GET routes, then the 404 every other request gets, the
- * catch-all's. */
+ * `handle` serves, then the three GET routes, the state and the record for a caller stating
+ * `stated` in `Legion-Plugin-Contract` (`unshaped`) and the health route, then the 404 every other
+ * request gets, the catch-all's. */
 async function answer(
   method: string,
   path: string,
-  body: unknown
+  body: unknown,
+  stated: string | null
 ): Promise<{ response: Response; mintedGrantId?: string; phase?: string }> {
   if (method === "POST") return handle(path, body);
   if (method === "GET") {
-    if (path === "/healthz") {
-      return {
-        response: Response.json(HEALTH, {
-          headers: { [DAEMON_CONTRACT_HEADER]: String(pkg.legion.daemonApiVersion) },
-        }),
-      };
-    }
-    if (path === "/legion/v1/state") return { response: await stateAnswer() };
+    if (path === "/healthz") return { response: json(200, HEALTH) };
+    if (path === "/legion/v1/state") return { response: await stateAnswer(stated) };
     const record = ISSUE_RECORD_PATH.exec(path);
-    if (record !== null) return { response: await recordAnswer(record[1] ?? "") };
+    if (record !== null) return { response: await recordAnswer(record[1] ?? "", stated) };
   }
   return { response: json(404, { error: "no route" }) };
 }
@@ -2569,7 +2647,12 @@ const server = Bun.serve({
       ? { response: json(404, { error: "no route" }) }
       : nul !== undefined
         ? { response: json(400, { error: nul }) }
-        : await answer(request.method, path, body);
+        : await answer(request.method, path, body, request.headers.get(PLUGIN_CONTRACT_HEADER));
+    // A daemon that states its contract states it on every answer, set before any route answers
+    // (server.go's `statingContract`): a refusal, the catch-all's 404 and a 204 as much as a
+    // success. A daemon before it states none.
+    if (DAEMON_CONTRACT !== undefined)
+      response.headers.set(DAEMON_CONTRACT_HEADER, String(DAEMON_CONTRACT));
     // What the daemon last saw of the issue's tree move (`treeMovedAt`): a request of the
     // claim's that it took.
     if (request.method === "POST" && response.status < 300) movedAt = new Date().toISOString();

@@ -33,7 +33,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { type LegionRole, roleForPhase, roleToken } from "@legion/contracts";
-import { servesFixAttempts } from "./daemon-pane";
+import { servesFixAttempts, statesContract } from "./daemon-pane";
 
 /** The issue's generation: one run of the workflow, which no world of the rig re-admits. */
 export const GENERATION = 1;
@@ -131,6 +131,14 @@ export interface RecordFacts {
   /** The contract the label's plugin declares at its registration, which every claim of the
    * issue's pod records: they all load the one plugin. */
   readonly pluginContract: number;
+  /** The contract the label's daemon states on every answer and shapes its bodies to, which every
+   * caller of a run is served the body of (daemon-pane.ts's `statesContract`, main's since #3659):
+   * where it is one, the state is marked with it twice, as the daemon's and as the caller's
+   * (`contract`), carries the lowest contract the claims holding a process record
+   * (`lowestPluginContract`), and each claim its update state, `none`, since the rig opens no
+   * update round (`updateState`). Undefined for a daemon before #3659, whose body carries none of
+   * the three as the stand-in serves it. */
+  readonly daemonContract?: number | undefined;
   readonly architect?: ClaimFacts | undefined;
   /** Each role that holds a claim, by role. */
   readonly workers: Readonly<Record<string, RowFacts>>;
@@ -249,6 +257,8 @@ function claimView(facts: RecordFacts, role: LegionRole, claim: ClaimFacts) {
         }),
     ...(claim.served ? { servingGeneration: GENERATION } : {}),
     pluginContract: facts.pluginContract,
+    // Where the round over the claim stands (updatestate.go's `UpdateStateOf`): no rig opens one.
+    ...(facts.daemonContract === undefined ? {} : { updateState: "none" }),
     ...(pendingTask === undefined ? {} : { pendingTask }),
     ...(claim.lastTurnStart === undefined ? {} : { lastTurnStart: claim.lastTurnStart }),
     ...(claim.lastTurnEnd === undefined ? {} : { lastTurnEnd: claim.lastTurnEnd }),
@@ -398,6 +408,12 @@ export function issueRecord(facts: RecordFacts): Record<string, unknown> {
  * in. */
 export function stateBody(facts: RecordFacts, startedAt: string): Record<string, unknown> {
   const [owner = ""] = facts.repo.split("/");
+  // The lowest contract among the claims whose locator names a pod and that record one
+  // (shaping.go's `lowestPluginContract`, `recordsContract`): every claim records the label
+  // plugin's, and a claim with no generation has no locator.
+  const located = [facts.architect, ...Object.values(facts.workers).map((row) => row.claim)].some(
+    (claim) => claim?.generation !== undefined
+  );
   return {
     daemon: {
       project: facts.project,
@@ -406,6 +422,9 @@ export function stateBody(facts: RecordFacts, startedAt: string): Record<string,
       firstBootAt: startedAt,
       startedAt,
     },
+    ...(facts.daemonContract === undefined
+      ? {}
+      : { contract: { daemon: facts.daemonContract, caller: facts.daemonContract } }),
     admission: {
       cap: 1,
       active: keepsSlot(facts.phase) ? [facts.issue] : [],
@@ -450,6 +469,9 @@ export function stateBody(facts: RecordFacts, startedAt: string): Record<string,
     // still requires it.
     settings: { max_fix_attempts: 3, review_round_cap: 3, worker_boot_timeout_seconds: 120 },
     consumers: [],
+    ...(facts.daemonContract === undefined || !located || facts.pluginContract === 0
+      ? {}
+      : { lowestPluginContract: facts.pluginContract }),
   };
 }
 
@@ -470,10 +492,14 @@ function sampleClaim(state: string, generation: number | undefined, more: Partia
  * phase — the claim of each state a stand-in gives one, a handoff commit and record, a pull
  * request in each merge state a world reports and under each decision, a gate approved, waiting
  * and with changes requested, and an issue with no history at all — and the count of fix attempts
- * `fixAttempts` on each pull request, for a label whose daemon serves one (`RecordFacts`).
- * `contractRefusal` hands each to a label's own contract, so a member a label's schema refuses is
- * found before any run of the label starts rather than in its agents' turns. */
-export function sampleFacts(fixAttempts?: number): { name: string; facts: RecordFacts }[] {
+ * `fixAttempts` on each pull request, for a label whose daemon serves one, and the contract
+ * `daemonContract` the bodies are marked with, for a label whose daemon states one
+ * (`RecordFacts`). `contractRefusal` hands each to a label's own contract, so a member a label's
+ * schema refuses is found before any run of the label starts rather than in its agents' turns. */
+export function sampleFacts(
+  fixAttempts?: number,
+  daemonContract?: number
+): { name: string; facts: RecordFacts }[] {
   const at = "2026-11-17T12:00:00.000Z";
   const head = "804a7ad10da2154015508a1bbc4a5b2ac9e98b81";
   const record = { id: "a1ae938f-0520-47a1-8778-12b5f3bf9f4f", version: 1 };
@@ -485,6 +511,7 @@ export function sampleFacts(fixAttempts?: number): { name: string; facts: Record
     defaultBranch: "main",
     pluginContract: 146,
     fixAttempts,
+    daemonContract,
     admittedAt: at,
     movedAt: at,
     now: "2026-11-17T12:30:00.000Z",
@@ -622,11 +649,14 @@ export const WORLD_FIX_ATTEMPTS = 0;
  * (packages/contracts/src/legion-api.ts), the schema the plugin its label's agents load reads
  * every state answer with. The bodies are the ones the stand-in serves that label: their pull
  * request carries `fixAttempts` where the checkout's daemon serves it (daemon-pane.ts's
- * `servesFixAttempts`, read out of its source), and none where it does not. The module is another
- * checkout's, at a path this process is handed at run time, so no static import reaches it; a
- * checkout that has none, or one that exports no such schema, is a refusal too, naming the file,
- * since a label whose contract cannot be read is never answered as some other contract would
- * describe it; and so is a daemon source of neither shape, naming each marker and its file. */
+ * `servesFixAttempts`, read out of its source), and none where it does not; and they carry the
+ * contract mark, the claims' lowest contract and each claim's update state where the checkout's
+ * daemon states its contract (daemon-pane.ts's `statesContract`), and none of them where it does
+ * not. The module is another checkout's, at a path this process is handed at run time, so no
+ * static import reaches it; a checkout that has none, or one that exports no such schema, is a
+ * refusal too, naming the file, since a label whose contract cannot be read is never answered as
+ * some other contract would describe it; and so is a daemon source of no shape, naming each
+ * marker and its file. */
 export async function contractRefusal(checkout: string): Promise<string | undefined> {
   const contract = path.join(checkout, "packages", "contracts", "src", "legion-api.ts");
   let loaded: unknown;
@@ -642,12 +672,14 @@ export async function contractRefusal(checkout: string): Promise<string | undefi
   if (typeof schema?.safeParse !== "function")
     return `${contract} exports no LegionStateResponse to read a state body with`;
   let counted: boolean;
+  let stated: number | undefined;
   try {
     counted = servesFixAttempts(checkout);
+    stated = statesContract(checkout);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  for (const { name, facts } of sampleFacts(counted ? WORLD_FIX_ATTEMPTS : undefined)) {
+  for (const { name, facts } of sampleFacts(counted ? WORLD_FIX_ATTEMPTS : undefined, stated)) {
     const read = schema.safeParse(stateBody(facts, facts.admittedAt));
     if (!read.success)
       return `${contract} does not describe the state body the stand-in serves (${name}): ${read.error?.message ?? "refused"}`;
