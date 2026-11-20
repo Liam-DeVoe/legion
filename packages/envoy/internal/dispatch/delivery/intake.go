@@ -447,28 +447,31 @@ func consumerGenerationMetadata() map[string]string {
 // the envelope on the bus is the only memory of the change, for as long as the bus keeps events:
 // the stream keeps a message 72 hours from its publish (bus.streamCfg's MaxAge,
 // contracts.DeliveryDuplicateWindow), and a hand-back does not renew that. So the envelope is
-// handed back with a delay (redeliverAfter), for as long as that lasts: the durable sets no
-// MaxDeliver, and no count of deliveries ends it, since R4 keeps which pull request changed until
-// a read succeeds. Where the whole database refuses writes, no other envelope's head write could
-// be stored either, but a lock of pull_request_reads_owed alone (a migration of it) refuses the
-// record while other heads are still written, and for that lock's length each such envelope holds
-// its slot, four of them every slot. The hand-back's WARN line names the record's failure, and is
-// written at an envelope's first delivery and then once every handBackLineEvery deliveries
-// (logHandBack). It is handed back now rather than at the stop: this message wants redelivering
-// to this same process, which still holds the durable's hold and still routes that key to the one
-// goroutine it is on. The write is idempotent (both its statements are `on conflict … do
-// update`), so a redelivery of an envelope whose write had in fact landed writes the same pair
-// again.
+// handed back with a delay (intakeDelivery.handBackOwn), for as long as that lasts: the durable
+// sets no MaxDeliver, and no count of deliveries ends it, since R4 keeps which pull request
+// changed until a read succeeds. Where the whole database refuses writes, no other envelope's
+// head write could be stored either, but a lock of pull_request_reads_owed alone (a migration of
+// it) refuses the record while other heads are still written, and for that lock's length each
+// such envelope holds its slot, four of them every slot. The hand-back's WARN line names the
+// record's failure, and is written at an envelope's first delivery and then once every
+// handBackLineEvery deliveries (logHandBack). It is handed back now rather than at the stop:
+// this message wants redelivering to this same process, which still holds the durable's hold and
+// still routes that key to the one goroutine it is on. The write is idempotent (both its
+// statements are `on conflict … do update`), so a redelivery of an envelope whose write had in
+// fact landed writes the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
-// ack floor hands it to the new holder once. The acknowledgement is held to the hold the same way
-// (intakeDelivery.holdCovers): one made after the lapse would settle on the new holder's consumer
-// a message its handler had not handled, so a holder whose hold has lapsed answers nothing and
-// the next holder takes the envelope, which redoes the same idempotent writes.
+// ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
+// on a reconnecting link between attempts it is refused at once, and while an
+// attempt holds nats.go's lock it waits until the attempt ends (intakeDelivery.handBackOwn).
+// The acknowledgement is held to the hold the same way (intakeDelivery.holdCovers): one made
+// after the lapse would settle on the new holder's consumer a message its handler had not
+// handled, so a holder whose hold has lapsed answers nothing and the next holder takes the
+// envelope, which redoes the same idempotent writes.
 //
 // An envelope no delivery can get past is not handed back at all: one that names no pull request
 // GitHub can have (errNoPullRequestNamed) reads nothing and owes no read, and one whose owed record
@@ -503,10 +506,10 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope is left unanswered with the durable for the next holder's take-over",
 				"subject", msg.Subject, "redeliver", redeliver)
 		case redeliver:
-			redeliverAfter(log, msg, in.redeliverAfter)
+			d.handBackOwn(log, msg, in.redeliverAfter)
 			handedBack = true
 		default:
-			acknowledge(log, msg)
+			d.acknowledge(log, msg)
 		}
 		_, due := handBackLineDue(msg)
 		lines.write(handedBack && !due)
@@ -611,30 +614,6 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo s
 		return repo, number, err
 	}
 	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure, "")
-}
-
-// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
-// zero, which is the same message to the server, since nats.go adds a delay to the negative
-// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs through log a
-// hand-back the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked
-// but not never.
-func redeliverAfter(log *slog.Logger, msg *natsgo.Msg, after time.Duration) {
-	if err := msg.NakWithDelay(after); err != nil {
-		log.Error("dispatch delivery: hand a message back for redelivery",
-			"subject", msg.Subject, "delay", after, "error", err)
-	}
-}
-
-// acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
-// leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
-// anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
-// connection is down, which is why the ack failed), the ack wait is the backstop. Both failures
-// are logged through log.
-func acknowledge(log *slog.Logger, msg *natsgo.Msg) {
-	if err := msg.Ack(); err != nil {
-		log.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		redeliverAfter(log, msg, 0)
-	}
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
