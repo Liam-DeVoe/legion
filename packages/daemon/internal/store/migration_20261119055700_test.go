@@ -29,8 +29,14 @@ func TestADeliveryCarriesTheMarkOfTheDesignGatesOwnTaskAfter20261119055700(t *te
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, gateMessageVersion-1)
+	// The claim is written as the release before writes it, in SQL: this daemon's PutClaim writes
+	// the columns of every migration it embeds, a later one's among them (20261120042902's
+	// claims.agent_resume_generation), which the database migrated only this far does not hold.
 	c := tmuxClaim("legion-LEGION-208-merger")
-	if err := store.PutClaim(ctx, c); err != nil {
+	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+		launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation, given_entry, served_entry)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, $6, 0, 0)`,
+		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), c.Generation, c.Session, c.SessionFile, string(c.State)); err != nil {
 		t.Fatalf("put the claim under the release before: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at)
