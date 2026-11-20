@@ -46,21 +46,17 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// repositoriesHiddenQuery is refs.RepositoryClause over each repository of an array, each held to
-// the GitHub id repository_ids records for it (refs.RepositoryIDSQL), the reader's visibility
-// argument bound at $1 and the repositories at $2, each answered with whether it is hidden. Neither
-// placeholder differs between reads, so the text is built once.
-var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause("asked.repo", refs.RepositoryIDSQL("asked.repo"), "$1") + ` from unnest($2::text[]) as asked(repo)`
+// repositoriesHiddenQuery is refs.RepositoryClause over each repository of an array, the reader's
+// visibility argument bound at $1 and the repositories at $2, each answered with whether it is
+// hidden. Neither placeholder differs between reads, so the text is built once.
+var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause("asked.repo", "$1") + ` from unnest($2::text[]) as asked(repo)`
 
 // repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
-// whether it fails refs.RepositoryClause under the GitHub id repository_ids records for it, read in
-// one statement and keyed by the name as given. A repository with no recorded id is hidden from an
-// open reader whom no issue it sees gives the repository while a project is private, since the rule
-// cannot tell it from a private project's repository under a new name or owner. A reader that sees
-// every object (seesEveryObject) sees every repository, and nothing is read for it (R9); nothing is
-// read for no repository either. Delivery's pull requests that name no issue and its runs that ship
-// none (deliveryPopulation.cutTo) hold a repository to it, as the GitHub proxy does (routes'
-// repositoryHidden).
+// whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A
+// reader that sees every object (seesEveryObject) sees every repository, and nothing is read for
+// it (R9); nothing is read for no repository either. Delivery's pull requests that name no issue
+// and its runs that ship none (deliveryPopulation.cutTo) hold a repository to it, as the GitHub
+// proxy does (routes' repositoryHidden).
 func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, repositories []string) (map[string]bool, error) {
 	hidden := make(map[string]bool, len(repositories))
 	if len(repositories) == 0 || seesEveryObject(reader) {

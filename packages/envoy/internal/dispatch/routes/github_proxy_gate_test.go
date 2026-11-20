@@ -1,10 +1,8 @@
 package routes
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -217,28 +215,19 @@ func proxyAnswer(t *testing.T, handler http.Handler, login, repository, suffix s
 }
 
 // gateGitHub is GitHub for the repositories it names installed: the App's installation on each of
-// them, a token for that installation, the repository itself (GET /repos/{owner}/{repo}) answered
-// with its GitHub id and the name GitHub gives it now, and every other read of a repository,
-// answered with the repository's name and recorded. A repository's id is ids' entry for it, else
-// one of its own derived from its name; its name now is renamed's entry for it, else its own; a
-// repository noID names answers the read of its id with a 500. Every request it is sent, the
-// installation lookups, token mints and id reads included, is recorded apart, and the id reads
-// apart again.
+// them, a token for that installation, and every read of a repository, answered with the
+// repository's name and recorded. Every request it is sent, the installation lookups and token
+// mints included, is recorded apart.
 type gateGitHub struct {
-	installed  []string
-	ids        map[string]int64
-	renamed    map[string]string
-	noID       []string
-	mu         sync.Mutex
-	reads      []string
-	identities []string
-	every      []string
+	installed []string
+	mu        sync.Mutex
+	reads     []string
+	every     []string
 }
 
 func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.every = append(g.every, r.Method+" "+r.URL.RequestURI())
-	installed := slices.Clone(g.installed)
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method == http.MethodPost && r.URL.Path == "/app/installations/11/access_tokens" {
@@ -250,23 +239,11 @@ func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	name, path, _ := strings.Cut(rest, "/")
 	repository := owner + "/" + name
 	if path == "installation" {
-		if !slices.Contains(installed, repository) {
+		if !slices.Contains(g.installed, repository) {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
 		fmt.Fprint(w, `{"id":11,"app_slug":"envoy","permissions":{"pull_requests":"read","checks":"read"}}`)
-		return
-	}
-	if path == "" {
-		g.mu.Lock()
-		g.identities = append(g.identities, r.Method+" "+r.URL.RequestURI())
-		id, current, failing := g.idOf(repository), cmp.Or(g.renamed[repository], repository), slices.Contains(g.noID, repository)
-		g.mu.Unlock()
-		if failing {
-			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
-			return
-		}
-		fmt.Fprintf(w, `{"full_name":%q,"id":%d}`, current, id)
 		return
 	}
 	g.mu.Lock()
@@ -275,41 +252,14 @@ func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"repository":%q}`, repository)
 }
 
-// idOf is repository's GitHub id: ids' entry for it, else one of its own derived from its name.
-// The caller holds g.mu.
-func (g *gateGitHub) idOf(repository string) int64 {
-	if id, ok := g.ids[repository]; ok {
-		return id
-	}
-	sum := fnv.New32a()
-	sum.Write([]byte(repository))
-	return int64(sum.Sum32()) + 1
-}
-
-// install has the App installed on exactly repositories from now on.
-func (g *gateGitHub) install(repositories ...string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.installed = repositories
-}
-
-// repositoryReads is every read of a repository beyond the installation lookup, the token mint and
-// the read of the repository's id.
+// repositoryReads is every read of a repository beyond the installation lookup and the token mint.
 func (g *gateGitHub) repositoryReads() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.reads...)
 }
 
-// identityReads is every read of a repository's id (GET /repos/{owner}/{repo}).
-func (g *gateGitHub) identityReads() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]string(nil), g.identities...)
-}
-
-// requests is every request GitHub was sent, the installation lookups, token mints and id reads
-// included.
+// requests is every request GitHub was sent, the installation lookups and token mints included.
 func (g *gateGitHub) requests() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()

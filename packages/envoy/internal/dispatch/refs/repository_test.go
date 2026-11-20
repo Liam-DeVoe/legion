@@ -25,8 +25,7 @@ var clauseRepositories = []string{
 // PUB-2 and PRIV-5 both name acme/both; and PRIV-6 names acme/oldname, which a mapping of PRIV
 // records as renamed to acme/newname, a rename the clause does not read. No issue names acme/none
 // or acme/newname. The default and the rename are stored as this build stores them, in
-// repo_projects, in the one statement below. Every repository has a GitHub id of its own, as
-// LearnRepositoryIDs records it (learnRepositoryIDs), so each answer turns on the names alone.
+// repo_projects, in the one statement below.
 func seedRepositoryIssues(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -49,23 +48,7 @@ func seedRepositoryIssues(t *testing.T) *store.Store {
 	`); err != nil {
 		t.Fatalf("seed the repositories' issues: %v", err)
 	}
-	learnRepositoryIDs(t, database, clauseRepositories...)
 	return database
-}
-
-// learnRepositoryIDs records a GitHub id of its own for each of repositories, 1001 for the first
-// and one more for each after it, as LearnRepositoryIDs records what GitHub answers.
-func learnRepositoryIDs(t *testing.T, database *store.Store, repositories ...string) {
-	t.Helper()
-	var known int64
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from repository_ids`).Scan(&known); err != nil {
-		t.Fatalf("count the recorded ids: %v", err)
-	}
-	for index, repository := range repositories {
-		if err := RecordRepositoryID(context.Background(), database.Pool, repository, 1001+known+int64(index)); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 // TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt (c-proxy-by-issue's rule): a
@@ -110,18 +93,17 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		t.Errorf("RepositoryClause(ACME/Priv) for bob = false, want true: GitHub spells a name in any case")
 	}
 	var answered *bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "null", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "$1"),
 		VisibilityArg(model.Actor{})).Scan(&answered); err != nil || answered == nil || *answered {
 		t.Errorf("RepositoryClause over no repository for the closed viewer = %v (%v), want false and never null", answered, err)
 	}
 }
 
-// repositoryPasses answers RepositoryClause for who over repository, under the GitHub id
-// repository_ids records for it (RepositoryIDSQL).
+// repositoryPasses answers RepositoryClause for who over repository.
 func repositoryPasses(t *testing.T, database *store.Store, who model.Actor, repository string) bool {
 	t.Helper()
 	var passes bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2::text", RepositoryIDSQL("$2::text"), "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2::text", "$1"),
 		VisibilityArg(who), repository).Scan(&passes); err != nil {
 		t.Fatalf("RepositoryClause(%s): %v", repository, err)
 	}
@@ -133,7 +115,7 @@ func repositoryPasses(t *testing.T, database *store.Store, who model.Actor, repo
 // repository PRIV maps; acme/privonlymapped, which PRIV maps and no issue resolves to; PUB-5, which
 // names acme/pubwalk, and its child PRIV-8, which names none and so resolves to it; and
 // acme/movedold, which a PUB mapping records as renamed to acme/movednew, the repository PRIV-7
-// names. Each new repository has a GitHub id of its own.
+// names.
 func seedHiddenRepositories(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -149,7 +131,6 @@ func seedHiddenRepositories(t *testing.T, database *store.Store) {
 	`); err != nil {
 		t.Fatalf("seed the hidden repositories: %v", err)
 	}
-	learnRepositoryIDs(t, database, "acme/privmapped", "acme/privonlymapped", "acme/pubwalk", "acme/movedold", "acme/movednew")
 }
 
 // TestProjectRepositoriesSQLAnswersEveryProjectThatOwnsARepository: ProjectRepositoriesSQL, the rule
@@ -293,8 +274,8 @@ func TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsI
 }
 
 // TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate (R9): for an open viewer of a deployment
-// with no private project, the clause passes every repository, with or without an id, and reads no
-// issue: no plan node that scans issues runs. The same viewer, were a project private, walks the
+// with no private project, the clause passes every repository, one no issue names included, and
+// reads no issue: no plan node that scans issues runs. The same viewer, were a project private, walks the
 // issues, which shows the count can see the walk.
 func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 	database := seedRepositoryIssues(t)
@@ -319,7 +300,7 @@ func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 func issueScanLoops(t *testing.T, database *store.Store, who model.Actor, repository string) int {
 	t.Helper()
 	var plan []map[string]any
-	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2::text", RepositoryIDSQL("$2::text"), "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2::text", "$1"),
 		VisibilityArg(who), repository).Scan(&plan); err != nil {
 		t.Fatalf("explain RepositoryClause(%s): %v", repository, err)
 	}

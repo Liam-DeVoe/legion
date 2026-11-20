@@ -144,6 +144,14 @@ func ProjectClause(projectExpr, viewerParam string) string {
 		ViewerFlag(viewerParam, "all"), viewerParam, projectExpr))
 }
 
+// HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
+// private and the viewer does not see it: the projects whose ownership of a repository hides it
+// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row.
+func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
+	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
+		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'))`)
+}
+
 // OpenClause passes an open viewer: one that is not a restricted member and holds no list, which
 // reads every row that belongs to no project and to no conversation, as every caller did before a
 // project could be private. The server's own viewer is open.
