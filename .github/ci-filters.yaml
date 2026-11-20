@@ -351,8 +351,7 @@ daemon_go_tests:
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
-  # The removal of each gone test stack's Postgres, which the proof's start runs with Bun
-  # (stage1-skeleton.sh:26-27), and the modules that command imports.
+  # why: .github/ci-notes/ci.md#daemon_go_tests-the-removal-of-each-gone-test-stacks-postgres
   - 'scripts/e2e/lib/leftovers.sh'
   - 'packages/dispatch/e2e/postgres-mark.ts'
   - 'packages/dispatch/e2e/harness-postgres-marks.ts'
@@ -1051,17 +1050,16 @@ test:
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
   - 'packages/envoy-client/test/fake-dispatch.ts'
-  # sweep-order.test.ts runs each shell stack's start, the skill scenarios' batch among them,
-  # and the mark command that lib/leftovers.sh runs, with the modules it imports.
+  # why: .github/ci-notes/ci.md#test-each-shell-stacks-start-which-the-sweep-order-test-runs
   - 'packages/dispatch/e2e/postgres-mark.ts'
   - 'packages/dispatch/e2e/harness-postgres-marks.ts'
   - 'packages/dispatch/e2e/harness-postgres-removal.ts'
   - 'packages/dispatch/e2e/harness-postgres-container-removal.ts'
   - 'packages/dispatch/e2e/harness-postgres-processes.ts'
   - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
-  # Four of the e2e libraries' tests remove their scratch in a hook through it.
+  # why: .github/ci-notes/ci.md#test-the-hook-that-removes-the-e2e-libraries-scratch
   - 'packages/dispatch/e2e/__tests__/step-end.ts'
-  # row-waits.test.ts reads the rows of these two beside its own directory's.
+  # why: .github/ci-notes/ci.md#test-the-rows-the-row-waits-test-reads-outside-its-own-directory
   - 'packages/pi-envoy/extensions/envoy.test.ts'
   - 'packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts'
   - 'scripts/dispatch/**'
@@ -1390,8 +1388,7 @@ dispatch_ui:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
-  # e2e/__tests__/postgres-provider.test.ts reads every step of it: each test this job's lane
-  # leaves out must be run by a step there that names a provider.
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-browser-workflow-the-provider-test-reads
   - '.github/workflows/dispatch-browser.yaml'
   - *bun_install
   - 'packages/dispatch/**'
@@ -1520,8 +1517,7 @@ dispatch_browser:
   - *go_workspace
   - *dispatch_server
   - 'scripts/e2e/lib/held-port.py'
-  # The visual job's image rows of harness-postgres-leftover.test.ts start a shell stack that
-  # marks its Postgres, and run its removal, through this.
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-shell-stack-the-visual-jobs-image-rows-start
   - 'scripts/e2e/lib/leftovers.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
@@ -2353,8 +2349,7 @@ envoy_session_stall:
   - 'packages/contracts/**'
   - 'packages/test-fixtures/src/**'
   - 'packages/broker-client/**'
-  # The role takeover smoke's listener serves on the socket held-port.py holds, and
-  # port-file.sh reads its port (packages/pi-envoy/scripts/local-stack.sh).
+  # why: .github/ci-notes/ci.md#envoy_session_stall-the-held-socket-the-role-takeover-smoke-serves-on
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/port-file.sh'
   - '.github/scripts/pg-connection-ceiling.sh'

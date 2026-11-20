@@ -1021,8 +1021,9 @@ on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to th
 it had. The image provider's step came after those runs, so none of them measured it, and it
 runs after that pull, so it pulls nothing: its four files read about 67 s on a shared machine
 under a load of about 300 (67 x 1.15 = 77 s, under the rule's floor), so it takes the floor, two
-minutes, until runs of it give a maximum. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+minutes, until runs of it give a maximum. The reverse-order browser step runs the same rows on a
+new stack of the same size, with a new seed, and has the first step's 4-minute budget, which the
+next paragraph adds to the sum of the other steps: 14 + 4 = 18 minutes, the job's limit.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
