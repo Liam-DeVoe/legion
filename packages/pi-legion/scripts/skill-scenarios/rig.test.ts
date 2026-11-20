@@ -3318,6 +3318,7 @@ describe("red_fixture", () => {
       spent: false,
       by_hand: false,
       over_lane: true,
+      log_gone: false,
       partner: "test (notify)",
     });
   });
