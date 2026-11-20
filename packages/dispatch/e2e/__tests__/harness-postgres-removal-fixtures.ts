@@ -1,10 +1,12 @@
-/** The fixtures of the rows of `harness-postgres-removal.test.ts` and
- *  `harness-postgres-holders.test.ts`: the marks, data directories and stand-in postmasters a row
- *  plants, the start's sweep, a start's claim and a start's removal of one container, each run in
- *  a child of the row, the stand-in `docker` of that removal, with its own clock, the end of such a
- *  child, and the stack's harness and the stand-in `pg_ctl` a row kills hard. The rows and what
- *  they require stay in those files. The program of each row's own limit (`Waits`, `Part`,
- *  `rowMs`, `Row`) is in `harness-postgres-waits.ts`, and the machine whose clock a row moves for a
+/** The fixtures of the rows of `harness-postgres-removal.test.ts`,
+ *  `harness-postgres-elsewhere.test.ts`, `harness-postgres-container-removal.test.ts`,
+ *  `harness-postgres-waits.test.ts` and `harness-postgres-holders.test.ts`: the marks, data
+ *  directories and stand-in postmasters a row plants, the start's sweep and a start's claim, each
+ *  run in a child of the row, the end of such a child, and the stack's harness and the stand-in
+ *  `pg_ctl` a row kills hard. The rows and what they require stay in those files. The stand-in
+ *  `docker`, and a start's removal of one container in a child, are in
+ *  `harness-postgres-docker-fixtures.ts`; the program of each row's own limit (`Waits`, `Part`,
+ *  `rowMs`, `Row`) in `harness-postgres-waits.ts`; and the machine whose clock a row moves for a
  *  start's removal of one container (`rowMachine`) in `harness-postgres-row-machine.ts`. */
 
 import { expect } from "bun:test";
@@ -14,7 +16,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -30,7 +31,7 @@ import type { RemovalBounds } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
 import { claimInfix, type StatReader, statMs, statReader } from "../harness-postgres-processes";
 import type { RowAnswer, RowCall } from "./harness-postgres-row-machine";
-import { boundOf, type Row, type Waits } from "./harness-postgres-waits";
+import { boundOf, type Row } from "./harness-postgres-waits";
 import {
   parentLives,
   type StandIn,
@@ -66,6 +67,7 @@ export function owners() {
  *  other's dead stacks, said so on lines their rows did not expect, and made holder reads their
  *  limits did not count: 13 failures in CI's repeat lane on 2026-11-20. */
 let plants: string | undefined;
+
 export function plantsRoot(): string {
   if (plants === undefined || !existsSync(plants)) {
     plants = realpathSync(mkdtempSync(join(tmpdir(), "marks-rows-")));
@@ -218,9 +220,7 @@ while ${parentLives}; do read -r -t 0.05 -u 3 _; done`;
 }
 
 const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url));
-const containerRemovalModule = fileURLToPath(
-  new URL("../harness-postgres-container-removal.ts", import.meta.url)
-);
+
 const rowMachineModule = fileURLToPath(
   new URL("./harness-postgres-row-machine.ts", import.meta.url)
 );
@@ -256,7 +256,7 @@ if (ROW_DOCKER === undefined) {
 
 /** The environment that gives a start's removal of a container in a child of this file the
  *  row's `bounds`. */
-function boundsEnv({ answerMs, boundMs, watchMs }: RemovalBounds): Record<string, string> {
+export function boundsEnv({ answerMs, boundMs, watchMs }: RemovalBounds): Record<string, string> {
   return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs), WATCH_MS: String(watchMs) };
 }
 
@@ -735,107 +735,12 @@ export function holding(lines: readonly string[], text: string): string[] {
   return lines.filter((line) => line.includes(text));
 }
 
-/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file,
- *  within the row's bounds (`boundsEnv`): it prints how the removal ended, and its own lines on
- *  stderr. */
-const removeScript = `
-import { removeContainer } from ${JSON.stringify(containerRemovalModule)};
-const { CONTAINER_ID: id = "", ANSWER_MS, BOUND_MS, WATCH_MS } = process.env;
-const bounds = { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) };
-console.log(JSON.stringify(await removeContainer(id, undefined, bounds)));
-`;
-
-/** One entry of a stand-in's own clock: when a call reached it, or when it ended, in seconds since
- *  the epoch (`EPOCHREALTIME`), with the call's arguments. */
-export interface Tick {
-  readonly at: number;
-  readonly event: "start" | "end";
-  readonly call: string;
-}
-
-/** A stand-in `docker` (`standInDocker`): its directory, the calls it got, its clock, each process
- *  it wrote, by its pid and start, and each process that runs now under its path. */
-export interface StandInDocker {
-  readonly bin: string;
-  calls(): string[];
-  clock(): Tick[];
-  processes(): { pid: number; start: string }[];
-  running(): { pid: number; start: string }[];
-}
-
-/** A directory in `tmp` with a stand-in `docker`, which runs no real one, so a row of it acts on
- *  no container of the machine: it writes the arguments of each call it gets as a line of
- *  `calls`, the stat of its own process as a file of `processes`, and, on its own clock, when the
- *  call reached it and when it ended (`Tick`), and then runs the lines of bash `body`. That clock
- *  is the stand-in's, which no load on the start or on the row stretches: a row times the start's
- *  waits on it. A body that execs another program keeps the stand-in's path as its name (`exec -a
- *  "$0"`), so `running` finds it, and writes no end; one that waits in the background (`sleep N &
- *  wait $!`) ends on SIGTERM, which a start's stop of a call sends, writes its end then, and ends
- *  what it waited for. Answers the directory, the calls so far, the clock so far, each process
- *  the stand-in wrote, by its pid and start, and each process that runs now under its path. */
-export function standInDocker(tmp: string, body: readonly string[]): StandInDocker {
-  const bin = mkdtempSync(join(tmp, "docker-"));
-  const calls = join(bin, "calls");
-  const clock = join(bin, "clock");
-  const processes = join(bin, "processes");
-  mkdirSync(processes);
-  writeFileSync(
-    join(bin, "docker"),
-    [
-      "#!/usr/bin/env bash",
-      `echo "$*" >>${JSON.stringify(calls)}`,
-      `cat /proc/$$/stat >${JSON.stringify(processes)}/$$`,
-      `printf '%s start %s\\n' "$EPOCHREALTIME" "$*" >>${JSON.stringify(clock)}`,
-      `trap 'kill $(jobs -p) 2>/dev/null; printf "%s end %s\\n" "$EPOCHREALTIME" "$*" >>${JSON.stringify(clock)}' EXIT`,
-      "trap 'exit 143' TERM",
-      ...body,
-      "",
-    ].join("\n"),
-    { mode: 0o755 }
-  );
-  const ofStandIn = `${join(bin, "docker")}\0`;
-  return {
-    bin,
-    calls: (): string[] => readFileSync(calls, "utf8").trim().split("\n"),
-    clock: (): Tick[] =>
-      readFileSync(clock, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [at = "", event = "", ...call] = line.split(" ");
-          return { at: Number(at), event: event === "end" ? "end" : "start", call: call.join(" ") };
-        }),
-    processes: (): { pid: number; start: string }[] =>
-      readdirSync(processes).map((pid) => ({
-        pid: Number(pid),
-        start: marks.startOf(readFileSync(join(processes, pid), "utf8")),
-      })),
-    // A stand-in that has not reached its first line yet, or wrote no stat before a signal ended
-    // it, is found here all the same: its command line names the stand-in's path.
-    running: (): { pid: number; start: string }[] =>
-      readdirSync("/proc").flatMap((entry) => {
-        if (!/^\d+$/.test(entry)) return [];
-        try {
-          if (!readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(ofStandIn)) return [];
-          return [
-            {
-              pid: Number(entry),
-              start: marks.startOf(readFileSync(`/proc/${entry}/stat`, "utf8")),
-            },
-          ];
-        } catch {
-          return [];
-        }
-      }),
-  };
-}
-
 /** Runs `script` in a child of this file with `env` over this process's own, and `bin`, a
  *  directory of stand-ins, first on its `PATH`. Answers what it printed on stdout and stderr and
  *  how many seconds it took; kills the child and throws where it has not ended within everything
  *  `row` waits for (`Row.ms`), or by its deadline where its CI step cut its limit (`boundOf`), and
  *  where it exits other than 0. */
-async function inChild(script: string, bin: string, env: Record<string, string>, row: Row) {
+export async function inChild(script: string, bin: string, env: Record<string, string>, row: Row) {
   const started = Date.now();
   const { ms, named } = boundOf(row, row.ms);
   const child = Bun.spawn([process.execPath, "--eval", script], {
@@ -857,106 +762,7 @@ async function inChild(script: string, bin: string, env: Record<string, string>,
   return { stdout, stderr, seconds: (Date.now() - started) / 1000 };
 }
 
-/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`,
- *  within `bounds`, and charges `row` for the child. Answers how the removal ended, the lines the
- *  start printed, and how many seconds the child took; kills the child and throws where it has
- *  not ended within everything the row waits for (`Row.ms`). */
-export async function removeInChild(row: Row, bin: string, id: string, bounds: RemovalBounds) {
-  row.child(`the removal of container ${id.slice(0, 12)}`);
-  const { stdout, stderr, seconds } = await inChild(
-    removeScript,
-    bin,
-    { CONTAINER_ID: id, ...boundsEnv(bounds) },
-    row
-  );
-  return { removal: JSON.parse(stdout) as unknown, lines: stderr.split("\n"), seconds };
-}
-
-const leftoverFixtures = fileURLToPath(
-  new URL("./harness-postgres-leftover-fixtures.ts", import.meta.url)
-);
-const waitsModule = fileURLToPath(new URL("./harness-postgres-waits.ts", import.meta.url));
-
-/** One call of the leftover rows' fixture `docker` (`harness-postgres-leftover-fixtures.ts`) in a
- *  child of this file, with the arguments `ARGS` gives, for a row of the waits `WAITS` that starts
- *  with the child (`rowOf` of `harness-postgres-waits.ts`): it prints what the call answered, or
- *  the message of what it threw. The call is the subject of the row that runs the child, so the
- *  child's row does not charge it as a call that makes a container (`Row.made`): it runs to the
- *  deadline `WAITS` sets, and not for `makeMs` of `harness-postgres-waits.ts`. Where `BEFORE` is
- *  set (`{ what, ms }`), the row first waits `ms`, a wait it names `what` (`during` of
- *  `harness-postgres-waits.ts`), as a row awaits a start of its own. Where `RUN` is set it then
- *  runs a row's `finally`, as the leftover rows do: a stop that takes `STOP_MS`, which the row's
- *  `Waits.ends` counts, and then the removal of each container whose mark names `RUN`
- *  (`removeContainersOf`), and prints whether that removal ended or what it threw. */
-const fixtureCallScript = `
-import { docker, removeContainersOf } from ${JSON.stringify(leftoverFixtures)};
-import { during, rowOf } from ${JSON.stringify(waitsModule)};
-const { ARGS = "[]", BEFORE, RUN, STOP_MS, WAITS = "" } = process.env;
-const row = { ...rowOf(JSON.parse(WAITS)), made() {} };
-const ended = {};
-try {
-  if (BEFORE !== undefined) {
-    const { what, ms } = JSON.parse(BEFORE);
-    await during(what, () => Bun.sleep(ms));
-  }
-  ended.stdout = await docker(row, ...JSON.parse(ARGS));
-} catch (error) {
-  ended.error = error instanceof Error ? error.message : String(error);
-}
-if (RUN !== undefined) {
-  await Bun.sleep(Number(STOP_MS));
-  try {
-    await removeContainersOf(row, RUN);
-    ended.removed = true;
-  } catch (error) {
-    ended.removal = error instanceof Error ? error.message : String(error);
-  }
-}
-console.log(JSON.stringify(ended));
-`;
-
-/** Runs the leftover rows' fixture `docker` with `args` in a child whose `docker` is the one in
- *  `bin` (`fixtureCallScript`), for a row of the waits `waits` that starts with the child: first,
- *  where `before` is given, a wait of `before.ms` that the row names `before.what`; then the call;
- *  and then, where `end` is given, that row's `finally`: a stop of `end.stopMs` and the removal of
- *  the containers whose mark names `end.run`. Charges `row` for the child. Answers what the call
- *  answered or threw, what the removal did, and the lines the child printed; kills the child and
- *  throws where it has not ended within everything the row waits for (`Row.ms`). */
-export async function fixtureDockerInChild(
-  row: Row,
-  bin: string,
-  args: readonly string[],
-  waits: Waits,
-  {
-    before,
-    end,
-  }: {
-    readonly before?: { readonly what: string; readonly ms: number };
-    readonly end?: { readonly stopMs: number; readonly run: string };
-  } = {}
-) {
-  row.child(`the fixture's docker ${args.join(" ")}`);
-  const { stdout, stderr } = await inChild(
-    fixtureCallScript,
-    bin,
-    {
-      WAITS: JSON.stringify(waits),
-      ARGS: JSON.stringify(args),
-      ...(before === undefined ? {} : { BEFORE: JSON.stringify(before) }),
-      ...(end === undefined ? {} : { RUN: end.run, STOP_MS: String(end.stopMs) }),
-    },
-    row
-  );
-  return {
-    ended: JSON.parse(stdout) as {
-      stdout?: string;
-      error?: string;
-      removed?: true;
-      removal?: string;
-    },
-    lines: stderr.split("\n"),
-  };
-}
+const _waitsModule = fileURLToPath(new URL("./harness-postgres-waits.ts", import.meta.url));
 
 /** Runs the start's whole sweep (`sweepScript`) in a child with `tmp` for its `TMPDIR` and `bin`,
  *  a directory holding a stand-in `docker`, first on its `PATH`, within `bounds`, with the start's

@@ -100,7 +100,9 @@ jobs:
       # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
       # in random order") says; it also says what a row that failed from the lane's load needs.
       #
-      # The rows of harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # The rows of harness-postgres-removal.test.ts, the files split from it
+      # (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+      # harness-postgres-waits.test.ts), harness-postgres-holders.test.ts and
       # harness-postgres-marks.test.ts in this lane may wait, within their parts' own bounds, far
       # longer than this job runs (their limits are the sums of those bounds,
       # e2e/__tests__/harness-postgres-waits.ts's `rowMs`). So the step has a limit of

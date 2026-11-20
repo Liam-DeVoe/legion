@@ -43,6 +43,9 @@ const files = [
   "scripts/e2e/lib/sweep-order.test.ts",
   "packages/pi-envoy/extensions/envoy.test.ts",
   "packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts",
+  "packages/dispatch/e2e/__tests__/harness-postgres-elsewhere.test.ts",
+  "packages/dispatch/e2e/__tests__/harness-postgres-container-removal.test.ts",
+  "packages/dispatch/e2e/__tests__/harness-postgres-waits.test.ts",
 ];
 
 /** Bun's own calls that start a process, as a file writes them. */

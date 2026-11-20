@@ -1,5 +1,5 @@
 /** The rules of the source of `v-no-leftover-postgres`'s rows and of the CI steps that run them,
- *  which no row of `harness-postgres-removal.test.ts` sees at run time: the start's removal of a
+ *  which no row of `harness-postgres-container-removal.test.ts` sees at run time: the start's removal of a
  *  container reads the time and runs `docker` only through its machine; each row that counts its
  *  waits states its limit as the program's sum of them (`limitsNotSummed` of
  *  `@legion/test-fixtures/row-sums`, the one reading `scripts/e2e/lib/row-waits.test.ts` holds its
@@ -389,6 +389,24 @@ function aroundTheRemoval(modules: readonly Module[]): {
   return { under: [...under].map(label).sort(), handed: [...handed].map(label).sort(), found };
 }
 
+/** Each call of the start's sweep (`removeLeftoverPostgres`) in `modules`, the production modules
+ *  of `e2e/`, that passes it an argument, as "<file> <body> <line>:<column> <call>": a start runs
+ *  the sweep with its own bounds, reader and look at the whole machine (`servedUnder` "/"), the
+ *  defaults; a row passes its own, which no production module may. */
+function sweepsGivenArguments(modules: readonly Module[]): string[] {
+  return modules
+    .filter(({ text }) => text.includes("removeLeftoverPostgres"))
+    .flatMap(bodiesOf)
+    .flatMap((body) =>
+      body.calls
+        .filter((call) => calleeOf(call) === "removeLeftoverPostgres" && call.arguments.length > 0)
+        .map((call) => {
+          const at = body.source.getLineAndCharacterOfPosition(call.getStart(body.source));
+          return `${body.file} ${body.name} ${at.line + 1}:${at.character + 1} ${call.getText(body.source)}`;
+        })
+    );
+}
+
 /** `modules` with the text of `file` changed by `change`, which must change it. */
 function planted(
   modules: readonly Module[],
@@ -411,7 +429,7 @@ function atColumnOne(found: readonly string[]): string {
   return at === null ? `not at column 1: ${only}` : only.slice(at[0].length);
 }
 
-// The rows of `harness-postgres-removal.test.ts` on the row's clock see a limit of the removal on
+// The rows of `harness-postgres-container-removal.test.ts` on the row's clock see a limit of the removal on
 // that clock; one on the real clock never fires in their moment of real time, and they call
 // `removeContainer` itself, not what runs it. So this row reads the source: the removal module
 // reads the time, waits and runs `docker` only through its machine, and the machine's own sets no
@@ -538,11 +556,28 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
     ]);
     expect(aroundTheRemoval(raceOfTheSweep).found[0]?.startsWith(`${file} ${body} `)).toBe(true);
   }
+  // Every start runs the sweep with its own defaults, the look at the whole machine among them;
+  // the control, the pool's start given a directory to look in, is named.
+  expect(sweepsGivenArguments(modules)).toEqual([]);
+  expect(
+    sweepsGivenArguments(
+      planted(modules, "harness-pool.ts", (source) =>
+        source.replace(
+          "await removeLeftoverPostgres();",
+          "await removeLeftoverPostgres(undefined, undefined, tmpdir());"
+        )
+      )
+    )
+  ).toEqual([
+    expect.stringMatching(/^harness-pool\.ts startPool \d+:\d+ removeLeftoverPostgres\(/),
+  ]);
 });
 
 /** The test files whose rows count their waits with these fixtures (`rowOf`), which the shared
  *  reading holds to the sum rule (`limitsNotSummed`). */
 const summedFiles = [
+  "harness-postgres-container-removal.test.ts",
+  "harness-postgres-elsewhere.test.ts",
   "harness-postgres-holders.test.ts",
   "harness-postgres-image-mount.test.ts",
   "harness-postgres-image-port.test.ts",
@@ -550,12 +585,14 @@ const summedFiles = [
   "harness-postgres-leftover.test.ts",
   "harness-postgres-marks.test.ts",
   "harness-postgres-removal.test.ts",
+  "harness-postgres-waits.test.ts",
 ];
 
 /** The files that start the stand-ins of these rows, or write their scripts: the rows' own files
  *  and their fixtures. */
 const standInFiles = [
   ...summedFiles,
+  "harness-postgres-docker-fixtures.ts",
   "harness-postgres-leftover-fixtures.ts",
   "harness-postgres-provider-children.ts",
   "harness-postgres-removal-fixtures.ts",

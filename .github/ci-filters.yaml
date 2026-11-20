@@ -1063,6 +1063,9 @@ test:
   # why: .github/ci-notes/ci.md#test-the-rows-the-row-waits-test-reads-outside-its-own-directory
   - 'packages/pi-envoy/extensions/envoy.test.ts'
   - 'packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-elsewhere.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-container-removal.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-waits.test.ts'
   - 'scripts/dispatch/**'
   - 'scripts/github-apps/**'
   - 'scripts/sessions/**'

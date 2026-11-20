@@ -69,7 +69,7 @@ export const removalBounds: RemovalBounds = {
  *  answers on that clock. Every wait of a removal is a `sleep` of it, and every end of a `docker`
  *  call is that call's `signal` or `timeout`, so a limit the removal sets itself ends a removal of
  *  such a row on the row's clock, where the row reads it; one of any other clock is refused by the
- *  row that reads this module's source (`harness-postgres-removal.test.ts`). */
+ *  row that reads this module's source (`harness-postgres-source-rules.test.ts`). */
 export interface Machine {
   /** The time, in milliseconds since the epoch. */
   now(): number;

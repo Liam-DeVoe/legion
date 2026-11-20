@@ -224,7 +224,9 @@ jobs:
       # minutes; and 999 to 1,529 s in the 73 completed harness legs, the most in run 44389203951,
       # round 1, so 1,529 x 1.15 = 1,758 s, 30 minutes. The 39 web-cold legs took at most 101 s,
       # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor. A harness leg
-      # also reruns harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # also reruns harness-postgres-removal.test.ts, the files split from it
+      # (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+      # harness-postgres-waits.test.ts), harness-postgres-holders.test.ts and
       # harness-postgres-marks.test.ts 20 times, whose real-time rows wait out bounds of a few
       # seconds each: the three took 104 to 121 s together in 8 whole runs on one bun worker beside
       # a shared Linux machine's load of 318 to 336 on 2026-11-19, so 121 x 20 x 1.15 = 2,783 s, 47
@@ -233,7 +235,9 @@ jobs:
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation). The harness lane's rows of
-      # harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # harness-postgres-removal.test.ts, the files split from it
+      # (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+      # harness-postgres-waits.test.ts), harness-postgres-holders.test.ts and
       # harness-postgres-marks.test.ts may wait longer than this step within their parts' own
       # bounds, so the step exports when its limit ends it (LEGION_TEST_STEP_ENDS_AT, as
       # ci-job-dispatch-ui.yaml's test step does), and such a row ends there, naming its wait.

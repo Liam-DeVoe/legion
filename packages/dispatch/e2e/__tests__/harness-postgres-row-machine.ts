@@ -1,4 +1,4 @@
-/** The machine of the rows of `harness-postgres-removal.test.ts` that run a start's removal of a
+/** The machine of the rows of `harness-postgres-container-removal.test.ts` that run a start's removal of a
  *  container on a clock the row moves (`rowMachine`), so that the start's own bounds pass in a
  *  moment of real time, and a row's own bounds end where the program says whatever the load: its
  *  `docker`, which answers each call as the row says (`RowAnswer`, `tableAnswer`), and each call it

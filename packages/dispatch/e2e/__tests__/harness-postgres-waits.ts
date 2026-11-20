@@ -1,5 +1,5 @@
-/** The program of each row's own limit, for the rows of `harness-postgres-removal.test.ts`,
- *  `harness-postgres-holders.test.ts`, `harness-postgres-leftover.test.ts` and the other files
+/** The program of each row's own limit, for the rows of `harness-postgres-removal.test.ts`, the
+ *  files split from it by concern, `harness-postgres-holders.test.ts`, `harness-postgres-leftover.test.ts` and the other files
  *  whose rows count their waits (`rowOf`): a row states what it waits for (`Waits`), its limit is
  *  the sum of those waits (`rowMs`), a wait that waits for several things itself is a part whose
  *  bound is the sum of its own (`Part`), and each fixture that starts a child or a holder read, or

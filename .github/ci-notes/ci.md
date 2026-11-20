@@ -416,8 +416,10 @@ packages/dispatch/e2e/__tests__/step-end.ts, which they import by path.
 ## test: The rows the row-waits test reads outside its own directory
 
 scripts/e2e/lib/row-waits.test.ts reads the rows of packages/pi-envoy/extensions/envoy.test.ts and
-packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts beside its own directory's, and
-holds them to the rule packages/test-fixtures/src/row-sums.ts reads.
+of packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts and the three files split from
+it by concern (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+harness-postgres-waits.test.ts) beside its own directory's, and holds them to the rule
+packages/test-fixtures/src/row-sums.ts reads.
 
 ## guide_layout: The guides' layout step of the test job (ci-job-test.yaml's
 
