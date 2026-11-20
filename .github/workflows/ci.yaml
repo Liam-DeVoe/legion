@@ -738,6 +738,7 @@ jobs:
               # The shared model loop the answer and the decision call reach their models through.
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
+              - 'packages/envoy/going/agentwire/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
@@ -2136,6 +2137,7 @@ jobs:
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
+              - 'packages/envoy/going/agentwire/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
@@ -2281,6 +2283,7 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
+              - 'packages/envoy/going/agentwire/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
@@ -3286,6 +3289,7 @@ jobs:
               # models through, and the router.
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
+              - 'packages/envoy/going/agentwire/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
@@ -4002,6 +4006,8 @@ jobs:
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
+              - 'packages/envoy/going/agentwire/*'
+              - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
@@ -4230,6 +4236,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/internal/testtmp/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
