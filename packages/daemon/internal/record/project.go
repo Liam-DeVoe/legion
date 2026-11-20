@@ -128,10 +128,15 @@ func Accepted(issue Issue) bool {
 	return StandsIn(issue, phase.Retro, phase.Merging) && !HeldForChildren(issue)
 }
 
+// HeldFor says whether issue stands in held for reason.
+func HeldFor(issue Issue, reason HoldReason) bool {
+	return issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == reason
+}
+
 // HeldForChildren says whether issue is a parent held before its retro for the issues beneath it
 // (HoldForChildren).
 func HeldForChildren(issue Issue) bool {
-	return issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == HoldForChildren
+	return HeldFor(issue, HoldForChildren)
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own

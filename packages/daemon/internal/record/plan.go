@@ -151,6 +151,15 @@ type StoredPlan struct {
 	Steps   map[string][]PlanStep
 }
 
+// Task is the plan's one task, the task its run is on whatever that task's state: this release's
+// plans hold one (plan.Supported). A plan that holds none, or more than one, is an error.
+func (p *StoredPlan) Task() (PlanTask, error) {
+	if len(p.Tasks) != 1 {
+		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, and this release walks one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
+	}
+	return p.Tasks[0], nil
+}
+
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
 // steps of those tasks. The same version given twice is refused, and so is a task or a step of
 // another issue or generation, or a step of a task v does not give, whose step the write would
@@ -528,8 +537,8 @@ func (s *Postgres) hasPlan(ctx context.Context, tx pgx.Tx, issue string, generat
 }
 
 // ReturnCounts is the counts of returns of task: on the task, for an issue with plan rows at
-// generation, where a task the plan does not hold is refused; on its implementer's phases row for
-// an issue with none, where they lived before plans, and the zero counts where it has no such row.
+// generation, where a task the plan does not hold is refused; for an issue with none, on its
+// implementer's phases row (ImplementerCounts).
 func (s *Postgres) ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error) {
 	describe := fmt.Sprintf("read the counts of returns of task %s of %s at generation %d", task, issue, generation)
 	has, err := s.hasPlan(ctx, tx, issue, generation)
@@ -541,8 +550,7 @@ func (s *Postgres) ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, ge
 		if err != nil {
 			return ReturnCounts{}, fmt.Errorf("%s: %w", describe, err)
 		}
-		row := PhaseRowOf(rows, claim.RoleImplementer)
-		return ReturnCounts{Pass: row.Pass, Rounds: row.Rounds, ConflictRounds: row.ConflictRounds, BackwardMoves: row.BackwardMoves, CapTold: row.CapTold}, nil
+		return ImplementerCounts(rows), nil
 	}
 	var counts ReturnCounts
 	var moves []byte
@@ -559,6 +567,14 @@ func (s *Postgres) ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, ge
 		return ReturnCounts{}, fmt.Errorf("%s: %w", describe, err)
 	}
 	return counts, nil
+}
+
+// ImplementerCounts is the counts of returns of an issue with no plan rows, on its implementer's
+// phases row among rows, where they lived before plans; the zero counts where rows hold no such
+// row. An issue with plan rows keeps them on its task instead (PlanTask.Counts).
+func ImplementerCounts(rows []PhaseRow) ReturnCounts {
+	row := PhaseRowOf(rows, claim.RoleImplementer)
+	return ReturnCounts{Pass: row.Pass, Rounds: row.Rounds, ConflictRounds: row.ConflictRounds, BackwardMoves: row.BackwardMoves, CapTold: row.CapTold}
 }
 
 // PutReturnCounts writes the counts of returns of task where ReturnCounts reads them, and nothing

@@ -288,7 +288,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	switch {
 	case HeldForChildren(issue):
 		return HeldChildrenBeforeRetro, openBeneathIn(issue, facts.Chain)
-	case issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == HoldTaskStopped && !KeepsSlot(issue):
+	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the

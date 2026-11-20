@@ -256,27 +256,39 @@ func childUnderAcceptedParent(child, ancestor, operation string) string {
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue it owns, an architect
-// of the issue's tree now (ownedIssue, record.ArchitectOfTree), and returns the grant and that
-// record.
+// of the issue's tree now (architectOfRecord), and returns the grant and that record.
 func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, record.Issue, bool) {
-	grant, ok := s.architectGrant(w, r, grantID)
+	grant, recorded, ok := s.architectOfRecord(w, r, grantID, issue)
 	if !ok {
-		return credential.Grant{}, record.Issue{}, false
-	}
-	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return credential.Grant{}, record.Issue{}, false
 	}
 	if recorded == nil {
 		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return credential.Grant{}, record.Issue{}, false
 	}
-	if !owned {
-		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
-		return credential.Grant{}, record.Issue{}, false
-	}
 	return grant, *recorded, true
+}
+
+// architectOfRecord authorizes an architect's grant for issue, and answers the daemon's record of
+// issue, nil where it holds none, which each caller answers in its own way. A recorded issue is
+// the grant's only where its architect is an architect of the issue's tree now (ownedIssue,
+// record.ArchitectOfTree), the rule every architect operation holds it to; any other is refused
+// 403 ISSUE_OUTSIDE_TREE.
+func (s *server) architectOfRecord(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, *record.Issue, bool) {
+	grant, ok := s.architectGrant(w, r, grantID)
+	if !ok {
+		return credential.Grant{}, nil, false
+	}
+	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
+	if err != nil {
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		return credential.Grant{}, nil, false
+	}
+	if recorded != nil && !owned {
+		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+		return credential.Grant{}, nil, false
+	}
+	return grant, recorded, true
 }
 
 // requestFactID names one API request's fact. A grant serves every request its command makes, so
@@ -499,24 +511,11 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 	if !found {
 		return dispatch.Issue{}, false, false
 	}
-	// inTree walks the child's Dispatch parent chain up to the tree root and answers a chain that
-	// never reaches it; throughGrant says whether the chain passed the grant's own issue on the way.
+	// inTree walks the child's Dispatch parent chain up to the tree root (treeChain), and says
+	// whether the chain passed the grant's own issue on the way.
 	inTree := func() (throughGrant, ok bool) {
-		seen := map[string]bool{key: true}
-		for parent := child.Parent; parent != nil && !seen[*parent]; {
-			if *parent == grant.Tree {
-				return throughGrant, true
-			}
-			throughGrant = throughGrant || *parent == grant.Issue
-			seen[*parent] = true
-			ancestor, found := read(w, r, *parent)
-			if !found {
-				return false, false
-			}
-			parent = ancestor.Parent
-		}
-		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, grant.Tree))
-		return false, false
+		below, ok := treeChain(w, r, key, child, grant.Tree, read)
+		return slices.Contains(below, grant.Issue), ok
 	}
 	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
 	if !byRoot {
@@ -550,30 +549,26 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 	return child, write, true
 }
 
-// dispatchTreeMember is key as Dispatch shows it, when its Dispatch parent chain reaches tree,
-// the architect's: the membership of an issue the record cannot answer for, since it holds a
-// child only once the child is todo. It is the walk register_plan makes, reading each issue
-// through read, which answers its own failures. One whose chain ends, or comes round on itself,
-// before tree is answered 403 ISSUE_OUTSIDE_TREE.
-func (s *server) dispatchTreeMember(w http.ResponseWriter, r *http.Request, tree, key string, read issueReader) (dispatch.Issue, bool) {
-	issue, found := read(w, r, key)
-	if !found {
-		return dispatch.Issue{}, false
-	}
-	seen := map[string]bool{key: true}
-	for parent := issue.Parent; parent != nil && !seen[*parent]; {
+// treeChain walks the Dispatch parent chain of key, as read shows it (issue), up to tree, the
+// architect's, and answers the ancestors it passed below tree, nearest first: the membership of an
+// issue the record cannot answer for, since it holds a child only once the child is todo. It is
+// the one walk release_children (releasableChild) and register_plan (planOwner) make, reading each
+// ancestor through read, which answers its own failures. A chain that ends, or comes round on
+// itself, before tree is answered 403 ISSUE_OUTSIDE_TREE.
+func treeChain(w http.ResponseWriter, r *http.Request, key string, issue dispatch.Issue, tree string, read issueReader) (below []string, ok bool) {
+	for parent := issue.Parent; parent != nil && *parent != key && !slices.Contains(below, *parent); {
 		if *parent == tree {
-			return issue, true
+			return below, true
 		}
-		seen[*parent] = true
+		below = append(below, *parent)
 		ancestor, found := read(w, r, *parent)
 		if !found {
-			return dispatch.Issue{}, false
+			return nil, false
 		}
 		parent = ancestor.Parent
 	}
 	writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, tree))
-	return dispatch.Issue{}, false
+	return nil, false
 }
 
 // maxChildReleaseAttempts and childReleaseBackoff bound release_children's retries of a todo child

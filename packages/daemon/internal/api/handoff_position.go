@@ -12,15 +12,15 @@ import (
 
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
 // snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, the
-// task the issue runs (runningTask; "" for an issue with no plan rows at its generation, which
-// walks today's line), its pass — that task's count of returns to an earlier step
-// (record.Postgres.ReturnCounts), the implementer's row's for an issue with no plan rows, which
-// tells each implementing, testing, and reviewing pass from the last — the handoff record the
-// implementer last named for a file-backed phase (record.PhaseRow.LastHandoff), the phase entry
-// the completing role's current phase is on (record.PhaseRow.Entry, 0 on a row no start has
-// stamped) and whether the start that raised it moved the issue back
-// (record.PhaseRow.EntryMovedBack), its pull request record, nil while none is recorded, and its
-// production check, nil while none was ever opened.
+// task the issue runs (record.StoredPlan.Task; "" for an issue with no plan rows at its
+// generation, which walks today's line), its pass — that task's count of returns to an earlier
+// step, which an issue with no plan rows keeps on its implementer's row
+// (record.ImplementerCounts), which tells each implementing, testing, and reviewing pass from the
+// last — the handoff record the implementer last named for a file-backed phase
+// (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
+// (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
+// moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
+// is recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -60,23 +60,19 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 	completing := record.PhaseRowOf(rows, role)
-	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
 	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
 	if err != nil {
 		return completionPosition{}, err
 	}
 	var task string
+	counts := record.ImplementerCounts(rows)
 	if stored != nil {
-		if task, err = runningTask(stored); err != nil {
-			return completionPosition{}, err
-		}
-		counts, err := s.records.ReturnCounts(ctx, tx, key, issue.Generation, task)
+		running, err := stored.Task()
 		if err != nil {
 			return completionPosition{}, err
 		}
-		pass = counts.Pass
+		task, counts = running.Task, running.Counts
 	}
 	pr, err := s.records.PullRequest(ctx, tx, key)
 	if err != nil {
@@ -86,24 +82,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: pass,
-		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
+	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
+		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
-}
-
-// runningTask is the task of stored its issue runs: the task whose state is running, and the
-// plan's only task while none runs (a task its owner stopped). A plan of several tasks none of
-// which runs names no task a completion could be of, which is an error: this release's plans hold
-// one task (plan.Supported), and the workflow walks no other (workflow's Engine.walk).
-func runningTask(stored *record.StoredPlan) (string, error) {
-	for _, task := range stored.Tasks {
-		if task.State == record.TaskRunning {
-			return task.Task, nil
-		}
-	}
-	if len(stored.Tasks) == 1 {
-		return stored.Tasks[0].Task, nil
-	}
-	v := stored.Version
-	return "", fmt.Errorf("the plan of %s at generation %d holds %d tasks and none of them runs, so no task is the one a completion is of", v.Issue, v.Generation, len(stored.Tasks))
 }
