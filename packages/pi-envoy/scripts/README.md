@@ -807,16 +807,27 @@ read as a direct call of that tool would be; text a call writes (a `--body`, a c
 message to Envoy, a file never run) reaches nothing; and a tool nobody named has every argument
 read. A network URL in a `bash` command reaches its host only where a command hands it to
 something that may fetch it, directly or through a variable the reader expands (a `for` loop over
-literal words, an assignment of a literal): a URL only `echo` or `printf` prints, or `grep`,
+literal words, an assignment of a literal, or a variable of the run's pane file, read with its
+value until the command sets it): a URL only `echo` or `printf` prints, or `grep`,
 `head`, `tail` or `jq` reads, whose output goes out of the call or into another of those,
 reaches nothing (`echo "== $url =="`, `echo URL | grep x`), and neither does a word of such a
 loop's list or such an assignment's value, which reaches what each place its variable is
 expanded in hands it to. One the reader cannot follow reaches its host as a call that may send
 anything: one piped into a shell or `xargs`, written to a file, run through `eval` or `source`,
 given to a command none of those, or the value of a variable read where the reader expands
-none (after its loop); and a curl or a wget that takes its URLs from a file (`-K`, `-i`) is off
-the world, since the reader does not read the file. A `bash` command is read by each program's
-own grammar, in the places that take a host: a
+none (after its loop). A fetcher whose URLs are not in the text is off the world, whatever they
+name: a curl or a wget that takes its URLs from a file (`-K`, `-i`), since the reader does not
+read the file; and a URL that holds a variable the reader cannot expand, or a command
+substitution, and names no host, given to curl or wget as an operand or curl's `--url`, to git as
+the remote of `clone`, `fetch`, `pull`, `push`, `ls-remote` or `remote add`, or to a fetch of a
+program an interpreter runs or an `eval` cell holds (`urlopen`, `requests.get`, `fetch` and the
+like, given an expression such as `sys.argv[1]` or a template that holds one; and a cell's
+`tool.fetch` given such a URL): `x=$(gh api … --jq .html_url); curl -s "$x"` is refused with `curl's
+URL is $x, which the reader cannot expand, so its host is not known to be one of the run's world`
+(the architect's ruling of 2026-11-20T21:30Z, which the tester's reader holds too). A variable
+anywhere else names no host (`curl -H "Authorization: $TOKEN" …`, `curl -o "$out" …`, `git log
+"$sha"`), and a URL that names its host beside a variable is judged by that host. A `bash`
+command is read by each program's own grammar, in the places that take a host: a
 remote in scp form (`[user@]host:path`) only where `git`, `jj`, `scp`, `rsync` or `sftp` take an
 address, so `git show HEAD:docs/cli.md` and `jj file show main@origin:docs/cli.md` reach nothing;
 the host operands of `ssh`, `scp`, `sftp`, `rsync`, `nc`, `ncat` and `telnet`, and the ssh

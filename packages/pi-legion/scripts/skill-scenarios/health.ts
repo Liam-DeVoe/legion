@@ -102,10 +102,15 @@
  *      is a URL in a bash command that no command hands to something that may fetch it: one only
  *      `echo` or `printf` prints or `grep`, `head`, `tail` or `jq` reads, its output going to
  *      nothing that fetches (QUIET, `unfetched`), and a `for` list's word or an assignment's value
- *      the reader writes into each place its variable is read (`literalFlow`). One the reader
- *      cannot follow (into a shell, xargs or a file, through `eval`, to a command it does not
- *      know) reaches its host, and a curl or a wget that takes its URLs from a file (`-K`, `-i`,
- *      URL_FILES) is off the world. A bash
+ *      the reader writes into each place its variable is read (`literalFlow`), a variable of the
+ *      run's pane file read with its value from the text's start. One the reader cannot follow
+ *      (into a shell, xargs or a file, through `eval`, to a command it does not know) reaches its
+ *      host, and a fetcher whose URLs are not in the text is off the world: a curl or a wget that
+ *      takes its URLs from a file (`-K`, `-i`, URL_FILES), and a URL that holds what the reader
+ *      cannot expand and names no host, given to curl or wget as an operand or curl's `--url`, to
+ *      git as the remote of clone, fetch, pull, push, ls-remote or `remote add`
+ *      (`unexpandedUrls`: `x=$(gh api …); curl -s "$x"`), or to a fetch of a program an
+ *      interpreter runs or an eval cell holds (`programFetches`: `urlopen(sys.argv[1])`). A bash
  *      command is read by each program's own grammar, in the positions that take a host
  *      (`commandHosts`): a remote in scp form, `[user@]host:path`, only where git, jj, scp, rsync
  *      or sftp take an address; the host operands of ssh, scp, sftp, rsync, nc, ncat and telnet
@@ -2078,6 +2083,15 @@ const GIT_TAKERS = new Map<string, AddressTaker>([
   ],
 ]);
 
+/** The subcommands of GIT_TAKERS whose address is a remote git fetches from or pushes to, or
+ * names one by: clone, fetch, pull, push, ls-remote and `remote add`, as the tester's reader
+ * reads a fetcher's URL (`unexpandedUrls`). */
+const GIT_REMOTES = new Map(
+  [...GIT_TAKERS].filter(([subcommand]) =>
+    ["clone", "fetch", "pull", "push", "ls-remote", "remote add"].includes(subcommand)
+  )
+);
+
 /** jj's global options whose value is the next word, which stand before or after its subcommand
  * (jj's CLI reference, https://docs.jj-vcs.dev/latest/cli-reference/, `jj`'s Options). */
 const JJ_GLOBAL = optionSet(
@@ -2493,8 +2507,9 @@ const FIELD_FLAG = new RegExp(
  * names (`ghHosts`); `get`, a reach that reads and sends nothing (a GET or a HEAD with no body,
  * `httpRead`; a `read` or `fetch` of the URL; git's read of a repository's refs, `refsRead`), the
  * one kind of reach rule 13 allows off the world (`githubRead`); `unread`, why the hosts a command
- * reaches are not in the text (a curl or a wget that takes its URLs from a file, URL_FILES), which
- * makes the reach off the world whatever it names. */
+ * reaches are not in the text (a curl or a wget that takes its URLs from a file, URL_FILES; a URL
+ * a fetcher is given that holds what the reader cannot expand and names no host, `unreadUrl`),
+ * which makes the reach off the world whatever it names. */
 interface Reach {
   readonly host: string;
   readonly named: string;
@@ -2685,9 +2700,10 @@ function urlHosts(text: string): Reach[] {
 }
 
 /** Every host a program reaches: a shell script's as a `bash` command's (`bashHosts`), and the
- * host of every network URL any other language's program holds, whatever it does with it. */
+ * host of every network URL any other language's program holds, whatever it does with it, and
+ * each fetch of it whose URL the reader cannot tell (`programFetches`). */
 function programHosts(text: string, shell: boolean): Reach[] {
-  return shell ? bashHosts(text) : urlHosts(text);
+  return shell ? bashHosts(text) : [...urlHosts(text), ...programFetches(text)];
 }
 
 /** Every host one command reaches, read as it runs once its wrappers are read off
@@ -2735,6 +2751,60 @@ function commandHosts(
   return hosts.filter(
     (one) => one.gh !== undefined || one.unread !== undefined || !/[$`{}*?]/.test(one.host)
   );
+}
+
+/** The reach of a URL a fetcher is given whose host the reader cannot tell: `url`, which `fetcher`
+ * fetches as its `what` (its URL, git's remote), holds `expansion`, a variable the reader holds no
+ * value of, a command substitution or a program's expression, and names no host of its own, so
+ * the host it reaches is not in the text. Rule 13 refuses it whatever it names (`unread`), and
+ * says what the reader cannot expand. */
+function unreadUrl(fetcher: string, what: string, url: string, expansion: string): Reach {
+  return {
+    host: `the host ${url} names`,
+    named: url,
+    unread: `${fetcher}'s ${what} is ${url}, ${url === expansion ? "which" : `whose ${expansion}`} the reader cannot expand, so its host is not known to be one of the run's world`,
+  };
+}
+
+/** The URLs a command fetches whose host the reader cannot tell (`unreadUrl`), read off its words
+ * as it runs once its wrappers are read off (`invocationOf`), each value the reader holds written
+ * in (`literalFlow`): curl's operands and its `--url`, wget's operands, and the remote git's
+ * clone, fetch, pull, push, ls-remote and `remote add` take (GIT_REMOTES), where one holds an
+ * expansion (EXPANSION) and no host, neither in a URL (`urlHosts`, whose host rule 13 judges as
+ * it reads it) nor where the command reads one without a scheme (BARE_HOST, `scpHost`):
+ * `curl -s "$x"`, `wget "${base}/x"`, `git clone "$remote"`. A word in any other place is none
+ * (a header, `-H "…$TOKEN"`; an output file, `-o "$out"`; a revision, `git log "$sha"`), and so is
+ * a command that is given no URL (`git status`). */
+function unexpandedUrls({ name, words }: Pick<Invocation, "name" | "words">): Reach[] {
+  let urls: readonly (string | undefined)[] = [];
+  let bare: (url: string) => string | undefined = () => undefined;
+  if (name === "curl" || name === "wget") {
+    const args = argumentsOf(words, name === "curl" ? CURL_VALUED : WGET_VALUED);
+    urls = [...args.operands, ...(name === "curl" ? valuesOf(args, "--url") : [])];
+    bare = (url) => BARE_HOST.exec(url)?.[1];
+  } else if (name === "git") {
+    urls = takerAddresses(words.slice(firstOperand(words, GIT_GLOBAL)), NO_OPTIONS, GIT_REMOTES);
+    bare = scpHost;
+  }
+  return urls.flatMap((url = "") => {
+    const expansion = EXPANSION.exec(url)?.[0];
+    const host = bare(url);
+    if (expansion === undefined || urlHosts(url).length > 0) return [];
+    if (host !== undefined && !/[$`{}*?]/.test(host)) return [];
+    return [unreadUrl(name, name === "git" ? "remote" : "URL", url, expansion)];
+  });
+}
+
+/** `one`, a command `commandsOf` read off `spoken`, as `code` holds it: `spoken` is `code` with
+ * each quoted string that holds a separator emptied at its own length (`bashHosts`), so the same
+ * places of `code` hold the command as written, with a URL in a command substitution
+ * (`"$(gh api …)"`) and a program an interpreter is given inline (`python3 -c '…'`). */
+function asWritten(one: ShellCommand, code: string): ShellCommand {
+  const text = code.slice(one.at, one.end);
+  const rest = text.slice(text.length - one.rest.length);
+  const word = shellWord(text.slice(one.lead.length, text.length - one.rest.length));
+  const lead = text.slice(0, one.lead.length);
+  return { ...one, word, name: path.posix.basename(word), rest, lead, text };
 }
 
 /** A gap between two tokens of shell text (`shellTokens`) that holds blanks alone, so the two are
@@ -3086,7 +3156,9 @@ function namedOnlyAt(code: string, name: string, places: Places): boolean {
  * expands it (`flowed`, in two readings: the first finds where the text sets each variable, the
  * second writes those it reads): a `for` loop's, over a list of literal words, written out once
  * per word; and a command of assignments alone's, its value a literal or the value of a variable
- * the reader holds, as is or trimmed by `%`, `%%`, `#` or `##` (`expandedWord`). No command runs:
+ * the reader holds, as is or trimmed by `%`, `%%`, `#` or `##` (`expandedWord`). Each variable
+ * `env` gives the text (the pane's, `bashHosts`) whose value is a literal is held from the text's
+ * start, so a read of it is written as that value until the text sets it. No command runs:
  * nothing set any other way is read, a command's output, a file's text, arithmetic, a loop over
  * anything but literal words, an assignment inside a bracket, a compound command or after `&&`,
  * and its expansion stays as written. A variable is read only where every place the text names it
@@ -3103,12 +3175,17 @@ function namedOnlyAt(code: string, name: string, places: Places): boolean {
  * that variable (`flowed`'s `sources`, each of a variable of which no read stays in the text): that
  * value reaches only what those places hand it to. A value of a variable read where the reader
  * writes no value (after its loop, in single quotes, after an assignment of a value it does not
- * hold) goes where the reader does not follow, and is none of them. */
-function literalFlow(code: string): {
+ * hold) goes where the reader does not follow, and is none of them. And the variables of `env` it
+ * held that the text sets nowhere (`kept`), whose value a program the text runs gets too. */
+function literalFlow(
+  code: string,
+  env: ReadonlyMap<string, string> = new Map()
+): {
   code: string;
   given: (readonly [from: number, to: number])[];
+  kept: ReadonlyMap<string, string>;
 } {
-  const whole = { code, given: [] };
+  const whole = { code, given: [], kept: new Map<string, string>() };
   const scan = scanned(code);
   const { tokens, raw, gaps, starts } = scan;
   if (/(?<!\w)IFS(?!\w)/.test(code)) return whole;
@@ -3131,23 +3208,29 @@ function literalFlow(code: string): {
   }
   const places: Places = { sites: [], literal: childWords(scan) };
   flowed(code, 0, new Map(), undefined, places);
+  const set = new Set(places.sites.map((site) => site.name));
+  // The variables `env` gives the text that it names, each one whose value is a literal.
+  const held = [...env].filter(
+    ([name, value]) =>
+      /^[A-Za-z_]\w*$/.test(name) && code.includes(name) && literalWord(value) === value
+  );
   const eligible = new Set(
-    places.sites
-      .map((site) => site.name)
-      .filter(
-        (name) =>
-          !SHELL_SETS.test(name) &&
-          namedOnlyAt(code, name, places) &&
-          !naming.some((word) => new RegExp(`${name}(?!\\w)`).test(word))
-      )
+    [...set, ...held.map(([name]) => name)].filter(
+      (name) =>
+        !SHELL_SETS.test(name) &&
+        namedOnlyAt(code, name, places) &&
+        !naming.some((word) => new RegExp(`${name}(?!\\w)`).test(word))
+    )
   );
   if (eligible.size === 0) return whole;
-  const read = flowed(code, 0, new Map(), eligible, { sites: [], literal: [] });
+  const bound = held.filter(([name]) => eligible.has(name));
+  const read = flowed(code, 0, new Map(bound), eligible, { sites: [], literal: [] });
   return {
     code: read.text,
     given: read.sources
       .filter((one) => !new RegExp(`\\$\\{?[#!]?${one.name}(?!\\w)`).test(read.text))
       .map((one) => [one.from, one.to] as const),
+    kept: new Map(bound.filter(([name]) => !set.has(name))),
   };
 }
 
@@ -3367,19 +3450,34 @@ function unfetched(code: string, spoken: string): (readonly [from: number, to: n
  * as such a reach (`get`); every other one reaches its host as a call that may send anything, so
  * a URL that goes where the reader does not follow it (a pipe into a shell or xargs, `eval`, a
  * file a later command reads, a command it does not know) is off the world unless its host is the
- * world's. No command is read inside a quoted string a command is given as text (`spoken`). A
- * command's words leave its redirections out (`shellWords`), so `curl … > report.json` names no
- * host `report.json`. The variables a command runs with are those its prefix and its wrappers set,
- * over those `env` holds and those a command of assignments alone or an `export` set before it:
- * every pane exports GH_HOST (empty, daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh
- * after it. Each of the text's variables that a `for` loop over literal words or an assignment of
- * a literal sets is read where it is expanded (`literalFlow`), so a loop's body is read once per
- * word of its list and every reach of each of them is judged. */
-function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()): Reach[] {
+ * world's. And a URL a fetcher is given that holds what the reader cannot expand and names no host
+ * reaches a host the text does not name, which is off the world whatever it is (`unread`): curl's,
+ * wget's or git's (`unexpandedUrls`: `x=$(gh api …); curl -s "$x"`, `wget "$URL"`, `git clone
+ * "$remote"`), and the fetch of a program an interpreter is given inline (`python3 -c
+ * 'urlopen(sys.argv[1])'`, `programFetches`); each command is read there with its words as the
+ * text holds them (`asWritten`), a command substitution among them. No command is read inside a
+ * quoted string a command is given as text (`spoken`). A command's words leave its redirections
+ * out (`shellWords`), so `curl … > report.json` names no host `report.json`. The variables a
+ * command runs with are those its prefix and its wrappers set, over those `env` holds (the pane's,
+ * `offWorldReach`) and those a command of assignments alone or an `export` set before it: every
+ * pane exports GH_HOST (empty, daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it.
+ * Each of the text's variables that a `for` loop over literal words or an assignment of a literal
+ * sets, and each `known` holds a literal of (the pane's, or in a shell's inline program those of
+ * the pane the text around it sets nowhere), is read where it is expanded (`literalFlow`), so a
+ * loop's body is read once per word of its list, a URL the pane names (`curl "$DISPATCH_URL/…"`)
+ * is judged by its value, and every reach of each of them is judged. */
+function bashHosts(
+  command: string,
+  env: ReadonlyMap<string, string> = new Map(),
+  known: ReadonlyMap<string, string> = env
+): Reach[] {
   const { code: written, bodies } = withoutBodies(command);
   // A here-document's body is read at the place of its `<<` in the text (`bodyRunner`), which a
   // variable's value written in would move: a call with one has none written in.
-  const flow = bodies.length === 0 ? literalFlow(written) : { code: written, given: [] };
+  const flow =
+    bodies.length === 0
+      ? literalFlow(written, known)
+      : { code: written, given: [], kept: new Map<string, string>() };
   const { code } = flow;
   const inline = [...code.matchAll(SHELL_INLINE)];
   // A quoted string that holds a `;`, `&`, `|`, a bracket, a backquote or a line break is text a
@@ -3412,6 +3510,13 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
         if (found !== null) shell.set(found[1] ?? "", found[2] ?? "");
     const runs = new Map([...shell, ...run.env]);
     commands.push(...commandHosts(run, runs));
+    const full = invocationOf(asWritten(one, code));
+    if (full !== undefined) {
+      commands.push(...unexpandedUrls(full));
+      const program = SHELL.test(full.name) ? undefined : programOf(full.name, full.words);
+      for (const reach of program === undefined ? [] : programFetches(program))
+        commands.push({ ...reach, via: ` in the program ${full.name} runs` });
+    }
     if (httpRead(run) || refsRead(run)) {
       for (const reach of urlHosts(code.slice(one.at, one.end))) gets.push({ ...reach, get: true });
       urls.fill("_", one.at, one.end);
@@ -3432,7 +3537,7 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
     // this command: `spoken` empties one that holds a separator.
     const quoted = inline.find((hit) => (hit.index ?? 0) >= one.at && (hit.index ?? 0) < one.end);
     const text = quoted === undefined ? program : (quoted[1] ?? "").slice(1, -1);
-    for (const reach of bashHosts(text, runs))
+    for (const reach of bashHosts(text, runs, flow.kept))
       commands.push({ ...reach, via: reach.via ?? ` in the program ${run.name} -c runs` });
   }
   const reached = urls
@@ -3744,6 +3849,74 @@ function closer(code: string, at: number, close: string): number {
   return -1;
 }
 
+/** A call of a program that fetches the URL an argument gives, with its callee whole
+ * (`urllib.request.urlopen`): Python's urllib (`urlopen` and `urlretrieve` under any module's
+ * name, `Request`), requests, httpx and http.client (whose connection is given its host);
+ * JavaScript's `fetch`, axios and node's http and https; Ruby's Net::HTTP and `URI.open`. A method
+ * of anything else is none: `tool.fetch(…)`, a session tool call `evalHosts` reads, and
+ * `origin.fetch()`. */
+const FETCH_CALL =
+  /(?<![\w$.])((?:[A-Za-z_][\w.]*\.)?(?:urlopen|urlretrieve)|(?:urllib\.request\.)?Request|(?:requests|httpx)\.(?:get|head|post|put|patch|delete|options|request|stream)|(?:http\.client\.)?HTTPS?Connection|fetch|axios(?:\.(?:get|head|post|put|patch|delete|options|request))?|https?\.(?:get|request)|Net::HTTP\.(?:get|get_response|start)|URI\.open)\s*\(/g;
+
+/** The arguments of the call whose bracket opens right before `open` in `code`, each its text
+ * trimmed, up to the `)` that closes it (`closer`), past nested brackets and string literals;
+ * undefined for a call that does not close. */
+function callArguments(code: string, open: number): string[] | undefined {
+  const close = closer(code, open, ")");
+  if (close < 0) return undefined;
+  const args: string[] = [];
+  let depth = 0;
+  let from = open;
+  for (let i = open; i < close; i++) {
+    const char = code[i] ?? "";
+    if (char === "'" || char === '"' || char === "`") {
+      const end = literalEnd(code, i);
+      if (end < 0) return undefined;
+      i = end - 1;
+    } else if (CLOSERS[char] !== undefined) depth++;
+    else if (char === ")" || char === "]" || char === "}") depth--;
+    else if (char === "," && depth === 0) {
+      args.push(code.slice(from, i).trim());
+      from = i + 1;
+    }
+  }
+  return [...args, code.slice(from, close).trim()].filter((one) => one !== "");
+}
+
+/** Whether `text` is one Python or JavaScript string literal (`literalEnd`, a Python prefix
+ * before it) of plain text: no `$` (a template's interpolation, or a shell's expansion written
+ * into a program it is given inline) and no f-string's interpolation (a brace but a doubled one). */
+function plainLiteral(text: string): boolean {
+  const prefix = /^[rRbBuUfF]{0,2}/.exec(text)?.[0] ?? "";
+  const quote = text[prefix.length];
+  if (quote !== "'" && quote !== '"' && quote !== "`") return false;
+  if (literalEnd(text, prefix.length) !== text.length || text.includes("$")) return false;
+  return !/[fF]/.test(prefix) || !text.replace(/\{\{/g, "").includes("{");
+}
+
+/** The fetches of a program in a language an interpreter runs or an eval cell holds (FETCH_CALL)
+ * whose URL the reader cannot tell (`unreadUrl`): the URL the call is given (its `url=`, else its
+ * first argument, requests' and httpx's `request(method, url)` its second) is no string literal
+ * of plain text (`plainLiteral`: an expression, `sys.argv[1]`, `base + "/x"`, an interpolation)
+ * and names no host (`urlHosts`, whose host rule 13 judges where it reads the program). A call
+ * that does not close is read so too, its URL the rest of its line. One given no URL is none. */
+function programFetches(code: string): Reach[] {
+  return [...code.matchAll(FETCH_CALL)].flatMap((hit) => {
+    const callee = hit[1] ?? "";
+    const open = (hit.index ?? 0) + hit[0].length;
+    const args = callArguments(code, open);
+    const keyed = args?.find((one) => /^url\s*=(?!=)/.test(one));
+    const url =
+      args === undefined
+        ? (code.slice(open).split("\n")[0] ?? "").trim()
+        : (keyed?.replace(/^url\s*=\s*/, "") ??
+          args[/^(?:requests|httpx)\.request$/.test(callee) ? 1 : 0]);
+    if (url === undefined || url === "" || plainLiteral(url) || urlHosts(url).length > 0) return [];
+    const named = url.replace(/\s+/g, " ");
+    return [unreadUrl(callee, "URL", named, named)];
+  });
+}
+
 /** The name a string literal is given by the text before it: `key:`, `"key":` or `key=`, a
  * Python string's prefix (`f`, `r`, `b`) between. */
 const KEYED = /(?:(\w+)|(["'])(\w+)\2)\s*[:=]\s*[rbfuRBFU]{0,2}$/;
@@ -3807,43 +3980,64 @@ function evalToolCalls(code: string) {
 /** Every host an `eval` cell reaches: each session tool call of it (`evalToolCalls`) by the
  * reading its tool gets as a call of its own (`reachesOf`: none for a tool of TEXT_TOOLS,
  * `bashHosts` for `bash`, the URL a `read` is given, the class default for a tool nobody named),
- * given the files the run wrote, those the cell's calls before it wrote included, and the code of
- * each expression among its literals; then every network URL in the rest of the cell, those
- * calls blanked. A cell with a call whose brackets or literals do not end is read whole as code. */
-function evalHosts(call: Call, written: readonly Written[]): Reach[] {
+ * given the files the run wrote, those the cell's calls before it wrote included, the pane's
+ * variables (`pane`), and the code of each expression among its literals; a `fetch` the cell
+ * gives no URL of plain text that names a host (`{url: u}`, a template's `${base}/x`), whose host
+ * the reader cannot tell (`unreadUrl`); then the rest of the cell, those calls blanked, as a
+ * program (`programHosts`: every network URL in it, and each fetch of it whose URL the reader
+ * cannot tell). A cell with a call whose brackets or literals do not end is read whole as code. */
+function evalHosts(
+  call: Call,
+  written: readonly Written[],
+  pane: ReadonlyMap<string, string>
+): Reach[] {
   const code = stringArg(call.args, "code") ?? "";
   const calls = evalToolCalls(code);
-  if (calls === undefined) return urlHosts(code);
+  if (calls === undefined) return programHosts(code, false);
   const rest = code.split("");
   const reached: Reach[] = [];
   const seen = [...written];
   for (const one of calls) {
     const inner = { ...call, tool: one.tool, args: one.args };
+    const url = stringArg(one.args, "url") ?? stringArg(one.args, "path");
+    const given = code.slice(one.open, one.close).replace(/\s+/g, " ").trim();
+    const unread =
+      (one.tool === "fetch" || one.tool === "web_fetch") &&
+      (url === undefined ? given !== "" : /[$`{]/.test(url) && urlHosts(url).length === 0);
     for (const hit of [
-      ...reachesOf(inner, seen),
-      ...one.code.flatMap((expression) => evalHosts({ ...call, args: { code: expression } }, seen)),
+      ...reachesOf(inner, seen, pane),
+      ...(unread ? [unreadUrl(`tool.${one.tool}`, "URL", url ?? given, url ?? given)] : []),
+      ...one.code.flatMap((expression) =>
+        evalHosts({ ...call, args: { code: expression } }, seen, pane)
+      ),
     ])
       reached.push({ ...hit, via: hit.via ?? ` in the cell's tool.${one.tool} call` });
     seen.push(...record(writtenText(inner), seen, call.tool, call.file));
     rest.fill(" ", one.open, one.close);
   }
-  return [...reached, ...urlHosts(rest.join(""))];
+  return [...reached, ...programHosts(rest.join(""), false)];
 }
 
-/** Every host a call reaches, by its tool: a `bash` command's (`bashHosts`); an `eval` cell's
- * (`evalHosts`), in whatever language; an http(s) URL a `read`, `fetch` or `grep` is given as
- * its path; and for a file the call runs that the run wrote (`fileRuns`), every host its
- * program reaches. A tool of TEXT_TOOLS reaches none by its arguments; any other tool reaches the
- * host of every network URL in any string argument but `i`, the intent every call names. */
-function reachesOf(call: Call, written: readonly Written[]): Reach[] {
+/** Every host a call reaches, by its tool: a `bash` command's (`bashHosts`, the pane's variables
+ * `pane` its own); an `eval` cell's (`evalHosts`), in whatever language; an http(s) URL a `read`,
+ * `fetch` or `grep` is given as its path; and for a file the call runs that the run wrote
+ * (`fileRuns`), every host its program reaches. A tool of TEXT_TOOLS reaches none by its
+ * arguments; any other tool reaches the host of every network URL in any string argument but `i`,
+ * the intent every call names. */
+function reachesOf(
+  call: Call,
+  written: readonly Written[],
+  pane: ReadonlyMap<string, string>
+): Reach[] {
   const ran = fileRuns(call, written).flatMap(({ file, shell }) =>
     programHosts(file.text, shell).map((one) => ({
       ...one,
       via: ` in ${file.path}, which a ${file.tool} call in ${file.file} wrote and it runs`,
     }))
   );
-  if (call.tool === "bash") return [...bashHosts(stringArg(call.args, "command") ?? ""), ...ran];
-  if (call.tool === "eval") return [...evalHosts(call, written), ...ran];
+  if (call.tool === "bash")
+    return [...bashHosts(stringArg(call.args, "command") ?? "", pane), ...ran];
+  if (call.tool === "eval") return [...evalHosts(call, written, pane), ...ran];
   if (PATH_READERS.has(call.tool)) {
     // A read of a URL is a GET with no body, unless the call names another method than a GET or a
     // HEAD (READ_METHODS), or a body.
@@ -3924,8 +4118,9 @@ function githubRead(reach: Reach, repositories: ReadonlySet<string>): boolean {
   return repository !== undefined && repositories.has(repository);
 }
 
-/** An expansion in shell text as written: `${…}`, `$NAME`, or a `$` and the character after it. */
-const EXPANSION = /\$(?:\{[^}]*\}|[A-Za-z_]\w*|\S)?/;
+/** An expansion in shell text as written: a command substitution, `$(…)` or a backquoted one,
+ * through its close; `${…}`; `$NAME`; or a `$` and the character after it. */
+const EXPANSION = /\$\((?:[^()]|\([^()]*\))*\)?|`[^`]*`?|\$(?:\{[^}]*\}|[A-Za-z_]\w*|\S)?/;
 
 /** Why `reach`, off the run's world on a host of GITHUB_READ_HOSTS, is no read rule 13 allows of
  * one of `repositories`, those the world's workflow names: where it is a GET whose URL holds an
@@ -4075,20 +4270,25 @@ export type Keeper = (target: string, transcript: string) => string | undefined;
  * but one about the world's workflow (`searchRefusal`), and the hosts each call reaches
  * (`reachesOf`), given the files the calls before it wrote that its agent reaches: a file one
  * agent's launch alone kept (`keeper`, none by default) is that agent's, and a later agent that
- * runs the same path runs nothing of it. A reach some hosts serve in place of
+ * runs the same path runs nothing of it; and the variables of the run's pane (`pane`, none by
+ * default), which every agent's shell starts with, so a fetcher's URL a variable of it names is
+ * judged by its value (`bashHosts`). A reach some hosts serve in place of
  * the world's (`served`) is held to those, and a gh run by a path (`gh`) to the run's own
  * stand-in, <own>/bin/gh of each of `own`, the run's directories, a relative path read from the
  * run's cwd (<own>/cwd, where launch starts the agent). A reach whose hosts are not in the text
- * (`unread`) is off the world whatever it names. Any other reach off the world is allowed
- * where it reads and sends nothing (a GET or a HEAD with no body, a `git ls-remote`) of one of
- * the public repositories the world's workflow names (`allowed`'s `uses`, `githubRead`), and the
- * reason for a reach of a host that serves those says why it is none (`githubReadRefusal`). */
+ * (`unread`: a curl or a wget given a file of URLs, a fetcher's URL that holds what the reader
+ * cannot expand and names no host) is off the world whatever it names. Any other reach off the
+ * world is allowed where it reads and sends nothing (a GET or a HEAD with no body, a `git
+ * ls-remote`) of one of the public repositories the world's workflow names (`allowed`'s `uses`,
+ * `githubRead`), and the reason for a reach of a host that serves those says why it is none
+ * (`githubReadRefusal`). */
 export function offWorldReach(
   calls: readonly Call[],
   hosts: ReadonlySet<string>,
   own: readonly string[] = [],
   allowed: OffWorldAllowed = NOTHING_ALLOWED,
-  keeper: Keeper = () => undefined
+  keeper: Keeper = () => undefined,
+  pane: ReadonlyMap<string, string> = new Map()
 ): string | undefined {
   const allowedHosts = [...hosts].join(", ");
   const { repositories } = allowed.uses;
@@ -4116,7 +4316,7 @@ export function offWorldReach(
       const kept = keeper(file.path, file.file);
       return kept === undefined || kept === keeper(file.path, call.file);
     });
-    const off = reachesOf(call, reached).find(outside);
+    const off = reachesOf(call, reached, pane).find(outside);
     if (off !== undefined)
       return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, ${
         off.unread !== undefined
@@ -4159,8 +4359,9 @@ function launchOf(run: Pick<Run, "scenario">, transcript: string): string {
  * of a repository the world's workflow names and a web search about one (`offWorldAllowed`). A
  * file a call writes into a tmpfs of its agent's launch (`reachedIn`) is that agent's alone, so a
  * later agent's run of its path runs nothing (`Keeper`); a run from before the namespace kept
- * every file where each of its agents reached it. No tool is taken out of a profile for this: a
- * profile without a tool is a world that differs from production. */
+ * every file where each of its agents reached it. A variable of the run's pane file (`paneOf`)
+ * is read with its value. No tool is taken out of a profile for this: a profile without a tool is
+ * a world that differs from production. */
 function offWorld(run: Run): string | undefined {
   return offWorldReach(
     run.calls,
@@ -4170,7 +4371,8 @@ function offWorld(run: Run): string | undefined {
     (target, transcript) =>
       target.startsWith("/") && reachedIn(run, path.posix.normalize(target)) === undefined
         ? launchOf(run, transcript)
-        : undefined
+        : undefined,
+    paneOf(run.dir)
   );
 }
 

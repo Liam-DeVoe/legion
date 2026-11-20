@@ -2452,6 +2452,108 @@ test("rule 13 reads a URL as a reach only where a command hands it to something 
   });
 });
 
+// Catches (the architect's ruling of 2026-11-20T21:30Z on rule 13): a health that reads a
+// fetcher's host only where the text names one, so a fetcher whose URL is a variable the reader
+// cannot expand, and no literal host (`x=$(gh api … --jq .html_url); curl -s "$x"`, `wget -q
+// "$URL"`, `curl -s "$URL/tags"`, `git ls-remote "$repo"`), a command substitution, or a program's
+// fetch of an expression reaches a host nobody read and passes; and one that refuses wider: a
+// variable in a header (`-H "…$TOKEN"`), an output file (`-o "$out"`) or a revision (`git log
+// "$sha"`), none of which names a host, and a variable of the run's pane, which the reader reads
+// with its value, allowed where that value is the world's host and refused where it is not, until
+// the text sets it to what the reader cannot expand.
+test("rule 13 refuses a fetcher whose URL holds a variable the reader cannot expand and no host, and reads the pane's variables by their value", () => {
+  const dir = workflowRun();
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const file = "sessions/reviewer/a.jsonl";
+  const pane = new Map([
+    ["DISPATCH_URL", "http://127.0.0.1:4101"],
+    ["MIRROR_URL", "https://mirror.example.com"],
+  ]);
+  const reach = (tool: string, args: Record<string, unknown>) =>
+    offWorldReach([{ file, tool, args, at: 1 }], loopback, [dir], allowed, () => undefined, pane);
+  const unread = (tool: string, url: string, why: string, via = "") =>
+    `off-world network: a ${tool} call in ${file} reaches the host ${url} names (${url})${via}, ${why} the reader cannot expand, so its host is not known to be one of the run's world`;
+  const api = "https://api.github.com/repos/actions/checkout";
+  const bashRows: [command: string, reason: string | undefined][] = [
+    [
+      'x=$(gh api repos/actions/checkout --jq .html_url); curl -s "$x"',
+      unread("bash", "$x", "curl's URL is $x, which"),
+    ],
+    ['wget -q "$URL"', unread("bash", "$URL", "wget's URL is $URL, which")],
+    ['curl -s "$URL/tags"', unread("bash", "$URL/tags", "curl's URL is $URL/tags, whose $URL")],
+    [
+      `wget -qO- "\${base}/x"`,
+      unread("bash", `\${base}/x`, `wget's URL is \${base}/x, whose \${base}`),
+    ],
+    ['git clone "$remote"', unread("bash", "$remote", "git's remote is $remote, which")],
+    ['git ls-remote "$u"', unread("bash", "$u", "git's remote is $u, which")],
+    ['git ls-remote "$repo"', unread("bash", "$repo", "git's remote is $repo, which")],
+    [
+      'curl -s "$(gh api repos/actions/checkout --jq .html_url)"',
+      unread(
+        "bash",
+        "$(gh api repos/actions/checkout --jq .html_url)",
+        "curl's URL is $(gh api repos/actions/checkout --jq .html_url), which"
+      ),
+    ],
+    [
+      `python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1])' "$x"`,
+      unread(
+        "bash",
+        "sys.argv[1]",
+        "urllib.request.urlopen's URL is sys.argv[1], which",
+        " in the program python3 runs"
+      ),
+    ],
+    [
+      `python3 - "$x" <<'EOF'\nimport sys, urllib.request\nurllib.request.urlopen(sys.argv[1])\nEOF`,
+      unread(
+        "bash",
+        "sys.argv[1]",
+        "urllib.request.urlopen's URL is sys.argv[1], which",
+        " in a here-document python3 runs"
+      ),
+    ],
+    [`curl -H "Authorization: $TOKEN" ${api}`, undefined],
+    [`curl -o "$out" ${api}`, undefined],
+    ['git log "$sha"', undefined],
+    ["git status", undefined],
+    ['curl -s "$DISPATCH_URL/api/v1/whoami"', undefined],
+    [
+      'curl -s "$MIRROR_URL/repos/actions/checkout"',
+      `off-world network: a bash call in ${file} reaches mirror.example.com (https://mirror.example.com/repos/actions/checkout), no host of the run's world (127.0.0.1, localhost, ::1)`,
+    ],
+    [
+      'DISPATCH_URL=$(cat f); curl -s "$DISPATCH_URL/x"',
+      unread("bash", "$DISPATCH_URL/x", "curl's URL is $DISPATCH_URL/x, whose $DISPATCH_URL"),
+    ],
+  ];
+  const cells: [language: string, code: string, reason: string | undefined][] = [
+    ["js", "const r = await fetch(url)", unread("eval", "url", "fetch's URL is url, which")],
+    [
+      "py",
+      "import urllib.request\nurllib.request.urlopen(u)",
+      unread("eval", "u", "urllib.request.urlopen's URL is u, which"),
+    ],
+    [
+      "js",
+      "await tool.fetch({url: u})",
+      unread(
+        "eval",
+        "{url: u}",
+        "tool.fetch's URL is {url: u}, which",
+        " in the cell's tool.fetch call"
+      ),
+    ],
+    ["js", 'await fetch("http://127.0.0.1:4101/api/v1/whoami")', undefined],
+  ];
+  expect({
+    bash: bashRows.map(([command]) => [command, reach("bash", { command })]),
+    eval: cells.map(([language, code]) => [language, code, reach("eval", { language, code })]),
+  }).toEqual({ bash: bashRows, eval: cells });
+});
+
 // Catches: a health that calls every web search off the world, where a production reviewer may
 // search for an action the world's own workflow pins, which tells nothing of the scenario: in the
 // rehearsal of 2026-11-16 a subagent of the reviewer searched `actions/checkout 3d3c42e5… v7.0.1`
