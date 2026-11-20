@@ -3,6 +3,8 @@ package busprojects_test
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects/busprojectstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -194,4 +197,41 @@ func TestTheProofConnectionHoldsNothing(t *testing.T) {
 	}
 	require.Contains(t, hub.Refusals(), busprojectstest.RefusedNotDispatch)
 	require.Contains(t, hub.Refusals(), busprojectstest.RefusedNotAProof)
+}
+
+// TestTheProofClientLogsNoPermissionsViolation: the hub-admission client stays inside the proof's
+// grant, so the hub refuses it nothing and the client logs no permissions violation: not at
+// connect, where a client that reads the stream's subjects publishes a request the grant refuses,
+// not on a request of its own, whose reply inbox the grant admits only under its own prefix, and
+// not on a proof. Every log line the client's connection queued before a forced reconnect has been
+// written once its "reconnected" line is, since nats.go runs those callbacks in order.
+//
+// Controls, each run on its own: build the client without bus.WithInboxPrefix (nats.go's default
+// _INBOX); its request's inbox subscription is refused and logged. Build it without
+// bus.WithoutStreamSubjects; the stream's subjects read at connect is refused and logged.
+func TestTheProofClientLogsNoPermissionsViolation(t *testing.T) {
+	var recorder logtest.Recorder
+	logtest.SetDefault(t, &recorder)
+	hub := busprojectstest.StartHub(t, true)
+	a, clients := admissionOver(t, hub)
+	awaitConnected(t, clients[0])
+	a.SetListeners(busprojectstest.ReadyListener(t))
+	require.NoError(t, a.Prove(t.Context()))
+
+	conn := clients[0].Connection()
+	_, err := conn.Request(busprojectstest.ProofPingSubject, []byte("example"), time.Second)
+	require.True(t, errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, natsgo.ErrTimeout), "the ping request: %v", err)
+	require.NoError(t, conn.FlushTimeout(5*time.Second))
+	require.NoError(t, conn.ForceReconnect())
+	logged := func(message string) bool {
+		return slices.ContainsFunc(recorder.Records(), func(r slog.Record) bool { return r.Message == message })
+	}
+	require.Eventually(t, func() bool { return logged("envoy nats reconnected") }, 30*time.Second, 20*time.Millisecond, "the forced reconnect was never logged")
+
+	for _, record := range recorder.Records() {
+		record.Attrs(func(attr slog.Attr) bool {
+			require.NotContains(t, attr.Value.String(), "Permissions Violation", "the proof client logged %q: %s", record.Message, attr.Value.String())
+			return true
+		})
+	}
 }

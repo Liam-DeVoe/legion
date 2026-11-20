@@ -92,7 +92,7 @@ func admissionOver(t *testing.T, hubs ...*busprojectstest.Hub) (*busprojects.Hub
 	for i, h := range hubs {
 		clients[i] = busprojectstest.ProofClient(t, h.URL, proofToken())
 	}
-	a := busprojects.NewHubAdmission(clients, nil)
+	a := busprojects.NewHubAdmission(clients)
 	require.NotNil(t, a)
 	busprojects.SetLookup(a, resolveWorkload)
 	return a, clients
@@ -210,7 +210,7 @@ func TestANoInventoryProofRefuses(t *testing.T) {
 // Prove answers ErrNoBus, so a switch to private is refused; it is ready, since no project can be
 // private there; Run returns at once; and its report, served with status 200, is empty.
 func TestANilAdmissionMakesNothingPrivate(t *testing.T) {
-	a := busprojects.NewHubAdmission(nil, nil)
+	a := busprojects.NewHubAdmission(nil)
 	require.Nil(t, a)
 	require.ErrorIs(t, a.Prove(t.Context()), busprojects.ErrNoBus)
 	require.True(t, a.Ready())
