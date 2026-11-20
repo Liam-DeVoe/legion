@@ -81,7 +81,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	_, c, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		if failed, held := s.supervisor.Machine(req.ClaimToken); held {
-			if c := failed.Claim(); c.State == supervise.StateFailed && (c.Session == "" || c.Session == req.SessionID) {
+			if c := failed.Claim(); c.State == supervise.StateFailed && (c.Session == "" || c.HoldsSession(req.SessionID)) {
 				writeJSON(w, http.StatusOK, OwedResponse{})
 				return
 			}
@@ -90,8 +90,9 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The claim is read once: the session it is held to, the stale check and the answer all come
-	// from the claim the secret was checked against (authenticated).
-	if c.Session != "" && c.Session != req.SessionID {
+	// from the claim the secret was checked against (authenticated). The claim holds its session as
+	// the store keeps it, so the request's is compared as the store would keep it (HoldsSession).
+	if c.Session != "" && !c.HoldsSession(req.SessionID) {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
