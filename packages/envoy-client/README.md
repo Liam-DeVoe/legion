@@ -19,8 +19,8 @@ natsd and calloutd with no shared wait in it, keeps `BUILD_GUARD_MS` (300000 ms)
 process run `docs/testing.md` lets a hook guard itself. The second command runs the files whose
 rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the three
 `*.live.test.ts` suites, `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts`,
-`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`,
-`nats-credential.test.ts` and `nats-handshake.test.ts`; the first runs every other file. The
+`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`
+and `nats-credential.test.ts`; the first runs every other file. The
 guards are 30000 and 120000 ms, each at least twice the slowest row or hook its command ran under
 8 busy loops on 2 CPUs; `package.json`'s `"//"` note gives each reading, and the hook's.
 
@@ -36,7 +36,10 @@ client's own count of it (`bearerRedactionMatches`, `excerptPatternCharacters` i
 `dispatch-http.ts`). What no count reaches, the steps a regular expression takes within one pass,
 recheck's automaton checker reads from each pattern instead (`test/pattern-analysis.ts`): a row
 analyzes a pattern it reads in a moment, and holds a slower one to the verdict `bun run
-analyze:patterns` committed beside its test.
+analyze:patterns` committed beside its test. Real sockets do not fit the fake clock, so the NATS
+dial's rows run `connectNats` on a clock they drive (`NatsDialClock`,
+`src/__tests__/driven-dial-clock.ts`), which holds each wait and bound until the row ends it, and
+read the timers nats.js's own code armed and ran from `@legion/test-fixtures/timer-record`.
 
 ## Inbound delivery
 
@@ -181,7 +184,9 @@ default 120 s interval left a frozen path for up to 6 minutes. A plugin opens it
 `connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
 lookup, every address and every server, which nats.js times one at a time), and a failed dial
 dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
-unless no redial can cure the failure. A server that closes a dial during its handshake, as
+unless no redial can cure the failure. The waits, the bounds and the budget's reading are those of
+`hooks.clock` (`NatsDialClock`), the process's own unless a test hands it a clock it drives. A
+server that closes a dial during its handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
