@@ -270,10 +270,12 @@ func (r ProjectReleaseResult) Listed() ProjectReleaseResult {
 // once it is recorded, 200 with the report of a dry run, and 200 with this process's release, which
 // starts nothing, once one ran here. A bound that is no positive Go duration is refused 400 before
 // anything starts, and a release while a pause holds the project 409 PROJECT_PAUSED
-// (releasePausedFailure).
+// (releasePausedFailure). Its answer is the `legion` command's, which no plugin parses
+// (answerUnparsed, writeUnparsedAnswer), as the operator's pause's is; every refusal is
+// AnswerRefusal.
 func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if s.projectRelease == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the project release is not served by this daemon"))
+		s.refuse(w, r, http.StatusInternalServerError, "the project release is not served by this daemon")
 		return
 	}
 	var req ProjectReleaseRequest
@@ -284,7 +286,7 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if req.Bound != "" {
 		parsed, err := time.ParseDuration(req.Bound)
 		if err != nil || parsed <= 0 {
-			writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("bound %q is no positive Go duration, such as 30m", req.Bound)))
+			s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("bound %q is no positive Go duration, such as 30m", req.Bound))
 			return
 		}
 		bound = parsed
@@ -293,7 +295,7 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	var paused *store.ProjectPausedError
 	switch {
 	case errors.Is(err, ErrProjectReleaseRunsNoPod):
-		writeFailure(w, http.StatusConflict, projectReleaseNoPod, ProjectReleaseRunsNoPod)
+		s.writeFailure(w, r, http.StatusConflict, projectReleaseNoPod, ProjectReleaseRunsNoPod)
 		return
 	case errors.As(err, &paused):
 		held := make([]string, len(paused.Held))
@@ -302,18 +304,18 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Info("api: refused a project release: a pause holds the project", "dry_run", req.DryRun,
 			"paused", paused.Paused, "pause", paused.Pause.ID, "held", held)
-		writeJSON(w, http.StatusConflict, releasePausedFailure(paused))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, releasePausedFailure(paused))
 		return
 	case err != nil:
 		s.logRequestFailure(r, err, "api: the project release could not start")
-		writeJSON(w, http.StatusInternalServerError, errorBody("start the project release: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "start the project release: "+err.Error())
 		return
 	}
 	status := http.StatusOK
 	if started {
 		status = http.StatusAccepted
 	}
-	writeJSON(w, status, view)
+	s.writeUnparsedAnswer(w, r, status, view)
 }
 
 // releasePausedFailure is the refusal of a project release a pause holds (store.ProjectPausedError,
@@ -369,20 +371,21 @@ func heldPodClaimsWords(claims []claim.Token) string {
 
 // readProjectRelease is `GET /legion/v1/operator/project/release`: 200 with the newest release of
 // the project, its progress while it runs and its result once it finished, and 404 when none ran.
+// Its answer is the `legion` command's, as startProjectRelease's is.
 func (s *server) readProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if s.projectRelease == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the project release is not served by this daemon"))
+		s.refuse(w, r, http.StatusInternalServerError, "the project release is not served by this daemon")
 		return
 	}
 	view, found, err := s.projectRelease.Read(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the project release could not be read")
-		writeJSON(w, http.StatusInternalServerError, errorBody("read the project release: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "read the project release: "+err.Error())
 		return
 	}
 	if !found {
-		writeJSON(w, http.StatusNotFound, errorBody("no project release of this project was recorded"))
+		s.refuse(w, r, http.StatusNotFound, "no project release of this project was recorded")
 		return
 	}
-	writeJSON(w, http.StatusOK, view)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, view)
 }

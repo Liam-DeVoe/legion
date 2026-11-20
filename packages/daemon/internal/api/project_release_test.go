@@ -157,13 +157,13 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 			if strings.Contains(door.name, "retry") {
 				request = "retry"
 			}
-			wantReleaseRefusal(t, door.ask(t, h, "LEGION-209", claim.RoleImplementer), request)
+			wantReleaseRefusal(t, door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil), request)
 			if got := h.stored(token); got.Session != before.Session || got.State != before.State || got.Generation != before.Generation {
 				t.Fatalf("after the refused fresh session the claim is %s at generation %d on %q, want it untouched: %s at %d on %q",
 					got.State, got.Generation, got.Session, before.State, before.Generation, before.Session)
 			}
 			released.Store(false)
-			if recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer); recorder.Code != http.StatusOK {
+			if recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("fresh session with the mark clear = %d, want 200; body %s", recorder.Code, recorder.Body)
 			}
 			if got := h.stored(token); got.Session == before.Session {
