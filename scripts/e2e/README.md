@@ -6393,6 +6393,7 @@ It names a marked process double-forked to pid 1, which no tree the run started 
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+From an `EXIT` trap that runs after `exit 3`, with the `find` of a busy machine, which exits 1 for an entry of another user's process, `listening_holders` names the socket's holder as outside one, and reports a `find` a signal ends with that `find`'s 137.
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -6444,6 +6445,9 @@ It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
+Each walk ends its process substitution with `exit "$?"`, its reader's own status, and never with a bare `exit`:
+in a substitution forked while an `EXIT` trap runs, bash (5.2.37) takes a bare `exit` for the status the shell is exiting with.
+From a failed run's exit handler a walk read the run's `exit 1` as its reader's status: `procs_naming` failed with 2, and the handler's sweep stopped nothing.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
@@ -6572,6 +6576,8 @@ and the processes of the rows that start a line or a helper are gone when they e
 and `first_native` takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim.
 Its process-scan rows put a `ps`, `pgrep` and `pkill` on `PATH` that log each call and run nothing: `signalable` refuses the calling shell and, asked from a child shell that does not lead its group, that group's leader, `stop_tree` leaves a process whose parent is not the one it is given and then ends a parent and its two children, the cleanup wait's failure names each survivor that runs with its command line and none that has ended, and none of them starts any of the three.
 Where `strace` is on the host, a traced row holds that they open no other process's `/proc` entry, list no directory but the asked processes' `task` directories, and read no other `/proc` file than `/proc/stat` and bash's own `/proc/self/maps`; against the helpers before them each row fails.
+Its `procs_naming` rows walk a proc root of a process they start and an `environ` that `grep` cannot read, so `xargs` exits 123, outside a trap and from the `EXIT` trap of a shell that runs `exit 1`:
+from the trap it names the process with its start time as it does outside one, and where a signal ends the `grep` it fails with 2 and names `xargs`'s 125 in both; against the bare `exit` before, both rows fail.
 `lib/claude-backend-guards.test.ts` finds a pane's Claude Code under its bridge when its path holds a space and when it runs under another name, which the lookup by `argv[0]` before it did not;
 answers nothing while the bridge's child is still the bridge's own fork, the first wrapper of a chain of two (bash) or the second (sh), and then names the program the chain ends in;
 and takes a pane's Claude Code for its agent where that Claude Code, under another name, runs an Oh My Pi below itself, an Oh My Pi the lookup before it took for the agent
@@ -6705,6 +6711,7 @@ Only processes in the caller's own pid namespace are read, since a pid means not
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+From an `EXIT` trap that runs after `exit 3`, with the `find` of a busy machine, which exits 1 for an entry of another user's process, it names a leftover by its working directory as it does outside one, and reports a `find` a signal ends with that `find`'s 137.
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh
