@@ -303,6 +303,21 @@ func decoded[T any](t *testing.T, body []byte) T {
 // sessionActor is a body's actor for the session id.
 func sessionActor(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
 
+// uploadBase is the token an upload replacing the document artifactID names, which every
+// replacement names: the one the document carries now, read as `dispatch doc-read` reads it (GET
+// /api/v1/artifacts/{id}/text). A drive reads it in its Ready step, so the read is no part of what
+// the drive measures.
+func (r *writersRig) uploadBase(t *testing.T, artifactID string) map[string]string {
+	t.Helper()
+	read := decoded[struct {
+		Token string `json:"token"`
+	}](t, r.request(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice", http.StatusOK))
+	if read.Token == "" {
+		t.Fatalf("the read of document %s carries no token", artifactID)
+	}
+	return map[string]string{"document": read.Token}
+}
+
 // awaitTrue waits until query, a select of one boolean over args, answers true, and fails the test
 // naming what once it has waited longer than any of the drives' work takes.
 func (r *writersRig) awaitTrue(t *testing.T, what, query string, args ...any) {
@@ -356,6 +371,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	// The second comment mentioning the held session, whose first attempt a lane stands down from
 	// beside a Retry in flight; the Retry's answer, and what lets its held lookup through.
 	var overtaken string
+	// The token of the spec's version the drive that writes its next version replaces.
+	var specBase map[string]string
 	retried := make(chan *httptest.ResponseRecorder, 1)
 	var openLookups func()
 	replayedBody := map[string]any{
@@ -809,9 +826,13 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// question reworded to name that version, and the request moved to its agent.
 		Name: "docs/approval_ask.go#rewriteApprovalAsk", Database: r.database,
 		Sites: []string{"docs/approval_ask.go#rewriteApprovalAsk", "api/artifacts.go#storeArtifact", "refs/blocks.go#Queue"},
+		Ready: func(t *testing.T) {
+			specBase = r.uploadBase(t, r.spec)
+		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "spec.md", "content": "# Spec\n\nWhat the writers write, read once more.\n",
+				"precondition": specBase,
 			}, "alice", http.StatusCreated)
 		},
 		// The version's new block and the one it took out, gone.

@@ -335,11 +335,14 @@ func eraseDocumentText(t *testing.T, server *dispatchProcess, document string) s
 	return text.Markdown
 }
 
-// uploadEraseDocument uploads markdown as the document name of issue, which writes it a version,
-// and answers its id.
+// uploadEraseDocument uploads markdown as the document name of issue, which writes it a version
+// - naming the token of the version it replaces where the issue holds one (uploadBase) - and
+// answers its id.
 func uploadEraseDocument(t *testing.T, server *dispatchProcess, issue, name, markdown string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"name": name, "content": markdown})
+	body, err := json.Marshal(map[string]any{
+		"name": name, "content": markdown, "precondition": server.uploadBase(t, "/api/v1/issues/"+issue, name),
+	})
 	if err != nil {
 		t.Fatalf("encode the document: %v", err)
 	}

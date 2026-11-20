@@ -23,7 +23,8 @@ import {
 } from "../../theme/classes";
 import { MentionField } from "../conversation/MentionField";
 import { useDialog } from "../shell/useDialog";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 import { useQuestionLabel } from "./question-label";
 
@@ -123,8 +124,14 @@ function DeclineDialog({
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* The server's own words where it gave any - the note is too long, the ask is an
-                  approval request, it is already closed - since each says what to do next. */}
-              {apiErrorMessage(error, "Could not decline this question. Try again.")}
+                  approval request, it is already closed - since each says what to do next. A
+                  decline the reader stopped may have been made, and the button below is a press
+                  of its own, under a key of its own. */}
+              {error instanceof SendStoppedError
+                ? stoppedWriteNote("your decline", "made", {
+                    anew: "Pressing Decline to answer again sends a new decline.",
+                  })
+                : apiErrorMessage(error, "Could not decline this question. Try again.")}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -149,6 +156,13 @@ function DeclineDialog({
       </div>
     </>
   );
+}
+
+/** One press of the decline: the ask it is of (`AskPress`), what it sends, and its question as
+ *  the label names it (`questionWords`). */
+interface DeclinePress extends AskPress {
+  readonly input: DeclineAskInput;
+  readonly questionWords: string;
 }
 
 /**
@@ -181,25 +195,27 @@ export function DeclineControl({
   const [open, setOpen] = useState(false);
   const question = useQuestionLabel(ask);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
-  // the shell's indicator carries it only while it is out. Its label holds the question's
-  // plain-text projection, the words the card draws: the reading list's `write-label`
-  // (`DISPATCH_READING_SURFACES`) says why.
+  // the shell's indicator carries it only while it is out. Each press carries the ask it
+  // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
+  // card is drawn for by then. Its label holds the question's plain-text projection, the words
+  // the card draws: the reading list's `write-label` (`DISPATCH_READING_SURFACES`) says why. The
+  // press carries that line as it reads at the press, so it names its own ask's question too.
   const write = useOutstandingAnswerWrite({
-    askId: ask.id,
-    label: () => `Decline of “${question.line()}”`,
-    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
+    label: (press: DeclinePress) => `Decline of “${press.questionWords}”`,
+    method: "POST",
+    write: (press: DeclinePress, bounds) => decline(press.ask.id, press.input, bounds),
     onSettled: () => submitGuard.release(),
-    onSuccess: (declined) => {
+    onSuccess: (declined, press) => {
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+        queryClient.setQueryData<AskRead>(["ask-thread", press.ask.id], (current) =>
           current === undefined ? undefined : { ...current, ask: declined }
         );
       }
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-      invalidateOwnerReads(queryClient, ask);
-      onDeclined?.(ask.id);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+      invalidateOwnerReads(queryClient, press.ask);
+      onDeclined?.(press.ask.id);
     },
   });
 
@@ -222,7 +238,15 @@ export function DeclineControl({
             write.reset();
             setOpen(false);
           }}
-          onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+          onSubmit={(note) =>
+            submitGuard.guard(() =>
+              write.mutate({
+                ask,
+                input: note === "" ? {} : { note },
+                questionWords: question.line(),
+              })
+            )
+          }
           project={ask.anchor_artifact?.project}
           saving={write.isPending}
         />

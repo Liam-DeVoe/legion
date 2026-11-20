@@ -84,6 +84,7 @@ export type DispatchReadingSurface =
   | "margin-comment-body"
   | "margin-thread-preview"
   | "anchor-quote"
+  | "kept-draft"
   | "document-body"
   | "document-version-body"
   | "document-open-decision"
@@ -801,14 +802,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // The quote a comment or an ask was left on, wherever one is drawn: over a thread card and
   // its preview, over an ask's card, over a thread in the Inbox's reading column, in the
-  // composer that is writing on it, in the Decisions panel's Change form, and in the Activity
-  // tab's line for the comment.
+  // composer that is writing on it, in the Decisions panel's Change form, in the Activity tab's
+  // line for the comment, and in the words that name it beside a draft a margin compose kept
+  // for it (the composer's offer, the margin's list of what its compose kept).
   {
     files: [
       "packages/dispatch/web/src/features/margin/ThreadCard.tsx",
       "packages/dispatch/web/src/features/inbox/AskAnchorLink.tsx",
       "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
       "packages/dispatch/web/src/features/conversation/MentionComposer.tsx",
+      "packages/dispatch/web/src/features/conversation/KeptDraftOffers.tsx",
+      "packages/dispatch/web/src/features/margin/CommentsTab.tsx",
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/activity/activity-model.ts",
     ],
@@ -818,6 +822,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "anchor-quote",
+  },
+  // A draft the reader wrote and did not send, waiting outside a composer's field: an edit
+  // written over a body the comment no longer holds, a draft a margin compose kept for other
+  // words, a reply kept for a comment or message no longer listed, and what the margin lists of
+  // its compose's kept drafts, each drawn by one offer (`DraftOffer`).
+  {
+    files: ["packages/dispatch/web/src/features/conversation/KeptDraftOffers.tsx"],
+    reach: "/issues/<ISSUE>/conversation, a kept draft beside the docked composer's field",
+    reason:
+      "A kept draft is the reader's own text as the field holds it, not a record and not yet a message: Dispatch has stored nothing of it, and Use it here puts exactly these characters back in the field, which shows them as the characters they are. It is drawn the same way beside the field, so the reader sees what they will take back - a mention as the link they picked, `[@Planner](dispatch://agent/...)` - and reads the message it becomes only once it is sent.",
+    record: false,
+    rendered: false,
+    surface: "kept-draft",
   },
   // A document's own body, live and at a past version, which the Proof editor draws.
   {

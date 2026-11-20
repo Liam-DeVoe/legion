@@ -19,7 +19,8 @@
 #                                      thing; or the reading of a retired document's slug
 #                                      (refs.RetiredDecisionsSlug), or a citation
 #                                      dispatch://KEY/artifact/decisions-md in
-#                                      packages/envoy/cmd/listener/api.go
+#                                      packages/envoy/cmd/listener/api.go or
+#                                      packages/daemon/internal/pause/pause.go
 #     hit <path>:<n>: <line>           a production line that still spells one, which fails
 # The step's Go code calls decisions_documents() and spells no slug, so no line under the id
 # `decisions-step` is admitted. Before it reads the checkout, the sweep reads a planted instance
@@ -141,8 +142,8 @@ sweep_grep() {
 readonly literal='decisions\.md|decisions-md|ArtifactRoleDecisions|GatedStepDecisions|DesignStepDecisions'
 readonly catalog_migration=packages/envoy/internal/dispatch/store/migrations/20261117093337_decisions_documents.up.sql
 readonly applied_migration=packages/envoy/internal/dispatch/store/migrations/20261101162254_decision_records.up.sql
-# The citation packages/envoy/cmd/listener/api.go carries: a retired decisions document's address
-# under any issue key.
+# The citation packages/envoy/cmd/listener/api.go and packages/daemon/internal/pause/pause.go
+# carry: a retired decisions document's address under any issue key.
 readonly retired_citation='dispatch://[A-Z][A-Z0-9]*-[0-9]+/artifact/decisions-md'
 
 # The ids the root's list holds, with their things.
@@ -222,7 +223,8 @@ literal_sweep() {
       admitted=$((admitted + 1))
       continue
     fi
-    if [[ "$path" == packages/envoy/cmd/listener/api.go && "$text" =~ $retired_citation ]]; then
+    if [[ ("$path" == packages/envoy/cmd/listener/api.go || "$path" == packages/daemon/internal/pause/pause.go) &&
+      "$text" =~ $retired_citation ]]; then
       printf 'admitted %s:%s serves a citation dispatch://KEY/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
       admitted=$((admitted + 1))
       continue
@@ -304,6 +306,31 @@ step_admission() {
     packages/dispatch/web/src/features/issue/issue-tab-list.ts | packages/dispatch/web/src/features/issue/IssuePage.tsx)
       printf 'the Decisions tab' ;;
     packages/dispatch/web/src/features/issue-page/page-words.ts) printf 'the Decisions tab of the filter row' ;;
+    # Main's new issue page model (#4196): its Decisions filter, the decisions read's `decisions`
+    # member, kept for one release (compat-objects), and that read's query key. Each is admitted
+    # by its text, so any other line of these files that spells the word is still a hit.
+    packages/dispatch/web/src/features/issue-page/issue-address.ts)
+      [[ "$text" != *"decisions: ${quoted_word},"* ]] || printf 'the Decisions filter of the issue page'"'"'s address' ;;
+    packages/dispatch/web/src/features/issue-page/presets.ts)
+      [[ "$text" != *"view(${quoted_word})"* ]] || printf 'the Decisions filter of the issue page' ;;
+    packages/dispatch/web/src/features/issue-page/decision-review.ts)
+      [[ "$text" != *"Pick<IssueDecisions, ${quoted_word}>"* ]] ||
+        printf 'the decisions member of the decisions read, kept for one release (compat-objects)' ;;
+    packages/dispatch/web/src/features/issue-page/useIssueTree.ts)
+      [[ "$text" != *"[${quoted_word}, key]"* ]] || printf 'the query key of the Decisions read' ;;
+    # Main's new issue page frame (#4189): its keymap's Decisions tab, and the e2e rows that press
+    # the Decisions preset, read its address and list the views and shortcuts that name it. Each is
+    # admitted by its text, as #4196's are, so any other line of these files that spells the word
+    # is still a hit.
+    packages/dispatch/web/src/features/issue-page/useIssueKeymap.ts)
+      [[ "$text" != *"toggled(key, ${quoted_word}"* && "$text" != *"tab: ${quoted_word},"* ]] ||
+        printf 'the Decisions tab of the issue page'"'"'s keymap' ;;
+    packages/dispatch/e2e/issue-page-d.e2e.ts)
+      [[ "$text" != *"presetToggle(page, ${quoted_word})"* &&
+        "$text" != *"addressOf(key, ${quoted_word})"* &&
+        "$text" != *"[${dq}d${dq}, ${quoted_word}]"* &&
+        "$text" != *"[${dq}spec${dq}, ${dq}verification${dq}, ${dq}plan${dq}, ${quoted_word}]"* ]] ||
+        printf 'test material: the Decisions tab of the issue page' ;;
     packages/dispatch/web/src/features/refs/routes.ts) printf 'the dispatch://KEY/decisions route' ;;
     packages/contracts/src/legion-roles.ts)
       [[ "$text" != *"GATED_STEPS ="* ]] || printf 'GATED_STEPS, kept for one release (contract-read-side)' ;;

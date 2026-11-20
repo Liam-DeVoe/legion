@@ -334,7 +334,13 @@ function collectSourceFiles(root: string): string[] {
         continue;
       }
       const isSource = entry.name.endsWith(".ts") || entry.name.endsWith(".tsx");
-      const isTest = entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.tsx");
+      // A test file is the suite, and so is a draft matrix's coverage list (`*.coverage.ts`):
+      // test-support data no product module imports, whose strings name the mounts the composer
+      // census finds (`<MentionComposer mutationKey={...}>`) rather than mounting anything.
+      const isTest =
+        entry.name.endsWith(".test.ts") ||
+        entry.name.endsWith(".test.tsx") ||
+        entry.name.endsWith(".coverage.ts");
       if (isSource && !isTest) {
         files.push(child);
       }
@@ -1657,7 +1663,7 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "live.text",
   },
   {
-    file: `${FEATURES}/inbox/AskCard.tsx`,
+    file: `${FEATURES}/inbox/AskHandOn.tsx`,
     holds: "the waiting-on badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
   },

@@ -406,8 +406,10 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 			run.path(), before.shaped(), ask)
 	}
 	text := run.seed("reading the spec's text", http.MethodGet, "/api/v1/artifacts/"+run.specID+"/text", "", asUser(dispatchTestLogin), http.StatusOK)
+	// The read answers the spec's token too, which the write that replaces the spec names.
 	var spec struct {
 		Markdown string `json:"markdown"`
+		Token    string `json:"token"`
 	}
 	if err := json.Unmarshal(text, &spec); err != nil || strings.Count(spec.Markdown, defectsAskOpener) != 1 {
 		t.Fatalf("seeding the issue failed at reading the spec's text: it holds the ask's opening %q %d time(s), want once (%v):\n%s",
@@ -415,9 +417,10 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	}
 	tie := run.writtenVersion("the write that ties the ask to the first requirement", run.seed("the write that ties the ask to the first requirement",
 		http.MethodPost, "/api/v1/issues/"+run.issue+"/artifacts", censusBody(t, map[string]any{
-			"name":    "spec.md",
-			"content": strings.Replace(spec.Markdown, defectsAskOpener, defectsAskOpener+` shaped="`+pointer+`"`, 1),
-			"summary": "the answered ask shaped the first requirement",
+			"name":         "spec.md",
+			"content":      strings.Replace(spec.Markdown, defectsAskOpener, defectsAskOpener+` shaped="`+pointer+`"`, 1),
+			"summary":      "the answered ask shaped the first requirement",
+			"precondition": map[string]string{"document": spec.Token},
 		}), asUser(dispatchTestLogin), http.StatusCreated))
 	read = run.readDecisions(fmt.Sprintf("first after version %d", tie))
 	if latest := run.latestSpecVersion("after the first Decisions read"); latest != tie {

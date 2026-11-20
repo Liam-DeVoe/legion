@@ -223,12 +223,14 @@ func writeCostDeliveryRecord(t *testing.T, corpus *writeCostCorpus, _ int) time.
 // this version moves, which is the edit a person makes: Dispatch carries a block's id across
 // versions, so the index sees one new block and the rest unchanged. -1 instead is the whole
 // document rewritten, every block new to the index, which a bulk action makes and a person
-// does not.
+// does not. The write names the token of the version it replaces, read before the timed request
+// (uploadBase).
 func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks, run, changedOnly int) time.Duration {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"name":    name,
-		"content": costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
+		"name":         name,
+		"content":      costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
+		"precondition": corpus.arm.server.uploadBase(t, "/api/v1/issues/"+corpus.issue, name),
 	})
 	if err != nil {
 		t.Fatalf("encode the version: %v", err)
@@ -255,8 +257,9 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 	release := costHoldBlockIndex(t, arm)
 	for index := range corpus.tick {
 		body, err := json.Marshal(map[string]any{
-			"name":    writeCostTickName(index),
-			"content": costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
+			"name":         writeCostTickName(index),
+			"content":      costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
+			"precondition": arm.server.uploadBase(t, "/api/v1/issues/"+corpus.issue, writeCostTickName(index)),
 		})
 		if err != nil {
 			release()
@@ -950,10 +953,12 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 
 // costUploadDocument writes one version of a document by name and answers its artifact id. A
 // second write of the same name is the next version of that document, which is the document
-// version write path.
+// version write path, and names the token of the version it replaces (uploadBase).
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"name": name, "content": content})
+	body, err := json.Marshal(map[string]any{
+		"name": name, "content": content, "precondition": arm.server.uploadBase(t, "/api/v1/issues/"+issue, name),
+	})
 	if err != nil {
 		t.Fatalf("encode %s: %v", name, err)
 	}

@@ -40,6 +40,9 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 		// path is the route the write goes to, on the issue and its spec.
 		path func(issueKey, artifactID string) string
 		body map[string]any
+		// upload is set on a whole-document replacement, which names the token of the version it
+		// replaces (storeArtifact).
+		upload bool
 		// refusal is what the refusal says after its ask's node and question, %s being the block's
 		// address.
 		refusal string
@@ -60,6 +63,7 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 			name:    "a whole-document replacement that leaves the block out",
 			path:    func(issueKey, _ string) string { return "/api/v1/issues/" + issueKey + "/artifacts" },
 			body:    map[string]any{"name": "spec.md", "content": keptAskContext},
+			upload:  true,
 			refusal: "an agent cannot remove its ask block %s from this document",
 			taken:   http.StatusCreated,
 			holds:   keptAskContext,
@@ -101,6 +105,9 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				body := map[string]any{"actor": sessionActor()}
 				for name, value := range write.body {
 					body[name] = value
+				}
+				if write.upload {
+					body["precondition"] = uploadBase(t, handler, issue.PrimaryArtifactID)
 				}
 
 				before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -146,7 +153,10 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 
 				// The person writes the ask's block back; the settlement that binds the ask's row to
 				// it retracts the removal.
-				back := person.send(t, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"actor": sessionActor(), "name": "spec.md", "content": original})
+				back := person.send(t, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+					"actor": sessionActor(), "name": "spec.md", "content": original,
+					"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
+				})
 				if back.Code != http.StatusCreated {
 					t.Fatalf("the person's upload of the ask's block back: status=%d body=%s", back.Code, back.Body.String())
 				}

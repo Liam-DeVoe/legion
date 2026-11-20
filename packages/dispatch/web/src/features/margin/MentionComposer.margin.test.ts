@@ -1,5 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
-import { canSubmitComposer, hasUnsavedInput } from "../conversation/MentionComposer";
+import { hasUnsavedInput } from "../conversation/composer-model";
+import { canSubmitComposer } from "../conversation/MentionComposer";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in

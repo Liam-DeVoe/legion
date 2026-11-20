@@ -55,10 +55,13 @@ func removalDocument(name string) string {
 }
 
 // uploadDocument uploads content under name to the issue through p, as the test's person, and
-// answers the answer: a new document, or a new version of the issue's document of that name.
+// answers the answer: a new document, or a new version of the issue's document of that name,
+// which names the token of the version it replaces (uploadBase).
 func uploadDocument(t *testing.T, p *dispatchProcess, issue, name, content string) httpAnswer {
 	t.Helper()
-	answer := p.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", encodeJSON(t, map[string]string{"name": name, "content": content}), asUser(dispatchTestLogin))
+	answer := p.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", encodeJSON(t, map[string]any{
+		"name": name, "content": content, "precondition": p.uploadBase(t, "/api/v1/issues/"+issue, name),
+	}), asUser(dispatchTestLogin))
 	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
 		t.Fatalf("upload %s to %s: %s", name, issue, answer)
 	}

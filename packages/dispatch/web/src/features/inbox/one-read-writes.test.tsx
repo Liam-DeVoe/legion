@@ -272,14 +272,14 @@ test("an answer or a decline takes the ask out of the one read, and a refusal pu
   const hook = renderHook(
     () =>
       useOutstandingAnswerWrite({
-        askId: "ask-a",
         label: () => "Ask declined",
+        method: "POST",
         write: () => answer.promise,
       }),
     { wrapper: wrapper(client) }
   );
 
-  act(() => hook.result.current.mutate(undefined as never));
+  act(() => hook.result.current.mutate({ ask }));
   await waitFor(() => expect(cachedAsk(client, "ask-a")).toBeUndefined());
   expect(cached(client)?.total).toBe(0);
 

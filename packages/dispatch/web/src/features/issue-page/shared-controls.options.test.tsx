@@ -127,6 +127,12 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
  * by a stub on `api` below.
  */
 
+// An Inbox row's card draws a question's text and its options through the Markdown engine, a
+// module loaded on first use (`markdown-engine.ts`). A row that holds the clock before it presses
+// an option spends its wait in moments of that clock, which a load on the real one does not keep
+// pace with, so the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
+
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
@@ -5808,7 +5814,7 @@ test("inside NoTooltips a priority's Remove draws its cross as an inline svg and
         expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
       } else {
         expect(remove.textContent).toBe("✕");
-        expect(crosses).toEqual([]);
+        expect(crosses).toHaveLength(0);
       }
     } finally {
       undraw(view);

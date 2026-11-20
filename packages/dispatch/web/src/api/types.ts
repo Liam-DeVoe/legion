@@ -202,6 +202,7 @@ export type {
   ItemBlocks,
   KnownSession,
   LauncherCredentialResp,
+  LauncherCredentialsResponse,
   LegionSetting,
   LiveAgentFrame,
   LiveClientFrame,
