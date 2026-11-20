@@ -61,7 +61,7 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results. A view on an approved ancestor
 holds no `requirement` block and registers on its approval instead
-(register_gate's `basis`).
+(`skill://legion-architect/references/design-gate.md`).
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to
