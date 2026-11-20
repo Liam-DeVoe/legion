@@ -1,2 +1,0 @@
-kind: Changed
-body: The GitHub proxy and Delivery take a repository's projects from the issues that resolve to it, and no longer from repository mappings or recorded renames. A repository an issue the reader sees resolves to is shown whole, whatever private project shares it. `GET /api/v1/github/app-installation/{owner}/{repo}` answers every caller alike again.
