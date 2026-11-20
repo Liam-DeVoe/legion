@@ -16,7 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -58,7 +58,7 @@ type privateNodeFixture struct {
 	privateComment, publicComment string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, so a read can
 	// be made under a session the broker verified as well as under a cookie and a token.
-	broker *brokertokentest.StubBroker
+	broker *ciphertokentest.StubBroker
 }
 
 // author and reader are the two people of this test: the one who owns the private node and one
