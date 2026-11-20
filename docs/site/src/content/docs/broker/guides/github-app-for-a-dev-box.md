@@ -266,30 +266,34 @@ and no account key. The case you type in `--github-owner` therefore does not mat
 Without the flag the variable holds the JSON object of installations, which the examples
 earlier on this page read with `jq`.
 
-The broker sends the narrowing to GitHub. GitHub refuses a repository or a permission that the
-installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. An
-account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
-An account that the tag lists but that the App is not installed on exits 1 with a message that
-says `has no installation on` that account: `NARROWING_REFUSED` when the broker refuses the
-request, and `MINT_FAILED` when the refusal comes as the broker reads the grant.
+The broker no longer takes this narrowing.
+Each of these flags sends it as the `github_app` field of the request, and the broker refuses every
+body that carries that field with `400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks
+anyone, so `agent-secrets` exits 1 and runs nothing.
+On the local stack of [Run the broker locally](/legion/broker/guides/run-locally/) it reads:
 
-When a person approves the request for this secret, the broker makes these refusals
-before the approval request. With `--github-repo` or `--github-read-only`, it makes the token
-that your read would get, reads GitHub's answer, and gives that token back to GitHub at once.
-With `--github-owner` alone, it reads only the list of the App's installations, and it makes no
-token. No token reaches your command, no request waits, and the person is not asked. A flag that
-you typed wrongly thus costs that person nothing, and you read the refusal at once. The refusal
-names the repository that the installation does not reach, or the read access that the App does
-not hold. The broker finds that part by asking GitHub again with less of the narrowing.
+```console
+$ agent-secrets DEMO_GITHUB_APP --github-owner acme-org -- sh -c 'echo ran'
+agent-secrets: github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY] (GITHUB_APP_FIELD_REMOVED) (answer 7746a1139d9db026a4ec5e7dd4621df8); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+```
 
+A narrowed token is a profile of the secret now: the deployment's profiles file names it, with its
+accounts, repositories and permissions, and you ask for it by that name.
+The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and
+names each permission it left out in the release (`github_left_out`).
+A profile whose permissions the installation holds none of, or that names a repository the
+installation does not reach, is refused `422 PROFILE_MINT_REFUSED`; an account the App is not
+installed on is refused with a message that says `has no installation on` that account,
+`422 PROFILE_MINT_REFUSED` when the broker refuses the request, and `502 MINT_FAILED` when the
+refusal comes as the broker reads the grant.
+When a person approves the request, the broker makes these refusals before the approval request:
+it makes the token that your read would get, reads GitHub's answer, and gives that token back to
+GitHub at once, so no request waits and the person is not asked.
 When GitHub does not answer the broker or refuses the App itself, or the check passes its time
-limit, the request goes to the approver as before. The refusal then comes when the broker reads
-the grant.
-
-The broker gives out the token only when GitHub's answer shows
-that the token holds no more than you asked. The command runs only when the broker tells
-`agent-secrets` that it applied the narrowing. A broker that cannot narrow releases the token
-for all repositories, so `agent-secrets` runs nothing and exits 1.
+limit, the request goes to the approver as before, and the refusal comes when the broker reads the
+grant.
+The broker gives out a token only when GitHub's answer shows that it holds no more than the profile
+asked.
 
 The narrowing applies to this read only. The next read without these flags gives the token for
 all repositories of each installation. Keep a narrowed token apart from the other tokens, so

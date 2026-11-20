@@ -671,50 +671,46 @@ The broker evaluates every name
   `MIXED_APPROVERS`; request them separately.
 - A **type secret** has `type=github-app`, `type=google-login` or `type=google-service-account`,
   and a current stored value. A GitHub App value holds an App identifier and private key.
-  Its release returns a JSON object with
-  one installation token for each installation of the App that is not suspended and is on an
-  account its `github-owners` tag lists. A release can narrow that token, with the `github_app`
-  body of `POST /v1/grants/{id}/values` or the exec form's `--github-owner`, `--github-repo` and
-  `--github-read-only`: the token of one listed account alone, limited to named repositories of
-  that account, to `contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`,
-  `checks: read` and `statuses: read`, or to both. An App whose installation has not been granted
-  Actions, checks or commit statuses gets the others. A token limited to
-  repositories alone keeps every permission the App holds, its organization permissions among
-  them, so a token for a machine that must only read is limited to read access too. A narrowing
-  to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`, and one GitHub
-  refuses, such as a repository the installation does not reach, `NARROWING_REFUSED`; the broker
-  releases a narrowed token only once GitHub's answer shows it holds no more. It narrows that
-  release alone; the grant's next release is owner-wide unless it narrows too. A request that
-  asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
-  must approve that request, the broker decides the narrowing before the approval request, so a
-  narrowing it cannot serve costs nobody an approval. It refuses the request then, and nobody is
-  asked, for each of five causes: a request that holds no github-app secret
-  (`NARROWING_NOT_APPLICABLE`), an account the secret's `github-owners` tag does not list
-  (`NARROWING_OWNER_NOT_LISTED`), a name behind the airlock (`NARROWING_BEHIND_AIRLOCK`), an App
-  with no installation on the account (`422 NARROWING_REFUSED` on the request, whose message
-  says `has no installation on`, where the release of a grant answers it `502 MINT_FAILED`), and
-  a narrowing GitHub refuses (`NARROWING_REFUSED`). For a narrowing that names repositories or
-  read access, it mints the token the release would mint and revokes it at once. It checks a
-  narrowing to an account alone from the App's list of
-  installations and mints no token for it: such a narrowing sends GitHub no repositories and no
-  permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.
+  Every GitHub App token the broker releases is a profile's (the profiles file, above), and a
+  `github-app` secret no profile names is refused by its name (`403 PROFILE_REFUSED`,
+  `github-app-no-profile`). A release holds one installation token for each account in effect,
+  the profile's `github.accounts` or the request's target, cut to the profile's repositories or
+  the target's: a JSON object of installations, or that one account's bare token for a profile
+  whose `github.value` is `token`. The broker asks GitHub for the profile's permissions cut to what
+  each installation holds, as its list of installations gives them: a permission the installation
+  holds none of is left out, and one it holds at a lower level is asked for at that level. The
+  values answer names each entry the cut left out (`github_left_out`), and the broker logs one
+  line for each. A cut that leaves no permission refuses the release with no request to GitHub
+  (`422 PROFILE_MINT_REFUSED`), since GitHub gives every permission the installation holds to a
+  request that names none, and GitHub's own `422`, such as for a repository the installation does
+  not reach, refuses it the same way. The broker releases a token only once GitHub's answer shows
+  it holds no more than the request asked, for every profile, and gives back one that holds more
+  (`502 MINT_FAILED`). A target is an entry of the signed request's `locations`, so the record a
+  person approves holds it and the approval page prints it beside the profile's source,
+  permissions, accounts, repositories and proxy hosts. A target outside the profile, a target on a
+  name with no `github` block, and no target on a `value: token` profile of more than one account
+  are refused `400 TARGET_REFUSED` before anybody is asked, naming the profile's accounts and
+  repositories. A body that carries `github_app`, the narrowing the broker took before profiles,
+  is refused `400 GITHUB_APP_FIELD_REMOVED` on `POST /v1/requests` and
+  `POST /v1/grants/{id}/values`, never `INVALID_REQUEST`, so a client of an earlier release does
+  not send its request again without it. Where a person must approve a request that names a GitHub
+  profile, the broker first mints the token the release would mint, for the target's account or
+  the profile's accounts, and revokes it at once, so a profile it cannot mint costs nobody an
+  approval: an App with no installation on an account in effect, a cut that leaves no permission
+  and a repository the installation does not reach are each refused `422 PROFILE_MINT_REFUSED`
+  then, and nobody is asked (the release of a grant answers the first `502 MINT_FAILED`).
   Where it reaches no verdict, the request waits for its approver as before and the release makes
   the refusal. GitHub gives no verdict when it is out of reach, when it answers a 5xx or a rate
   limit, and when it refuses the App itself with a `401`, `403` or `404`. The broker reaches no
   verdict when it cannot read the stored value or mint from it, when the check passes its own
   bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
   enrollment has used its checks (five at once, one more every twelve seconds), and when it
-  cannot read the requester or has no GitHub App minter. The narrowing is unsigned and narrows
-  nothing by itself, so the grant, its record and the approval page are the same, and a release
-  that asks for no narrowing is owner-wide whatever the request carried.
-  A narrowing and the airlock do not go together: where a person decides the request, the broker
-  refuses the request `NARROWING_BEHIND_AIRLOCK` before the approval request, naming that
-  secret, when any of its names is behind the airlock ([The airlock](#the-airlock)); where the
-  policy grants every name at once, the same refusal comes at the release of the grant. The
-  reason is that the proxy spends such a grant's values itself and mints them owner-wide for the
-  life of the grant, so no narrowing of one release could hold for them. A github-app secret
-  the rules do not name narrows as it always has: ask for it in a grant that holds no name
-  behind the airlock. The exec form's `--github-token` narrows nothing: the release holds the
+  cannot read the requester or has no GitHub App minter.
+  A profile with a `proxy` block is behind the airlock ([The airlock](#the-airlock)): its release
+  hands the command a placeholder, and the proxy mints the profile's token itself, for the grant's
+  target and with the same cut, keeps it until five minutes before it expires, and puts it in
+  place of the placeholder only in the requests the block allows.
+  The exec form's `--github-token` narrows nothing: the release holds the
   same JSON object of installations, and the flag decides what the exec form puts in the
   command's environment. With it the name holds that one installation's token alone, which is
   what a command sends to GitHub, and without it the name holds the whole object.

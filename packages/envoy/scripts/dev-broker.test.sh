@@ -333,9 +333,13 @@ run_instance() {
   instance_pid[which]=$!
 }
 
+# Waits up to 30 s for an instance to print its ready line: the stack's own waits poll every half
+# second (the stands, the proxy's front and each of the broker's three listening lines), so on a
+# loaded machine the fakes take seconds to get through them, and dev-airlock.test.sh's wait for
+# that same stack has the same bound.
 wait_for_ready() {
   local log_file="$1"
-  for _ in $(seq 1 50); do
+  for _ in $(seq 1 300); do
     grep -q 'dev-broker: ready\.' "$log_file" 2>/dev/null && return 0
     sleep 0.1
   done
