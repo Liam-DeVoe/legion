@@ -49,7 +49,9 @@ pids="$work/pids"
 stop_standins() {
   local pid
   while read -r pid; do
-    if [ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null)" = "$real_sleep 1000 " ]; then
+    # 2> before <, so a process already gone prints nothing: bash reports a failed redirection on
+    # the standard error it has at that point.
+    if [ "$(tr '\0' ' ' 2> /dev/null < "/proc/$pid/cmdline")" = "$real_sleep 1000 " ]; then
       kill -KILL "$pid" 2> /dev/null || true
     fi
   done < "$pids"
@@ -201,7 +203,7 @@ held_state=$( (sed 's/.*) //' "/proc/$held/stat" || true) 2> /dev/null | cut -c1
 check "and ended it" "$(is "$(case "$held_state" in "" | Z) echo gone ;; *) echo alive ;; esac)" gone)"
 # The holder is kept out of the stand-ins' pid list so the case, and not stop_standins, sees whether
 # the script ended it; one the script left is ended here, while /proc names it that sleep.
-if [ "$(tr '\0' ' ' < "/proc/$held/cmdline" 2> /dev/null)" = "$real_sleep 1000 " ]; then kill -KILL "$held"; fi
+if [ "$(tr '\0' ' ' 2> /dev/null < "/proc/$held/cmdline")" = "$real_sleep 1000 " ]; then kill -KILL "$held"; fi
 
 seam "$ENDS"
 echo "case: an install that fails by itself is not tried again, and the network is not blamed"
