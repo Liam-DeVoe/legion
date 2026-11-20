@@ -36,9 +36,9 @@ import (
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer than five minutes ago and every merged row the rule
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads). A change of an issue's links takes a pull request from the issue at
-// once where the link that gave it is gone, and has the reconcile judge again each pull request
-// the change named (LinksChanged), which the issue PATCH also reads again from GitHub at once.
+// ListStalePullRequestHeads). Each writer that read GitHub stores, with the issue, the inputs it
+// judged the issue from (PullRequestHead.Inputs), so a change of an issue's links judges each row
+// it names again from them, in its own transaction and with no read of GitHub (LinksChanged).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -73,6 +73,18 @@ type PullRequestHead struct {
 	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
 	// proves, that the base branch held this commit (UpsertPullRequestHead).
 	MergeCommitSHA string
+	// Inputs is what the attribution read the issue from (AttributionInputs), and HeadInRepo
+	// whether the head branch is in the pull request's own repository (headInOwnRepository),
+	// stored on the row so that a change of an issue's links judges the row again with no read
+	// of GitHub (LinksChanged). CommitsRead is whether Inputs.CommitKeys comes from a read of the
+	// commit messages, which attributeHead reads only when no earlier source names an issue the
+	// pull request may keep: the column holds null where they were not read, which is "not
+	// known", not "names nothing". A nil Inputs or HeadInRepo is a writer that read neither, and
+	// stores null. The three are written exactly where the issue is (AttributionComplete), so the
+	// row's issue and the facts it was judged from always come from one read.
+	Inputs      *AttributionInputs
+	CommitsRead bool
+	HeadInRepo  *bool
 }
 
 // PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
@@ -303,20 +315,7 @@ type IssuePullRequestAttributionEventPayload struct {
 func appendAttributionChange(
 	ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead, left *string,
 ) ([]model.Event, error) {
-	payload := IssuePullRequestAttributionEventPayload{
-		Repo: head.Repo, Number: head.Number, URL: head.URL,
-		From: left, To: head.IssueKey, Source: head.AttributionSource,
-	}
-	var moved []model.Event
-	for _, issue := range []*string{left, head.IssueKey} {
-		if issue == nil {
-			continue
-		}
-		key := *issue
-		moved = append(moved, model.Event{
-			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
-		})
-	}
+	moved := attributionMoveEvents(head.Repo, head.Number, head.URL, left, head.IssueKey, head.AttributionSource)
 	if err := broker.LockOwners(ctx, tx, moved...); err != nil {
 		return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
 	}
@@ -329,6 +328,27 @@ func appendAttributionChange(
 		appended = append(appended, written)
 	}
 	return appended, nil
+}
+
+// attributionMoveEvents is the AttributionEventType events one move of a pull request appends:
+// one on the issue it left and one on the issue it reached, each carrying the same payload, and
+// none on a side that is nobody. Every writer that moves a row builds its events here
+// (appendAttributionChange, HeadOfChangedLink.AttributionEvents).
+func attributionMoveEvents(repo string, number int, url string, from, to *string, source string) []model.Event {
+	payload := IssuePullRequestAttributionEventPayload{
+		Repo: repo, Number: number, URL: url, From: from, To: to, Source: source,
+	}
+	var moved []model.Event
+	for _, issue := range []*string{from, to} {
+		if issue == nil {
+			continue
+		}
+		key := *issue
+		moved = append(moved, model.Event{
+			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
+		})
+	}
+	return moved
 }
 
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
@@ -376,13 +396,20 @@ const headWriteRollback = 2 * time.Second
 // exactly as it was, which is the one way this statement writes nothing and reports no error.
 // Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
+//
+// The stored inputs and the head's repository (PullRequestHead.Inputs, HeadInRepo) follow the
+// issue: a complete write replaces them, and an incomplete one leaves them as they stand, so the
+// facts LinksChanged judges a row from are the facts its issue was judged from.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+	inputs := storedInputsOf(head)
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			title, url, event_at, checked_at, attribution_rule
+			title, url, event_at, checked_at, attribution_rule,
+			attribution_title_keys, attribution_cited_issues, attribution_branch_keys,
+			attribution_commit_keys, head_in_repo
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16, $17, $18, $19)
 		on conflict (repo, number) do update set
 			head_sha = excluded.head_sha,
 			head_ref = excluded.head_ref,
@@ -392,6 +419,16 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 				then excluded.issue_key else pull_request_heads.issue_key end,
 			attribution_source = case when $13::boolean
 				then excluded.attribution_source else pull_request_heads.attribution_source end,
+			attribution_title_keys = case when $13::boolean
+				then excluded.attribution_title_keys else pull_request_heads.attribution_title_keys end,
+			attribution_cited_issues = case when $13::boolean
+				then excluded.attribution_cited_issues else pull_request_heads.attribution_cited_issues end,
+			attribution_branch_keys = case when $13::boolean
+				then excluded.attribution_branch_keys else pull_request_heads.attribution_branch_keys end,
+			attribution_commit_keys = case when $13::boolean
+				then excluded.attribution_commit_keys else pull_request_heads.attribution_commit_keys end,
+			head_in_repo = case when $13::boolean
+				then excluded.head_in_repo else pull_request_heads.head_in_repo end,
 			title = excluded.title,
 			url = excluded.url,
 			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
@@ -405,11 +442,44 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
 		head.AttributionComplete, AttributionRuleVersion,
+		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// storedInputs is the five values upsertHeadRow binds for the stored inputs of a row, each nil
+// (null) where the write has none to store: an incomplete write, which stores none, and a writer
+// that read none. The commit keys are null where the commit messages were not read
+// (PullRequestHead.CommitsRead), and every other list is never null where the write read it: an
+// empty list is a source that names nothing, which LinksChanged reads as known.
+type storedInputs struct {
+	titleKeys, citedIssues, branchKeys, commitKeys []string
+	headInRepo                                     *bool
+}
+
+func storedInputsOf(head PullRequestHead) storedInputs {
+	if !head.AttributionComplete || head.Inputs == nil {
+		return storedInputs{}
+	}
+	known := func(list []string) []string {
+		if list == nil {
+			return []string{}
+		}
+		return list
+	}
+	stored := storedInputs{
+		titleKeys:   known(head.Inputs.TitleKeys),
+		citedIssues: known(head.Inputs.CitedIssues),
+		branchKeys:  known(head.Inputs.BranchKeys),
+		headInRepo:  head.HeadInRepo,
+	}
+	if head.CommitsRead {
+		stored.commitKeys = known(head.Inputs.CommitKeys)
+	}
+	return stored
 }
 
 // upsertHeadUnderCanonicalName writes head, which every caller has already keyed by the
@@ -813,13 +883,25 @@ func headInOwnRepository(repoFull, headRepo string) bool {
 // branch of the pull request's own repository, and whether the attempt read every source there
 // was. complete is the write's leave to replace a stored attribution: an attempt that could not
 // read a source it wanted — a payload that named no head repository, a commit read GitHub
-// refused — may add an attribution but never deletes one (UpsertPullRequestHead).
+// refused — may add an attribution but never deletes one (UpsertPullRequestHead). inputs is what
+// the attempt read the issue from, and commitsRead whether the commit messages were among it; the
+// row stores both with the issue (PullRequestHead.Inputs).
 type headAttributionResult struct {
-	issueKey *string
-	source   string
-	messages []string
-	ownHead  bool
-	complete bool
+	issueKey    *string
+	source      string
+	messages    []string
+	ownHead     bool
+	complete    bool
+	inputs      AttributionInputs
+	commitsRead bool
+}
+
+// stored is what a row written from this attempt stores of the facts it was judged from
+// (PullRequestHead.Inputs, CommitsRead, HeadInRepo).
+func (a headAttributionResult) stored(head PullRequestHead) PullRequestHead {
+	inputs, ownHead := a.inputs, a.ownHead
+	head.Inputs, head.CommitsRead, head.HeadInRepo = &inputs, a.commitsRead, &ownHead
+	return head
 }
 
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
@@ -859,8 +941,9 @@ func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFac
 		source:   string(sourceNone),
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
 		complete: headRepo != "",
+		inputs:   attributionInputsFrom(facts),
 	}
-	candidates, err := resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	candidates, err := resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributed.inputs)
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}
@@ -929,6 +1012,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 	facts.CommitMessages = read
 	attributed, err = headAttribution(ctx, pool, facts, headRepo)
 	attributed.messages = read
+	attributed.commitsRead = true
 	return attributed, err
 }
 
@@ -938,13 +1022,13 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
 // a merge is read from whichever of the two GitHub sent.
 func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time) PullRequestHead {
-	return PullRequestHead{
+	return attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
 		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
-	}
+	})
 }
 
 // headRepositoryOf is the repository a pull request's head branch lives in, as GitHub's answer
@@ -1202,14 +1286,14 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		now := time.Now()
 		checkedAt = &now
 	}
-	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, PullRequestHead{
+	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
 		BaseRef: payload["base_ref"], State: PullRequestHeadState(payload["action"], payload["merged"] == "true"),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
 		MergeCommitSHA: payload["merge_commit_sha"],
-	}, given)
+	}), given)
 }
 
 // envelopeTime reads an envelope's RFC3339 timestamp; an absent or malformed one is no time,

@@ -57,12 +57,12 @@ import (
 // link carries no time, and adding or removing one leaves its issue's updated_at alone), so the
 // walk visits them all in turn.
 //
-// A pull_request_heads row stores none of those inputs, so it is judged again only from a read of
-// GitHub (pull_request_heads.go). So a change of an issue's links judges again at once each row
-// whose own URL a link it added or removed names, and, where it removed a link to a GitHub issue,
-// each row the issue held by a citation: it takes a pull request from the issue in the
-// transaction of the change where the link that gave it is gone, and the issue PATCH reads each
-// such pull request again from GitHub after it (LinksChanged).
+// A pull_request_heads row stores the same four inputs, written by each writer that read them
+// from GitHub (UpsertPullRequestHead), and whether its head is in its own repository, so its issue
+// is judged again from the database alone too: a change of an issue's links judges at once, in its
+// own transaction, each row whose own URL a link it added or removed names and each row whose body
+// cites a GitHub issue it added or removed, with no read of GitHub (LinksChanged). A link a person
+// makes by hand is answered from what Dispatch holds, as the results route answers it.
 
 // AttributionRuleVersion names the rule this build judges a pull request by: the first
 // candidate, of the five sources above, that is held to the pull request.
@@ -74,14 +74,16 @@ import (
 // first. 2 is the order above, with the two links and the head branch over the title and the
 // body. 3 holds the issue's own link to a pull request's URL in any repository (R19 of the spec
 // of several open pull requests), so a pull request an issue links in another repository is that
-// issue's. A change of an issue's links that LinksChanged names a row for sets its rule to 0 too,
-// since the rule that judged it judged links the row no longer has.
+// issue's. 4 is 3 with its inputs and the head's repository stored on the row, so a change of an
+// issue's links judges the row from them; the reconcile's merged arm reads each merged row once
+// more and stores them. A row a change of an issue's links named and could not judge from stored
+// facts gets rule 0, so that arm reads it again (LinksChanged).
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
 // row is read again only by that arm — so a change made without raising it leaves every pull
 // request merged before it judged by the rule of its day for good.
-const AttributionRuleVersion = 3
+const AttributionRuleVersion = 4
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -452,9 +454,10 @@ type attributionCandidate struct {
 
 // resolveAttributionCandidates is every issue the stored inputs of the pull request at url, in
 // repo, name, best first, each marked held or not: the whole ranked list, so a caller that must
-// skip a candidate can take the next rather than make a second read.
-func resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
-	rows, err := pool.Query(ctx, attributionCandidatesQuery,
+// skip a candidate can take the next rather than make a second read. q is the pool, or a
+// transaction whose own uncommitted links the candidates must read (LinksChanged).
+func resolveAttributionCandidates(ctx context.Context, q refs.Queryer, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
+	rows, err := q.Query(ctx, attributionCandidatesQuery,
 		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)

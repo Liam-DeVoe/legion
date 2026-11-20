@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// A change of an issue's links that names a stored pull request's own URL leaves the row for the
-// reconcile to judge again, whatever a read of GitHub after the change does (LinksChanged): the
-// rule that judged it judged links the row no longer has, and a merged row the current rule judged
-// is visited by nothing else. The row whose issue the removed link gave is the issue's no longer,
-// at the change. A row the change linked keeps its stored issue until a read judges it, and a row
-// whose URL no changed link names is left exactly as it was.
+// A change of an issue's links that names a row no writer stored the inputs of — a row of the
+// release before, which the reconcile has not read again yet — leaves the row for the reconcile to
+// judge again (LinksChanged): the stored facts cannot judge it, and a merged row the current rule
+// judged is visited by nothing else. The row whose issue the removed link gave is the issue's no
+// longer, at the change. A row the change linked keeps its stored issue until a read judges it,
+// and a row whose URL no changed link names is left exactly as it was.
 func TestALinkChangeHasTheReconcileJudgeTheRowAgain(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedLinkedIssue(t, ctx, pool, linkedPullURL(21), linkedPullURL(22))
@@ -50,8 +50,8 @@ func TestALinkChangeHasTheReconcileJudgeTheRowAgain(t *testing.T) {
 		t.Fatalf("judge again the pull requests whose links changed: %v", err)
 	}
 	want := []HeadOfChangedLink{
-		{Repo: linkedPullRepo, Number: 21, URL: linkedPullURL(21), Uncredited: true},
-		{Repo: linkedPullRepo, Number: 23, URL: linkedPullURL(23), Uncredited: false},
+		{Repo: linkedPullRepo, Number: 21, URL: linkedPullURL(21), From: &issue, To: nil, Source: string(sourceNone)},
+		{Repo: linkedPullRepo, Number: 23, URL: linkedPullURL(23), From: nil, To: nil, Source: string(sourceNone)},
 	}
 	if !reflect.DeepEqual(changed, want) {
 		t.Fatalf("the pull requests the change named = %+v, want %+v", changed, want)
