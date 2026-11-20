@@ -28,17 +28,21 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
 skill's cases (`cases.ts`), one JSON object per line.
 
-- `screen`: per case, the two judge controls (the real step must pass, "I will continue." must
-  fail; a case that fails either is dropped), then a capture of each arm (old, new, none), 10
+- `screen`: per case, the three judge controls (the real step must pass; the case's
+  `violatingStep`, a step that breaks the line, must fail; "I will continue." must fail; a case
+  that fails any is dropped, naming the control), then a capture of each arm (old, new, none), 10
   replays of each, each reply judged blind with all arms shuffled, and runs made again for the runs
   with no verdict, at most 5 more per arm. It stops at 6 informative or 15 screened cases.
 - `confirm`: 40 fresh runs of old and new for each flagged case.
 - `control`: 40 runs of `minus` (old without the case's line, or without `--planted-line`) and 40
   fresh runs of old, on the skill's control case.
-- `report`: each case's passes per arm and stage, the skill's verdict and its reason, the
-  false-loss rate at the cases run, the spend at list price, the peak memory, and how many
-  captures' system-prompt digests differ from their session's. It calls no model, and needs only
-  `--config`, `--out`, `--old` and `--cases`.
+- `report`: each case's passes per arm and stage, the skill's verdict and its reason (`keeps`
+  prints as "no loss detected by the registered rule"), the drops per judge control, an estimate
+  of the procedure's false-loss chance at the cases run (exact binomial under identical old and
+  new texts, the pass rates taken from each case's own screen; its assumptions are printed with
+  it), a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
+  at list price, the peak memory, and how many captures' system-prompt digests differ from their
+  session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`.
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and

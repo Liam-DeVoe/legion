@@ -33,19 +33,23 @@
  *
  * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
  *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway's Anthropic
- *   Messages route does not serve is dropped; the two judge controls (judge.ts) run, and a case
- *   that fails either is dropped; then a capture per arm (old, new, none; capture.ts, read back
- *   when saved already), SCREEN_RUNS replays of each, every reply of the round judged blind (all
- *   arms shuffled under a recorded seed), and rounds of extra runs for the runs with no verdict, as
- *   score.ts's `stageOutcome` says, at most MAX_EXTRA_RUNS per arm.
+ *   Messages route does not serve is dropped; the three judge controls (judge.ts's CONTROLS) run,
+ *   and a case that fails any is dropped, its drop naming each control it failed; then a capture
+ *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
+ *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
+ *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
+ *   MAX_EXTRA_RUNS per arm.
  * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
  * - `control`: FRESH_RUNS runs of `minus` (old less the case's line, or less `--planted-line`) and
  *   FRESH_RUNS fresh runs of old, on the skill's control case.
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
  *   (fewer than MIN_INFORMATIVE_CASES informative cases, or a control that is no loss).
- * - `report` (no model call) prints each case's passes per arm and stage, the skill's verdict and
- *   its reason (score.ts), the false-loss rate at the cases run, the spend, the peak memory, and
- *   how many captures' system-prompt digests differ from their session's.
+ * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
+ *   control, the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected by
+ *   the registered rule"), the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7
+ *   and drops of 0.1 to 0.4), the estimated false-loss rate at the cases run (`falseLossChance`),
+ *   the spend, the peak memory, and how many captures' system-prompt digests differ from their
+ *   session's.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
  * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, `omp` by
@@ -123,10 +127,11 @@ import {
 } from "./gateway";
 import {
   type ArmReply,
+  CONTROLS,
+  ControlName,
   type Judged,
   judgeBlind,
   judgeControls,
-  NOTHING_REPLY,
   newSeed,
 } from "./judge";
 import { Host, LOAD_MODEL, LOAD_THINKING, LoadRefused, LoadStopped, runLoad } from "./load";
@@ -147,6 +152,7 @@ import { type Replayed, replay } from "./replay";
 import {
   FLAG_GAP,
   FRESH_RUNS,
+  INFORMATIVE_GAP,
   isControlLoss,
   isFlagged,
   isInformative,
@@ -680,7 +686,9 @@ export const CaseResult = z.strictObject({
   controls: z
     .strictObject({
       realStep: Judgement,
+      violating: Judgement,
       nothing: Judgement,
+      failed: z.array(ControlName),
       hold: z.boolean(),
       usd: z.number(),
     })
@@ -721,28 +729,84 @@ export function armCaptureDir(out: string, arm: Arm): string {
   return path.join(out, "captures", `${arm.name}-${text}`);
 }
 
-/** The chance that one count of `runs` runs that each pass with chance `p` is at least `gap` more
- *  than another such count. */
-export function chanceAhead(runs: number, p: number, gap: number): number {
+/** The chance of each count, 0 to `runs`, of `runs` runs that each pass with chance `p`. */
+function binomial(runs: number, p: number): number[] {
   const chances: number[] = [];
   let ways = 1;
   for (let k = 0; k <= runs; k += 1) {
     chances.push(ways * p ** k * (1 - p) ** (runs - k));
     ways = (ways * (runs - k)) / (k + 1);
   }
+  return chances;
+}
+
+/** From the chance of each count, the chance of each count or fewer. */
+function atMost(chances: readonly number[]): number[] {
   let sum = 0;
-  for (let x = gap; x <= runs; x += 1) {
-    for (let y = 0; y <= x - gap; y += 1) sum += (chances[x] ?? 0) * (chances[y] ?? 0);
-  }
+  return chances.map((chance) => {
+    sum += chance;
+    return sum;
+  });
+}
+
+/** The chance that a count of `runs` runs that each pass with chance `a` is at least `gap` more
+ *  than a count of `runs` runs that each pass with chance `b`. */
+function chanceAhead(runs: number, a: number, b: number, gap: number): number {
+  const ahead = binomial(runs, a);
+  const behind = atMost(binomial(runs, b));
+  let sum = 0;
+  for (let k = gap; k <= runs; k += 1) sum += (ahead[k] ?? 0) * (behind[k - gap] ?? 0);
   return sum;
 }
 
-/** The chance that a case is called a loss when the cut's text is the old text itself, both passing
- *  with chance `p`: flagged in the screen (FLAG_GAP more passes of SCREEN_RUNS), then a loss in the
- *  confirm (LOSS_GAP more of FRESH_RUNS), as the spec's "Why these numbers" counts it. */
-export function falseLossChance(p: number): number {
-  return chanceAhead(SCREEN_RUNS, p, FLAG_GAP) * chanceAhead(FRESH_RUNS, p, LOSS_GAP);
+/** Pass rates of the three texts a case runs under: the old text, the cut's and no skill. */
+export interface PassRates {
+  readonly old: number;
+  readonly cut: number;
+  readonly none: number;
 }
+
+/**
+ * The chance that the registered rule calls a loss in one informative case, when each run of the
+ * old text passes with chance `old`, of the cut's text with `cut` and of no skill with `none`, all
+ * runs apart. The case is flagged in the screen (o − n ≥ FLAG_GAP) given that it is informative
+ * (o − z ≥ INFORMATIVE_GAP), o, n and z counts of SCREEN_RUNS runs, and then is a loss in the
+ * confirm (O − N ≥ LOSS_GAP), O and N counts of FRESH_RUNS fresh runs; exact binomial:
+ * P(o − n ≥ FLAG_GAP and o − z ≥ INFORMATIVE_GAP) / P(o − z ≥ INFORMATIVE_GAP) × P(O − N ≥
+ * LOSS_GAP). Throws for rates under which no case is ever informative.
+ */
+export function lossChance(rates: PassRates): number {
+  const old = binomial(SCREEN_RUNS, rates.old);
+  const cut = atMost(binomial(SCREEN_RUNS, rates.cut));
+  const none = atMost(binomial(SCREEN_RUNS, rates.none));
+  let informative = 0;
+  let flagged = 0;
+  for (let k = 0; k <= SCREEN_RUNS; k += 1) {
+    const chance = (old[k] ?? 0) * (none[k - INFORMATIVE_GAP] ?? 0);
+    informative += chance;
+    flagged += chance * (cut[k - FLAG_GAP] ?? 0);
+  }
+  if (informative === 0) {
+    throw new Error(
+      `no case is informative when the old text passes ${rates.old} and no skill ${rates.none} of the runs`
+    );
+  }
+  return (flagged / informative) * chanceAhead(FRESH_RUNS, rates.old, rates.cut, LOSS_GAP);
+}
+
+/** An estimate of the chance that the registered rule calls a loss in one informative case when
+ *  the cut's text is the old text: lossChance with both texts passing at p = (old + new + 1) /
+ *  (2 × SCREEN_RUNS + 2), the case's old and cut screen passes pooled with a Laplace term, and no
+ *  skill at q = (none + 1) / (SCREEN_RUNS + 2). */
+export function falseLossChance(passes: { old: number; new: number; none: number }): number {
+  const p = (passes.old + passes.new + 1) / (2 * SCREEN_RUNS + 2);
+  const q = (passes.none + 1) / (SCREEN_RUNS + 2);
+  return lossChance({ old: p, cut: p, none: q });
+}
+
+/** The report's sensitivity table: the old text's pass rates, the drops of the cut's text from
+ *  them, and the no-skill pass rate. */
+export const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } as const;
 
 // `behaviour`: running the stages.
 
@@ -902,7 +966,8 @@ function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boo
   return existing.state !== "running";
 }
 
-/** The judge controls of case `c`, kept in `result`, which is dropped when they do not hold. */
+/** The judge controls of case `c`, kept in `result`, which is dropped when they do not hold: its
+ *  drop names each control it failed. */
 async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise<CaseResult> {
   const before = r.gateway.spend().usd;
   const controls = await judgeControls(c, r.judge);
@@ -911,16 +976,19 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
     ...result,
     controls: {
       realStep: judged(controls.realStep),
+      violating: judged(controls.violating),
       nothing: judged(controls.nothing),
+      failed: controls.failed,
       hold: controls.hold,
       usd: r.gateway.spend().usd - before,
     },
   };
   if (controls.hold) return next;
-  return {
-    ...next,
-    dropped: `the judge controls do not hold: the real step is judged ${controls.realStep.verdict ?? "not at all"} (pass wanted), and the reply "${NOTHING_REPLY}" ${controls.nothing.verdict ?? "not at all"} (fail wanted)`,
-  };
+  const failures = controls.failed.map(
+    (name) =>
+      `${CONTROLS[name].step} is judged ${controls[name].verdict ?? "not at all"} (${CONTROLS[name].wanted} wanted)`
+  );
+  return { ...next, dropped: `the judge controls do not hold: ${failures.join("; ")}` };
 }
 
 /** Round `round` of a stage: `toStart` replays of each arm, all at once (the gateway bounds the
@@ -1259,7 +1327,7 @@ function verdictLine(
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss`;
   if (outcome.verdict === "keeps") {
-    return `keeps: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}`;
+    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}`;
   }
   const losses = score.cases.filter((each) => each.loss).map((each) => each.caseId);
   return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}`;
@@ -1291,6 +1359,13 @@ function reportCommand(b: Behaviour): void {
   lines.push(
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${dropped.length - byControls} for their model), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
   );
+  const byControl = ControlName.options.map((name) => {
+    const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
+    return `${CONTROLS[name].step} not judged ${CONTROLS[name].wanted} ${count}`;
+  });
+  lines.push(
+    `judge controls failed, by control (a case can fail more than one): ${byControl.join(", ")}`
+  );
   lines.push(
     score.controlCase === undefined
       ? "control case: none, since no case is informative"
@@ -1298,15 +1373,26 @@ function reportCommand(b: Behaviour): void {
   );
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
+  const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+  lines.push(
+    `sensitivity of the registered rule: the chance that it calls a loss in one informative case whose no-skill arm passes ${SENSITIVITY.none} of its runs, by the old text's and the cut's pass rates (exact binomial)`
+  );
+  for (const old of SENSITIVITY.old) {
+    const row = SENSITIVITY.drops.map((drop) => {
+      const cut = old - drop;
+      return `new ${cut.toFixed(1)} ${percent(lossChance({ old, cut, none: SENSITIVITY.none }))}`;
+    });
+    lines.push(`  old ${old.toFixed(1)}: ${row.join(", ")}`);
+  }
+
   const chances = score.cases.flatMap((each) =>
     each.informative && each.screen.state === "counted"
-      ? [{ id: each.caseId, chance: falseLossChance(each.screen.passes.old / SCREEN_RUNS) }]
+      ? [{ id: each.caseId, chance: falseLossChance(each.screen.passes) }]
       : []
   );
   const rate = 1 - chances.reduce((none, { chance }) => none * (1 - chance), 1);
-  const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
   lines.push(
-    `false-loss rate at the cases run: ${percent(rate)}, the chance that the rules call a loss in one of the ${chances.length} informative cases when the cut's text is the old text, each case passing at its old screen rate${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
+    `false-loss rate at the cases run (an estimate): ${percent(rate)}, the chance that the registered rule calls a loss in one of the ${chances.length} informative cases when the cut's text is the old text; each case's chance is exact binomial given that it is informative, with the old and the cut's texts both passing at (old + new + 1)/${2 * SCREEN_RUNS + 2} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}, from its screen passes, and the cases are combined as independent, 1 − Π(1 − chance)${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
   );
 
   const notes = new Map<string, z.infer<typeof CaptureNote>>();

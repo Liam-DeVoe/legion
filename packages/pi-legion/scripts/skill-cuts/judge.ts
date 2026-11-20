@@ -28,7 +28,8 @@
  * `judgeBlind` shuffles the replies of all arms of a case with a seed (`blindOrder`), names each by
  * an opaque id that depends on the seed and its place alone, and starts their judgements in that
  * order. The caller records the seed, so the order and the ids can be made again. `judgeControls`
- * runs a case's two controls: its real step must pass, and the reply NOTHING_REPLY must fail.
+ * runs a case's three controls (CONTROLS): its real step must pass, and both its violating step
+ * (written by the case reader before any run) and the reply NOTHING_REPLY must fail.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -52,6 +53,17 @@ export const BEFORE_MESSAGES = 12;
 export const MESSAGE_CHARS = 4_000;
 /** The judge control's reply that does nothing. */
 export const NOTHING_REPLY = "I will continue.";
+
+/** The names of a case's judge controls. */
+export const ControlName = z.enum(["realStep", "violating", "nothing"]);
+export type ControlName = z.infer<typeof ControlName>;
+/** A case's judge controls: the step each one judges and the verdict it must get. A case that
+ *  fails any control is dropped, and the drop is counted by each control it failed. */
+export const CONTROLS = {
+  realStep: { step: "the real step", wanted: "pass" },
+  violating: { step: "the violating step", wanted: "fail" },
+  nothing: { step: `the reply "${NOTHING_REPLY}"`, wanted: "fail" },
+} as const satisfies Record<ControlName, { step: string; wanted: "pass" | "fail" }>;
 
 /** A judgement as the judge answers it. */
 export const Judgement = z.strictObject({
@@ -214,18 +226,24 @@ function caseInput(c: Case): Omit<JudgeInput, "reply"> {
   return { criterion: c.criterion, line: c.line.text, before: beforeText(c) };
 }
 
-/** A case's two judge controls, and whether they hold: the real step passes and NOTHING_REPLY
- *  fails. A control with a null verdict does not hold. Rejects when a send does. */
+/** A case's judge controls (CONTROLS): each one's judgement, the controls whose verdict is not the
+ *  one wanted (a null verdict is not), in CONTROLS' order, and whether none is. Rejects when a send
+ *  does. */
 export async function judgeControls(
   c: Case,
   gateway: Gateway
-): Promise<{ realStep: Judged; nothing: Judged; hold: boolean }> {
+): Promise<Record<ControlName, Judged> & { failed: ControlName[]; hold: boolean }> {
   const shared = caseInput(c);
-  const [realStep, nothing] = await Promise.all([
+  const [realStep, violating, nothing] = await Promise.all([
     judgeReply({ ...shared, reply: stepText(c.realStep.content ?? []) }, gateway),
+    judgeReply({ ...shared, reply: stepText(c.violatingStep.content ?? []) }, gateway),
     judgeReply({ ...shared, reply: stepText([{ type: "text", text: NOTHING_REPLY }]) }, gateway),
   ]);
-  return { realStep, nothing, hold: realStep.verdict === "pass" && nothing.verdict === "fail" };
+  const judged: Record<ControlName, Judged> = { realStep, violating, nothing };
+  const failed = ControlName.options.filter(
+    (name) => judged[name].verdict !== CONTROLS[name].wanted
+  );
+  return { ...judged, failed, hold: failed.length === 0 };
 }
 
 /** A fresh seed for `blindOrder`, to be recorded with the judgements. */

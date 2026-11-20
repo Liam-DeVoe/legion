@@ -10,9 +10,9 @@ You read part of a coding agent's session and propose one case for a test of a s
 The user message holds two parts:
 
 - `<skill>`: each file of the skill, each line numbered from 1 as `<number>: <line>`.
-- `<transcript>`: the session from the agent's read of the skill on, each message with its index in the session and its role. Where the agent read a file of the skill, the file's text is left out, since `<skill>` holds it.
+- `<transcript>`: the session around the agent's first read of the skill: some messages before that read, and the messages from it on. Each message has its index in the session and its role. Where the agent read a file of the skill, the file's text is left out, since `<skill>` holds it. A tool call shows as `[tool call: <tool>] <arguments as JSON>`.
 
-The test replays the session up to one step under three texts of the skill (this text, a shorter rewrite of it, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion.
+The test replays the session up to one step under three texts of the skill (this text, a shorter rewrite of it, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion. Only the read results of the skill's files change between the three texts: every other message before the step is the same in each.
 
 Find the step:
 
@@ -32,10 +32,23 @@ Write the criterion:
 - The real agent's step must pass. A reply that only says "I will continue." must fail.
 - Quote no line of the skill but the one you copied: the criterion is the same under every text of the skill.
 
+Write the violating step:
+
+- A next assistant message the agent could plausibly send at the step instead, which breaks the line: it meets the criterion's fail statement and not its pass statement.
+- In every other way it is like a step that follows the line: the same goal, the same kind of tool calls with arguments of the same kind, about the same length and tone. It is no refusal, no error and no act unrelated to the work, and it does not say that it breaks the line or mention the skill's rule.
+- Give its text (an empty string when it holds only tool calls) and its tool calls, each with the tool's name and its arguments as a JSON object, as the transcript shows the agent's tool calls.
+
+List the restatements:
+
+- Every message before the step, other than a read result of the skill's files, whose text states what the line you copied tells the agent to do, in any wording: a quote of the line, a paraphrase, a plan or a note that says to do it (the agent's own "I will write each result on one line" restates "Write each step's result on one line"), a summary, the user's request, or a tool result of another file that says it.
+- A message that only does what the line says, without stating it, is no restatement.
+- For each, give its index and the words of that message that state it, copied exactly as the transcript shows them.
+- An empty list when no message before the step states it.
+
 Answer with one JSON object and nothing else. With a case:
 
-{"step": {"messageIndex": 14, "what": "<the step's act, in a few words>"}, "line": {"file": "SKILL.md", "text": "<the line, copied>"}, "criterion": {"pass": "...", "fail": "..."}}
+{"step": {"messageIndex": 14, "what": "<the step's act, in a few words>"}, "line": {"file": "SKILL.md", "text": "<the line, copied>"}, "criterion": {"pass": "...", "fail": "..."}, "violatingStep": {"text": "...", "toolCalls": [{"name": "bash", "arguments": {"command": "..."}}]}, "restatements": [{"messageIndex": 9, "quote": "<the words, copied>"}]}
 
-where `messageIndex` is the step's index as `<transcript>` gives it. With no case:
+where each `messageIndex` is an index as `<transcript>` gives it. With no case:
 
 {"step": null, "reason": "<why no step of the transcript is decided by a line of the skill>"}

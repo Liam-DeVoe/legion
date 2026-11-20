@@ -13,6 +13,7 @@ import {
   type CliIo,
   caseResultFile,
   falseLossChance,
+  lossChance,
   main,
 } from "./cli";
 import { loadConfig } from "./config";
@@ -505,8 +506,9 @@ function behaviourStandIn(body: { [field: string]: unknown }): string | Response
   return text.includes(LINE) ? PASS_STEP : FAIL_STEP;
 }
 
-/** A case of F1's step after alpha's reads, which LINE governs, whose real step is `realStep`. */
-function makeCase(id: string, realStep = PASS_STEP): Case {
+/** A case of F1's step after alpha's reads, which LINE governs, whose real step is `realStep` and
+ *  whose violating step is `violatingStep`. */
+function makeCase(id: string, realStep = PASS_STEP, violatingStep = FAIL_STEP): Case {
   return {
     id,
     cut: "acme-skills-1",
@@ -531,6 +533,7 @@ function makeCase(id: string, realStep = PASS_STEP): Case {
     messages: messages.slice(0, 7),
     skillReads: [2, 4],
     realStep: { ...messages[7], content: [{ type: "text", text: realStep }] },
+    violatingStep: { role: "assistant", content: [{ type: "text", text: violatingStep }] },
     source: { store: "store_a", pathHash: pathHash(`/sessions/${id}.jsonl`) },
     sessionStart: "2026-11-20T01:59:41.780Z",
     secretsRemoved: 0,
@@ -562,14 +565,16 @@ function writeSkill(dir: string, files: Record<string, string>): void {
 function scenario(
   name: string,
   newSkill: string,
-  cases: readonly { id: string; realStep?: string; marker?: string }[]
+  cases: readonly { id: string; realStep?: string; violatingStep?: string; marker?: string }[]
 ): Scenario {
   const dir = path.join(scratch, name);
   const old = path.join(dir, "old");
   const fresh = path.join(dir, "new");
   writeSkill(old, { "SKILL.md": f1File(2), "references/x.md": f1File(4) });
   writeSkill(fresh, { "SKILL.md": newSkill, "references/x.md": f1File(4) });
-  const made = cases.map(({ id, realStep }) => makeCase(id, realStep));
+  const made = cases.map(({ id, realStep, violatingStep }) =>
+    makeCase(id, realStep, violatingStep)
+  );
   const casesFile = path.join(dir, "cases.jsonl");
   writeFileSync(casesFile, `${made.map((c) => JSON.stringify(c)).join("\n")}\n`);
   return {
@@ -679,6 +684,7 @@ const LOSS_SKILL = () => f1File(2).replace(LINE, "2. Put each step's result wher
 describe("behaviour", () => {
   test("screen, confirm, control and report give each case's passes and the skill's verdict", async () => {
     const s = scenario("loss", LOSS_SKILL(), [
+      { id: "c00", violatingStep: PASS_STEP },
       { id: "c01", realStep: FAIL_STEP },
       { id: "c02", marker: "FLAKY" },
       { id: "c03", marker: "BROKEN" },
@@ -703,10 +709,10 @@ describe("behaviour", () => {
     expect(screen.stdout).toContain(
       "screening stops before case c09: 6 informative and 6 screened cases"
     );
-    // Two judge controls a case; then 30 replays and 30 judgements, c02's three refused replays
+    // Three judge controls a case; then 30 replays and 30 judgements, c02's three refused replays
     // made again, and every one of c03's 15 replays of each arm refused.
     const screenRequests = requestsSince(from);
-    expect(screenRequests).toHaveLength(2 + (2 + 33 + 30) + (2 + 45) + 5 * 62);
+    expect(screenRequests).toHaveLength(3 + 3 + (3 + 33 + 30) + (3 + 45) + 5 * 63);
     // Each replay sends the anthropic-* headers its capture recorded.
     const replays = screenRequests.filter((request) => !isJudgement(JSON.parse(request.body)));
     expect(replays).toHaveLength(33 + 45 + 5 * 30);
@@ -714,13 +720,31 @@ describe("behaviour", () => {
       expect(request.headers["anthropic-beta"]).toBe(F2_HEADERS["anthropic-beta"] ?? "");
     }
 
-    const c01 = result(s.out, "c01");
-    expect(c01.dropped).toContain("the judge controls do not hold");
-    expect(c01.controls).toMatchObject({
-      realStep: { verdict: "fail" },
+    // c00's violating step is judged pass, and c01's real step fail: each is dropped, its drop
+    // naming the control it failed.
+    const c00 = result(s.out, "c00");
+    expect(c00.dropped).toBe(
+      "the judge controls do not hold: the violating step is judged pass (fail wanted)"
+    );
+    expect(c00.controls).toMatchObject({
+      realStep: { verdict: "pass" },
+      violating: { verdict: "pass" },
       nothing: { verdict: "fail" },
+      failed: ["violating"],
       hold: false,
     });
+    const c01 = result(s.out, "c01");
+    expect(c01.dropped).toBe(
+      "the judge controls do not hold: the real step is judged fail (pass wanted)"
+    );
+    expect(c01.controls).toMatchObject({
+      realStep: { verdict: "fail" },
+      violating: { verdict: "fail" },
+      nothing: { verdict: "fail" },
+      failed: ["realStep"],
+      hold: false,
+    });
+    expect(c00.stages.screen).toBeUndefined();
     expect(c01.stages.screen).toBeUndefined();
     const c02 = result(s.out, "c02");
     expect(c02.stages.screen?.state).toBe("counted");
@@ -733,7 +757,7 @@ describe("behaviour", () => {
     expect(result(s.out, "c03").stages.screen?.state).toBe("unscreened");
     expect(existsSync(caseResultFile(s.out, "c09"))).toBe(false);
     expect(readFileSync(afterLog, "utf8").trim().split("\n")).toEqual(
-      ["c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08"].map((id) =>
+      ["c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08"].map((id) =>
         caseResultFile(s.out, id)
       )
     );
@@ -759,7 +783,10 @@ describe("behaviour", () => {
     expect(reported.code).toBe(0);
     const lines = reported.stdout.split("\n");
     expect(lines).toContain(
-      `case c01: dropped: the judge controls do not hold: the real step is judged fail (pass wanted), and the reply "${NOTHING_REPLY}" fail (fail wanted)`
+      "case c00: dropped: the judge controls do not hold: the violating step is judged pass (fail wanted)"
+    );
+    expect(lines).toContain(
+      "case c01: dropped: the judge controls do not hold: the real step is judged fail (pass wanted)"
     );
     expect(lines).toContain(
       "case c02: screen: old 10/10, new 0/10, none 0/10: informative, flagged (3 runs with no verdict, run again); confirm: old 40/40, new 0/40: a loss; control: old 40/40, minus 0/40: a control loss"
@@ -772,13 +799,28 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 1 dropped (1 by the judge controls, 0 for their model), 1 unscreened, 1 not run"
+      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 for their model), 1 unscreened, 1 not run"
+    );
+    expect(lines).toContain(
+      `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
     );
     expect(lines).toContain("control case: c02");
     expect(lines).toContain(
       "verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss"
     );
-    expect(reported.stdout).toContain("false-loss rate at the cases run: 0.00%");
+    // Each informative case passed old 10, new 0 and none 0 of its screen runs.
+    const each = falseLossChance({ old: 10, new: 0, none: 0 });
+    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+    expect(each).toBeGreaterThan(0);
+    expect(reported.stdout).toContain(
+      `false-loss rate at the cases run (an estimate): ${percent(1 - (1 - each) ** 6)}, `
+    );
+    expect(reported.stdout).toContain(
+      `(c02 ${percent(each)}, c04 ${percent(each)}, c05 ${percent(each)}, c06 ${percent(each)}, c07 ${percent(each)}, c08 ${percent(each)})`
+    );
+    expect(lines).toContain(
+      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, cut, none: 0.1 }))}`).join(", ")}`
+    );
     expect(lines).toContain(
       "digests: 22 of 22 captures' system-prompt digests differ from their session's"
     );
@@ -793,7 +835,7 @@ describe("behaviour", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(logged).toHaveLength(424 + 6 * 160 + 160);
+    expect(logged).toHaveLength(435 + 6 * 160 + 160);
     expect(logged.filter((line) => line.status === 400)).toHaveLength(48);
     const judge = loadPrompt("judge").settings;
     expect(logged.find((line) => line.kind === "judge")).toMatchObject({
@@ -823,7 +865,7 @@ describe("behaviour", () => {
 
     let from = recorder.requests.length;
     expect((await cli(behaviour("screen", s))).code).toBe(0);
-    expect(requestsSince(from)).toHaveLength(2 * 62);
+    expect(requestsSince(from)).toHaveLength(2 * 63);
     const c04 = readFileSync(caseResultFile(s.out, "c04"), "utf8");
 
     from = recorder.requests.length;
@@ -837,7 +879,7 @@ describe("behaviour", () => {
     from = recorder.requests.length;
     const rerun = await cli(behaviour("screen", s));
     expect(rerun.code).toBe(0);
-    expect(requestsSince(from)).toHaveLength(62);
+    expect(requestsSince(from)).toHaveLength(63);
     expect(readFileSync(caseResultFile(s.out, "c04"), "utf8")).toBe(c04);
     expect(result(s.out, "c05").stages.screen?.state).toBe("counted");
   }, 120_000);
@@ -853,7 +895,7 @@ describe("behaviour", () => {
     const stopped = await cli(behaviour("screen", s, "--budget-usd", "1", "--concurrency", "1"));
     expect(stopped.code).toBe(3);
     expect(stopped.stderr).toContain("the budget is spent");
-    // The two judge controls ($0.80) and the first replay (to $1.00), then no new call starts.
+    // The three judge controls (to $1.20), then no new call starts: no replay is made.
     expect(requestsSince(from)).toHaveLength(3);
     const logged = readFileSync(path.join(s.out, "requests.jsonl"), "utf8")
       .trim()
@@ -905,7 +947,7 @@ describe("behaviour", () => {
       "case c04: screen: old 10/10, new 10/10, none 0/10: informative, not flagged; control: old 40/40, minus 0/40: a control loss"
     );
     expect(kept).toContain(
-      "verdict: keeps: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss"
+      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss"
     );
 
     from = recorder.requests.length;
@@ -940,11 +982,65 @@ describe("behaviour", () => {
     expect(existsSync(caseResultFile(s.out, "c05"))).toBe(false);
   }, 120_000);
 
-  test("the false-loss rate is the spec's: about 7% for 18 informative cases that pass half their runs", () => {
-    const rate = 1 - (1 - falseLossChance(0.5)) ** 18;
-    expect(rate).toBeGreaterThan(0.06);
-    expect(rate).toBeLessThan(0.08);
-    expect(falseLossChance(1)).toBe(0);
-    expect(falseLossChance(0)).toBe(0);
+  test("the false-loss chance is the procedure's own, exact, and old at 10 of 10 no longer gives 0", () => {
+    /** The chance of each count of `runs` runs that each pass with chance `p`. */
+    const pmf = (runs: number, p: number) => {
+      const choose = (k: number) => {
+        let ways = 1;
+        for (let i = 1; i <= k; i += 1) ways = (ways * (runs - k + i)) / i;
+        return ways;
+      };
+      return Array.from({ length: runs + 1 }, (_, k) => choose(k) * p ** k * (1 - p) ** (runs - k));
+    };
+    /** The rules table's figures, every outcome counted: of the screen's 10 runs a case is
+     *  informative at old − none ≥ 2 and flagged at old − new ≥ 2 too, and of the confirm's 40
+     *  fresh runs a loss at old − new ≥ 10. */
+    const bruteForce = (old: number, cut: number, none: number) => {
+      const [o, n, z] = [pmf(10, old), pmf(10, cut), pmf(10, none)];
+      let informative = 0;
+      let flagged = 0;
+      for (let a = 0; a <= 10; a += 1) {
+        for (let b = 0; b <= 10; b += 1) {
+          for (let c = 0; c <= 10; c += 1) {
+            const chance = (o[a] ?? 0) * (n[b] ?? 0) * (z[c] ?? 0);
+            if (a - c < 2) continue;
+            informative += chance;
+            if (a - b >= 2) flagged += chance;
+          }
+        }
+      }
+      const [O, N] = [pmf(40, old), pmf(40, cut)];
+      let loss = 0;
+      for (let a = 0; a <= 40; a += 1) {
+        for (let b = 0; b <= a - 10; b += 1) loss += (O[a] ?? 0) * (N[b] ?? 0);
+      }
+      return (flagged / informative) * loss;
+    };
+    /** Whether `exact` is `counted` but for rounding: a relative difference below 1e-9. */
+    const agrees = (exact: number, counted: number) =>
+      counted > 0 && Math.abs(exact - counted) / counted < 1e-9;
+    // Old and cut pooled with a Laplace term, none with its own: (o + n + 1)/22 and (z + 1)/12.
+    for (const passes of [
+      { old: 7, new: 6, none: 2 },
+      { old: 9, new: 4, none: 0 },
+    ]) {
+      const p = (passes.old + passes.new + 1) / 22;
+      const counted = bruteForce(p, p, (passes.none + 1) / 12);
+      expect({ passes, agrees: agrees(falseLossChance(passes), counted) }).toEqual({
+        passes,
+        agrees: true,
+      });
+    }
+    // The plug-in figure, the chance at the old text's own screen rate, gave 0 for a case whose old
+    // text passed 10 of 10; this one does not.
+    const full = falseLossChance({ old: 10, new: 10, none: 0 });
+    expect(full).toBeGreaterThan(0);
+    expect(agrees(full, bruteForce(21 / 22, 21 / 22, 1 / 12))).toBe(true);
+    // A sensitivity point: the old text at 0.9, the cut's at 0.7, no skill at 0.1 (about 20%).
+    const point = lossChance({ old: 0.9, cut: 0.7, none: 0.1 });
+    expect(agrees(point, bruteForce(0.9, 0.7, 0.1))).toBe(true);
+    expect(point).toBeGreaterThan(0.2);
+    expect(point).toBeLessThan(0.21);
+    expect(() => lossChance({ old: 0, cut: 0, none: 0.1 })).toThrow("no case is informative");
   });
 });

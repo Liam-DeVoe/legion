@@ -59,7 +59,10 @@ const InsidePath = z
  * passes and when it fails; it is written before any run. `model` and `thinking` are the
  * transcript's last `model_change` and `thinking_level_change` before the step. `messages` are the
  * session's Oh My Pi messages up to the step, `skillReads` the indices in `messages` of the read
- * results of this skill's files, and `realStep` the real agent's next assistant message. `source`
+ * results of this skill's files, and `realStep` the real agent's next assistant message.
+ * `violatingStep` is an assistant message the case reader wrote before any run: a plausible next
+ * step that breaks the line and otherwise looks like a valid one (the same goal, the same kind of
+ * tool calls); the judge must fail it (judge.ts, `judgeControls`). `source`
  * names the store and the SHA-256 of the transcript's path (`pathHash`), never the path.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
@@ -88,6 +91,17 @@ export const Case = z.strictObject({
   realStep: SessionMessage.refine(
     (message) => message.role === "assistant",
     "is not an assistant message"
+  ),
+  violatingStep: SessionMessage.refine(
+    (message) => message.role === "assistant",
+    "is not an assistant message"
+  ).refine(
+    (message) =>
+      (message.content ?? []).some(
+        (block) =>
+          (block.type === "text" && (block.text ?? "").trim() !== "") || block.type === "toolCall"
+      ),
+    "holds no text and no tool call"
   ),
   source: z.strictObject({
     store: z.string().min(1),
@@ -177,10 +191,11 @@ function refusal(c: Case, baseDir: string): string | undefined {
 
 /** The cases of `file`, each checked against the base text of its skill, the directory `baseDir`
  * (the skill's own directory, SKILL.md at its top). Throws one error that names each case it
- * refuses and why: a line that is no case, a missing realStep, a line.text that is not a whole
- * line (trimmed) of `baseDir/<baseFile>` or is not at its lineNumber, a skillReads index that is
- * not a read result of a `skill://<skill>` file, a read result of one that skillReads leaves out,
- * a skill its profile does not install, an id given twice, or cases of more than one skill. */
+ * refuses and why: a line that is no case, a missing realStep or violatingStep, a line.text that
+ * is not a whole line (trimmed) of `baseDir/<baseFile>` or is not at its lineNumber, a skillReads
+ * index that is not a read result of a `skill://<skill>` file, a read result of one that
+ * skillReads leaves out, a skill its profile does not install, an id given twice, or cases of
+ * more than one skill. */
 export function loadCases(file: string, baseDir: string): Case[] {
   if (!statSync(baseDir, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error(`the base directory ${baseDir} is not a directory`);
@@ -205,6 +220,12 @@ export function loadCases(file: string, baseDir: string): Case[] {
     const name = id === undefined ? `the case at ${where}` : `case ${id} (${where})`;
     if (typeof raw === "object" && raw !== null && !("realStep" in raw)) {
       refusals.push(`${name} has no realStep (the real agent's next assistant message)`);
+      continue;
+    }
+    if (typeof raw === "object" && raw !== null && !("violatingStep" in raw)) {
+      refusals.push(
+        `${name} has no violatingStep (a step that breaks the line, written before any run): build its case again`
+      );
       continue;
     }
     const parsed = Case.safeParse(raw);

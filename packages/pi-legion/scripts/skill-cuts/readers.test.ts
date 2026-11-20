@@ -139,6 +139,11 @@ const caseInput = {
   files: [{ path: "SKILL.md", text: SKILL_MD }],
   messages: [
     {
+      index: 2,
+      role: "user",
+      text: '[user]\nWrite the alpha checklist, and put every result on "one line".',
+    },
+    {
       index: 3,
       role: "assistant",
       text: '[assistant]\n[tool call: read] {"path":"skill://alpha"}',
@@ -148,13 +153,33 @@ const caseInput = {
       role: "toolResult",
       text: "[tool result: read]\n[the text of a file of the skill, left out]",
     },
-    { index: 5, role: "assistant", text: "[assistant]\n1. ok\n2. ok" },
+    {
+      index: 5,
+      role: "assistant",
+      text: '[assistant]\n[tool call: todo] {"plan":"Each result goes on\\n\\"one line\\"."}',
+    },
+    { index: 6, role: "assistant", text: "[assistant]\n1. ok\n2. ok" },
   ],
 };
 const caseStep = {
-  step: { messageIndex: 5, what: "writes the results" },
+  step: { messageIndex: 6, what: "writes the results" },
   line: { file: "SKILL.md", text: "2. Write each step's result on one line." },
   criterion: CRITERION,
+  violatingStep: { text: "1. ok, 2. ok", toolCalls: [] },
+  restatements: [],
+};
+/** The same case, with each message before the step that states the line, its words quoted:
+ *  white space, case and a JSON string's escapes aside. */
+const restated = {
+  ...caseStep,
+  violatingStep: {
+    text: "",
+    toolCalls: [{ name: "write", arguments: { path: "checklist.md", content: "1. ok, 2. ok" } }],
+  },
+  restatements: [
+    { messageIndex: 2, quote: 'Put every result on "one line".' },
+    { messageIndex: 5, quote: 'each result goes on "one   line".' },
+  ],
 };
 
 const mapInput = {
@@ -260,6 +285,7 @@ const ROWS: Record<ReaderName, Row> = {
     input: caseInput,
     valid: [
       caseStep,
+      restated,
       { step: null, reason: "No step after the read follows a line of the skill." },
     ],
     bad: [
@@ -281,6 +307,40 @@ const ROWS: Record<ReaderName, Row> = {
       },
       { answer: { ...caseStep, criterion: { pass: "x" } }, why: "criterion.fail" },
       { answer: { step: null }, why: "reason" },
+      {
+        answer: { ...caseStep, violatingStep: { text: " ", toolCalls: [] } },
+        why: "violatingStep: holds no text and no tool call",
+      },
+      {
+        answer: {
+          ...caseStep,
+          violatingStep: { text: "", toolCalls: [{ name: "", arguments: {} }] },
+        },
+        why: "violatingStep.toolCalls.0.name",
+      },
+      {
+        answer: { ...caseStep, violatingStep: undefined },
+        why: "violatingStep: Invalid input: expected object, received undefined",
+      },
+      {
+        answer: { ...caseStep, restatements: undefined },
+        why: "restatements: Invalid input: expected array, received undefined",
+      },
+      {
+        answer: { ...caseStep, restatements: [{ messageIndex: 6, quote: "1. ok" }] },
+        why: "restatements.0.messageIndex: is not before the step, message 6",
+      },
+      {
+        answer: { ...caseStep, restatements: [{ messageIndex: 7, quote: "x" }] },
+        why: "restatements.0.messageIndex: is no message index of the transcript",
+      },
+      {
+        answer: {
+          ...caseStep,
+          restatements: [{ messageIndex: 2, quote: "Write each result on one line." }],
+        },
+        why: "restatements.0.quote: is not words of message 2",
+      },
     ],
   },
   map: {

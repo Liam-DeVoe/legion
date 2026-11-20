@@ -147,6 +147,11 @@ const SESSIONS: Record<
     store: "store_a",
     change: (lines) => setText(lines, 3, () => "Step 2. Write each step's result on one line."),
   },
+  // The user's prompt, before the skill's read, states the line in other words.
+  restated: {
+    store: "store_a",
+    change: (lines) => setText(lines, 0, (text) => `${text} ${RESTATED}`),
+  },
   openai: {
     store: "store_a",
     change: (lines) => {
@@ -309,6 +314,9 @@ appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows
 process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.stringify(row) + "\\n").join("") + "(" + rows.length + (rows.length === 1 ? " row" : " rows") + ")\\n\\n");
 `;
 
+/** The words the `restated` session's prompt adds, which state LINE in other words. */
+const RESTATED = "Put the result of each step on a single line.";
+
 /** The proposal of the stand-in case reader for the session named in the transcript. */
 function caseAnswer(name: string): unknown {
   const criterion = {
@@ -322,8 +330,15 @@ function caseAnswer(name: string): unknown {
     step: { messageIndex: 7, what: "calls the task tool" },
     line: { file: "SKILL.md", text },
     criterion,
+    violatingStep: { text: "Step 4.", toolCalls: [VIOLATING_CALL] },
+    // Message 0, the user's prompt, comes before the skill's read: the reader sees it only in
+    // the messages before the read.
+    restatements: name === "restated" ? [{ messageIndex: 0, quote: RESTATED }] : [],
   };
 }
+
+/** The tool call of the stand-in reader's violating step. */
+const VIOLATING_CALL = { name: "read", arguments: { path: "skill://beta" } };
 
 /** A written task of the stand-in tasks reader. */
 const written = (label: string, n: number) => ({
@@ -620,7 +635,14 @@ interface Summary {
   sessionsTried: number;
   casesBuilt: number;
   drops: Partial<Record<DropReason, number>>;
-  sessions: { hash: string; outcome: string; reason?: DropReason; pulls?: number }[];
+  sessions: {
+    hash: string;
+    outcome: string;
+    reason?: DropReason;
+    detail?: string;
+    pulls?: number;
+    restatementCheck?: { read: number; before: number };
+  }[];
   readerSpend: { usd: number; models: Record<string, { calls: number }> };
 }
 
@@ -658,6 +680,14 @@ describe("build-cases over every made-up session", () => {
     expect(c?.messages[0]).toEqual(messages[0] as SessionMessage);
     expect(c?.messages[2]).toEqual(messages[2] as SessionMessage);
     expect(c?.realStep).toEqual(messages[7] as SessionMessage);
+    // The reader's violating step, as an assistant message: its text, then its tool call.
+    expect(c?.violatingStep).toEqual({
+      role: "assistant",
+      content: [
+        { type: "text", text: "Step 4." },
+        { type: "toolCall", id: "violating_1", ...VIOLATING_CALL },
+      ],
+    });
     expect(c?.skillReads).toEqual([2, 4]);
     expect(c?.model).toBe("anthropic/claude-sonnet-5-5");
     expect(c?.thinking).toBe("off");
@@ -671,6 +701,25 @@ describe("build-cases over every made-up session", () => {
     expect(c?.id).toBe(`skills-1-${pathHash(sessionPath("good")).slice(0, 12)}`);
     // No path text in the case beyond the transcript's own messages.
     expect(JSON.stringify({ ...c, messages: [], realStep: {} })).not.toContain(sessionPath("good"));
+  });
+
+  test("the case reader reads the messages before the skill's read too, and a restatement there drops the case", () => {
+    const summary = summaryOf(out);
+    const record = (name: string) =>
+      summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    // Of the 7 messages before the step, the reader read message 0 (before the read at 1) and
+    // messages 1 to 6.
+    expect(record("good")?.restatementCheck).toEqual({ read: 7, before: 7 });
+    expect(record("restated")).toMatchObject({
+      reason: "history-restates-line",
+      detail:
+        "the case reader finds the line's instruction stated in message 0 of the session, before the step at message 7",
+      restatementCheck: { read: 7, before: 7 },
+    });
+    // The reader's request held message 0 with its index.
+    const asked = recorder.requests.find((request) => request.body.includes("(case restated)"));
+    expect(asked?.body).toContain('<message index=\\"0\\" role=\\"user\\">');
+    expect(byName("restated")).toBeUndefined();
   });
 
   test("the profile is the skills the read's unit installs, at the commit of the session's start, each with its evidence", () => {
@@ -746,6 +795,7 @@ describe("build-cases over every made-up session", () => {
       "line-not-in-read": 1,
       "read-before-compaction": 1,
       "line-quoted": 1,
+      "history-restates-line": 1,
       "model-not-anthropic": 1,
       "read-by-path": 1,
       "no-read": 1,
@@ -761,6 +811,7 @@ describe("build-cases over every made-up session", () => {
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
+    expect(reasonOf("restated")).toBe("history-restates-line");
     expect(reasonOf("by-path")).toBe("read-by-path");
     expect(reasonOf("other-copy")).toBe("not-cut-copy");
     expect(reasonOf("compacted")).toBe("read-before-compaction");
@@ -906,9 +957,10 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
 test("removeSecrets takes out each secret shape and counts it, and leaves plain text alone", () => {
   const token = fixtureSecret("tok");
   const cases: [string, string, number][] = [
+    // A request header as `curl -v` prints it in a tool result: no command line gives it.
     [
-      `curl -H "Authorization: Bearer ${token}"`,
-      `curl -H "Authorization: Bearer ${SECRET_REMOVED}"`,
+      `> Authorization: Bearer ${token}\n> Accept: */*`,
+      `> Authorization: Bearer ${SECRET_REMOVED}\n> Accept: */*`,
       1,
     ],
     [PEM, SECRET_REMOVED, 1],

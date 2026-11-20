@@ -72,6 +72,13 @@ function f1Case(id = "c1"): Case {
     messages: messages.slice(0, 7),
     skillReads: [2, 4],
     realStep: messages[7] ?? {},
+    violatingStep: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Step 4." },
+        { type: "toolCall", id: "violating_1", name: "read", arguments: { path: "skill://beta" } },
+      ],
+    },
     source: { store: "store_a", pathHash: pathHash("/sessions/alpha.jsonl") },
     sessionStart: "2026-11-20T01:59:41.780Z",
     secretsRemoved: 0,
@@ -141,6 +148,27 @@ test("refuses a case with no realStep, naming it", () => {
   const userFile = caseFile("user-step", [userStep]);
   expect(() => loadCases(userFile, base)).toThrow(
     `case c-user-step (${userFile}:1) is not a case: realStep: is not an assistant message`
+  );
+});
+
+test("refuses a case with no violatingStep, and one that is no assistant step or holds nothing", () => {
+  const base = alphaDir("base-violating-step");
+  const { violatingStep: _, ...noViolating } = f1Case("c-no-violating");
+  const file = caseFile("no-violating", [noViolating]);
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-no-violating (${file}:1) has no violatingStep (a step that breaks the line, written before any run): build its case again`
+  );
+  const userStep = { ...f1Case("c-user-violating"), violatingStep: f1Messages()[0] };
+  const empty = {
+    ...f1Case("c-empty-violating"),
+    violatingStep: { role: "assistant", content: [{ type: "text", text: "  " }] },
+  };
+  const bad = caseFile("bad-violating", [userStep, empty]);
+  expect(() => loadCases(bad, base)).toThrow(
+    `case c-user-violating (${bad}:1) is not a case: violatingStep: is not an assistant message`
+  );
+  expect(() => loadCases(bad, base)).toThrow(
+    `case c-empty-violating (${bad}:2) is not a case: violatingStep: holds no text and no tool call`
   );
 });
 

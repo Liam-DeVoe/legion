@@ -19,9 +19,12 @@
  * input does not hold.
  *
  * The readers, each with the input it reads and the answer it gives:
- * - `case` (R2): a skill's base text and the session from the skill's read on; the first step the
- *   skill governs, its message index, the line it exercises and a criterion stating pass and fail,
- *   or no step. The case builder drops a proposal whose line is not a whole line of the base text.
+ * - `case` (R2): a skill's base text and the session around the skill's read; the first step the
+ *   skill governs, its message index, the line it exercises, a criterion stating pass and fail, a
+ *   violating step (a plausible next step that breaks the line and otherwise looks valid, which
+ *   the judge must fail), and each message before the step that states the line's instruction in
+ *   any wording, with words quoted from it; or no step. The case builder drops a proposal whose
+ *   line is not a whole line of the base text, or that names a restatement.
  * - `map` (R3): a skill's base and cut texts and the INFRA-2111 audit of the cut, if any; each rule
  *   of the base text with its line in the cut text or why it is gone, called kept, narrowed,
  *   widened or lost, with the audit's words where the audit answers it.
@@ -329,21 +332,54 @@ export const CaseInput = z.strictObject({
   messages: z.array(TranscriptMessage).min(1),
 });
 export type CaseInput = z.infer<typeof CaseInput>;
+/** A step the case reader writes: its text (empty when it holds only tool calls) and its tool
+ *  calls, each a tool's name and its arguments, as the transcript shows a step. */
+const WrittenStep = z
+  .strictObject({
+    text: z.string(),
+    toolCalls: z.array(
+      z.strictObject({
+        name: z.string().min(1),
+        arguments: z.record(z.string(), z.unknown()),
+      })
+    ),
+  })
+  .refine((step) => step.text.trim() !== "" || step.toolCalls.length > 0, {
+    message: "holds no text and no tool call",
+  });
 const CaseProposal = z.strictObject({
   step: z.strictObject({ messageIndex: z.int().nonnegative(), what: z.string().min(1) }),
   line: z.strictObject({ file: z.string().min(1), text: OneLine }),
   criterion: z.strictObject({ pass: z.string().min(1), fail: z.string().min(1) }),
+  violatingStep: WrittenStep,
+  restatements: z.array(
+    z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
+  ),
 });
 const NoCase = z.strictObject({ step: z.null(), reason: z.string().min(1) });
 export const CaseAnswer = z.union([CaseProposal, NoCase]);
 export type CaseAnswer = z.infer<typeof CaseAnswer>;
+
+/** `text` as a restatement's quote is looked for in it: a JSON string's escapes of a quote mark,
+ *  a backslash and a line break read as those characters, each run of white space as one space,
+ *  in lower case. A message's tool calls are rendered with their arguments as JSON. */
+function looseText(text: string): string {
+  return text
+    .replaceAll("\\n", " ")
+    .replaceAll('\\"', '"')
+    .replaceAll("\\\\", "\\")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
 
 const caseReader: Reader<CaseInput, CaseAnswer> = {
   input: CaseInput,
   answer: (input) =>
     CaseAnswer.superRefine((answer, ctx) => {
       if (answer.step === null) return;
-      const message = input.messages.find((each) => each.index === answer.step.messageIndex);
+      const step = answer.step.messageIndex;
+      const message = input.messages.find((each) => each.index === step);
       if (message === undefined) {
         refuse(ctx, ["step", "messageIndex"], "is no message index of the transcript");
       } else if (message.role !== "assistant") {
@@ -355,6 +391,18 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
       }
       if (!input.files.some((file) => file.path === answer.line.file)) {
         refuse(ctx, ["line", "file"], "is no file of the skill");
+      }
+      // A restatement is a message before the step that holds the words quoted from it.
+      for (const [index, { messageIndex, quote }] of answer.restatements.entries()) {
+        const at = ["restatements", index];
+        const restating = input.messages.find((each) => each.index === messageIndex);
+        if (restating === undefined) {
+          refuse(ctx, [...at, "messageIndex"], "is no message index of the transcript");
+        } else if (messageIndex >= step) {
+          refuse(ctx, [...at, "messageIndex"], `is not before the step, message ${step}`);
+        } else if (!looseText(restating.text).includes(looseText(quote))) {
+          refuse(ctx, [...at, "quote"], `is not words of message ${messageIndex}`);
+        }
       }
     }),
   render: (input) =>

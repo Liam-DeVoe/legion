@@ -33,12 +33,19 @@
  *    names must map, by the prefix table of `--copies`, to the cut repository's copy of the skill.
  * 4. The case reader (`skill-cuts read --prompt case`) reads the skill's base text (`--old`) and the
  *    messages from that read's call on, bounded: at most READER_MESSAGES messages and
- *    READER_CHARS characters, each message cut to MESSAGE_CHARS (its start and its end kept), each
- *    read result of the skill's files left out with a note. It proposes the first step the skill
- *    governs, its message index, the line it exercises and the criterion, or no step.
+ *    READER_CHARS characters; and before them, nearest first, at most READER_EARLIER_MESSAGES
+ *    messages and READER_EARLIER_CHARS characters of those after the last compaction or context
+ *    reset before the read. Each message is cut to MESSAGE_CHARS (its start and its end kept), and
+ *    each read result of the skill's files is left out with a note. It proposes the first step
+ *    the skill governs, its message index, the line it exercises, the criterion, a violating step
+ *    (a plausible next step that breaks the line and otherwise looks valid), and each message
+ *    before the step that states the line's instruction in any wording; or no step. The session's
+ *    record in the summary says how many of the messages before the step the reader read, beside
+ *    how many the case holds (`restatementCheck`).
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
- *    message at it, `skillReads` the index of each read result of a `skill://<skill>` file in
- *    `messages`, `model` and `thinking` the branch's last `model_change` and
+ *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
+ *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
+ *    in `messages`, `model` and `thinking` the branch's last `model_change` and
  *    `thinking_level_change` before the step, `sessionDigest` its last `system-prompt-digest`
  *    before the step, `sessionStart` the header's timestamp, `source` the store and the SHA-256 of
  *    the path (never the path), `context` the store's (`devbox`, or `legion:<project>` with the
@@ -58,11 +65,12 @@
  * read precedes a compaction (or a context reset) that precedes the step, or the compaction is of
  * a kind this file does not rebuild (one that keeps data for the provider, or keeps no entry of
  * the branch); an assistant message before the step quotes the line (less a leading list, heading
- * or quote mark); the model before the step is not an `anthropic/` one, or there is none; a read
- * before the step reads a file of the skill by its path or with a selector, which arms.ts does not
- * rebuild (a path that ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under the skill's
- * installed directory); a GitHub read the profile needs fails; or the profile's units install no
- * copy of the skill from the cut repository.
+ * or quote mark); the case reader finds a message before the step that states the line's
+ * instruction in other words; the model before the step is not an `anthropic/` one, or there is
+ * none; a read before the step reads a file of the skill by its path or with a selector, which
+ * arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is
+ * under the skill's installed directory); a GitHub read the profile needs fails; or the profile's
+ * units install no copy of the skill from the cut repository.
  *
  * **The role** of a Legion session is read from its first user message: the daemon starts a phase
  * worker with `Continue <title>. Issue: <key>. Phase: <phase>.` (packages/daemon/internal/workflow/
@@ -147,8 +155,13 @@ import {
 export const EXIT = { ok: 0, failed: 1, refused: 2 } as const;
 /** The most messages the case reader reads from the skill's read on. */
 export const READER_MESSAGES = 40;
-/** The most characters of rendered messages the case reader reads. */
+/** The most characters of rendered messages the case reader reads from the skill's read on. */
 export const READER_CHARS = 120_000;
+/** The most messages before the skill's read that the case reader reads, for its search for a
+ *  restatement of the line. */
+export const READER_EARLIER_MESSAGES = 20;
+/** The most characters of rendered messages before the skill's read that the case reader reads. */
+export const READER_EARLIER_CHARS = 40_000;
 /** The most hashes one sessions.sql query names. */
 export const SESSION_BATCH = 500;
 /** The most first user messages the second tasks reader call reads. */
@@ -178,6 +191,8 @@ export const DROP_REASONS = {
   "compaction-unsupported":
     "a compaction before the step is of a kind this builder does not rebuild",
   "line-quoted": "an assistant message before the step quotes the line",
+  "history-restates-line":
+    "a message before the step states the line's instruction in other words (the case reader's finding)",
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-anthropic": "the model before the step is not an anthropic/ one",
   "read-by-path": "a read before the step reads a file of the skill by its path or with a selector",
@@ -1292,7 +1307,9 @@ interface CaseRun {
   readonly gateway: Gateway;
 }
 
-/** One session's record in the summary. */
+/** One session's record in the summary. `restatementCheck`, once the case's messages are known:
+ *  how many of the messages before the step the case reader read, beside how many the case holds,
+ *  so a check that read only some of them shows it. */
 interface SessionRecord {
   store: string;
   hash: string;
@@ -1302,10 +1319,11 @@ interface SessionRecord {
   outcome: string;
   reason?: DropReason;
   detail?: string;
+  restatementCheck?: { read: number; before: number };
 }
 
 /** The case of one session's transcript `text`, or why it gives none. Adds what the reader spent
- *  to `record`. */
+ *  and what its restatement check read to `record`. */
 async function caseOf(
   run: CaseRun,
   store: { readonly name: string; readonly context: string },
@@ -1378,9 +1396,23 @@ async function caseOf(
     evidence.push({ item: "no role", source: `the store's context is ${store.context}` });
   }
 
-  // The case reader, on the messages from the read's call on.
+  // The case reader, on the messages from the read's call on, and, for its search for a
+  // restatement of the line, the messages before it that the model still read there: those after
+  // the last compaction or context reset before the read, nearest first.
   const from = Math.min(first.call, first.index);
   const hidden = skillReadResults(allMessages, run.skill);
+  const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
+    index,
+    role: message.role ?? "message",
+    text: hidden.has(index)
+      ? "[tool result: read]\n[the text of a file of the skill, left out: <skill> holds it]"
+      : cut(
+          typeof message.summary === "string"
+            ? `${renderMessage(message)}\n${message.summary}`
+            : renderMessage(message),
+          MESSAGE_CHARS
+        ),
+  });
   const windowMessages: CaseInput["messages"] = [];
   let chars = 0;
   for (
@@ -1390,23 +1422,30 @@ async function caseOf(
   ) {
     const message = allMessages[index];
     if (message === undefined) break;
-    const rendered = hidden.has(index)
-      ? "[tool result: read]\n[the text of a file of the skill, left out: <skill> holds it]"
-      : cut(
-          typeof message.summary === "string"
-            ? `${renderMessage(message)}\n${message.summary}`
-            : renderMessage(message),
-          MESSAGE_CHARS
-        );
-    if (windowMessages.length > 0 && chars + rendered.length > READER_CHARS) break;
-    chars += rendered.length;
-    windowMessages.push({ index, role: message.role ?? "message", text: rendered });
+    const each = shown(index, message);
+    if (windowMessages.length > 0 && chars + each.text.length > READER_CHARS) break;
+    chars += each.text.length;
+    windowMessages.push(each);
+  }
+  const readAt = t.items[from]?.at ?? 0;
+  const boundary = t.branch.findLastIndex(
+    (entry, at) => at < readAt && (entry.type === "compaction" || entry.type === "reset_boundary")
+  );
+  const earlier: CaseInput["messages"] = [];
+  let earlierChars = 0;
+  for (let index = from - 1; index >= 0 && earlier.length < READER_EARLIER_MESSAGES; index -= 1) {
+    const item = t.items[index];
+    if (item === undefined || item.at <= boundary) break;
+    const each = shown(index, item.message);
+    if (earlier.length > 0 && earlierChars + each.text.length > READER_EARLIER_CHARS) break;
+    earlierChars += each.text.length;
+    earlier.unshift(each);
   }
   let answer: CaseAnswer;
   try {
     const result = await runReader(
       "case",
-      { skill: run.skill, files: run.files, messages: windowMessages },
+      { skill: run.skill, files: run.files, messages: [...earlier, ...windowMessages] },
       run.gateway
     );
     record.readerUsd += usdOf(result.spent);
@@ -1452,6 +1491,10 @@ async function caseOf(
   const before = messagesBefore(t, stepItem.at, firstAt);
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
+  record.restatementCheck = {
+    read: earlier.length + windowMessages.filter((each) => each.index < stepIndex).length,
+    before: messages.length,
+  };
   const caseReads = skillReads(messages, run.skill);
   const installedDirs = caseReads.flatMap((read) =>
     read.header?.endsWith(`/${read.file}`) ? [read.header.slice(0, -(read.file.length + 1))] : []
@@ -1485,6 +1528,13 @@ async function caseOf(
   const quoting = quotingMessage(messages, wanted);
   if (quoting !== undefined) {
     return drop("line-quoted", `message ${quoting} of the case's messages quotes it`);
+  }
+  if (answer.restatements.length > 0) {
+    const indices = [...new Set(answer.restatements.map((each) => each.messageIndex))];
+    return drop(
+      "history-restates-line",
+      `the case reader finds the line's instruction stated in message${indices.length === 1 ? "" : "s"} ${indices.join(", ")} of the session, before the step at message ${stepIndex}`
+    );
   }
 
   // The profile.
@@ -1530,6 +1580,20 @@ async function caseOf(
   const secrets = scrubbed({
     messages,
     realStep: stepItem.message,
+    violatingStep: {
+      role: "assistant",
+      content: [
+        ...(answer.violatingStep.text.trim() === ""
+          ? []
+          : [{ type: "text", text: answer.violatingStep.text }]),
+        ...answer.violatingStep.toolCalls.map((call, n) => ({
+          type: "toolCall",
+          id: `violating_${n + 1}`,
+          name: call.name,
+          arguments: call.arguments,
+        })),
+      ],
+    },
     criterion: answer.criterion,
   });
   const built: Case = Case.parse({
@@ -1546,6 +1610,7 @@ async function caseOf(
     messages: secrets.value.messages,
     skillReads: caseReads.map((read) => read.index),
     realStep: secrets.value.realStep,
+    violatingStep: secrets.value.violatingStep,
     source: { store: store.name, pathHash: hash },
     sessionStart,
     secretsRemoved: secrets.removed,

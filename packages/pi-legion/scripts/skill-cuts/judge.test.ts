@@ -102,6 +102,14 @@ const f1Case: Case = {
   messages: messages.slice(0, 7),
   skillReads: [2, 4],
   realStep: messages[7] ?? {},
+  // Reads skill://beta itself where the criterion asks for a task agent.
+  violatingStep: {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Step 4." },
+      { type: "toolCall", id: "violating_1", name: "read", arguments: { path: "skill://beta" } },
+    ],
+  },
   source: { store: "store_a", pathHash: pathHash("/sessions/alpha.jsonl") },
   sessionStart: "2026-11-20T01:59:41.780Z",
   secretsRemoved: 0,
@@ -418,7 +426,7 @@ test("the pinned settings reach every request", async () => {
   await judgeReply({ criterion: f1Case.criterion, line: LINE, before: "", reply: "r" }, gateway);
   await judgeControls(f1Case, gateway);
   await judgeBlind(f1Case, armReplies(["old", "new"]), gateway, newSeed());
-  expect(bodies).toHaveLength(2 + 2 + 6);
+  expect(bodies).toHaveLength(2 + 3 + 6);
   for (const body of bodies) {
     expect(body.model).toBe(header.model);
     expect(body.max_tokens).toBe(header.max_tokens);
@@ -466,24 +474,47 @@ test("the shuffle is stable under a recorded seed and ids are opaque", async () 
   expect(newSeed()).not.toBe(newSeed());
 });
 
-test("the controls: the real step must pass and the reply that does nothing must fail", async () => {
-  const judge = (body: MessagesBody) => sse(stepOf(body) === NOTHING_REPLY ? FAIL : PASS);
-  const { gateway, bodies } = world(judge);
+test("the controls: the real step must pass, and the violating step and the reply that does nothing must fail", async () => {
+  const real = stepText(f1Case.realStep.content ?? []);
+  const violating = stepText(f1Case.violatingStep.content ?? []);
+  /** A judge that gives each step the verdict `verdicts` names for it, and fails any other. */
+  const judging = (verdicts: Record<string, "pass" | "fail">) => (body: MessagesBody) =>
+    sse(verdicts[stepOf(body)] === "pass" ? PASS : FAIL);
+  const { gateway, bodies } = world(judging({ [real]: "pass" }));
   const controls = await judgeControls(f1Case, gateway);
   expect(controls.hold).toBe(true);
-  expect(controls.realStep.verdict).toBe("pass");
-  expect(controls.nothing.verdict).toBe("fail");
-  // The real step is F1's own `task` call, rendered as a replayed reply's would be.
-  expect(stepOf(bodies[0])).toBe(stepText(f1Case.realStep.content ?? []));
+  expect(controls.failed).toEqual([]);
+  expect(
+    [controls.realStep, controls.violating, controls.nothing].map((each) => each.verdict)
+  ).toEqual(["pass", "fail", "fail"]);
+  // The real step is F1's own `task` call, and the violating step the case's own read of
+  // skill://beta, each rendered as a replayed reply's would be; every control reads the same
+  // case part.
+  expect(bodies.map(stepOf)).toEqual([real, violating, NOTHING_REPLY]);
   expect(stepOf(bodies[0])).toContain("[tool call: task] ");
-  expect(stepOf(bodies[1])).toBe(NOTHING_REPLY);
-  expect(blocksOf(bodies[0])[0]).toBe(blocksOf(bodies[1])[0]);
+  expect(stepOf(bodies[1])).toBe('Step 4.\n[tool call: read] {"path":"skill://beta"}');
+  expect(new Set(bodies.map((body) => blocksOf(body)[0])).size).toBe(1);
 
-  // Seen failing: a judge that passes every reply, and one whose judgement never parses.
-  const lenient = await judgeControls(f1Case, world(() => sse(PASS)).gateway);
-  expect([lenient.hold, lenient.nothing.verdict]).toEqual([false, "pass"]);
-  const mute = await judgeControls(f1Case, world(() => sse("no answer")).gateway);
-  expect([mute.hold, mute.realStep.verdict, mute.nothing.verdict]).toEqual([false, null, null]);
+  // Seen failing, each control by itself and all at once: a judge that passes the violating step,
+  // one that fails the real step, one that passes every reply, and one whose judgement never
+  // parses, which is no verdict and holds no control.
+  const failedBy = async (answer: (body: MessagesBody) => Response) => {
+    const judged = await judgeControls(f1Case, world(answer).gateway);
+    return { hold: judged.hold, failed: judged.failed };
+  };
+  expect(await failedBy(judging({ [real]: "pass", [violating]: "pass" }))).toEqual({
+    hold: false,
+    failed: ["violating"],
+  });
+  expect(await failedBy(judging({}))).toEqual({ hold: false, failed: ["realStep"] });
+  expect(await failedBy(() => sse(PASS))).toEqual({
+    hold: false,
+    failed: ["violating", "nothing"],
+  });
+  expect(await failedBy(() => sse("no answer"))).toEqual({
+    hold: false,
+    failed: ["realStep", "violating", "nothing"],
+  });
 });
 
 test("on F5: the gateway's judge reply gives its verdict and reason", async () => {

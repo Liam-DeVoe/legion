@@ -106,6 +106,7 @@ const f1Case: Case = {
   messages: messages.slice(0, 7),
   skillReads: [2, 4],
   realStep: messages[7] ?? {},
+  violatingStep: { role: "assistant", content: [{ type: "text", text: "Step 4." }] },
   source: { store: "store_a", pathHash: pathHash("/sessions/alpha.jsonl") },
   sessionStart: "2026-11-20T01:59:41.780Z",
   secretsRemoved: 0,
