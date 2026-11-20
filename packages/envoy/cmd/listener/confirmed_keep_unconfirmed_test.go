@@ -14,18 +14,22 @@ import (
 )
 
 // A publish to a role no session holds keeps the message for the role's next holder. A keep that
-// fails is answered 404 unclaimed, as at main, whether its publish stored nothing or went out and
-// was never acknowledged (and so may have stored the copy): this change keeps what each role route
-// answers. Both rows are controls of main's answer.
-func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
+// fails on NATS kept nothing that the listener knows of, and nothing says the message cannot be
+// kept, so it is answered the bus-unavailable 503 with Retry-After: 1 (keepFailureHolds,
+// roleSend.noHolder), and the sender sends again. A keep whose publish went out and was never
+// acknowledged may have stored the copy, so its 503 carries listenerwire.CodeMaybeStored
+// (writeBusUnavailable); one that stored nothing carries no code. A keep a rule refuses is still
+// the 404 (TestAPublishWhoseKeepFailsOnNATSIsAnsweredUnavailable holds that half).
+func TestAPublishWhoseKeepFailedOnNATSIsAnsweredUnavailable(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		err  error
+		code string
 	}{
-		{"control: the keep's publish went out and was never acknowledged: 404, as at main",
-			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed"))},
-		{"control: a keep that stored nothing: 404, as at main",
-			errors.New("nats: no responders available for request")},
+		{"the keep's publish went out and was never acknowledged: 503 maybe stored",
+			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed")), listenerwire.CodeMaybeStored},
+		{"a keep that stored nothing: 503 with no code",
+			errors.New("nats: no responders available for request"), ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			harness := newListenerDeliveryHarness(t)
@@ -40,12 +44,13 @@ func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
 			role := "keep-unconfirmed"
 			recorder, _ := publishThrough(deps, `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"for whoever holds the role next"}`)
 			if calls == 0 {
-				t.Fatalf("control: the publish made no keep; answered %d %s", recorder.Code, recorder.Body.String())
+				t.Fatalf("the publish made no keep; answered %d %s", recorder.Code, recorder.Body.String())
 			}
 			var body listenerwire.APIError
 			_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-			if recorder.Code != http.StatusNotFound || body.Code != "" {
-				t.Fatalf("answered %d with code %q (%s); want 404 with no code, as at main", recorder.Code, body.Code, recorder.Body.String())
+			if recorder.Code != http.StatusServiceUnavailable || body.Code != row.code || recorder.Header().Get("Retry-After") != "1" {
+				t.Fatalf("answered %d with code %q and Retry-After %q (%s); want 503 with code %q and Retry-After 1",
+					recorder.Code, body.Code, recorder.Header().Get("Retry-After"), recorder.Body.String(), row.code)
 			}
 		})
 	}
