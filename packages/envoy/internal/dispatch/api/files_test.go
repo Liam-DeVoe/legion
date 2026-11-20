@@ -328,7 +328,7 @@ const uploadLockProbeWindow = 20 * time.Second
 // answers none when the holder ended between the refusal and this read.
 func readIssueOwnerLockHolders(t *testing.T, database *store.Store, issue string) []storetest.LockHolder {
 	t.Helper()
-	holders, err := storetest.Holders(context.Background(), database.Pool, storetest.OwnerLock(store.IssueOwner(issue)))
+	holders, err := storetest.Holders(t.Context(), database.Pool, storetest.OwnerLock(store.IssueOwner(issue)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,16 +427,6 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, with
 	}
 }
 
-// settlementEditSourceRead is the read a spec settlement makes of its document's pending row
-// while it holds its issue's owner lock (docs.readSettlementEditSource): what another test's
-// settlement shows in pg_stat_activity as it holds that lock.
-const settlementEditSourceRead = `
-		select p.last_actor, coalesce(p.last_actor = kept.last_actor, false)
-		from doc_settlements_pending p
-			left join doc_closed_edit_sources kept on kept.artifact_id = p.artifact_id
-		where p.artifact_id = $1
-	`
-
 // The negative control of that fast arm: a transaction of this test's own takes the issue's owner
 // lock and makes the read every upload makes under it (issueStatusRead), which is what
 // pg_stat_activity shows of an upload's transaction parked in Put, and then holds both. The probe
@@ -444,17 +434,20 @@ const settlementEditSourceRead = `
 // take. Without this nothing shows the arm can fire, and the test below could only ever fail by
 // timing out.
 //
-// Meanwhile another database of the server holds a lock of the same two keys, as another test's
-// spec settlement holds its own issue's while it reads its document's pending row, on a backend
-// the server lists before this test's (storetest.ConnectInListingOrder): a probe that read the
-// server's first holder would name that settlement and never fire. The probe must name this test's
-// transaction alone, by its backend.
+// Meanwhile two other databases of the server hold a lock of the same two keys, as other tests'
+// writers of an issue with this key hold their own issue's, here on `select 1`, a statement no
+// upload makes: one on a backend opened before every other here, so with the lowest process id,
+// and one on a backend the server lists before this test's (storetest.ConnectInListingOrder). A
+// probe that read the server's first holder, or its holder with the lowest process id, would
+// name one of them and never fire. The probe must name this test's transaction alone, by its
+// backend.
 func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := fileIssue(t, handler)
 	lock := storetest.OwnerLock(store.IssueOwner(issue))
+	lowest := storetest.Hold(t, storetest.Open(t), lock, `select 1`)
 	there, here := storetest.ConnectInListingOrder(t, storetest.Open(t), database)
-	elsewhere := storetest.HoldOn(t, there, lock, settlementEditSourceRead, "00000000-0000-0000-0000-000000000000")
+	listed := storetest.HoldOn(t, there, lock, `select 1`)
 	// The lock, which waits out the settlement of the spec document fileIssue wrote, and then the
 	// read an upload's transaction makes under it, so this transaction is the lock's only holder
 	// in this test's database.
@@ -465,7 +458,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 		t.Fatal("the probe took the issue's owner lock while this test's transaction held it")
 	}
 	if got := probe.holderPIDs(); !slices.Equal(got, []int32{int32(holding)}) {
-		t.Fatalf("the probe read %s, want this test's own transaction alone, backend %d, and not backend %d of another database", probe.heldBy(), holding, elsewhere)
+		t.Fatalf("the probe read %s, want this test's own transaction alone, backend %d, and neither backend %d nor %d of the other databases", probe.heldBy(), holding, lowest, listed)
 	}
 	held := probe.uploadHoldsTheLock()
 	if held == "" {
@@ -477,18 +470,20 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 	t.Logf("the probe's fast arm fires: %s", held)
 }
 
-// The fast arm answers for a holder in this test's own database alone. Another database of the
-// server holds a lock of the same two keys on the read every upload makes under it, as another
-// test's upload parked in Put would, on a backend the server lists first, while this test's own
-// transaction holds the issue's lock on a statement no upload makes. The probe must name this
-// test's transaction alone and not answer at its fast arm: a probe that read the other database
-// would fail TestAnUploadHoldsNoIssueLockWhileTheStoreWrites for an upload that test never made.
+// The fast arm answers for a holder in this test's own database alone. Two other databases of the
+// server hold a lock of the same two keys on the read every upload makes under it, as other
+// tests' uploads parked in Put would, one on a backend opened before every other here and one on
+// a backend the server lists before this test's, while this test's own transaction holds the
+// issue's lock on a statement no upload makes. The probe must name this test's transaction alone
+// and not answer at its fast arm: a probe that read another database would fail
+// TestAnUploadHoldsNoIssueLockWhileTheStoreWrites for an upload that test never made.
 func TestTheUploadLockProbeNamesNoHolderOfAnotherDatabase(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := fileIssue(t, handler)
 	lock := storetest.OwnerLock(store.IssueOwner(issue))
+	lowest := storetest.Hold(t, storetest.Open(t), lock, issueStatusRead, issue)
 	there, here := storetest.ConnectInListingOrder(t, storetest.Open(t), database)
-	elsewhere := storetest.HoldOn(t, there, lock, issueStatusRead, issue)
+	listed := storetest.HoldOn(t, there, lock, issueStatusRead, issue)
 	holding := storetest.HoldOn(t, here, lock, `select 1`)
 
 	// A second bounds it: this test's transaction never lets go, so every attempt is refused, and
@@ -502,7 +497,7 @@ func TestTheUploadLockProbeNamesNoHolderOfAnotherDatabase(t *testing.T) {
 		t.Fatalf("the probe answered at its fast arm for a holder of another database: %s", held)
 	}
 	if got := probe.holderPIDs(); !slices.Equal(got, []int32{int32(holding)}) {
-		t.Fatalf("the probe read %s, want this test's own transaction alone, backend %d, and not backend %d of another database", probe.heldBy(), holding, elsewhere)
+		t.Fatalf("the probe read %s, want this test's own transaction alone, backend %d, and neither backend %d nor %d of the other databases", probe.heldBy(), holding, lowest, listed)
 	}
 }
 

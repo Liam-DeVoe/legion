@@ -581,7 +581,9 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 		})
 	}()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if searchTermStatsWaiters(t, database) > 0 {
+		var waiting int
+		waiting = searchTermStatsWaiters(t, database)
+		if waiting > 0 {
 			break
 		}
 		if time.Now().After(deadline) {

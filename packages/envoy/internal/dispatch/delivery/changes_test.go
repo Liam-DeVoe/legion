@@ -467,8 +467,11 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 	}()
 
 	waitFor(t, 10*time.Second, func() bool {
-		waiting, err := changeLogWaiters(ctx, pool)
-		return err == nil && waiting == 1
+		var waiting int
+		if counted, err := changeLogWaiters(ctx, pool); err == nil {
+			waiting = counted
+		}
+		return waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })
 
 	if err := a.Commit(ctx); err != nil {
