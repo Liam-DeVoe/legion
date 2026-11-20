@@ -555,7 +555,7 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 		return specs, true, nil
 	}
 	if _, reads := goingReadTools[request.Tool]; reads {
-		specs, err := goingReadSends(ctx, request.Tool, arguments, goingReader{doer: doer})
+		specs, err := goingReadSends(ctx, request.Tool, arguments, goingReader{doer: doer}, a.s.deps.ServerURL)
 		if err != nil {
 			return nil, false, goingCallRefusal(request.Tool, err)
 		}
@@ -606,25 +606,14 @@ func goingIssueOfPath(path string) string {
 	return key
 }
 
-// goingReadSends is the one request a read tool sends for arguments: through its first row whose
-// guard the arguments satisfy and every one of whose placeholders they fill (chooseGoingRoute),
-// translated by the row's own translation where it has one (a row its spec binds), and otherwise
-// with each argument the path does not take sent in the query of a GET, a list as one parameter
-// per item, or in the JSON body of any other method.
-func goingReadSends(ctx context.Context, tool string, arguments map[string]any, read goingReader) ([]goingSend, error) {
+// goingReadSends is the one request a read tool sends for arguments (goingReadCall). serverURL is
+// the server's own address, under which a dashboard URL names an item.
+func goingReadSends(ctx context.Context, tool string, arguments map[string]any, read goingReader, serverURL string) ([]goingSend, error) {
 	routes, err := goingReadToolRoutes(tool)
 	if err != nil {
 		return nil, err
 	}
-	route, values, chosen := chooseGoingRoute(GoingAction{Action: tool, Routes: routes}, arguments, "")
-	if !chosen {
-		return nil, GoingArgumentError{Action: tool, Reason: goingNoRouteReason(GoingAction{Routes: routes})}
-	}
-	translate := route.translate
-	if translate == nil {
-		translate = goingTranslateRead(route)
-	}
-	call, err := translate(ctx, read, goingCallInput{arguments: arguments, path: values})
+	route, call, err := goingReadCall(ctx, tool, routes, arguments, read, serverURL)
 	if err != nil {
 		var untranslatable goingUntranslatable
 		if errors.As(err, &untranslatable) {
@@ -633,6 +622,36 @@ func goingReadSends(ctx context.Context, tool string, arguments map[string]any, 
 		return nil, err
 	}
 	return call.requests(route)
+}
+
+// goingReadCall is the row of routes, the rows of the read tool named tool, that a call of it
+// reads, and what that row's route takes of the call: the row the tool's Pick picks, where it has
+// one, and otherwise its first row whose guard the arguments satisfy and every one of whose
+// placeholders they fill (chooseGoingRoute), translated by the row's own translation where it has
+// one, and otherwise with each argument the path does not take sent in the query of a GET, a list
+// as one parameter per item, or in the JSON body of any other method (goingTranslateRead).
+func goingReadCall(ctx context.Context, tool string, routes []GoingRoute, arguments map[string]any, read goingReader, serverURL string) (GoingRoute, goingCall, error) {
+	if pick := goingReadTools[tool].Pick; pick != nil {
+		row, call, err := pick(arguments, serverURL)
+		if err != nil {
+			return GoingRoute{}, goingCall{}, err
+		}
+		at := slices.IndexFunc(routes, func(route GoingRoute) bool { return route.Method+" "+route.Pattern == row })
+		if at < 0 {
+			return GoingRoute{}, goingCall{}, fmt.Errorf("%s picked %s, which is no row of its own", tool, row)
+		}
+		return routes[at], call, nil
+	}
+	route, values, chosen := chooseGoingRoute(GoingAction{Action: tool, Routes: routes}, arguments, "")
+	if !chosen {
+		return GoingRoute{}, goingCall{}, GoingArgumentError{Action: tool, Reason: goingNoRouteReason(GoingAction{Routes: routes})}
+	}
+	translate := route.translate
+	if translate == nil {
+		translate = goingTranslateRead(route)
+	}
+	call, err := translate(ctx, read, goingCallInput{arguments: arguments, path: values})
+	return route, call, err
 }
 
 // goingReadToolRoutes is the rows of read tool name: the rows its entry names, or the routes its

@@ -10,6 +10,11 @@ package api
 // route as it stands, and every read it makes goes through the caller's own Doer, so it reads
 // only what the caller may read.
 //
+// A read tool's rows are translated the same way: a search's words are its route's `q`, and a read
+// whose command picks what it reads from what its arguments name - dispatch_read and
+// dispatch_doc_read, an item named by its dispatch:// reference above all - picks its row as that
+// command does (goingPickRead, goingPickDocRead).
+//
 // What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
 // the bar has no way to reach, a `ref` where the bar places a write by issue, project and document
 // instead, and the rest goingUnsendable names - is decided by goingUnsendable, which needs no read:
@@ -19,6 +24,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,6 +39,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -568,6 +575,270 @@ func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput)
 // rows of a roster of any size than it answers.
 func goingTranslateRoster(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path, query: url.Values{"limit": {strconv.Itoa(goingReadSessionMax)}}}, nil
+}
+
+// goingTranslateSearch sends dispatch_search's words as the search route's q, and its project,
+// its limit and its offset under their own names, as `dispatch search` sends them.
+func goingTranslateSearch(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	query := url.Values{}
+	for argument, key := range map[string]string{"query": "q", "project": "project", "limit": "limit", "offset": "offset"} {
+		value, named := call.arguments[argument]
+		if !named || value == nil {
+			continue
+		}
+		text, isText := goingArgumentText(value)
+		if !isText {
+			return goingCall{}, goingUntranslatable(fmt.Sprintf("%s is sent in the query, which takes no %T", argument, value))
+		}
+		query.Set(key, text)
+	}
+	return goingCall{path: call.path, query: query}, nil
+}
+
+// goingTranslateIssueList sends dispatch_issues' filters in the query, as goingTranslateRead sends
+// a read's arguments, a null priority as the route's `none`, which `dispatch issues` sends for an
+// issue with no priority.
+func goingTranslateIssueList(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	if priorities, listed := call.arguments["priority"].([]any); listed {
+		named := make([]any, len(priorities))
+		for index, priority := range priorities {
+			named[index] = priority
+			if priority == nil {
+				named[index] = "none"
+			}
+		}
+		call.arguments = maps.Clone(call.arguments)
+		call.arguments["priority"] = named
+	}
+	// The listing's path takes no argument, so its row is its method alone.
+	return goingTranslateRead(GoingRoute{Method: http.MethodGet})(ctx, read, call)
+}
+
+// goingTranslateHandoffVersion reads the version of a phase's handoff that the call names, which
+// Dispatch reads by the handoff's id alone, as `dispatch handoff-read` reads it: the issue's
+// handoffs name the id of each version, and the row reads the handoff whose version filled its
+// {id} (chooseGoingRoute).
+func goingTranslateHandoffVersion(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	issue, phase, version := goingText(call.arguments, "issue"), goingText(call.arguments, "phase"), call.path["id"]
+	if issue == "" || phase == "" {
+		return goingCall{}, goingUntranslatable("version names a handoff of the issue and the phase the call names")
+	}
+	var handoffs []model.HandoffSummary
+	if err := read.get(ctx, goingIssuePath(issue, "handoffs"), &handoffs); err != nil {
+		return goingCall{}, err
+	}
+	for _, handoff := range handoffs {
+		if handoff.Phase == phase && strconv.Itoa(handoff.Version) == version {
+			return goingCall{path: map[string]string{"id": handoff.ID}}, nil
+		}
+	}
+	return goingCall{}, goingUntranslatable(fmt.Sprintf("%s has no %s handoff of version %s", issue, phase, version))
+}
+
+// goingReadRef is what a read's `ref` names, as the `dispatch` command reads one
+// (parseDispatchRef, packages/envoy-client/src/dispatch-owner.ts): the reference text.ParseRef
+// reads, a dashboard URL under the server's own address included; and, after an issue's key, one
+// of the two reads of the issue only a read names (of): its log, `log` or the Activity tab's
+// `activity`, and its children. version is the version an `@v<N>` after a document's slug names,
+// "" for none.
+type goingReadRef struct {
+	text.Ref
+	of      string
+	version string
+}
+
+// The reads of an issue only a read's reference names (goingReadRef.of).
+const (
+	goingRefLog      = "log"
+	goingRefChildren = "children"
+)
+
+// goingRefVersion is the `@v<N>` that ends a reference to a document at version N.
+var goingRefVersion = regexp.MustCompile(`/artifact/[^/#@]+@v([1-9][0-9]*)$`)
+
+// goingIssueReadEvents is how many of an issue's newest events its log lists where the read names
+// no count, as `dispatch read` lists them (DEFAULT_ISSUE_READ_EVENTS, packages/contracts).
+const goingIssueReadEvents = 10
+
+// goingParseReadRef reads value as a read's reference (goingReadRef), false where it names nothing
+// a read reads.
+func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
+	if ref, parsed := text.ParseRef(value, serverURL); parsed {
+		read := goingReadRef{Ref: ref}
+		if ref.Kind == "artifact" {
+			if version := goingRefVersion.FindStringSubmatch(value); version != nil {
+				read.version = version[1]
+			}
+		}
+		return read, true
+	}
+	rest, scheme := strings.CutPrefix(value, "dispatch://")
+	key, of, below := strings.Cut(rest, "/")
+	if !scheme || !below {
+		return goingReadRef{}, false
+	}
+	switch of {
+	case "log", "activity":
+		of = goingRefLog
+	case "children":
+		of = goingRefChildren
+	default:
+		return goingReadRef{}, false
+	}
+	ref, parsed := text.ParseRef("dispatch://"+key, "")
+	if !parsed || ref.Kind != "issue" {
+		return goingReadRef{}, false
+	}
+	return goingReadRef{Ref: ref, of: of}, true
+}
+
+// goingPickRead is the row of dispatch_read a call reads, and what that row's route takes of the
+// call, as `dispatch read` picks what it reads (packages/envoy-client/src/dispatch-commands/read.ts),
+// each item through the route a person reads it with: the item a reference names
+// (goingPickReadRef); else a message, on its issue where the call names one; an issue's or a
+// project's document; an issue (goingIssueRead); and a project's documents on no issue.
+func goingPickRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
+		return goingPickReadRef(value, arguments, serverURL)
+	}
+	issue, project, artifact, message := goingText(arguments, "issue"), goingText(arguments, "project"),
+		goingText(arguments, "artifact"), goingText(arguments, "message")
+	switch {
+	case message != "" && issue != "":
+		return "GET /api/v1/issues/{key}/messages/{id}", goingCall{path: map[string]string{"key": issue, "id": message}}, nil
+	case message != "":
+		return "GET /api/v1/messages/{id}", goingCall{path: map[string]string{"id": message}}, nil
+	case issue != "" && artifact != "":
+		return "GET /api/v1/issues/{key}/artifacts/{slug}", goingCall{path: map[string]string{"key": issue, "slug": artifact}}, nil
+	case project != "" && artifact != "":
+		return "GET /api/v1/projects/{key}/artifacts/{slug}", goingCall{path: map[string]string{"key": project, "slug": artifact}}, nil
+	case issue != "":
+		return goingIssueRead(issue, arguments)
+	case project != "":
+		return "GET /api/v1/projects/{key}/artifacts", goingCall{path: map[string]string{"key": project}, query: url.Values{"unlinked": {"true"}}}, nil
+	}
+	return "", goingCall{}, goingUntranslatable("name ref; an issue, alone or with its artifact; a project, alone or with its artifact; or a message")
+}
+
+// goingPickReadRef is the read of the item value, a read's reference, names (goingReadRef): an
+// issue (goingIssueRead), and its children, which the issue's own read lists; its log, as its
+// events (goingIssueEvents); a document of an issue or a project; a block, as its node in the
+// reference graph with what references it; an ask; a comment with its thread; and a message.
+func goingPickReadRef(value string, arguments map[string]any, serverURL string) (string, goingCall, error) {
+	ref, parsed := goingParseReadRef(value, serverURL)
+	switch {
+	case !parsed:
+		return "", goingCall{}, goingUntranslatable(fmt.Sprintf(
+			"ref %q is no reference to an issue, its log or its children, a document, a block, an ask, a comment or a message", value))
+	case ref.of == goingRefLog:
+		return goingIssueEvents(ref.IssueKey, arguments)
+	case ref.of == goingRefChildren:
+		return "GET /api/v1/issues/{key}", goingCall{path: map[string]string{"key": ref.IssueKey}}, nil
+	case ref.Kind == "issue":
+		return goingIssueRead(ref.IssueKey, arguments)
+	case ref.Kind == "artifact" && ref.IssueKey != "":
+		return "GET /api/v1/issues/{key}/artifacts/{slug}", goingCall{path: map[string]string{"key": ref.IssueKey, "slug": ref.ID}}, nil
+	case ref.Kind == "artifact" && ref.Project != "":
+		return "GET /api/v1/projects/{key}/artifacts/{slug}", goingCall{path: map[string]string{"key": ref.Project, "slug": ref.ID}}, nil
+	case ref.Kind == "artifact":
+		return "", goingCall{}, goingUntranslatable(fmt.Sprintf("ref %q names a file of an agent's conversation, which dispatch_doc_read reads", value))
+	case ref.Kind == "block":
+		return "GET /api/v1/references", goingCall{path: map[string]string{}, query: url.Values{"to": {value}}}, nil
+	case ref.Kind == "ask":
+		return "GET /api/v1/asks/{id}", goingCall{path: map[string]string{"id": ref.ID}}, nil
+	case ref.Kind == "comment":
+		return "GET /api/v1/comments/{id}", goingCall{path: map[string]string{"id": ref.ID}}, nil
+	case ref.Kind == "message":
+		return "GET /api/v1/issues/{key}/messages/{id}", goingCall{path: map[string]string{"key": ref.IssueKey, "id": ref.ID}}, nil
+	}
+	return "", goingCall{}, goingUntranslatable(fmt.Sprintf("ref %q names a %s, which a read does not read", value, ref.Kind))
+}
+
+// goingIssueRead is the read of an issue: its events where the call names how many of them it
+// lists (events, all_events), which the issue's own read does not carry, and the issue otherwise.
+func goingIssueRead(issue string, arguments map[string]any) (string, goingCall, error) {
+	if arguments["events"] != nil || arguments["all_events"] == true {
+		return goingIssueEvents(issue, arguments)
+	}
+	return "GET /api/v1/issues/{key}", goingCall{path: map[string]string{"key": issue}}, nil
+}
+
+// goingIssueEvents is the read of an issue's events: every one (all_events), oldest first, as
+// many as one page of the route holds; else the newest of them, newest first, as many as events
+// names or goingIssueReadEvents.
+func goingIssueEvents(issue string, arguments map[string]any) (string, goingCall, error) {
+	count := strconv.Itoa(goingIssueReadEvents)
+	if named := arguments["events"]; named != nil {
+		text, isText := goingArgumentText(named)
+		if !isText {
+			return "", goingCall{}, goingUntranslatable("events is how many of the issue's events the read lists, a number")
+		}
+		count = text
+	}
+	call := goingCall{path: map[string]string{"key": issue}}
+	switch {
+	case arguments["all_events"] == true && arguments["events"] != nil:
+		return "", goingCall{}, goingUntranslatable("events and all_events both say how many events the read lists: name one")
+	case arguments["all_events"] != true:
+		call.query = url.Values{"order": {"desc"}, "limit": {count}}
+	}
+	return "GET /api/v1/issues/{key}/events", call, nil
+}
+
+// goingPickDocRead is the row of dispatch_doc_read a call reads, and what that row's route takes
+// of the call, as `dispatch doc-read` reads a document
+// (packages/envoy-client/src/dispatch-commands/documents.ts): the document a reference names, or
+// the artifact the call names on its issue - the issue's spec where it names none - or on its
+// project, or by the document's id; its text, with its blocks where blocks is set, or the version
+// the call or the reference names. A file of an agent's conversation is read at the version named,
+// and its record, which names its versions, where none is.
+func goingPickDocRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+	issue, project, artifact, session := goingText(arguments, "issue"), goingText(arguments, "project"), goingText(arguments, "artifact"), ""
+	version, versioned := goingArgumentText(arguments["version"])
+	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
+		ref, parsed := goingParseReadRef(value, serverURL)
+		if !parsed || ref.Kind != "artifact" {
+			return "", goingCall{}, goingUntranslatable(fmt.Sprintf("ref %q is no reference to a document", value))
+		}
+		issue, project, session = ref.IssueKey, ref.Project, ref.Session
+		if artifact == "" {
+			artifact = ref.ID
+		}
+		if !versioned && ref.version != "" {
+			version, versioned = ref.version, true
+		}
+	}
+	blocks := arguments["blocks"] == true
+	if blocks && versioned {
+		return "", goingCall{}, goingUntranslatable("blocks lists the live document's blocks, and takes no version")
+	}
+	var row string
+	var path map[string]string
+	switch {
+	case session != "":
+		row, path = "GET /api/v1/agents/{session_id}/artifacts/{slug}", map[string]string{"session_id": session, "slug": artifact}
+	case issue != "":
+		row, path = "GET /api/v1/issues/{key}/artifacts/{slug}", map[string]string{"key": issue, "slug": cmp.Or(artifact, "spec")}
+	case project != "" && artifact != "":
+		row, path = "GET /api/v1/projects/{key}/artifacts/{slug}", map[string]string{"key": project, "slug": artifact}
+	case project == "" && artifact != "":
+		row, path = "GET /api/v1/artifacts/{id}", map[string]string{"id": artifact}
+	default:
+		return "", goingCall{}, goingUntranslatable("name ref; an issue, with its artifact or for its spec; a project with its artifact; or a document's id as artifact")
+	}
+	call := goingCall{path: path}
+	switch {
+	case versioned:
+		row, path["number"] = row+"/versions/{number}", version
+	case session != "":
+		// A conversation holds files alone, which no text route reads.
+	default:
+		row += "/text"
+		if blocks {
+			call.query = url.Values{"blocks": {"true"}}
+		}
+	}
+	return row, call, nil
 }
 
 // goingTranslateArchitectureSyncRepo imports one architecture source, named by its owner/name

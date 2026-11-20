@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -97,18 +99,15 @@ func (s *server) goingRunResults(ctx context.Context, run string, steps []int) (
 	if err != nil {
 		return nil, fmt.Errorf("read the saved tool steps of run %s: %w", run, err)
 	}
-	defer rows.Close()
-	var results []going.Result
-	for rows.Next() {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (going.Result, error) {
 		var step int
 		var body []byte
-		if err := rows.Scan(&step, &body); err != nil {
-			return nil, err
+		if err := row.Scan(&step, &body); err != nil {
+			return going.Result{}, err
 		}
 		saved, err := agent.ReadSavedResult(body)
 		if err != nil {
-			results = append(results, going.Result{Step: step, Call: 1, Unread: err.Error()})
-			continue
+			return going.Result{Step: step, Call: 1, Unread: err.Error()}, nil
 		}
 		result := going.Result{Step: step, Call: saved.Call, Tool: saved.Tool, Arguments: saved.Arguments, Status: saved.Status, Body: saved.Body}
 		switch {
@@ -117,7 +116,6 @@ func (s *server) goingRunResults(ctx context.Context, run string, steps []int) (
 		case saved.Shortened:
 			result.NotWhole = "holds only the first bytes of it you were given, which is all the step saved"
 		}
-		results = append(results, result)
-	}
-	return results, rows.Err()
+		return result, nil
+	})
 }

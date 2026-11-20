@@ -161,6 +161,13 @@ type goingWriteTool struct {
 // one the tool reads in process rather than by a call's arguments: the answer run's own reads.
 type goingReadTool struct {
 	Routes []goingToolRoute
+	// Pick is the row of Routes a call reads, by "<METHOD> <pattern>", and what that row's route
+	// takes of the call, for a tool whose command reads the item its arguments name rather than
+	// the first of its rows they fill: an item named by a reference, above all. serverURL is the
+	// server's own address, under which a dashboard URL names an item. Nil for a tool whose call
+	// reads its first row whose guard the arguments satisfy and whose placeholders they fill
+	// (goingReadCall).
+	Pick func(arguments map[string]any, serverURL string) (string, goingCall, error)
 }
 
 // goingToolRows is the rows of the tool spec names: the rows its entry names, or, for a spec that
@@ -689,7 +696,12 @@ var goingReadTools = map[string]goingReadTool{
 
 	// The tools whose command is written by hand, each with the rows its command reads and the
 	// argument that fills each of their placeholders.
-	"dispatch_read": {Routes: []goingToolRoute{
+	//
+	// dispatch_read reads the item its arguments name (goingPickRead); the reference that names an
+	// ask or a comment fills those rows' {id}. The lists of an issue's and a document's asks and
+	// comments, and a project document's summary, are reads its command makes to find an item,
+	// which no call picks.
+	"dispatch_read": {Pick: goingPickRead, Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/events", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/asks", Path: map[string]string{"key": "issue"}},
@@ -701,10 +713,16 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/projects/{key}/artifacts/{slug}/summary", Path: map[string]string{"key": "project", "slug": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/asks", Path: map[string]string{"id": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/comments", Path: map[string]string{"id": "artifact"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/asks/{id}", Path: map[string]string{"id": "ref"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/comments/{id}", Path: map[string]string{"id": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/messages/{id}", Path: map[string]string{"id": "message"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/references", Path: map[string]string{}},
 	}},
-	"dispatch_doc_read": {Routes: []goingToolRoute{
+	// dispatch_doc_read reads the document its arguments name (goingPickDocRead); the reference
+	// that names a file of an agent's conversation fills those rows' session and slug. The list of
+	// an issue's documents and the blocks rows are reads its command makes beside the text, which
+	// no call picks.
+	"dispatch_doc_read": {Pick: goingPickDocRead, Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/text", Path: map[string]string{"key": "issue", "slug": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/blocks", Path: map[string]string{"key": "issue", "slug": "artifact"}},
@@ -715,19 +733,25 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/text", Path: map[string]string{"id": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/blocks", Path: map[string]string{"id": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/versions/{number}", Path: map[string]string{"id": "artifact", "number": "version"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}", Path: map[string]string{"session_id": "ref", "slug": "ref"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", Path: map[string]string{"session_id": "ref", "slug": "ref", "number": "version"}},
 	}},
 	"dispatch_results": {Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/results", Path: map[string]string{"key": "issue"}},
 	}},
+	// A search's words are the route's q (goingTranslateSearch).
 	"dispatch_search": {Routes: []goingToolRoute{
-		{Method: http.MethodGet, Pattern: "/api/v1/search", Path: map[string]string{}},
-		{Method: http.MethodGet, Pattern: "/api/v1/search/results", Path: map[string]string{}},
+		{Method: http.MethodGet, Pattern: "/api/v1/search", Path: map[string]string{}, Translate: goingTranslateSearch},
+		{Method: http.MethodGet, Pattern: "/api/v1/search/results", Path: map[string]string{}, Translate: goingTranslateSearch},
 	}},
 	// A POST that writes nothing: the related-item check over a text as long as a spec.
 	"dispatch_related": {Routes: []goingToolRoute{
 		{Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/related", Path: map[string]string{"key": "project"}},
 	}},
-	"dispatch_issues":     {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/issues", Path: map[string]string{}}}},
+	// An issue with no priority is the route's `none` (goingTranslateIssueList).
+	"dispatch_issues": {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/issues", Path: map[string]string{}, Translate: goingTranslateIssueList},
+	}},
 	"dispatch_projects":   {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/projects", Path: map[string]string{}}}},
 	"dispatch_priorities": {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/priorities", Path: map[string]string{}}}},
 	"dispatch_open_asks":  {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/asks/open", Path: map[string]string{}}}},
@@ -736,7 +760,9 @@ var goingReadTools = map[string]goingReadTool{
 	}},
 	"dispatch_whoami": {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/whoami", Path: map[string]string{}}}},
 	"dispatch_limits": {Routes: []goingToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/limits", Path: map[string]string{}}}},
+	// A version names a handoff Dispatch reads by its id alone (goingTranslateHandoffVersion).
 	"dispatch_handoff_read": {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/handoffs/{id}", Path: map[string]string{"id": "version"}, Translate: goingTranslateHandoffVersion},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/handoffs/{phase}/latest", Path: map[string]string{"key": "issue", "phase": "phase"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/handoffs", Path: map[string]string{"key": "issue"}},
 	}},

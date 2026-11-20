@@ -154,7 +154,8 @@ func (rig goingAgentRig) count(t *testing.T, query string, arguments ...any) int
 }
 
 // queued records a queued run of login's, of shape, asked in words and granted by the header
-// identity, as the request that starts a run records one, and answers its id.
+// identity, with no page and no kind (a run of the words), the first of a conversation of its own,
+// and answers its id.
 func (rig goingAgentRig) queued(t *testing.T, login string, shape int, words string) string {
 	t.Helper()
 	id := uuid.NewString()

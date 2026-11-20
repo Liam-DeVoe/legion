@@ -1,15 +1,25 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestTheServerReadsGitHubAndTheWeb: the agent's reads outside Dispatch, which the server makes
@@ -129,4 +139,348 @@ func TestTheServerReadsGitHubAndTheWeb(t *testing.T) {
 			}
 		}
 	})
+}
+
+// goingServedRequest is one request the route table served in-process: its row, as
+// "<METHOD> <pattern>", the value of each placeholder of its path, its query and its body.
+type goingServedRequest struct {
+	route string
+	path  map[string]string
+	query url.Values
+	body  []byte
+}
+
+// goingServedRecord keeps each request the route table it wraps serves, with the row mux routes
+// it to, until take.
+type goingServedRecord struct {
+	mux    *http.ServeMux
+	mu     sync.Mutex
+	served []goingServedRequest
+}
+
+// wrap is inner with the record in front of it.
+func (s *goingServedRecord) wrap(inner http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		_, route := s.mux.Handler(r)
+		values := map[string]string{}
+		if _, pattern, found := strings.Cut(route, " "); found {
+			// A mux of the one row reads the value of each placeholder as the table reads it.
+			one := http.NewServeMux()
+			one.HandleFunc(route, func(_ http.ResponseWriter, matched *http.Request) {
+				for _, placeholder := range goingPlaceholders(pattern) {
+					placeholder = strings.TrimSuffix(placeholder, "...")
+					values[placeholder] = matched.PathValue(placeholder)
+				}
+			})
+			one.ServeHTTP(httptest.NewRecorder(), r.Clone(r.Context()))
+		}
+		s.mu.Lock()
+		s.served = append(s.served, goingServedRequest{route: route, path: values, query: r.URL.Query(), body: body})
+		s.mu.Unlock()
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// take is the requests served since the last take.
+func (s *goingServedRecord) take() []goingServedRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	served := s.served
+	s.served = nil
+	return served
+}
+
+// goingTaggedNames is the names v's struct type gives its fields under tag, an embedded struct's
+// fields included; none for nil.
+func goingTaggedNames(v any, tag string) map[string]bool {
+	names := map[string]bool{}
+	var walk func(reflect.Type)
+	walk = func(typ reflect.Type) {
+		for typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct {
+			return
+		}
+		for index := range typ.NumField() {
+			field := typ.Field(index)
+			name, _, _ := strings.Cut(field.Tag.Get(tag), ",")
+			switch {
+			case name == "-":
+			case name != "":
+				names[name] = true
+			case field.Anonymous:
+				walk(field.Type)
+			}
+		}
+	}
+	if v != nil {
+		walk(reflect.TypeOf(v))
+	}
+	return names
+}
+
+// goingCarries reports whether request carries every item of value where its route reads it: as
+// the value of a placeholder of its path, under a query key the route reads (routeShapes' Params,
+// and session, which every route reads), or in a field of the body its route reads (routeShapes'
+// Request).
+func goingCarries(request goingServedRequest, value any) bool {
+	shape := routeShapes[request.route]
+	keys := goingTaggedNames(shape.Params, "query")
+	keys["session"] = true
+	fields := goingTaggedNames(shape.Request, "json")
+	var body map[string]any
+	_ = json.Unmarshal(request.body, &body)
+	carried := func(text string) bool {
+		for _, held := range request.path {
+			if held == text {
+				return true
+			}
+		}
+		for key := range keys {
+			if slices.Contains(request.query[key], text) {
+				return true
+			}
+		}
+		for field := range fields {
+			held, many := body[field].([]any)
+			if !many {
+				held = []any{body[field]}
+			}
+			for _, item := range held {
+				if heldText, isText := goingArgumentText(item); isText && heldText == text {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	items, many := value.([]any)
+	if !many {
+		items = []any{value}
+	}
+	for _, item := range items {
+		if text, isText := goingArgumentText(item); !isText || !carried(text) {
+			return false
+		}
+	}
+	return true
+}
+
+// goingReadsNoPersonCalls are the read tools whose every row reads the calling session, which a
+// person's run acts as none of: the call is refused before any request, with its reason.
+var goingReadsNoPersonCalls = map[string]string{
+	"dispatch_answers": "it lists the answers written to the calling session",
+}
+
+// TestTheAgentReadsWhatItsArgumentsName: a read of the agent's reaches the route that reads what its
+// arguments name, and each argument reaches it where that route reads it (R12: a search, a read of
+// an item, and call_tool's read by a tool's name). The agent's search, and dispatch_search called
+// by its name, send their words as the search route's q and find the issue whose title holds them.
+// A read of a reference reads the item it names through the route a person reads it with: an
+// issue, a comment with its thread, an issue's log, a document of an issue or a project, an ask, a
+// message, an issue's children and a block; a read naming how many events reads the issue's
+// events, and a project alone its documents on no issue. dispatch_doc_read reads the text of the
+// document its issue, artifact or reference names, with its blocks or at a version;
+// dispatch_handoff_read reads the version it names; dispatch_issues lists the issues with no
+// priority. Then every read tool find_tools offers, called by call_tool with its spec's example,
+// reaches a row of its own with each argument where that row's route reads it: in its path, under
+// a query key the route reads, or in a field of the body it reads (routeShapes).
+func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
+	writes := newGoingWritesRig(t)
+	record := &goingServedRecord{mux: writes.mux.(*http.ServeMux)}
+	writes.served.inProcess = record.wrap(writes.served.inProcess)
+	rig := newGoingAgentRigOver(t, writes, nil)
+	loop := newGoingLoop(t, rig)
+	// call runs a run of alice's whose model calls tool with arguments and then answers, and
+	// answers what the model was told of the call and the requests the route table served for it.
+	call := func(t *testing.T, words, tool string, arguments map[string]any) (string, []goingServedRequest) {
+		t.Helper()
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall(tool, arguments)
+			}
+			return answered("Read.")
+		})
+		record.take()
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if ended := rig.ended(t, run, time.Minute); ended.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
+		}
+		results := rig.toolResults(t, run)
+		if len(results) != 1 {
+			t.Fatalf("the run saved %d tool results, want 1: %q", len(results), results)
+		}
+		return results[0], record.take()
+	}
+	created := func(response *httptest.ResponseRecorder, what string) string {
+		t.Helper()
+		if response.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, response).ID
+	}
+
+	mill := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "DEMO", "title": "The quernstone mill", "spec": "# The mill\n\nThe quernstone grinds the oats.\n", "force": true,
+	})).Key
+	comments := "/api/v1/issues/" + mill + "/comments"
+	comment := created(dispatchRequest(t, rig.mux, http.MethodPost, comments, map[string]any{"body": "Which millstone turns?"}, "alice"), "comment")
+	created(dispatchRequest(t, rig.mux, http.MethodPost, comments, map[string]any{"body": "The bedstone stays.", "reply_to": comment}, "alice"), "reply")
+	ask := rig.ask(t, mill, "Who dresses the quernstone?")
+	message := created(dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/issues/"+mill+"/messages",
+		map[string]any{"body": "The miller is on his way."}, "alice"), "message")
+	runbook := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/projects/DEMO/artifacts", map[string]any{
+		"name": "Mill runbook", "content": "# Mill runbook\n\nOil the spindle weekly.\n",
+	})).Artifact.Slug
+	for _, note := range []string{"first hand-off", "second hand-off"} {
+		body, err := json.Marshal(map[string]string{"note": note})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created(sessionRequest(t, rig.mux, http.MethodPost, "/api/v1/issues/"+mill+"/handoffs/implement",
+			map[string]any{"actor": sessionActor(), "body": string(body)}), "handoff")
+	}
+	blocks := decodeBody[[]struct {
+		ID string `json:"id"`
+	}](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+mill+"/artifacts/spec/blocks", nil))
+	if len(blocks) == 0 {
+		t.Fatalf("%s's spec holds no block", mill)
+	}
+	issueRef := "dispatch://" + mill
+	blockRef := issueRef + "/spec#b-" + text.EncodeBlockID(blocks[0].ID)
+	docRead := func(arguments map[string]any) map[string]any {
+		return map[string]any{"tool": "dispatch_doc_read", "arguments": arguments}
+	}
+
+	for _, row := range []struct {
+		name, tool string
+		arguments  map[string]any
+		// route is the row of the table the call reads, and query what that row's request holds
+		// under each key named, nil where the request holds none.
+		route string
+		query url.Values
+		holds []string
+	}{
+		{name: "the agent's search finds the issue whose title holds its words", tool: "search",
+			arguments: map[string]any{"query": "quernstone"},
+			route:     "GET /api/v1/search", query: url.Values{"q": {"quernstone"}}, holds: []string{mill}},
+		{name: "dispatch_search finds it in its project", tool: "call_tool",
+			arguments: map[string]any{"tool": "dispatch_search", "arguments": map[string]any{"query": "quernstone", "project": "DEMO"}},
+			route:     "GET /api/v1/search", query: url.Values{"q": {"quernstone"}, "project": {"DEMO"}}, holds: []string{mill}},
+		{name: "an issue's reference reads the issue", tool: "read", arguments: map[string]any{"ref": issueRef},
+			route: "GET /api/v1/issues/{key}", holds: []string{"The quernstone mill"}},
+		{name: "a comment's reference reads the comment with its thread", tool: "read",
+			arguments: map[string]any{"ref": issueRef + "/comment/" + comment},
+			route:     "GET /api/v1/comments/{id}", holds: []string{"Which millstone turns?", "The bedstone stays."}},
+		{name: "a comment's reference beside its issue reads the comment", tool: "read",
+			arguments: map[string]any{"ref": issueRef + "/comment/" + comment, "issue": mill},
+			route:     "GET /api/v1/comments/{id}", holds: []string{"Which millstone turns?"}},
+		{name: "an issue's log reads its newest events", tool: "read", arguments: map[string]any{"ref": issueRef + "/log"},
+			route: "GET /api/v1/issues/{key}/events", query: url.Values{"order": {"desc"}, "limit": {"10"}}, holds: []string{"comment.created"}},
+		{name: "an issue read naming all_events reads every event", tool: "read", arguments: map[string]any{"issue": mill, "all_events": true},
+			route: "GET /api/v1/issues/{key}/events", query: url.Values{"order": nil, "limit": nil}, holds: []string{"issue.created"}},
+		{name: "an issue read naming events reads that many of the newest", tool: "read", arguments: map[string]any{"issue": mill, "events": 2},
+			route: "GET /api/v1/issues/{key}/events", query: url.Values{"order": {"desc"}, "limit": {"2"}}},
+		{name: "a spec's reference reads the document", tool: "read", arguments: map[string]any{"ref": issueRef + "/spec"},
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}", holds: []string{`"slug":"spec"`}},
+		{name: "an issue and its artifact read the document", tool: "read", arguments: map[string]any{"issue": mill, "artifact": "spec"},
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}", holds: []string{`"slug":"spec"`}},
+		{name: "a project document's reference reads the document", tool: "read", arguments: map[string]any{"ref": "dispatch://DEMO/artifact/" + runbook},
+			route: "GET /api/v1/projects/{key}/artifacts/{slug}", holds: []string{"Mill runbook"}},
+		{name: "an ask's reference reads the ask", tool: "read", arguments: map[string]any{"ref": issueRef + "/ask/" + ask},
+			route: "GET /api/v1/asks/{id}", holds: []string{"Who dresses the quernstone?"}},
+		{name: "a message's reference reads the message", tool: "read", arguments: map[string]any{"ref": issueRef + "/message/" + message},
+			route: "GET /api/v1/issues/{key}/messages/{id}", holds: []string{"The miller is on his way."}},
+		{name: "an issue's children read the issue", tool: "read", arguments: map[string]any{"ref": issueRef + "/children"},
+			route: "GET /api/v1/issues/{key}", holds: []string{"The quernstone mill"}},
+		{name: "a block's reference reads the block", tool: "read", arguments: map[string]any{"ref": blockRef},
+			route: "GET /api/v1/references", query: url.Values{"to": {blockRef}}, holds: []string{blocks[0].ID}},
+		{name: "a project alone lists its documents on no issue", tool: "read", arguments: map[string]any{"project": "DEMO"},
+			route: "GET /api/v1/projects/{key}/artifacts", query: url.Values{"unlinked": {"true"}}, holds: []string{runbook}},
+		{name: "dispatch_doc_read of an issue reads its spec's text", tool: "call_tool", arguments: docRead(map[string]any{"issue": mill}),
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/text", holds: []string{"grinds the oats"}},
+		{name: "dispatch_doc_read of an issue's artifact reads its text", tool: "call_tool", arguments: docRead(map[string]any{"issue": mill, "artifact": "spec"}),
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/text", holds: []string{"grinds the oats"}},
+		{name: "dispatch_doc_read of a reference reads its text", tool: "call_tool", arguments: docRead(map[string]any{"ref": issueRef + "/spec"}),
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/text", holds: []string{"grinds the oats"}},
+		{name: "dispatch_doc_read with blocks reads the text with its blocks", tool: "call_tool", arguments: docRead(map[string]any{"issue": mill, "blocks": true}),
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/text", query: url.Values{"blocks": {"true"}}, holds: []string{blocks[0].ID}},
+		{name: "dispatch_doc_read with a version reads that version", tool: "call_tool", arguments: docRead(map[string]any{"issue": mill, "version": 1}),
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}", holds: []string{"grinds the oats"}},
+		{name: "dispatch_doc_read of a project document's reference at a version reads that version", tool: "call_tool",
+			arguments: docRead(map[string]any{"ref": "dispatch://DEMO/artifact/" + runbook + "@v1"}),
+			route:     "GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}", holds: []string{"Oil the spindle weekly."}},
+		{name: "dispatch_handoff_read of a version reads that version", tool: "call_tool",
+			arguments: map[string]any{"tool": "dispatch_handoff_read", "arguments": map[string]any{"issue": mill, "phase": "implement", "version": 1}},
+			route:     "GET /api/v1/handoffs/{id}", holds: []string{"first hand-off"}},
+		{name: "dispatch_issues lists the issues with no priority", tool: "call_tool",
+			arguments: map[string]any{"tool": "dispatch_issues", "arguments": map[string]any{"project": "DEMO", "priority": []any{nil}}},
+			route:     "GET /api/v1/issues", query: url.Values{"priority": {"none"}}, holds: []string{mill}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			result, served := call(t, row.name, row.tool, row.arguments)
+			if len(served) == 0 {
+				t.Fatalf("the call reached no route; the model was told %q", result)
+			}
+			read := served[len(served)-1]
+			if read.route != row.route {
+				t.Fatalf("the call read %s?%s, want %s; the model was told %q", read.route, read.query.Encode(), row.route, result)
+			}
+			for key, want := range row.query {
+				if got := read.query[key]; !slices.Equal(got, want) {
+					t.Errorf("the read's query holds %s=%q, want %q", key, got, want)
+				}
+			}
+			if !strings.Contains(result, "status 200") {
+				t.Errorf("the model was told %q, want status 200", result)
+			}
+			for _, held := range row.holds {
+				if !strings.Contains(result, held) {
+					t.Errorf("the model was told %q, which does not hold %q", result, held)
+				}
+			}
+		})
+	}
+
+	for _, spec := range contracts.DispatchTools {
+		if _, reads := goingReadTools[spec.Name]; !reads {
+			continue
+		}
+		t.Run(spec.Name+" with its example", func(t *testing.T) {
+			routes, err := goingReadToolRoutes(spec.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var example map[string]any
+			if err := json.Unmarshal(spec.Example, &example); err != nil {
+				t.Fatal(err)
+			}
+			result, served := call(t, "call "+spec.Name+" with its example", "call_tool", map[string]any{"tool": spec.Name, "arguments": example})
+			if len(served) == 0 {
+				if _, refused := goingReadsNoPersonCalls[spec.Name]; refused && strings.Contains(result, agentwire.CodeCallRefused) {
+					return
+				}
+				t.Fatalf("the call reached no route; the model was told %q", result)
+			}
+			read := served[len(served)-1]
+			if !slices.ContainsFunc(routes, func(route GoingRoute) bool { return route.Method+" "+route.Pattern == read.route }) {
+				t.Fatalf("the call read %s, which is no row of %s", read.route, spec.Name)
+			}
+			for name, value := range example {
+				if !goingCarries(read, value) {
+					t.Errorf("%s=%v never reaches %s?%s (body %s), which reads it under no name", name, value, read.route, read.query.Encode(), read.body)
+				}
+			}
+		})
+	}
 }
