@@ -94,7 +94,7 @@ type connState struct {
 //
 // Its reads are not bounded as readConnection's are, and they can wait: each takes nats.go's lock
 // of the connection, which a reconnect attempt holds up to connectTimeout and a write of the
-// connection's buffered output holds as long as the socket write lasts (connectionReadBound). A
+// connection's buffered output holds as long as the socket write lasts (ConnectionReadBound). A
 // bound here would not bound the send it serves, because the publish that follows it takes the
 // same lock with no bound of its own (nats.go's publish), and a publish cannot be given one: one
 // left running past a bound goes out after its caller was told it did not. The bounded reads made

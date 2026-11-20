@@ -141,30 +141,40 @@ type Deps struct {
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
 	// leaves none out of its read and takes no lock.
 	lanes *lanes
-	// readsBy, when set, is the moment by which a batch's reads before its first send - its claim
-	// of events (readRows), the lookups of their destinations (resolveDestinations) and the reads
-	// of their roles' holders (resolveRoleHolders) - must have answered (reads). The outbox's scan
-	// sets it, to the take-over's budget, for the first batch of a take-over's first scan and no
-	// other (Outbox.firstReadsBy).
-	readsBy time.Time
+	// firstReads, when set, is cut at the take-over's budget unless a batch of the take-over's
+	// first scan has had its reads before its first send answered by then - its claim of events
+	// (readRows), the lookups of their destinations (resolveDestinations) and the reads of their
+	// roles' holders (resolveRoleHolders) - and those reads of every batch of that scan end with it
+	// (reads). firstReadsDone is what a batch calls once those reads of its own have answered:
+	// the take-over's first send can begin, so it leaves firstReads uncut, and no read of the scan
+	// is cut after it, whichever batch it was. The outbox's scan sets both for the batches of a
+	// take-over's first scan and no other (Outbox.firstReadsBy).
+	firstReads     context.Context
+	firstReadsDone func()
 }
 
-// errReadsBound marks a batch whose reads ran past Deps.readsBy (boundedRead): a take-over's
-// first batch whose reads did not answer by the take-over's budget.
+// errReadsBound marks a batch whose reads the take-over's budget cut (Deps.firstReads,
+// boundedRead): no batch of the take-over's first scan had its reads before its first send
+// answered by that budget.
 var errReadsBound = errors.New("the batch's reads did not answer within their bound")
 
-// reads is ctx bounded by d.readsBy when it is set, and ctx itself when it is not.
+// reads is ctx, cut too when d.firstReads is cut, when that is set, and ctx itself when it is not.
 func (d Deps) reads(ctx context.Context) (context.Context, context.CancelFunc) {
-	if d.readsBy.IsZero() {
+	if d.firstReads == nil {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, d.readsBy)
+	reads, cut := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(d.firstReads, func() { cut(context.Cause(d.firstReads)) })
+	return reads, func() {
+		stop()
+		cut(nil)
+	}
 }
 
-// boundedRead is err, a read's under reads, marked errReadsBound when reads's own bound ended it
-// while ctx, the batch's, still runs.
+// boundedRead is err, a read's under reads, marked errReadsBound when the take-over's budget cut
+// reads (Deps.firstReads) while ctx, the batch's, still runs.
 func boundedRead(ctx, reads context.Context, err error) error {
-	if err != nil && ctx.Err() == nil && errors.Is(reads.Err(), context.DeadlineExceeded) {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(reads), errReadsBound) {
 		return fmt.Errorf("%w: %w", errReadsBound, err)
 	}
 	return err
@@ -342,6 +352,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	}
 	resolveRoleHolders(reads, deps, events, resolvedRoles)
 	endReads()
+	if deps.firstReadsDone != nil {
+		deps.firstReadsDone()
+	}
 	chains := planChains(events)
 
 	changed := deps.Publisher.ConnectionChanged()

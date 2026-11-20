@@ -256,7 +256,7 @@ func (w *window) pin(wait time.Duration) error {
 // after either read closes the channel and the loop tries the connection again. The reconnect
 // count records a life only while that same channel is still current and unpinned.
 //
-// The whole pin is bounded at wait plus two connectionReadBound (Bounded): one for
+// The whole pin is bounded at wait plus two ConnectionReadBound (Bounded): one for
 // ensureConnWithContext's read of the connection's status, once the wait is spent, and one for the
 // pin's own reads of it, each of which waits on nats.go's lock as that read does. A send pins with
 // no wait (pinToSend), so it pins a client connected now, within that bound, and answers
@@ -264,7 +264,7 @@ func (w *window) pin(wait time.Duration) error {
 func (w *window) pinFirst(wait time.Duration) error {
 	waiting, cancel := context.WithTimeout(w.ctx, wait)
 	defer cancel()
-	ctx, cancelBound := context.WithTimeout(w.ctx, wait+2*connectionReadBound)
+	ctx, cancelBound := context.WithTimeout(w.ctx, wait+2*ConnectionReadBound)
 	defer cancelBound()
 	type connection struct {
 		conn *nats.Conn

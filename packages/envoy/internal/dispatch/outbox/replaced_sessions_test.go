@@ -871,8 +871,10 @@ func (h *heldRecord) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEnd
 // keeps the hold: the ending, the batch's statement and the hold's renewal each take a connection
 // of production's outbox pool (store's outboxPoolSize) at once, so the renewal waits behind
 // neither, and the batch is recorded published. The second row, whose ending answers, is the same
-// with no late take-over: its first batch's record ends past the take-over's budget, so the batch
-// the scan starts after it reads past that budget too, with no bound (scan).
+// with no late take-over: its first batch's record ends past the take-over's budget, and the reads
+// the scan makes past that budget - of the batch it starts next, or of one a wake started beside it,
+// which waits for the record's statement - are not cut, since a batch had its reads answered by
+// the budget (scan).
 func TestAHolderKeepsItsHoldWhileALateEndingAndASlowFirstRecordShareTheOutboxPool(t *testing.T) {
 	for _, row := range []struct {
 		name   string

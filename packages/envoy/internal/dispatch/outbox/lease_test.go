@@ -955,9 +955,9 @@ func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T)
 // timeout, with the client's reconnect wait between attempts: a read of the connection's status
 // that waited on that lock held the batch up to 6 s. So the silent row begins its batch while an
 // attempt holds the lock (inReconnectAttempt), where the batch's first read of the
-// connection's status meets it. The bound is probeTimeout, one bounded status read past it (bus's
-// connectionReadBound, 250 ms), and the batch's own two statements, its read of the events and its
-// release of what it did not send, which the rest of the second covers.
+// connection's status meets it. The bound is probeTimeout, one bounded status read past it
+// (bus.ConnectionReadBound, 250 ms), and the batch's own two statements, its read of the events
+// and its release of what it did not send, which the rest of the second covers.
 func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *testing.T) {
 	for _, row := range []struct {
 		name    string

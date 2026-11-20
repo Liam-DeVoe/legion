@@ -842,10 +842,12 @@ func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) 
 	}
 }
 
-// connectionReadBound bounds each read of a connection's status that ensureConnWithContext makes
+// ConnectionReadBound bounds each read of a connection's status that ensureConnWithContext makes
 // before it decides (readConnection), a window's first pin among its callers (window.pinFirst, which
 // gives its own reads one bound more); a pinned window's later checks read nothing of nats.go's
-// (window.current). nats.go reads the status under its lock of the connection, and holds that
+// (window.current). It is also the bound every caller of ConnectedWithin gives its read: the holder
+// of Dispatch's publisher hold, Dispatch's /healthz and an envoy-listener's /healthz for its role
+// lane. nats.go reads the status under its lock of the connection, and holds that
 // lock across two waits a read then sits behind: each reconnect attempt's dial and handshake, up to
 // connectTimeout, and each write of its buffered output to the socket (nats.go's flusher), which
 // takes microseconds while the socket accepts the bytes and lasts as long as the write does when it
@@ -857,7 +859,14 @@ func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) 
 // window's first pin takes the connection as not connected: its send answers ErrUnavailable at once
 // and a probe waits out its own timeout, rather than either waiting on the lock. On a link that is
 // only slow, that refuses a first send whose connection is still up.
-const connectionReadBound = 250 * time.Millisecond
+//
+// The value sits between the two reads it tells apart. A healthy read through ConnectedWithin (its
+// goroutine, channel and timer included), with another goroutine publishing through the same
+// client beside it, took at most 18.9 ms in 20,000 reads, and its direct read at most 0.13 ms,
+// measured on 2026-11-20 on a shared 288-CPU development machine at a load of 500 to 600: the
+// bound is about 13 times the slowest. A reconnect attempt holds the lock up to connectTimeout
+// (5 s), twenty times the bound.
+const ConnectionReadBound = 250 * time.Millisecond
 
 // connectionState is what readConnection reads of a connection: its status and how often it has
 // reconnected.
@@ -871,13 +880,13 @@ func (s connectionState) connected() bool {
 	return s.status == nats.CONNECTED || s.status == nats.DRAINING_SUBS || s.status == nats.DRAINING_PUBS
 }
 
-// readConnection reads conn's status and reconnect count within connectionReadBound, and answers
+// readConnection reads conn's status and reconnect count within ConnectionReadBound, and answers
 // false when the read has not answered by then. The read it starts is left to end on its own,
 // when nats.go lets the lock go.
 func readConnection(conn *nats.Conn) (connectionState, bool) {
 	answer := make(chan connectionState, 1)
 	go func() { answer <- connectionState{status: conn.Status(), reconnects: conn.Stats().Reconnects} }()
-	timer := time.NewTimer(connectionReadBound)
+	timer := time.NewTimer(ConnectionReadBound)
 	defer timer.Stop()
 	select {
 	case state := <-answer:
@@ -1653,7 +1662,7 @@ const reconnectRecheck = time.Second
 //
 // Each read of the connection's status is bounded (readConnection): a read a reconnect attempt
 // holds is a connection being reconnected, which is waited for as one, so the wait ends with ctx
-// within one connectionReadBound rather than when the attempt lets nats.go's lock go.
+// within one ConnectionReadBound rather than when the attempt lets nats.go's lock go.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()

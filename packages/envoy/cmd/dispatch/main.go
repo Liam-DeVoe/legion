@@ -2222,8 +2222,10 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 
 // healthNATSRead bounds /healthz's read of the publisher's connection status (bus.ConnectedWithin,
 // healthzHandler's `nats`). A client in the middle of a reconnect reads as not connected, which it
-// is, so the bound costs the field nothing and keeps the probe inside its probers' deadlines.
-const healthNATSRead = 250 * time.Millisecond
+// is, so the bound costs the field nothing and keeps the probe inside its probers' deadlines. It is
+// bus's bound of every such read (bus.ConnectionReadBound), whose note gives the healthy reads it
+// was measured against.
+const healthNATSRead = bus.ConnectionReadBound
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it
 // is when the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so
