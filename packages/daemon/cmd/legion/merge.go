@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,7 +29,7 @@ func newMergeCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	repository := cmd.Flags().StringP("repository", "R", "", "a directory of the jj workspace (default: the current directory)")
 	message := cmd.Flags().StringP("message", "m", "", "the description of the merge commit (required)")
-	// A count of revisions other than two is the merge's own refusal, exit 3, so any count of
+	// A count of revisions other than two is runMerge's own refusal, exit 3, so any count of
 	// words passes here. A flag cobra marks required fails as a plain error, which run answers
 	// with 1, so a missing -m is a usage error of this command's own.
 	cmd.Args = func(*cobra.Command, []string) error {
@@ -50,20 +51,29 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // workspace that the directory repository is in, running each git and jj through runner. It
 // answers 0 for a merge git made cleanly and 1 for a merge that holds git's conflicts, each with
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
-// made. A commit of an earlier run that the merge keeps, because another commit stands on it, a
-// bookmark other than a carrier's names it, a remote bookmark holds it or it is a working-copy
-// commit, and a bookmark of a carrier's name that it leaves on a commit no legion merge wrote, are
-// named on stderr too, and the merge goes on.
+// made. A count of revisions other than two is a refusal. A commit of an earlier run that the
+// merge keeps, because another commit stands on it, a bookmark other than a carrier's names it, a
+// remote bookmark holds it or it is a working-copy commit, and a bookmark of a carrier's name that
+// it leaves on a commit no legion merge wrote, are named on stderr too, and the merge goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {
-	root, err := mergeWorkspace(repository)
-	if err == nil {
-		var result jjmerge.Result
-		if result, err = jjmerge.Merge(ctx, runner, jjmerge.Request{Workspace: root, Message: message, Revisions: revisions, Stderr: stderr}); err == nil {
-			return reportMerge(stdout, root, revisions, result)
-		}
+	refuse := func(err error) int {
+		fmt.Fprintf(stderr, "legion merge: %v\n%s", err, mergeRefusedNextStep)
+		return 3
 	}
-	fmt.Fprintf(stderr, "legion merge: %v\n%s", err, mergeRefusedNextStep)
-	return 3
+	if len(revisions) != 2 {
+		return refuse(fmt.Errorf("name two revisions, the first parent and then the second: %d given (%s)",
+			len(revisions), strings.Join(revisions, " ")))
+	}
+	root, err := mergeWorkspace(repository)
+	if err != nil {
+		return refuse(err)
+	}
+	pair := [2]string(revisions)
+	result, err := jjmerge.Merge(ctx, runner, jjmerge.Request{Workspace: root, Message: message, Revisions: pair, Stderr: stderr})
+	if err != nil {
+		return refuse(err)
+	}
+	return reportMerge(stdout, root, pair, result)
 }
 
 // mergeWorkspace is the root of the jj workspace dir is in: dir, or the nearest directory above it
@@ -94,7 +104,7 @@ const (
 
 // reportMerge prints the merge on stdout and answers its exit status: 0 when git merged cleanly,
 // and 1 with the next step as the last lines when the merge holds git's conflicts.
-func reportMerge(stdout io.Writer, root string, revisions []string, result jjmerge.Result) int {
+func reportMerge(stdout io.Writer, root string, revisions [2]string, result jjmerge.Result) int {
 	fmt.Fprintf(stdout, "The merge commit is %s. Its change id is %s.\n", result.CommitID, result.ChangeID)
 	fmt.Fprintf(stdout, "Its first parent is %s (%s). Its second parent is %s (%s).\n",
 		revisions[0], result.Parents[0], revisions[1], result.Parents[1])
@@ -111,7 +121,14 @@ func reportMerge(stdout io.Writer, root string, revisions []string, result jjmer
 	}
 	fmt.Fprintln(stdout, "git's conflicts, in git's words:")
 	for _, message := range result.Messages {
-		fmt.Fprintf(stdout, "  %s\n", strings.ReplaceAll(message.Text, "\n", "\n  "))
+		// A path that holds a newline adds a line to git's text, and that line can read as one of
+		// this output's own. So a message that names a path shownPath quotes is quoted whole, on
+		// one line.
+		text := strings.ReplaceAll(message.Text, "\n", "\n  ")
+		if slices.ContainsFunc(message.Paths, func(path string) bool { return shownPath(path) != path }) {
+			text = strconv.Quote(message.Text)
+		}
+		fmt.Fprintf(stdout, "  %s\n", text)
 	}
 	fmt.Fprintln(stdout, "What the merge holds at each path of git's conflicts:")
 	var paths []string
@@ -133,9 +150,9 @@ func reportMerge(stdout io.Writer, root string, revisions []string, result jjmer
 	if conflicts {
 		steps = append(steps, "Resolve each jj conflict in the working-copy commit.")
 	}
-	steps = append(steps,
-		"Move the resolution into the merge with this command:\n     "+squashCommand(root, result.ChangeID, paths),
-		"Push the merge.")
+	steps = append(steps, "Move the resolution into the merge with this command:\n     "+squashCommand(root, result.ChangeID, paths))
+	squashStep := len(steps)
+	steps = append(steps, "Push the merge.")
 	fmt.Fprintln(stdout, "Next step:")
 	for i, step := range steps {
 		fmt.Fprintf(stdout, "  %d. %s\n", i+1, step)
@@ -144,7 +161,7 @@ func reportMerge(stdout io.Writer, root string, revisions []string, result jjmer
 	if conflicts {
 		fmt.Fprintf(stdout, "If you keep a part of the resolution for a later turn, that part stays in a commit above the merge.\n"+
 			"Then jj git push refuses the merge, because the merge still holds the conflict.\n"+
-			"The command in step %d moves the resolution into the merge.\n", len(steps)-1)
+			"The command in step %d moves the resolution into the merge.\n", squashStep)
 	}
 	return 1
 }
@@ -171,16 +188,10 @@ func shownPath(path string) string {
 	return path
 }
 
-// mergeComparison is the command that prints how merge differs from git's merge of its parents,
-// with the merge's own option list, so the machine's configuration does not make git's merge
-// another one (jjmerge.MergeTreeOptions). git rev-parse gives merge-tree the parents' full commit
-// ids, as the merge gives them: git names a file it puts aside in a conflict after the revision it
-// was given (p~<id>), so a merge-tree of <merge>^1 would name a path the merge does not hold.
-// flags go to git diff, as --name-only does.
+// mergeComparison is the reading command that the help prints: jjmerge.Comparison of merge, with
+// flags for git diff. The rows that run the help's command call it by this name.
 func mergeComparison(merge string, flags ...string) string {
-	diff := strings.Join(append([]string{"git", "diff"}, flags...), " ")
-	return fmt.Sprintf(`%s "$(git %s merge-tree --write-tree $(git rev-parse %s^1 %s^2) | head -n 1)" %s`,
-		diff, strings.Join(jjmerge.MergeTreeOptions(), " "), merge, merge, merge)
+	return jjmerge.Comparison(merge, flags...)
 }
 
 // mergeHelp is `legion merge --help`'s text: what the command does and why, that one run at a

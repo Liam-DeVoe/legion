@@ -595,6 +595,31 @@ func TestLegionMergeShowsABinaryConflict(t *testing.T) {
 	}
 }
 
+// A path that holds a newline makes git's message about it two lines, and the second could read
+// as a line of the output's own. The output gives that message Go-quoted, on one line, so no line
+// of git's words holds the path's second half alone. A message whose paths print as they are keeps
+// git's text.
+func TestLegionMergeQuotesGitsMessageOnAPathWithANewline(t *testing.T) {
+	const odd = "-odd path\twith tab\nand newline"
+	result := jjmerge.Result{
+		CommitID: "c0de", ChangeID: "zzzz", Parents: [2]string{"aaaa", "bbbb"}, Tree: "7ree",
+		Conflicts: []jjmerge.Conflict{{Path: odd, JJConflict: true}, {Path: "g", JJConflict: true}},
+		Messages: []jjmerge.Message{
+			{Paths: []string{odd}, Type: "CONFLICT (contents)", Text: "CONFLICT (content): Merge conflict in " + odd},
+			{Paths: []string{"g"}, Type: "CONFLICT (contents)", Text: "CONFLICT (content): Merge conflict in g"},
+		},
+	}
+	var stdout strings.Builder
+	if code := reportMerge(&stdout, "/ws", [2]string{mergeFirst, mergeSecond}, result); code != 1 {
+		t.Fatalf("reportMerge = %d, want 1\n%s", code, stdout.String())
+	}
+	_, after, _ := strings.Cut(stdout.String(), "git's conflicts, in git's words:\n")
+	words, _, _ := strings.Cut(after, "What the merge holds at each path of git's conflicts:\n")
+	if want := "  " + strconv.Quote(result.Messages[0].Text) + "\n  CONFLICT (content): Merge conflict in g\n"; words != want {
+		t.Errorf("git's words read\n%s\nwant\n%s\nstdout:\n%s", words, want, stdout.String())
+	}
+}
+
 // stepRunner is jjmerge.Exec but for the first command step picks out, which fail answers in its
 // place: a merge that fails at that one step.
 type stepRunner struct {

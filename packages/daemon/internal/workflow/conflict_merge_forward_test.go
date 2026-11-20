@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/jjmerge"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -658,8 +659,9 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 // The refusal of a completion at the head a merge forward replaced sends the role to read the
 // merge before it does the phase's work at the new head, and it names the reading every role is
 // given (dispatch://INFRA-4149, R2): the merge against git's own merge of its parents,
-// `git merge-tree --write-tree` of the new head's two parents, and never `git show --remerge-diff`,
-// which can leave out a file git conflicts in when the merge has several merge bases.
+// `git merge-tree --write-tree` of the new head's two parents with the option list of
+// `legion merge`, and never `git show --remerge-diff`, which can leave out a file git conflicts in
+// when the merge has several merge bases.
 func TestAConflictRefusalReadsTheMergeAgainstGitsMerge(t *testing.T) {
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
@@ -671,7 +673,7 @@ func TestAConflictRefusalReadsTheMergeAgainstGitsMerge(t *testing.T) {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
 	}
 	msg := result.Refusal.Message
-	if says := "git merge-tree --write-tree $(git rev-parse " + forwardHead + "^1 " + forwardHead + "^2)"; !strings.Contains(msg, says) {
+	if says := "git " + strings.Join(jjmerge.MergeTreeOptions(), " ") + " merge-tree --write-tree $(git rev-parse " + forwardHead + "^1 " + forwardHead + "^2)"; !strings.Contains(msg, says) {
 		t.Errorf("the refusal reads %q, want it to say %q", msg, says)
 	}
 	if strings.Contains(msg, "--remerge-diff") {

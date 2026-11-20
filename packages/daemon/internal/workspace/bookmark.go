@@ -103,7 +103,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 			"Cancel the deletion, and the next provisioning adopts origin's branch: %s. "+
 			"Start from %s instead: delete the branch on GitHub (the pull request's Delete branch button, or %s), and the next provisioning starts at %s",
 			workspace.Bookmark, cloneDir, remote, origin.added[0], workspace.Dir,
-			wayOut(cloneDir, "bookmark", "set", jjString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
+			wayOut(cloneDir, "bookmark", "set", JJString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
 			wayOut(cloneDir, "bookmark", "forget", exactName(workspace.Bookmark)),
 			workspace.DefaultBranch, deleteOnGitHub(workspace), workspace.DefaultBranch)
 	case origin.present:
@@ -189,7 +189,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	if !fromBase {
 		return nil
 	}
-	_, err = RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", jjString(workspace.Bookmark), "-r", "@"})
+	_, err = RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", JJString(workspace.Bookmark), "-r", "@"})
 	return err
 }
 
@@ -231,7 +231,7 @@ func conflictRefusal(workspace Workspace, local, origin bookmarkRow) error {
 		startAtBase = "delete the branch on GitHub (the pull request's Delete branch button, or " + deleteOnGitHub(workspace) + ") and run " + startAtBase
 	}
 	return fmt.Errorf("Bookmark %s is conflicted %s; workspace %s was not created. Keep %s: %s. Start from %s instead: %s, and the next provisioning starts at %s",
-		workspace.Bookmark, local.sides(), workspace.Dir, keep, wayOut(workspace.Clone, "bookmark", "set", jjString(workspace.Bookmark), "-r", commit),
+		workspace.Bookmark, local.sides(), workspace.Dir, keep, wayOut(workspace.Clone, "bookmark", "set", JJString(workspace.Bookmark), "-r", commit),
 		workspace.DefaultBranch, startAtBase, workspace.DefaultBranch)
 }
 
@@ -256,7 +256,7 @@ func baseCommit(ctx context.Context, run Runner, workspace Workspace) (string, e
 	switch base, origin := rows.local, rows.origin; {
 	case base.conflict:
 		return "", fmt.Errorf("Bookmark %s is conflicted %s; workspace %s was not created. Keep origin's: %s, and the next provisioning starts there",
-			branch, base.sides(), workspace.Dir, wayOut(workspace.Clone, "bookmark", "set", jjString(branch), "-r", originRow(branch), "--allow-backwards"))
+			branch, base.sides(), workspace.Dir, wayOut(workspace.Clone, "bookmark", "set", JJString(branch), "-r", originRow(branch), "--allow-backwards"))
 	case base.present:
 		return base.added[0], nil
 	case origin.conflict:
@@ -264,7 +264,7 @@ func baseCommit(ctx context.Context, run Runner, workspace Workspace) (string, e
 			remote, origin.sides(), branch, workspace.Clone, workspace.Dir, branch)
 	case origin.present && origin.tracked:
 		return "", fmt.Errorf("Bookmark %s was deleted in the shared clone %s while %s is tracked at %s; workspace %s was not created. Restore it: %s, and the next provisioning starts there",
-			branch, workspace.Clone, remote, origin.added[0], workspace.Dir, wayOut(workspace.Clone, "bookmark", "set", jjString(branch), "-r", originRow(branch)))
+			branch, workspace.Clone, remote, origin.added[0], workspace.Dir, wayOut(workspace.Clone, "bookmark", "set", JJString(branch), "-r", originRow(branch)))
 	case origin.present:
 		return "", fmt.Errorf("Bookmark %s is not tracked in the shared clone %s, where %s is at %s untracked; workspace %s was not created. Track it: %s, and the next provisioning starts there",
 			branch, workspace.Clone, remote, origin.added[0], workspace.Dir, wayOut(workspace.Clone, "bookmark", "track", originRow(branch)))
@@ -288,11 +288,11 @@ func wayOut(cloneDir string, args ...string) string {
 
 // exactName is the jj name pattern that matches the bookmark name alone, whatever characters it
 // holds: `jj bookmark list`, `delete` and `forget` take one, as does `jj git fetch --branch`.
-func exactName(name string) string { return "exact:" + jjString(name) }
+func exactName(name string) string { return "exact:" + JJString(name) }
 
 // originRow is the bookmark name's row on origin as jj reads it: `jj bookmark track`'s argument,
 // and a revset naming origin's commit of it.
-func originRow(name string) string { return jjString(name) + "@origin" }
+func originRow(name string) string { return JJString(name) + "@origin" }
 
 // deleteOnGitHub is the printed command that deletes the issue's branch on GitHub.
 func deleteOnGitHub(workspace Workspace) string {

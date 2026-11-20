@@ -182,9 +182,9 @@ func seedRemote(t *testing.T, root, defaultBranch string) string {
 
 	seed := filepath.Join(root, "seed")
 	runSetup(t, root, fixturegit.JJInit(seed, true)...)
-	runSetup(t, root, "jj", "bookmark", "set", jjString(defaultBranch), "-R", seed)
+	runSetup(t, root, "jj", "bookmark", "set", JJString(defaultBranch), "-R", seed)
 	runSetup(t, root, "jj", "git", "remote", "add", "origin", remote, "-R", seed)
-	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+jjString(defaultBranch), "--allow-empty-description", "-R", seed)
+	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+JJString(defaultBranch), "--allow-empty-description", "-R", seed)
 	return remote
 }
 
@@ -278,13 +278,13 @@ func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 			}
 			for _, call := range run.Calls() {
 				for _, arg := range call.Argv {
-					if arg == "main" || strings.Contains(arg, jjString("main")) || strings.HasPrefix(arg, "main@") || strings.HasSuffix(arg, ":main") {
+					if arg == "main" || strings.Contains(arg, JJString("main")) || strings.HasPrefix(arg, "main@") || strings.HasSuffix(arg, ":main") {
 						t.Errorf("a command named main: %q", call.Argv)
 					}
 				}
 			}
 			if source == "feed" {
-				if fetch := findCall(t, run.Calls(), "jj", "git", "fetch"); !slices.Contains(fetch.Argv, "exact:"+jjString("release/v7.1")) {
+				if fetch := findCall(t, run.Calls(), "jj", "git", "fetch"); !slices.Contains(fetch.Argv, "exact:"+JJString("release/v7.1")) {
 					t.Errorf("the feed fetch %q names no exact release/v7.1", fetch.Argv)
 				}
 			}
@@ -329,7 +329,7 @@ func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 				}
 
 				first := provision("first provisioning")
-				runSetup(t, first.Clone, "jj", "bookmark", "delete", "exact:"+jjString(first.Bookmark), "--ignore-working-copy", "-R", first.Clone)
+				runSetup(t, first.Clone, "jj", "bookmark", "delete", "exact:"+JJString(first.Bookmark), "--ignore-working-copy", "-R", first.Clone)
 				runSetup(t, first.Clone, "jj", "workspace", "forget", filepath.Base(first.Dir), "--ignore-working-copy", "-R", first.Clone)
 				if err := os.RemoveAll(first.Dir); err != nil {
 					t.Fatal(err)

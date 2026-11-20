@@ -7,4 +7,7 @@ body: |-
   `git diff "$(git merge-tree --write-tree $(git rev-parse <merge>^1 <merge>^2) | head -n 1)" <merge>`
   in place of `git show --remerge-diff`, which can leave out a file git conflicts in. git rev-parse
   gives git the parents' full commit ids, as `legion merge` gives them, so git names a file it puts
-  aside in a conflict as the merge names it.
+  aside in a conflict as the merge names it. The daemon's messages, the refusal and
+  `legion merge --help` give `git merge-tree` the option list of `legion merge`
+  (`-c merge.renames=true` and the other merge options at git's defaults), so the configuration
+  of the machine does not change git's merge.

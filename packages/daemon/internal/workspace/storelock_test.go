@@ -527,7 +527,7 @@ func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
 		}
 	}
 	for _, branch := range []string{"main", "legion/WIDGETS-42"} {
-		if !slices.Contains(fetch.Argv, "exact:"+jjString(branch)) {
+		if !slices.Contains(fetch.Argv, "exact:"+JJString(branch)) {
 			t.Errorf("the fetch %q does not name %s exactly", fetch.Argv, branch)
 		}
 	}

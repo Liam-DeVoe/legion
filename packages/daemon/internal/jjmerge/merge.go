@@ -33,9 +33,9 @@ import (
 // a user's attributes file with `f merge=union`, makes git merge a content conflict cleanly. The
 // repository's own attributes still apply, as they do to any git merge in it: the .gitattributes
 // of the working copy or of git's index when git runs in a git worktree,
-// $GIT_DIR/info/attributes, and the system attributes file. The merge and the reading command
-// `legion merge --help` prints both read the list through MergeTreeOptions, which answers a copy,
-// so neither changes the list the other gets.
+// $GIT_DIR/info/attributes, and the system attributes file. The merge (mergeTree) and the reading
+// command (Comparison) both give git this list. A caller outside the package reads it through
+// MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
 var mergeTreeOptions = [...]string{
 	"-c", "merge.renames=true",
 	"-c", "merge.directoryRenames=conflict",
@@ -51,6 +51,21 @@ var mergeTreeOptions = [...]string{
 // file can make git's merge another one.
 func MergeTreeOptions() []string {
 	return slices.Clone(mergeTreeOptions[:])
+}
+
+// Comparison is the command that prints how merge, a merge commit, differs from git's merge of
+// its two parents (`git merge-tree --write-tree`): how it resolved git's conflicts. It gives git
+// the merge's option list, so the machine's configuration does not make git's merge another one.
+// git rev-parse gives merge-tree the parents' full commit ids, as the merge gives them: git names
+// a file it puts aside in a conflict after the revision it was given (p~<id>), so a merge-tree of
+// <merge>^1 would name a path the merge does not hold. flags go to git diff, as --name-only does.
+// `legion merge --help` prints it, and so do the daemon's messages after a merge forward lands
+// (record's readMerge) and its refusal of a completion at a head that a merge forward replaced
+// (workflow's mergedForwardRefusal).
+func Comparison(merge string, flags ...string) string {
+	diff := strings.Join(append([]string{"git", "diff"}, flags...), " ")
+	return fmt.Sprintf(`%s "$(git %s merge-tree --write-tree $(git rev-parse %s^1 %s^2) | head -n 1)" %s`,
+		diff, strings.Join(mergeTreeOptions[:], " "), merge, merge, merge)
 }
 
 // minimumGit is the first git whose merge-tree has --write-tree, which the merge reads.
@@ -78,8 +93,23 @@ const bookmarkPrefix = "legion-merge-"
 // name is another's name and a dash and more never matches here.
 var runID = regexp.MustCompile(`^[0-9a-f]{16}-$`)
 
+// The roles of the carriers, each an index of carrierRoles. g holds git's tree. k1, k2 and k3
+// hold git's tree with each conflicted path at its stage 1, 2 or 3 version. A merge that git makes
+// cleanly has g alone.
+const (
+	carrierG = iota
+	carrierK1
+	carrierK2
+	carrierK3
+)
+
+// carrierRoles is the name of each role, which ends its carrier's bookmark. The bookmark's pattern
+// and the run's carriers both read this one list, so a role that the list lacks is an index out
+// of range where the run writes that carrier, which the compiler refuses.
+var carrierRoles = [...]string{carrierG: "g", carrierK1: "k1", carrierK2: "k2", carrierK3: "k3"}
+
 // carrierBookmark is the name of a carrier's bookmark: its run's prefix, then the carrier's role.
-var carrierBookmark = regexp.MustCompile(`^(.+-)(?:g|k1|k2|k3)$`)
+var carrierBookmark = regexp.MustCompile(`^(.+-)(?:` + strings.Join(carrierRoles[:], "|") + `)$`)
 
 // runTrailer begins the line `Legion-Merge-Run: <run prefix>` that each jj commit of a run
 // carries from the moment jj makes it: jj's merge of the carriers, and the merge until its last
@@ -176,8 +206,8 @@ type Request struct {
 	// Message is the merge commit's description, as `jj new -m` takes it.
 	Message string
 	// Revisions are the parents as the caller wrote them, each a jj revset that names one commit:
-	// the first parent, then the second. Any other count is refused.
-	Revisions []string
+	// the first parent, then the second.
+	Revisions [2]string
 	// Stderr is where the merge names, one line each, a commit of a run that it keeps rather than
 	// abandons, with why it keeps it (keep), and a bookmark of a carrier's name that it leaves on a
 	// commit that is no carrier. Nil names nothing.
@@ -231,10 +261,6 @@ type Conflict struct {
 // killed leaves its carriers, their bookmarks and the commits that carry its line behind, and the
 // next run in the same workspace removes them first, all but what keep keeps.
 func Merge(ctx context.Context, run Runner, request Request) (Result, error) {
-	if len(request.Revisions) != 2 {
-		return Result{}, fmt.Errorf("name two revisions, the first parent and then the second: %d given (%s)",
-			len(request.Revisions), strings.Join(request.Revisions, " "))
-	}
 	gitDir, err := workspace.GitDir(request.Workspace)
 	if err != nil {
 		return Result{}, fmt.Errorf("find the git directory of the workspace %s: %w", request.Workspace, err)
@@ -254,7 +280,14 @@ func Merge(ctx context.Context, run Runner, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return Result{}, fmt.Errorf("make the run's id: %w", err)
+	}
+	// Both prefixes are set before any method that reads them runs: with an empty run prefix,
+	// ofRun and own would match the line of every run in the workspace.
 	m.prefix = bookmarkPrefix + name + "-"
+	m.runPrefix = m.prefix + hex.EncodeToString(random) + "-"
 	if err := m.removeLeftovers(ctx); err != nil {
 		return Result{}, err
 	}
@@ -274,11 +307,6 @@ func Merge(ctx context.Context, run Runner, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	random := make([]byte, 8)
-	if _, err := rand.Read(random); err != nil {
-		return Result{}, fmt.Errorf("make the run's id: %w", err)
-	}
-	m.runPrefix = m.prefix + hex.EncodeToString(random) + "-"
 	result, err := m.build(ctx, parents, tree)
 	if err != nil {
 		// The undo runs to its end when the caller's context ended the run: a merge that stops
@@ -318,8 +346,9 @@ type merger struct {
 	request Request
 	stderr  io.Writer
 	// prefix begins every run prefix of this workspace, and runPrefix is this run's: prefix, the
-	// run's random id and a dash. Each carrier's bookmark is its run's prefix and its role, and
-	// each jj commit of a run carries the line runTrailer and its run's prefix.
+	// run's random id and a dash. Merge sets both at once, before any method reads them. Each
+	// carrier's bookmark is its run's prefix and its role, and each jj commit of a run carries the
+	// line runTrailer and its run's prefix.
 	prefix, runPrefix string
 	// merge is the merge's change id once `jj new` made it: a restore and a describe rewrite the
 	// merge, so its first commit id stops naming a visible commit.
@@ -331,11 +360,10 @@ type merger struct {
 func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (Result, error) {
 	conflicted := tree.conflictedPaths()
 	short := func(id string) string { return id[:min(12, len(id))] }
-	// The carriers by their role, which ends each one's bookmark: g holds git's tree; k1, k2 and
-	// k3 hold git's tree with each conflicted path at its stage 1, 2 or 3 version.
-	carriers := map[string]string{}
+	// The carriers' commit ids, by role (carrierRoles).
+	var carriers [len(carrierRoles)]string
 	var err error
-	if carriers["g"], err = m.commitTree(ctx, tree.Tree, "", fmt.Sprintf("git's merge of %s and %s", short(parents[0]), short(parents[1]))); err != nil {
+	if carriers[carrierG], err = m.commitTree(ctx, tree.Tree, "", fmt.Sprintf("git's merge of %s and %s", short(parents[0]), short(parents[1]))); err != nil {
 		return Result{}, err
 	}
 	if len(conflicted) > 0 {
@@ -344,25 +372,31 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (R
 			return Result{}, err
 		}
 		// jj's conflict markers quote each side's description, so each names whose version it holds.
+		// k1 has no parent, and k2 and k3 stand on k1, their merge base.
 		for _, k := range []struct {
-			role   string
-			stage  int
-			parent string
-			text   string
+			role, stage int
+			text        string
 		}{
-			{"k1", 1, "", fmt.Sprintf("git's merge base of %s and %s", m.request.Revisions[0], m.request.Revisions[1])},
-			{"k2", 2, "k1", fmt.Sprintf("%s %s", m.request.Revisions[0], short(parents[0]))},
-			{"k3", 3, "k1", fmt.Sprintf("%s %s", m.request.Revisions[1], short(parents[1]))},
+			{carrierK1, 1, fmt.Sprintf("git's merge base of %s and %s", m.request.Revisions[0], m.request.Revisions[1])},
+			{carrierK2, 2, fmt.Sprintf("%s %s", m.request.Revisions[0], short(parents[0]))},
+			{carrierK3, 3, fmt.Sprintf("%s %s", m.request.Revisions[1], short(parents[1]))},
 		} {
-			if carriers[k.role], err = m.commitTree(ctx, stages[k.stage-1], carriers[k.parent], k.text); err != nil {
+			parent := ""
+			if k.role != carrierK1 {
+				parent = carriers[carrierK1]
+			}
+			if carriers[k.role], err = m.commitTree(ctx, stages[k.stage-1], parent, k.text); err != nil {
 				return Result{}, err
 			}
 		}
 	}
 	// Bookmarks and not tags: a tag is in immutable_heads(), and jj abandons no immutable commit.
+	// A merge that git makes cleanly has g alone, so the other roles hold no id.
 	var refs strings.Builder
-	for _, role := range slices.Sorted(maps.Keys(carriers)) {
-		fmt.Fprintf(&refs, "create refs/heads/%s%s %s\n", m.runPrefix, role, carriers[role])
+	for role, id := range carriers {
+		if id != "" {
+			fmt.Fprintf(&refs, "create refs/heads/%s%s %s\n", m.runPrefix, carrierRoles[role], id)
+		}
 	}
 	if _, err := m.git(ctx, []byte(refs.String()), nil, "update-ref", "--stdin"); err != nil {
 		return Result{}, err
@@ -384,14 +418,14 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (R
 	// The source is the tree the merge takes: git's, or, where git conflicts, X, jj's merge of
 	// git's own three versions of each conflicted path over K1, their one merge base. X equals
 	// git's tree on every other path.
-	source := carriers["g"]
+	source := carriers[carrierG]
 	if len(conflicted) > 0 {
-		if _, err := m.jj(ctx, "new", "--no-edit", "--message=jj's merge of git's versions of the paths git conflicts in", "--message="+marker, carriers["k2"], carriers["k3"]); err != nil {
+		if _, err := m.jj(ctx, "new", "--no-edit", "--message=jj's merge of git's versions of the paths git conflicts in", "--message="+marker, carriers[carrierK2], carriers[carrierK3]); err != nil {
 			return Result{}, err
 		}
-		x, err := m.one(ctx, m.ofRun(fmt.Sprintf("children(%s) & children(%s)", carriers["k2"], carriers["k3"])), "change_id")
+		x, err := m.one(ctx, m.ofRun(fmt.Sprintf("children(%s) & children(%s)", carriers[carrierK2], carriers[carrierK3])), "change_id")
 		if err != nil {
-			return Result{}, fmt.Errorf("find jj's merge of the carriers %s and %s: %w", carriers["k2"], carriers["k3"], err)
+			return Result{}, fmt.Errorf("find jj's merge of the carriers %s and %s: %w", carriers[carrierK2], carriers[carrierK3], err)
 		}
 		source = x
 	}
@@ -425,7 +459,7 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (R
 	if _, err := m.jj(ctx, "restore", "--from", source, "--into", m.merge); err != nil {
 		return Result{}, err
 	}
-	back, err := m.diffPaths(ctx, carriers["g"], m.merge)
+	back, err := m.diffPaths(ctx, carriers[carrierG], m.merge)
 	if err != nil {
 		return Result{}, err
 	}
@@ -488,7 +522,7 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (R
 
 // ofRun is the commits of revset that carry this run's line.
 func (m *merger) ofRun(revset string) string {
-	return fmt.Sprintf("%s & description(substring:%s)", revset, jjString(runTrailer+m.runPrefix))
+	return fmt.Sprintf("%s & description(substring:%s)", revset, workspace.JJString(runTrailer+m.runPrefix))
 }
 
 // workspaceName is the jj workspace's own name, read with the run's first jj command, which
@@ -682,7 +716,7 @@ func (m *merger) notCarriers(ctx context.Context, targets []string) ([]string, e
 		return nil, nil
 	}
 	set := "(" + strings.Join(targets, " | ") + ")"
-	return m.list(ctx, fmt.Sprintf("%[1]s & ((parents(%[1]s) ~ %[1]s ~ root()):: | ~mutable() | ~author_email(exact:%[2]s))", set, jjString(carrierEmail)), "commit_id")
+	return m.list(ctx, fmt.Sprintf("%[1]s & ((parents(%[1]s) ~ %[1]s ~ root()):: | ~mutable() | ~author_email(exact:%[2]s))", set, workspace.JJString(carrierEmail)), "commit_id")
 }
 
 // marked is each mutable merge that carries the line of a run ours matches. Each commit a run
@@ -693,7 +727,7 @@ func (m *merger) notCarriers(ctx context.Context, targets []string) ([]string, e
 // is this one's, a dash and more also holds this workspace's prefix. An immutable commit is left
 // out, since jj abandons none, and so the search reads only the commits that are not on the base.
 func (m *merger) marked(ctx context.Context, ours func(run string) bool) ([]string, error) {
-	revset := fmt.Sprintf("mutable() & merges() & description(substring:%s)", jjString(runTrailer+m.prefix))
+	revset := fmt.Sprintf("mutable() & merges() & description(substring:%s)", workspace.JJString(runTrailer+m.prefix))
 	out, err := m.jj(ctx, "log", "--no-graph", "-r", revset, "-T", `commit_id ++ "\0" ++ description ++ "\0"`)
 	if err != nil {
 		return nil, err
@@ -1038,13 +1072,7 @@ func trailerBlock(paragraph string) bool {
 // RootFile is the jj fileset that names path alone, a repository-relative path: a path with
 // spaces, quotes, parentheses or a leading dash is still that one file.
 func RootFile(path string) string {
-	return "root-file:" + jjString(path)
-}
-
-// jjString is s as a jj string literal, for a fileset or a revset: its quotes and backslashes are
-// escaped, so nothing of s is read as syntax.
-func jjString(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+	return "root-file:" + workspace.JJString(path)
 }
 
 // nulFields is out's NUL-terminated fields.

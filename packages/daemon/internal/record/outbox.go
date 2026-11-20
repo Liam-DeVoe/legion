@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/jjmerge"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
@@ -1906,23 +1907,14 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
 // changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
-// `git diff` from git's own merge of the merge's two parents (`git merge-tree --write-tree`) to
-// the merge, and `git diff --stat` against the merge's first parent.
+// `git diff` from git's own merge of the merge's two parents (`git merge-tree --write-tree`, with
+// the option list of `legion merge`: jjmerge.Comparison) to the merge, and `git diff --stat`
+// against the merge's first parent.
 func (p MergeForwardMessage) readMerge() string {
 	return fmt.Sprintf("run `git diff %s %s`."+
 		" For a merge of the base, `%s` shows how the merge resolved the conflict, against git's own merge of its parents,"+
 		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, MergeComparison(p.Landed), p.Landed, p.Landed)
-}
-
-// MergeComparison is the command that shows how merge, a merge commit, differs from git's own
-// merge of its two parents (`git merge-tree --write-tree`): how it resolved git's conflicts. git
-// rev-parse gives merge-tree the parents' full commit ids, as `legion merge` gives them: git names
-// a file it puts aside in a conflict after the revision it was given (p~<id>), so given <merge>^1
-// it would name a path the merge does not hold. The landed and the review give it (readMerge),
-// and so does the completion fence of a merge forward (workflow's mergedForwardRefusal).
-func MergeComparison(merge string) string {
-	return fmt.Sprintf(`git diff "$(git merge-tree --write-tree $(git rev-parse %s^1 %s^2) | head -n 1)" %s`, merge, merge, merge)
+		p.Head, p.Landed, jjmerge.Comparison(p.Landed), p.Landed, p.Landed)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at

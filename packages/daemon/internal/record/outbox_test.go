@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/jjmerge"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
@@ -731,6 +732,7 @@ func TestMergeForwardMessagesNameLegionMergeAndReadAgainstGitsMerge(t *testing.T
 		}
 	}
 
+	options := strings.Join(jjmerge.MergeTreeOptions(), " ")
 	for _, told := range []struct {
 		name    string
 		message MergeForwardMessage
@@ -744,8 +746,8 @@ func TestMergeForwardMessagesNameLegionMergeAndReadAgainstGitsMerge(t *testing.T
 		var lacking []string
 		for _, says := range []string{
 			"git diff c0de d00d",
-			"git merge-tree --write-tree $(git rev-parse d00d^1 d00d^2)",
-			`git diff "$(git merge-tree --write-tree $(git rev-parse d00d^1 d00d^2) | head -n 1)" d00d`,
+			"git " + options + " merge-tree --write-tree $(git rev-parse d00d^1 d00d^2)",
+			`git diff "$(git ` + options + ` merge-tree --write-tree $(git rev-parse d00d^1 d00d^2) | head -n 1)" d00d`,
 			"git diff --stat d00d^1 d00d",
 		} {
 			if !strings.Contains(text, says) {
