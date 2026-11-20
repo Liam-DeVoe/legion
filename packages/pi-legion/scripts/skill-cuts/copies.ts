@@ -19,16 +19,23 @@
  *
  * The run's peak resident memory (memory.ts) is checked before every gh call and at each step:
  * above MEMORY_LIMIT_BYTES (1.5 GiB) the run stops, exit 3, writing nothing; it is in the summary
- * line and skill-copies.md otherwise.
+ * line and skill-copies.md otherwise. The run keeps no blob text past the repository it came from
+ * (`readRepositoryStep`): each repository's SKILL.md and manifest files are parsed in its step and
+ * only the parsed fields kept (`RepositoryRead`), its tree is dropped once its step is done, and a
+ * fork's text files are written to disk as they are read and read back one at a time by its scan,
+ * which keeps only its hits. So the memory a run holds grows with the skills and manifests it
+ * lists, not with the blobs it reads.
  *
  * `--cache-dir <dir>` keeps each finished read (`ReadCache`), so a run stopped and started again
  * loses nothing: each owner's listing, each repository whole (its commit at `--at`, kept tree
- * entries and their count, and every SKILL.md, manifest and fork-scan blob it read, written the
- * moment that repository is done, keyed by repository, default branch and `--at`, which name one
- * commit), and each code search run whole, keyed by its query. A cached read makes no GitHub
- * call; a read that failed is not cached, so it is tried again. stderr gets one line per
- * repository done (`copies: tree <n>/<total> <owner/repo>: <entries> entries, <calls> tree reads,
- * <seconds> s, cached|read`) and one per 25 searches with the calls so far.
+ * entries and their count, the SKILL.md and manifest blobs it read, and apart from them a fork's
+ * text files, written the moment that repository is done, keyed by repository, default branch
+ * and `--at`, which name one commit), and each code search run whole, keyed by its query. A
+ * cached read makes no GitHub call; a read that failed is not cached, so it is tried again.
+ * Without `--cache-dir` the same files go to a temporary directory, removed when the run ends.
+ * stderr gets one line per repository done (`copies: tree <n>/<total> <owner/repo>: <entries>
+ * entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25 searches with the calls
+ * so far.
  *
  * 1. Repositories. `gh repo list <owner> --limit 2000 --json nameWithOwner,isFork,isArchived,
  *    defaultBranchRef,parent` for each configured owner (with `--only`, for the owners of the named
@@ -75,7 +82,11 @@
  *    query was not read whole (`rerunsOf` says why one read whole is not). A fork, which code
  *    search leaves out, is read from its tree instead when it holds a skill: each text blob
  *    (`TEXT_EXTENSIONS`, or a name in `TEXT_NAMES`) of at most `FORK_SCAN_MAX_BYTES` bytes outside
- *    a skill is read and searched for every skill name. Pacing: GitHub allows 10 code searches a
+ *    a skill that it changed against its parent (`forkChanges`: GitHub's compare through their
+ *    merge base; its whole tree where the compare cannot answer whole) is read and searched for
+ *    every skill name; queries.jsonl and skill-copies.md say which files of each fork were read.
+ *    Its skills, manifests and installers are read from its whole tree. Pacing: GitHub allows 10
+ *    code searches a
  *    minute per token, and each owner has its own token, so the owners' searches run at once, each
  *    owner's one at a time (GitHub asks for one client's requests to be serial) and paced by its
  *    own limit: at most `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a
@@ -128,8 +139,22 @@
  *                     installers, the prefix rows outside the targets, and every failure.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { loadConfig, type SkillCutsConfig } from "./config";
@@ -337,7 +362,11 @@ const CachedEntry = z.object({
   sha: z.string(),
   size: z.number().optional(),
 });
-/** A repository read whole, as `--cache-dir` keeps it. */
+/** A repository read whole, as `--cache-dir` keeps it: its kept tree and the texts of its SKILL.md
+ *  and manifest files (`blobs`). A fork's text files are kept apart (`forkFilesApart`, the lines
+ *  of `fork-files`, `[path, blob id, text or null]`), read back one at a time by its scan. A file
+ *  written before that holds them in `blobs` too, and one written before forks were compared
+ *  with their parents has no `forkRead` or `changed`. */
 const CachedRepository = z.object({
   commit: z.string(),
   treeEntries: z.number(),
@@ -345,7 +374,14 @@ const CachedRepository = z.object({
   treeCalls: z.number(),
   tree: z.array(CachedEntry),
   blobs: z.record(z.string(), z.string()),
+  forkRead: z.string().optional(),
+  changed: z.array(z.string()).optional(),
+  forkFilesApart: z.boolean().optional(),
 });
+type CachedRepository = z.infer<typeof CachedRepository>;
+/** One line of a fork's text files on disk: its path, blob id, and text (null when its read
+ *  failed, so its scan reads it again). */
+const ForkFileLine = z.tuple([z.string(), z.string(), z.string().nullable()]);
 /** A search run whole, as `--cache-dir` keeps it. */
 const CachedSearch = z.object({
   status: z.literal("ok"),
@@ -363,20 +399,31 @@ const CachedSearch = z.object({
  * The finished reads of a run (`--cache-dir`), so that a run started again skips them: each value
  * is one JSON file under `<dir>/<kind>/`, named by the SHA-1 of its key and holding the key, which
  * is checked on reading. A value is written to a temporary name and renamed, so a killed write
- * leaves no file under a name this reads; a file that is not of its shape is not read.
+ * leaves no file under a name this reads; a file that is not of its shape is not read. A run with
+ * no `--cache-dir` keeps its reads in a temporary directory, removed when the run ends: the run
+ * reads a fork's text files back from disk, never holding them (`lines`).
  */
 class ReadCache {
   private writes = 0;
+  private readonly dir: string;
+  private readonly temporary: boolean;
 
-  constructor(private readonly dir: string | undefined) {}
+  constructor(dir: string | undefined) {
+    this.temporary = dir === undefined;
+    this.dir = dir ?? mkdtempSync(path.join(tmpdir(), "skill-copies-"));
+  }
 
-  private file(kind: string, key: string): string {
+  /** Removes the directory of a run with no `--cache-dir`. */
+  dispose(): void {
+    if (this.temporary) rmSync(this.dir, { recursive: true, force: true });
+  }
+
+  private file(kind: string, key: string, extension = ".json"): string {
     const name = createHash("sha1").update(key).digest("hex");
-    return path.join(this.dir ?? "", kind, `${name}.json`);
+    return path.join(this.dir, kind, `${name}${extension}`);
   }
 
   get<T>(kind: string, key: string, schema: z.ZodType<T>): T | undefined {
-    if (this.dir === undefined) return undefined;
     let text: string;
     try {
       text = readFileSync(this.file(kind, key), "utf8");
@@ -388,22 +435,123 @@ class ReadCache {
   }
 
   put(kind: string, key: string, value: unknown): void {
-    if (this.dir === undefined) return;
     const file = this.file(kind, key);
     mkdirSync(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp-${process.pid}-${this.writes++}`;
     writeFileSync(temporary, JSON.stringify({ key, value }));
     renameSync(temporary, file);
   }
+
+  /** A writer of the lines of `kind` and `key`, one JSON value a line after a first line holding
+   *  the key; the lines are found under their name only once `close` renames them there, and
+   *  `abandon` removes them. */
+  lineWriter(
+    kind: string,
+    key: string
+  ): { write(line: string): void; close(): void; abandon(): void } {
+    const file = this.file(kind, key, ".jsonl");
+    mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.tmp-${process.pid}-${this.writes++}`;
+    const fd = openSync(temporary, "w");
+    writeSync(fd, `${JSON.stringify({ key })}\n`);
+    return {
+      write: (line) => {
+        writeSync(fd, `${line}\n`);
+      },
+      close: () => {
+        closeSync(fd);
+        renameSync(temporary, file);
+      },
+      abandon: () => {
+        closeSync(fd);
+        rmSync(temporary, { force: true });
+      },
+    };
+  }
+
+  /** Whether the lines of `kind` and `key` are on disk. */
+  hasLines(kind: string, key: string): boolean {
+    return existsSync(this.file(kind, key, ".jsonl"));
+  }
+
+  /** The lines `lineWriter` wrote for `kind` and `key`, read from disk one at a time; none when
+   *  the file is missing or its first line names another key. */
+  async *lines(kind: string, key: string): AsyncGenerator<string> {
+    const file = this.file(kind, key, ".jsonl");
+    if (!existsSync(file)) return;
+    const reader = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+    let first = true;
+    for await (const line of reader) {
+      if (first) {
+        first = false;
+        const head = z.object({ key: z.literal(key) }).safeParse(parseJson(line));
+        if (!head.success) return;
+        continue;
+      }
+      if (line !== "") yield line;
+    }
+  }
 }
 
-/** gh's reads, with a blob cache, a sleep to the reset when the core limit is spent, and the run's
- *  memory limit checked before each call. */
+/** The read slots of a run: at most `total` gh calls in flight, at most `perRepository` of one
+ *  repository's. A call that ends hands its slot to the waiting call whose repository holds the
+ *  fewest slots (the first of them to wait among equals), so a small repository's few calls pass
+ *  the queue of a large tree's walk rather than waiting behind every subtree of its level. */
+export class ReadSlots {
+  private taken = 0;
+  private readonly heldBy = new Map<string, number>();
+  private readonly waiting: { repository: string; start: () => void }[] = [];
+
+  constructor(
+    private readonly total: number,
+    private readonly perRepository: number
+  ) {}
+
+  private held(repository: string): number {
+    return this.heldBy.get(repository) ?? 0;
+  }
+
+  private mayStart(repository: string): boolean {
+    return this.taken < this.total && this.held(repository) < this.perRepository;
+  }
+
+  private count(repository: string, by: number): void {
+    this.taken += by;
+    this.heldBy.set(repository, this.held(repository) + by);
+  }
+
+  /** `read`, a gh call reading `repository`, run once it may hold a slot. */
+  async run<T>(repository: string, read: () => Promise<T>): Promise<T> {
+    if (this.mayStart(repository)) this.count(repository, 1);
+    else {
+      const slot = Promise.withResolvers<void>();
+      this.waiting.push({ repository, start: slot.resolve });
+      await slot.promise;
+    }
+    try {
+      return await read();
+    } finally {
+      this.count(repository, -1);
+      let next = -1;
+      for (const [index, candidate] of this.waiting.entries()) {
+        if (!this.mayStart(candidate.repository)) continue;
+        const best = this.waiting[next];
+        if (best === undefined || this.held(candidate.repository) < this.held(best.repository))
+          next = index;
+      }
+      const [chosen] = next < 0 ? [] : this.waiting.splice(next, 1);
+      if (chosen !== undefined) {
+        this.count(chosen.repository, 1);
+        chosen.start();
+      }
+    }
+  }
+}
+
+/** gh's reads, with a sleep to the reset when the core limit is spent and the run's memory limit
+ *  checked before each call. It keeps no blob text: each read is handed to its caller. */
 class Github {
-  private readonly blobs = new Map<string, Promise<string>>();
-  private slotsTaken = 0;
-  private readonly slotsOf = new Map<string, number>();
-  private readonly slotQueue: { repository: string; start: () => void }[] = [];
+  private readonly slots = new ReadSlots(READ_CALLS, READ_CALLS_PER_REPOSITORY);
   /** The largest peak resident memory read so far, in bytes. */
   peakBytes = 0;
   constructor(
@@ -428,44 +576,9 @@ class Github {
     return this.io.gh(args);
   }
 
-  private mayStart(repository: string): boolean {
-    return (
-      this.slotsTaken < READ_CALLS &&
-      (this.slotsOf.get(repository) ?? 0) < READ_CALLS_PER_REPOSITORY
-    );
-  }
-
-  private countSlot(repository: string, by: number): void {
-    this.slotsTaken += by;
-    this.slotsOf.set(repository, (this.slotsOf.get(repository) ?? 0) + by);
-  }
-
-  /** `read`, a gh call reading `repository`, run once fewer than READ_CALLS such calls are in
-   *  flight and fewer than READ_CALLS_PER_REPOSITORY of that repository's; a call that ends starts
-   *  the first waiting call that may start, handing it its slot. */
-  async inSlot<T>(repository: string, read: () => Promise<T>): Promise<T> {
-    if (this.mayStart(repository)) this.countSlot(repository, 1);
-    else {
-      const slot = Promise.withResolvers<void>();
-      this.slotQueue.push({ repository, start: slot.resolve });
-      await slot.promise;
-    }
-    try {
-      return await read();
-    } finally {
-      this.countSlot(repository, -1);
-      const next = this.slotQueue.findIndex((waiting) => this.mayStart(waiting.repository));
-      const [waiting] = next < 0 ? [] : this.slotQueue.splice(next, 1);
-      if (waiting !== undefined) {
-        this.countSlot(waiting.repository, 1);
-        waiting.start();
-      }
-    }
-  }
-
-  /** Puts a blob's text, read by an earlier run, in the cache. */
-  seedBlob(sha: string, text: string): void {
-    this.blobs.set(sha, Promise.resolve(text));
+  /** `read`, a gh call reading `repository`, in one of the run's read slots (`ReadSlots`). */
+  inSlot<T>(repository: string, read: () => Promise<T>): Promise<T> {
+    return this.slots.run(repository, read);
   }
 
   /** gh's standard output for `args`; throws gh's first error line. */
@@ -505,18 +618,8 @@ class Github {
     return wait;
   }
 
-  /** The text of the blob `sha` of `repository`; cached by sha, since a blob id is its content. */
-  blob(repository: string, sha: string): Promise<string> {
-    let text = this.blobs.get(sha);
-    if (text === undefined) {
-      text = this.readBlob(repository, sha);
-      this.blobs.set(sha, text);
-    }
-    return text;
-  }
-
-  /** The text of the blob `sha` of `repository`, read alone and not cached. */
-  private async readBlob(repository: string, sha: string): Promise<string> {
+  /** The text of the blob `sha` of `repository`, read alone over REST and kept nowhere. */
+  async readBlob(repository: string, sha: string): Promise<string> {
     const blob = await this.inSlot(repository, () =>
       this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob)
     );
@@ -525,60 +628,85 @@ class Github {
     return Buffer.from(blob.content, "base64").toString("utf8");
   }
 
-  /** Reads the blobs `entries` of `repository` into the cache in GraphQL batches (`graphqlArgs`),
-   *  up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call: one call where each blob alone
-   *  would take one. A blob a batch does not give whole (binary, truncated, missing, or in a batch
-   *  that fails) is left to `blob`, which reads it alone. */
-  async prefetch(repository: string, entries: readonly TreeEntry[]): Promise<void> {
-    const wanted = new Map<string, TreeEntry>();
-    for (const entry of entries) {
-      if (!this.blobs.has(entry.sha) && /^[0-9a-f]{40}$/.test(entry.sha))
-        wanted.set(entry.sha, entry);
-    }
+  /** Hands each of the blobs `entries` of `repository` to `each`, in their order, with its text or
+   *  the error that kept it from being read, and keeps none: a caller parses or stores each and
+   *  drops it. They are read in GraphQL batches (`graphqlArgs`), up to BLOB_BATCH blobs and
+   *  BLOB_BATCH_BYTES bytes a call and one batch at a time, so at most one batch's texts are held
+   *  at once; a blob a batch does not give whole (binary, truncated, missing, or in a batch that
+   *  fails) is read alone. Entries of one blob id are read once. */
+  async readBlobs(
+    repository: string,
+    entries: readonly TreeEntry[],
+    each: (entry: TreeEntry, read: { text: string } | { error: string }) => void
+  ): Promise<void> {
+    const bySha = new Map<string, TreeEntry[]>();
+    for (const entry of entries) bySha.set(entry.sha, [...(bySha.get(entry.sha) ?? []), entry]);
     const batches: TreeEntry[][] = [];
     let bytes = 0;
-    for (const entry of wanted.values()) {
+    for (const [first] of bySha.values()) {
+      if (first === undefined) continue;
       const last = batches[batches.length - 1];
       if (
         last === undefined ||
         last.length >= BLOB_BATCH ||
-        bytes + (entry.size ?? 0) > BLOB_BATCH_BYTES
+        bytes + (first.size ?? 0) > BLOB_BATCH_BYTES
       ) {
-        batches.push([entry]);
-        bytes = entry.size ?? 0;
+        batches.push([first]);
+        bytes = first.size ?? 0;
       } else {
-        last.push(entry);
-        bytes += entry.size ?? 0;
+        last.push(first);
+        bytes += first.size ?? 0;
       }
     }
     for (const batch of batches) {
       const fields = batch
+        .filter((entry) => /^[0-9a-f]{40}$/.test(entry.sha))
         .map(
           (entry, index) =>
             `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
-        )
-        .join(" ");
-      const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-      const result = await this.inSlot(repository, () => this.call(graphqlArgs(repository, query)));
-      const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
-      if (!parsed.success) {
-        const why = firstLine(result.stderr) || "an answer not of its shape";
-        this.io.err(
-          `copies: a batch of ${batch.length} blobs of ${repository} failed (${why}); each is read alone`
         );
-        continue;
-      }
-      batch.forEach((entry, index) => {
-        const blob = parsed.data.data.repository?.[`b${index}`];
-        if (blob?.isBinary === false && !blob.isTruncated && blob.text !== null) {
-          this.blobs.set(entry.sha, Promise.resolve(blob.text));
+      let given: z.infer<typeof BlobBatch>["data"]["repository"] | undefined;
+      if (fields.length === batch.length) {
+        const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields.join(" ")} } }`;
+        const result = await this.inSlot(repository, () =>
+          this.call(graphqlArgs(repository, query))
+        );
+        const parsed = BlobBatch.safeParse(
+          result.code === 0 ? parseJson(result.stdout) : undefined
+        );
+        if (parsed.success) given = parsed.data.data.repository;
+        else {
+          const why = firstLine(result.stderr) || "an answer not of its shape";
+          this.io.err(
+            `copies: a batch of ${batch.length} blobs of ${repository} failed (${why}); each is read alone`
+          );
         }
-      });
+      }
+      for (const [index, entry] of batch.entries()) {
+        const blob = given?.[`b${index}`];
+        const read =
+          blob?.isBinary === false && !blob.isTruncated && blob.text !== null
+            ? { text: blob.text }
+            : await this.readAlone(repository, entry.sha);
+        for (const same of bySha.get(entry.sha) ?? []) each(same, read);
+      }
+    }
+  }
+
+  private async readAlone(
+    repository: string,
+    sha: string
+  ): Promise<{ text: string } | { error: string }> {
+    try {
+      return { text: await this.readBlob(repository, sha) };
+    } catch (error) {
+      rethrowStop(error);
+      return { error: (error as Error).message };
     }
   }
 
   /** The files `paths` of `repository` at `commit`, read by path in one GraphQL batch (routed as
-   *  `prefetch` is) and cached nowhere: a caller checks each and drops it. A file the batch does
+   *  `readBlobs` is) and cached nowhere: a caller checks each and drops it. A file the batch does
    *  not give whole (truncated, or a batch that fails) is read alone over REST. */
   async filesAt(
     repository: string,
@@ -729,12 +857,18 @@ export interface Repository {
   readonly parent: string;
   readonly branch: string;
   commit: string;
-  /** The entries of its tree this list uses (`keepsEntry`); the rest are counted, not kept. */
+  /** The entries of its tree this list uses (`keepsEntry`; the rest are counted, not kept), while
+   *  its step runs: once it is done they are on disk (the cache), and this is empty. */
   tree: TreeEntry[];
   /** How many entries its whole tree holds. */
   treeEntries: number;
   /** `whole`, or `by directory, <n> reads` for a truncated tree. */
   treeRead: string;
+  /** In a fork holding a skill, which files its scan reads (`forkChanges`); else `""`. */
+  forkRead: string;
+  /** The paths of the files that fork changed against its parent, or undefined when it is read
+   *  from its whole tree. */
+  changed: string[] | undefined;
   error: string;
 }
 
@@ -760,7 +894,8 @@ export function keepsEntry(
 
 /** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. The whole tree
  *  is asked for in one REST read (through gh's jq, TREE_JQ, one line per entry). A tree GitHub
- *  answers truncated is walked a level at a time: each level's subtrees are read in GraphQL
+ *  answers truncated, or whose whole read fails (gh cut off the answer of a large tree: "unexpected
+ *  end of JSON input"), is walked a level at a time: each level's subtrees are read in GraphQL
  *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
  *  `graphqlArgs` says), batches at once under the read slots (`Github.inSlot`). A batch GitHub
  *  refuses (a node limit, a timeout) is halved, and a subtree refused alone is read over REST, one
@@ -848,7 +983,13 @@ export async function readTree(
       throw new Error(`the tree of ${shown(tree.prefix)} is truncated even one level at a time`);
     return [one.entries];
   };
-  const whole = await restRead(sha, "", true);
+  let whole: { entries: TreeEntry[]; truncated: boolean };
+  try {
+    whole = await restRead(sha, "", true);
+  } catch (error) {
+    rethrowStop(error);
+    whole = { entries: [], truncated: true };
+  }
   if (!whole.truncated) {
     for (const entry of whole.entries) if (keep(entry)) kept.push(entry);
     return { entries: kept, count: whole.entries.length, reads, truncated: false };
@@ -913,9 +1054,84 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
   }
 }
 
+/** The jq filter a compare is read through: the merge base, how many files it lists, then one
+ *  JSON array per file, `[filename, status, previous filename]`, so the answer's patches and
+ *  commits never sit in this process. */
+const COMPARE_JQ =
+  '.merge_base_commit.sha, (.files // [] | length), ((.files // [])[] | [.filename, .status, (.previous_filename // "")] | @json)';
+/** The most files GitHub lists of a compare, on its first page only, so a list this long may be
+ *  cut. */
+export const COMPARE_MAX_FILES = 300;
+const ForkParent = z.looseObject({
+  parent: z.looseObject({ full_name: z.string(), default_branch: z.string() }).nullish(),
+});
+const CompareFile = z.tuple([z.string(), z.string(), z.string()]);
+
+/** Which files of the fork `repo` (holding a skill, its commit read) its scan reads: those it
+ *  changed against its parent, from GitHub's compare of the parent's default branch with the
+ *  fork's commit at --at, through their merge base (`repos/<fork>/compare/<parent owner>:<parent
+ *  branch>...<commit>`, routed by the fork's owner). GitHub lists a compare's files on its first
+ *  page only, so one page is read, with one commit (`per_page=1`). A removed file is not read; a
+ *  renamed one is read under its new name. Where the compare cannot answer whole (no parent, or
+ *  one gone or not readable, a compare that fails, or a list of COMPARE_MAX_FILES files) the
+ *  whole tree is read, and `read` says why. */
+async function forkChanges(
+  github: Github,
+  repo: Repository
+): Promise<{ read: string; changed: string[] | undefined }> {
+  const whole = (why: string) => ({ read: `whole tree: ${why}`, changed: undefined });
+  if (repo.parent === "") return whole("the listing names no parent");
+  let parent: { full_name: string; default_branch: string };
+  try {
+    const info = await github.inSlot(repo.repository, () =>
+      github.api(`repos/${repo.repository}`, ForkParent)
+    );
+    if (info.parent == null) return whole(`its parent ${repo.parent} is gone or not readable`);
+    parent = info.parent;
+  } catch (error) {
+    rethrowStop(error);
+    return whole(`its parent could not be read (${(error as Error).message})`);
+  }
+  const owner = parent.full_name.split("/")[0] ?? "";
+  const basehead = `${owner}:${encodeURIComponent(parent.default_branch)}...${repo.commit}`;
+  let lines: string[];
+  try {
+    lines = (
+      await github.inSlot(repo.repository, () =>
+        github.text([
+          "api",
+          `repos/${repo.repository}/compare/${basehead}?per_page=1`,
+          "--jq",
+          COMPARE_JQ,
+        ])
+      )
+    )
+      .split("\n")
+      .filter((line) => line !== "");
+  } catch (error) {
+    rethrowStop(error);
+    return whole(`the compare with ${parent.full_name} failed (${(error as Error).message})`);
+  }
+  const [base = "", listed = "", ...files] = lines;
+  if (!/^[0-9a-f]{40}$/.test(base) || !/^\d+$/.test(listed) || Number(listed) !== files.length)
+    return whole(`the compare with ${parent.full_name} is not of its shape`);
+  if (files.length >= COMPARE_MAX_FILES)
+    return whole(
+      `the compare with ${parent.full_name} lists ${files.length} files, the most GitHub lists, so its list may be cut`
+    );
+  const changed: string[] = [];
+  for (const line of files) {
+    const parsed = CompareFile.safeParse(parseJson(line));
+    if (!parsed.success) return whole(`the compare with ${parent.full_name} is not of its shape`);
+    const [filename, status] = parsed.data;
+    if (status !== "removed") changed.push(filename);
+  }
+  return { read: `changed files against ${parent.full_name}@${base}`, changed: changed.sort() };
+}
+
 /** What a run reads of one repository beside its tree: its SKILL.md files (and those left out by
  *  `excludePaths`), its manifest files, and, in a fork that holds a skill, the text files outside
- *  its skills that the fork scan reads. */
+ *  its skills that the fork scan reads (only those it changed, when `changed` gives them). */
 function repositoryReads(
   repo: Repository,
   excludePaths: SkillCutsConfig["excludePaths"]
@@ -952,6 +1168,9 @@ function repositoryReads(
       continue;
     manifests.push({ entry, kind });
   }
+  // A fork's scan reads its text files outside its skills, only those it changed when `changed`
+  // gives them (`forkChanges`).
+  const changed = repo.changed === undefined ? undefined : new Set(repo.changed);
   const forkFiles =
     repo.fork && withSkill
       ? repo.tree.filter(
@@ -960,10 +1179,197 @@ function repositoryReads(
             entry.mode !== "120000" &&
             (Object.hasOwn(TEXT_EXTENSIONS, path.posix.extname(entry.path).toLowerCase()) ||
               Object.hasOwn(TEXT_NAMES, path.posix.basename(entry.path))) &&
-            insideSkill(skills, entry.path) === undefined
+            insideSkill(skills, entry.path) === undefined &&
+            (changed === undefined || changed.has(entry.path))
         )
       : [];
   return { skillFiles, excluded, manifests, forkFiles };
+}
+
+/** Whether the kept tree `tree` holds a `SKILL.md`. */
+function holdsSkill(tree: readonly TreeEntry[]): boolean {
+  return tree.some(
+    (entry) => entry.type === "blob" && path.posix.basename(entry.path) === "SKILL.md"
+  );
+}
+
+/** What a run keeps of one repository once its step is done: its skills parsed (names, paths,
+ *  descriptions), its manifests parsed, the SKILL.md files `excludePaths` leaves out, the
+ *  failures of those reads, and, in a fork holding a skill, how many text files its scan reads
+ *  back from disk and how many larger ones it leaves out. It holds no blob text and no tree. */
+interface RepositoryRead {
+  readonly copies: SkillCopy[];
+  readonly excluded: string[];
+  readonly manifests: Manifest[];
+  readonly skillFailures: string[];
+  readonly manifestFailures: string[];
+  readonly forkFiles: number;
+  readonly forkLarge: number;
+}
+
+/** The key of a repository's reads in the cache: its name, default branch and --at, which name
+ *  one commit. */
+function repositoryKey(repo: Repository, at: string): string {
+  return `${repo.repository}\0${repo.branch}\0${at}`;
+}
+
+/** Takes `repo` from the cache when it holds it: its commit, kept tree, and fork reads, and the
+ *  texts of its SKILL.md and manifest files into `texts`. A file written before a fork's text
+ *  files were kept apart is rewritten: those files move to their own lines (`fork-files`), so its
+ *  scan reads them one at a time. Returns the tree's gh calls of the run that read it, or
+ *  undefined when the cache does not hold it whole. It runs without a pause, so two never hold a
+ *  large file at once. */
+function takeCached(
+  cache: ReadCache,
+  key: string,
+  repo: Repository,
+  excludePaths: SkillCutsConfig["excludePaths"],
+  texts: Map<string, string>
+): { treeCalls: number } | undefined {
+  const cached: CachedRepository | undefined = cache.get("repository", key, CachedRepository);
+  if (cached === undefined) return undefined;
+  const scanned = repo.fork && holdsSkill(cached.tree);
+  if (scanned && cached.forkFilesApart === true && !cache.hasLines("fork-files", key))
+    return undefined;
+  repo.commit = cached.commit;
+  repo.tree = cached.tree;
+  repo.treeEntries = cached.treeEntries;
+  repo.treeRead = cached.treeRead;
+  // A fork cached before the compare rule was read from its whole tree, and keeps it.
+  repo.forkRead = cached.forkRead ?? (scanned ? "whole tree: read before the compare rule" : "");
+  repo.changed = cached.changed;
+  const reads = repositoryReads(repo, excludePaths);
+  for (const entry of [...reads.skillFiles, ...reads.manifests.map(({ entry }) => entry)]) {
+    const text = cached.blobs[entry.sha];
+    if (text !== undefined) texts.set(entry.sha, text);
+  }
+  if (scanned && cached.forkFilesApart !== true) {
+    const writer = cache.lineWriter("fork-files", key);
+    for (const entry of reads.forkFiles) {
+      if ((entry.size ?? 0) > FORK_SCAN_MAX_BYTES) continue;
+      writer.write(JSON.stringify([entry.path, entry.sha, cached.blobs[entry.sha] ?? null]));
+    }
+    writer.close();
+    cache.put("repository", key, {
+      ...cached,
+      blobs: Object.fromEntries(texts),
+      forkRead: repo.forkRead,
+      forkFilesApart: true,
+    });
+  }
+  return { treeCalls: cached.treeCalls };
+}
+
+/** One repository whole, read or taken from the cache (`takeCached`): its commit at --at and kept
+ *  tree, a fork's compare with its parent (`forkChanges`), then its SKILL.md and manifest blobs,
+ *  parsed as they come, and a fork's text files, written to disk as they come for its scan. The
+ *  cache gets the repository the moment it is done, and the step keeps only its
+ *  `RepositoryRead`: its tree is emptied and no blob text outlives it. Returns undefined for a
+ *  repository whose commit or tree read failed (`repo.error`), and the tree's gh calls. */
+async function readRepositoryStep(
+  github: Github,
+  cache: ReadCache,
+  repo: Repository,
+  at: string,
+  excludePaths: SkillCutsConfig["excludePaths"]
+): Promise<{ read: RepositoryRead | undefined; calls: number; cached: boolean }> {
+  const key = repositoryKey(repo, at);
+  const texts = new Map<string, string>();
+  const cached = takeCached(cache, key, repo, excludePaths, texts);
+  const calls = cached === undefined ? await readRepository(github, repo, at) : 0;
+  if (repo.error !== "") return { read: undefined, calls, cached: false };
+  const scanned = repo.fork && holdsSkill(repo.tree);
+  if (cached === undefined && scanned) {
+    const changes = await forkChanges(github, repo);
+    repo.forkRead = changes.read;
+    repo.changed = changes.changed;
+  }
+  const reads = repositoryReads(repo, excludePaths);
+  const small = reads.forkFiles.filter((entry) => (entry.size ?? 0) <= FORK_SCAN_MAX_BYTES);
+  if (cached === undefined && scanned) {
+    const writer = cache.lineWriter("fork-files", key);
+    try {
+      await github.readBlobs(repo.repository, small, (entry, read) => {
+        writer.write(JSON.stringify([entry.path, entry.sha, "text" in read ? read.text : null]));
+      });
+    } catch (error) {
+      writer.abandon();
+      throw error;
+    }
+    writer.close();
+  }
+  const errors = new Map<string, string>();
+  const wanted = [...reads.skillFiles, ...reads.manifests.map(({ entry }) => entry)].filter(
+    (entry) => !texts.has(entry.sha)
+  );
+  await github.readBlobs(repo.repository, wanted, (entry, read) => {
+    if ("text" in read) texts.set(entry.sha, read.text);
+    else errors.set(entry.sha, read.error);
+  });
+  const textOf = (entry: TreeEntry): string => {
+    const text = texts.get(entry.sha);
+    if (text === undefined) throw new Error(errors.get(entry.sha) ?? "the blob was not read");
+    return text;
+  };
+  const skillFailures: string[] = [];
+  const copies = reads.skillFiles.map((entry): SkillCopy => {
+    const dir = dirOf(entry.path);
+    const base = {
+      repository: repo.repository,
+      path: dir,
+      file: entry.path,
+      blob: entry.sha,
+      fork: repo.fork,
+      archived: repo.archived,
+      parent: repo.parent,
+    };
+    try {
+      return { ...base, ...skillFields(dir, repo.repository, textOf(entry)) };
+    } catch (error) {
+      const fault = `SKILL.md read failed: ${(error as Error).message}`;
+      skillFailures.push(`${repo.repository}:${entry.path}: ${fault}`);
+      const name = dir === "" ? (repo.repository.split("/")[1] ?? "") : path.posix.basename(dir);
+      return { ...base, name, nameFrom: "directory", description: "", descriptionBytes: 0, fault };
+    }
+  });
+  const manifestFailures: string[] = [];
+  const manifests = reads.manifests.map(({ entry, kind }): Manifest => {
+    const base = { repository: repo.repository, path: entry.path, kind, source: "tree" as const };
+    try {
+      return { ...base, rows: 0, ...parseManifest(kind, entry.path, textOf(entry)), error: "" };
+    } catch (error) {
+      const message = (error as Error).message;
+      manifestFailures.push(`${repo.repository}:${entry.path} (${kind}): ${message}`);
+      return { ...base, rows: 0, facts: [], ofKind: true, says: "", error: message };
+    }
+  });
+  if (cached === undefined || wanted.length > 0) {
+    cache.put("repository", key, {
+      commit: repo.commit,
+      treeEntries: repo.treeEntries,
+      treeRead: repo.treeRead,
+      treeCalls: cached?.treeCalls ?? calls,
+      tree: repo.tree,
+      blobs: Object.fromEntries(texts),
+      forkRead: repo.forkRead,
+      ...(repo.changed === undefined ? {} : { changed: repo.changed }),
+      forkFilesApart: true,
+    });
+  }
+  repo.tree = [];
+  return {
+    read: {
+      copies,
+      excluded: reads.excluded.map((entry) => entry.path),
+      manifests,
+      skillFailures,
+      manifestFailures,
+      forkFiles: scanned ? small.length : 0,
+      forkLarge: scanned ? reads.forkFiles.length - small.length : 0,
+    },
+    calls,
+    cached: cached !== undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2601,10 +3007,14 @@ export interface QueryRecord {
   error: string;
 }
 
-/** One line of queries.jsonl for a fork read from its tree. */
+/** One line of queries.jsonl for a fork read from its tree: `read` says which files, the ones it
+ *  changed against its parent (`changed files against <parent>@<merge base>`, `changed_files` of
+ *  them listed) or all of them (`whole tree: <why>`, `changed_files` null). */
 export interface ForkScanRecord {
   readonly type: "fork-scan";
   readonly repository: string;
+  readonly read: string;
+  readonly changed_files: number | null;
   readonly max_bytes: number;
   files_read: number;
   skipped_large: number;
@@ -3309,7 +3719,7 @@ function markdown(result: CopiesResult): string {
   }
   for (const scan of result.forkScans) {
     say(
-      `- the fork ${scan.repository}, read from its tree: ${scan.files_read} text files of at most ${scan.max_bytes} bytes read, ` +
+      `- the fork ${scan.repository} (${scan.read}): ${scan.files_read} text files of at most ${scan.max_bytes} bytes read, ` +
         `${scan.files_naming_a_skill} naming a skill, ${scan.skipped_large} larger left out, ${scan.failures.length} reads failed`
     );
   }
@@ -3481,11 +3891,24 @@ export async function listCopies(
   options: CopiesOptions,
   io: CopiesIo
 ): Promise<CopiesResult> {
+  const cache = new ReadCache(options.cacheDir);
+  try {
+    return await readAll(config, options, io, cache);
+  } finally {
+    cache.dispose();
+  }
+}
+
+async function readAll(
+  config: SkillCutsConfig,
+  options: CopiesOptions,
+  io: CopiesIo,
+  cache: ReadCache
+): Promise<CopiesResult> {
   const github = new Github(io, () =>
     io.peakRssBytes === undefined ? procPeakRssBytes() : io.peakRssBytes()
   );
   const failures: string[] = [];
-  const cache = new ReadCache(options.cacheDir);
   const only = options.only.map((repository) => repository.toLowerCase());
   const owners =
     only.length > 0
@@ -3525,6 +3948,8 @@ export async function listCopies(
           tree: [],
           treeEntries: 0,
           treeRead: "",
+          forkRead: "",
+          changed: undefined,
           error: "",
         });
       }
@@ -3541,110 +3966,42 @@ export async function listCopies(
   }
   repositories.sort((a, b) => a.repository.localeCompare(b.repository));
   io.err(`copies: reading ${repositories.length} repositories at ${options.at}`);
-  // Each repository whole, read or taken from the cache: its commit at --at and kept tree
-  // entries, then every SKILL.md, manifest and fork-scan blob it holds, written to the cache the
-  // moment it is done. The cache key is the repository, its default branch and --at, which name
-  // one commit, so a cached repository costs no GitHub read at all.
+  // Each repository whole, read or taken from the cache (`readRepositoryStep`), written to the
+  // cache the moment it is done; the run keeps only what the later steps and the output need of
+  // it (`RepositoryRead`), so its memory does not grow with the blobs it read.
+  const reads = new Map<Repository, RepositoryRead>();
   let done = 0;
   // Repositories finish in any order; each result lands on its own repository, and every later
   // step goes through them in name order, so the output does not depend on that order.
   await mapLimit(repositories, options.repositoryJobs ?? REPOSITORY_JOBS, async (repo) => {
     const started = io.now();
-    const key = `${repo.repository}\0${repo.branch}\0${options.at}`;
-    const cached = cache.get("repository", key, CachedRepository);
-    let calls = 0;
-    if (cached !== undefined) {
-      repo.commit = cached.commit;
-      repo.tree = cached.tree;
-      repo.treeEntries = cached.treeEntries;
-      repo.treeRead = cached.treeRead;
-      for (const [sha, text] of Object.entries(cached.blobs)) github.seedBlob(sha, text);
-    } else {
-      calls = await readRepository(github, repo, options.at);
-      if (repo.error === "") {
-        const reads = repositoryReads(repo, config.excludePaths);
-        const wanted = [
-          ...reads.skillFiles,
-          ...reads.manifests.map(({ entry }) => entry),
-          ...reads.forkFiles.filter((entry) => (entry.size ?? 0) <= FORK_SCAN_MAX_BYTES),
-        ];
-        await github.prefetch(repo.repository, wanted);
-        const blobs: Record<string, string> = {};
-        for (const entry of wanted) {
-          try {
-            blobs[entry.sha] = await github.blob(repo.repository, entry.sha);
-          } catch (error) {
-            // A blob that fails is read again, and its failure recorded, where it is used.
-            rethrowStop(error);
-          }
-        }
-        cache.put("repository", key, {
-          commit: repo.commit,
-          treeEntries: repo.treeEntries,
-          treeRead: repo.treeRead,
-          treeCalls: calls,
-          tree: repo.tree,
-          blobs,
-        });
-      }
-    }
+    const step = await readRepositoryStep(github, cache, repo, options.at, config.excludePaths);
+    if (step.read !== undefined) reads.set(repo, step.read);
     done++;
     const seconds = Math.round((io.now() - started) / 1000);
     io.err(
       repo.error === ""
-        ? `copies: tree ${done}/${repositories.length} ${repo.repository}: ${repo.treeEntries} entries, ${calls} tree reads, ${seconds} s, ${cached === undefined ? "read" : "cached"}`
+        ? `copies: tree ${done}/${repositories.length} ${repo.repository}: ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
         : `copies: tree ${done}/${repositories.length} ${repo.repository}: failed (${repo.error}), ${seconds} s`
     );
   });
 
-  // 2. Skills.
-  const plans = new Map(
-    repositories.map((repo) => [repo, repositoryReads(repo, config.excludePaths)])
-  );
+  // 2. Skills, parsed in each repository's step.
   const excluded: { repository: string; file: string }[] = [];
-  const skillFiles: { repo: Repository; entry: TreeEntry }[] = [];
-  for (const [repo, reads] of plans) {
-    for (const entry of reads.excluded)
-      excluded.push({ repository: repo.repository, file: entry.path });
-    for (const entry of reads.skillFiles) skillFiles.push({ repo, entry });
+  const copies: SkillCopy[] = [];
+  const read: Manifest[] = [];
+  const manifestFailures: string[] = [];
+  for (const repo of repositories) {
+    const kept = reads.get(repo);
+    if (kept === undefined) continue;
+    for (const file of kept.excluded) excluded.push({ repository: repo.repository, file });
+    copies.push(...kept.copies);
+    read.push(...kept.manifests);
+    failures.push(...kept.skillFailures);
+    manifestFailures.push(...kept.manifestFailures);
   }
   github.checkMemory();
-  io.err(`copies: reading ${skillFiles.length} SKILL.md files`);
-  const copies = await mapLimit(
-    skillFiles,
-    REST_JOBS,
-    async ({ repo, entry }): Promise<SkillCopy> => {
-      const dir = dirOf(entry.path);
-      const base = {
-        repository: repo.repository,
-        path: dir,
-        file: entry.path,
-        blob: entry.sha,
-        fork: repo.fork,
-        archived: repo.archived,
-        parent: repo.parent,
-      };
-      try {
-        return {
-          ...base,
-          ...skillFields(dir, repo.repository, await github.blob(repo.repository, entry.sha)),
-        };
-      } catch (error) {
-        rethrowStop(error);
-        const fault = `SKILL.md read failed: ${(error as Error).message}`;
-        failures.push(`${repo.repository}:${entry.path}: ${fault}`);
-        const name = dir === "" ? (repo.repository.split("/")[1] ?? "") : path.posix.basename(dir);
-        return {
-          ...base,
-          name,
-          nameFrom: "directory",
-          description: "",
-          descriptionBytes: 0,
-          fault,
-        };
-      }
-    }
-  );
+  io.err(`copies: reading ${copies.length} SKILL.md files`);
   copies.sort((a, b) => a.repository.localeCompare(b.repository) || a.path.localeCompare(b.path));
   const copiesByRepository = new Map<string, SkillCopy[]>();
   for (const copy of copies)
@@ -3654,42 +4011,15 @@ export async function listCopies(
     ]);
   const copiesIn = (repository: string) => copiesByRepository.get(repository) ?? [];
   const withSkill = new Set(
-    [...plans]
-      .filter(([, reads]) => reads.skillFiles.length + reads.excluded.length > 0)
+    [...reads]
+      .filter(([, kept]) => kept.copies.length + kept.excluded.length > 0)
       .map(([repo]) => repo.repository)
   );
 
-  // 4. Manifests.
-  const candidates = [...plans].flatMap(([repo, reads]) =>
-    reads.manifests.map(({ entry, kind }) => ({ repo, entry, kind }))
-  );
+  // 4. Manifests, parsed in each repository's step.
   github.checkMemory();
-  io.err(`copies: reading ${candidates.length} manifest files`);
-  const read = await mapLimit(
-    candidates,
-    REST_JOBS,
-    async ({ repo, entry, kind }): Promise<Manifest> => {
-      const base = {
-        repository: repo.repository,
-        path: entry.path,
-        kind,
-        source: "tree" as const,
-        rows: 0,
-      };
-      try {
-        return {
-          ...base,
-          ...parseManifest(kind, entry.path, await github.blob(repo.repository, entry.sha)),
-          error: "",
-        };
-      } catch (error) {
-        rethrowStop(error);
-        const message = (error as Error).message;
-        failures.push(`${repo.repository}:${entry.path} (${kind}): ${message}`);
-        return { ...base, facts: [], ofKind: true, says: "", error: message };
-      }
-    }
-  );
+  io.err(`copies: reading ${read.length} manifest files`);
+  failures.push(...manifestFailures);
   const alwaysListed = new Set<ManifestKind>(
     MANIFEST_KINDS.filter((kind) => kind.listed === "always").map((kind) => kind.kind)
   );
@@ -3873,7 +4203,8 @@ export async function listCopies(
     }
   });
 
-  // Forks: read from their trees when they hold a skill.
+  // Forks: read from their trees when they hold a skill, only the files each changed against its
+  // parent where the compare answered whole (`forkChanges`).
   github.checkMemory();
   const forkScans: ForkScanRecord[] = [];
   const forksNotScanned: string[] = [];
@@ -3887,50 +4218,52 @@ export async function listCopies(
     const scan: ForkScanRecord = {
       type: "fork-scan",
       repository: repo.repository,
+      read: repo.forkRead,
+      changed_files: repo.changed === undefined ? null : repo.changed.length,
       max_bytes: FORK_SCAN_MAX_BYTES,
       files_read: 0,
-      skipped_large: 0,
+      skipped_large: reads.get(repo)?.forkLarge ?? 0,
       skipped_binary: 0,
       files_naming_a_skill: 0,
       failures: [],
     };
-    const text = repo.tree.filter(
-      (entry) =>
-        entry.type === "blob" &&
-        entry.mode !== "120000" &&
-        (Object.hasOwn(TEXT_EXTENSIONS, path.posix.extname(entry.path).toLowerCase()) ||
-          Object.hasOwn(TEXT_NAMES, path.posix.basename(entry.path))) &&
-        insideSkill(copiesIn(repo.repository), entry.path) === undefined
-    );
-    const small = text.filter((entry) => (entry.size ?? 0) <= FORK_SCAN_MAX_BYTES);
-    scan.skipped_large = text.length - small.length;
     io.err(
-      `copies: reading the fork ${repo.repository} from its tree (${small.length} text files)`
+      `copies: reading the fork ${repo.repository} from its tree (${reads.get(repo)?.forkFiles ?? 0} text files)`
     );
-    await github.prefetch(repo.repository, small);
-    await mapLimit(small, REST_JOBS, async (entry) => {
-      let body: string;
-      try {
-        body = await github.blob(repo.repository, entry.sha);
-      } catch (error) {
-        rethrowStop(error);
-        scan.failures.push(`${entry.path}: ${(error as Error).message}`);
-        return;
+    // Its text files, from disk one at a time (its step wrote them), each dropped once matched.
+    const key = repositoryKey(repo, options.at);
+    if (!cache.hasLines("fork-files", key)) scan.failures.push("its text files are not on disk");
+    for await (const line of cache.lines("fork-files", key)) {
+      const parsed = ForkFileLine.safeParse(parseJson(line));
+      if (!parsed.success) {
+        scan.failures.push("a line of its text files on disk is not of its shape");
+        continue;
+      }
+      const [file, sha, stored] = parsed.data;
+      let body = stored;
+      if (body === null) {
+        try {
+          body = await github.readBlob(repo.repository, sha);
+        } catch (error) {
+          rethrowStop(error);
+          scan.failures.push(`${file}: ${(error as Error).message}`);
+          continue;
+        }
       }
       scan.files_read++;
       if (body.includes("\u0000")) {
         scan.skipped_binary++;
-        return;
+        continue;
       }
       let named = false;
       for (const name of new Set([...body.matchAll(nameRe)].map((match) => match[1] ?? ""))) {
-        const kinds = mentions(body, name, pluginsOf.get(name) ?? [], entry.path);
+        const kinds = mentions(body, name, pluginsOf.get(name) ?? [], file);
         if (kinds.length === 0) continue;
         named = true;
-        addLoader(repo.repository, entry.path, name, kinds, "fork scan");
+        addLoader(repo.repository, file, name, kinds, "fork scan");
       }
       if (named) scan.files_naming_a_skill++;
-    });
+    }
     for (const failure of scan.failures) failures.push(`${repo.repository}:${failure} (fork scan)`);
     forkScans.push(scan);
   }

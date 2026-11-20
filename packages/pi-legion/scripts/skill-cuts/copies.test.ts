@@ -1,3 +1,4 @@
+import { heapSize } from "bun:jsc";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
@@ -34,6 +35,7 @@ import {
   READ_CALLS_PER_REPOSITORY,
   REPOSITORY_JOBS,
   type ReaderSkill,
+  ReadSlots,
   resolveInstallers,
   SKILL_COPIES_COLUMNS,
   type SkillCopy,
@@ -64,7 +66,10 @@ import {
 //   symbolic link `packages/acme-envoy/skills/beta` (as packages/claude-envoy/skills/* link to
 //   skills/* in cybermonklabs/legion), a draft skill under the excluded `pipeline/candidates/`,
 //   and a guide naming skills.
-// - acme/old-skills, a made-up archived fork of acme/skills holding one skill, read from its tree.
+// - acme/old-skills, a made-up archived fork of acme/skills holding one skill, read in the files
+//   its made-up compare with acme/skills lists (in the shape of GitHub's compare answer: a
+//   `merge_base_commit`, and `files` each with `filename`, `status` and a renamed file's
+//   `previous_filename`).
 // - acme-gone, an owner whose listing fails.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
@@ -263,6 +268,19 @@ const OLD_FILES: MadeFile[] = [
   { path: "assets/data.json", text: '{"bytes": "\u0000\u0001"}\n' },
 ];
 
+/** The made-up merge base of acme/old-skills and acme/skills. */
+const OLD_BASE = sha1("merge base acme/old-skills");
+
+/** The part of GitHub's compare answer that copies.ts reads. */
+interface CompareAnswer {
+  readonly merge_base_commit: { readonly sha: string };
+  readonly files: readonly {
+    readonly filename: string;
+    readonly status: string;
+    readonly previous_filename?: string;
+  }[];
+}
+
 interface SearchReply {
   readonly status?: number;
   readonly code?: number;
@@ -285,6 +303,11 @@ class World {
   readonly trees = new Map<string, unknown>();
   readonly blobs = new Map<string, string>();
   readonly failingBlobs = new Set<string>();
+  /** `repos/<repository>`: GitHub's answer for it (a fork's `parent`), or an error line. */
+  readonly repositoryInfo = new Map<string, unknown>();
+  /** `<fork> <base>...<head>`: a compare answer (`merge_base_commit` and `files`), or an error
+   *  line. */
+  readonly compares = new Map<string, unknown>();
   /** Each GraphQL blob batch: the repository its `owner` and `name` fields name, and its blobs. */
   readonly batches: { repository: string; blobs: number }[] = [];
   search: (q: string, page: number, call: number) => SearchReply = () => ({ body: EMPTY_SEARCH });
@@ -488,6 +511,28 @@ class World {
         ? fail("gh: No commit found for SHA: main (HTTP 422)")
         : answer(found);
     }
+    const info = /^repos\/([^/]+\/[^/]+)$/.exec(endpoint);
+    if (info !== null) {
+      const found = this.repositoryInfo.get(info[1] ?? "");
+      return found === undefined ? fail("gh: Not Found (HTTP 404)") : answer(found);
+    }
+    const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^?]+)\?per_page=1$/.exec(endpoint);
+    if (compare !== null) {
+      const found = this.compares.get(`${compare[1]} ${decodeURIComponent(compare[2] ?? "")}`);
+      if (found === undefined) return fail("gh: Not Found (HTTP 404)");
+      if (typeof found === "string") return fail(found);
+      if (!args.includes("--jq")) return fail("stand-in gh: a compare read without --jq");
+      // gh's jq of copies.ts's COMPARE_JQ: the merge base, how many files, one array per file.
+      const { merge_base_commit, files } = found as CompareAnswer;
+      const lines = [
+        merge_base_commit.sha,
+        String(files.length),
+        ...files.map((file) =>
+          JSON.stringify([file.filename, file.status, file.previous_filename ?? ""])
+        ),
+      ];
+      return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+    }
     const tree = /^repos\/([^/]+\/[^/]+)\/git\/trees\/([0-9a-f]+)(\?recursive=1)?$/.exec(endpoint);
     if (tree !== null) {
       const repository = tree[1] ?? "";
@@ -612,6 +657,19 @@ function world(): World {
   w.addRepository("acme/skills", treeOf("acme/skills", acme));
   w.addFiles(OLD_FILES);
   w.addRepository("acme/old-skills", treeOf("acme/old-skills", OLD_FILES));
+  // The fork changed every file but its skill against acme/skills.
+  w.repositoryInfo.set("acme/old-skills", {
+    full_name: "acme/old-skills",
+    fork: true,
+    parent: { full_name: "acme/skills", default_branch: "main" },
+  });
+  w.compares.set(`acme/old-skills acme:main...${sha1("commit acme/old-skills")}`, {
+    merge_base_commit: { sha: OLD_BASE },
+    files: OLD_FILES.filter((file) => !file.path.endsWith("/SKILL.md")).map((file) => ({
+      filename: file.path,
+      status: "modified",
+    })),
+  });
   w.search = acmeSearch;
   return w;
 }
@@ -679,6 +737,30 @@ async function run(
         .filter((line) => line !== "")
         .map((line) => JSON.parse(line) as Record<string, unknown>),
   };
+}
+
+/** The file the cache under `cacheDir` holds for `repository`. */
+function cachedEntry(
+  cacheDir: string,
+  repository: string
+):
+  | {
+      tree: TreeEntry[];
+      blobs: Record<string, string>;
+      forkRead?: string;
+      forkFilesApart?: boolean;
+    }
+  | undefined {
+  const dir = path.join(cacheDir, "repository");
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith(".json")) continue;
+    const entry = JSON.parse(readFileSync(path.join(dir, file), "utf8")) as {
+      key: string;
+      value: { tree: TreeEntry[]; blobs: Record<string, string> };
+    };
+    if (entry.key.startsWith(`${repository}\0`)) return entry.value;
+  }
+  return undefined;
 }
 
 /** The installer rows of a manifest, as `<action> <unit> <skill> <copy repository> <copy path>`. */
@@ -1191,11 +1273,13 @@ describe("the full run over the owners", () => {
     expect(new Set(alone)).toEqual(new Set([failing?.sha ?? "", blobSha(binary?.text ?? "")]));
   });
 
-  test("a fork that holds a skill is read from its tree, under the size bound", () => {
+  test("a fork that holds a skill is read in the files it changed against its parent, under the size bound", () => {
     const scan = r.queries().find((query) => query.type === "fork-scan");
     expect(scan).toEqual({
       type: "fork-scan",
       repository: "acme/old-skills",
+      read: `changed files against acme/skills@${OLD_BASE}`,
+      changed_files: 3,
       max_bytes: 100_000,
       files_read: 2,
       skipped_large: 1,
@@ -1353,6 +1437,217 @@ describe("one repository with --only, on F6's code search answer", () => {
   });
 });
 
+describe("a fork read against its parent", () => {
+  const commit = sha1("commit acme/old-skills");
+  const compareKey = `acme/old-skills acme:main...${commit}`;
+  const only = ["--only", "acme/old-skills", "--only", "acme/skills", "--max-search-calls", "0"];
+  /** Five more text files of the fork, each naming the skill beta. Its compare lists one changed,
+   *  one removed and one renamed (from docs/old-name.md), not docs/untouched.md; the tree holds
+   *  the removed file and the old name too, so only the compare keeps them from being read. */
+  const EXTRA: MadeFile[] = [
+    { path: "docs/changed.md", text: "Load skill://beta: changed.\n" },
+    { path: "docs/untouched.md", text: "Load skill://beta: untouched.\n" },
+    { path: "docs/removed.md", text: "Load skill://beta: removed.\n" },
+    { path: "docs/old-name.md", text: "Load skill://beta: the old name.\n" },
+    { path: "docs/new-name.md", text: "Load skill://beta: the new name.\n" },
+  ];
+  const FILES: CompareAnswer["files"] = [
+    { filename: "docs/changed.md", status: "modified" },
+    { filename: "docs/removed.md", status: "removed" },
+    { filename: "docs/new-name.md", status: "renamed", previous_filename: "docs/old-name.md" },
+  ];
+  const WHOLE = [
+    "README.md",
+    "docs/changed.md",
+    "docs/new-name.md",
+    "docs/old-name.md",
+    "docs/removed.md",
+    "docs/untouched.md",
+  ];
+  const forkWorld = () => {
+    const w = world();
+    const files = [...OLD_FILES, ...EXTRA];
+    w.addFiles(files);
+    w.addRepository("acme/old-skills", treeOf("acme/old-skills", files));
+    w.compares.set(compareKey, { merge_base_commit: { sha: OLD_BASE }, files: FILES });
+    return w;
+  };
+  const loaderPaths = (r: Run) =>
+    r
+      .table("loaders.tsv")
+      .filter((row) => row.repository === "acme/old-skills")
+      .map((row) => row.path)
+      .sort();
+  const forkScan = (r: Run) => r.queries().find((query) => query.type === "fork-scan");
+
+  test("only the files it changed are read, a renamed one under its new name and a removed one not at all", async () => {
+    const w = forkWorld();
+    const r = await run(w, only);
+    expect(r.code).toBe(0);
+    expect(
+      w.calls.some(
+        (call) => call[1] === `repos/acme/old-skills/compare/acme:main...${commit}?per_page=1`
+      )
+    ).toBe(true);
+    expect(loaderPaths(r)).toEqual(["docs/changed.md", "docs/new-name.md"]);
+    expect(forkScan(r)).toMatchObject({
+      read: `changed files against acme/skills@${OLD_BASE}`,
+      changed_files: 2,
+      files_read: 2,
+      files_naming_a_skill: 2,
+    });
+    expect(r.text("skill-copies.md")).toContain(
+      `- the fork acme/old-skills (changed files against acme/skills@${OLD_BASE}): 2 text files of at most`
+    );
+    // No blob of a file the compare left out, removed or renamed away is read.
+    const unread = ["docs/untouched.md", "docs/removed.md", "docs/old-name.md", "README.md"].map(
+      (file) => blobSha([...OLD_FILES, ...EXTRA].find((made) => made.path === file)?.text ?? "")
+    );
+    expect(w.calls.filter((call) => unread.some((sha) => call.join(" ").includes(sha)))).toEqual(
+      []
+    );
+    // Its skills are still read from its whole tree.
+    expect(
+      r.table("skill-copies.tsv").filter((row) => row.repository === "acme/old-skills")
+    ).toHaveLength(1);
+  });
+
+  test("a compare of 299 files is read as changed files", async () => {
+    const w = forkWorld();
+    const more = Array.from({ length: 299 - FILES.length }, (_, index) => ({
+      filename: `src/file-${index}.ts`,
+      status: "added",
+    }));
+    w.compares.set(compareKey, {
+      merge_base_commit: { sha: OLD_BASE },
+      files: [...FILES, ...more],
+    });
+    const r = await run(w, only);
+    expect(forkScan(r)).toMatchObject({
+      read: `changed files against acme/skills@${OLD_BASE}`,
+      changed_files: 298,
+    });
+    expect(loaderPaths(r)).toEqual(["docs/changed.md", "docs/new-name.md"]);
+  });
+
+  test.each<[string, (w: World) => void, string]>([
+    [
+      "the listing names no parent",
+      (w) =>
+        w.listings.set(
+          "acme",
+          (w.listings.get("acme") as Record<string, unknown>[]).map((entry) =>
+            entry.nameWithOwner === "acme/old-skills" ? { ...entry, parent: null } : entry
+          )
+        ),
+      "whole tree: the listing names no parent",
+    ],
+    [
+      "its parent is gone or not readable",
+      (w) =>
+        w.repositoryInfo.set("acme/old-skills", { full_name: "acme/old-skills", parent: null }),
+      "whole tree: its parent acme/skills is gone or not readable",
+    ],
+    [
+      "its repository's read fails",
+      (w) => w.repositoryInfo.set("acme/old-skills", "gh: Server Error (HTTP 502)"),
+      "whole tree: its parent could not be read (gh: Server Error (HTTP 502))",
+    ],
+    [
+      "the compare fails",
+      (w) => w.compares.set(compareKey, "gh: Server Error (HTTP 502)"),
+      "whole tree: the compare with acme/skills failed (gh: Server Error (HTTP 502))",
+    ],
+    [
+      "the compare lists 300 files, a cut list",
+      (w) =>
+        w.compares.set(compareKey, {
+          merge_base_commit: { sha: OLD_BASE },
+          files: Array.from({ length: 300 }, (_, index) => ({
+            filename: `src/file-${index}.ts`,
+            status: "added",
+          })),
+        }),
+      "whole tree: the compare with acme/skills lists 300 files, the most GitHub lists, so its list may be cut",
+    ],
+  ])("a fork the compare cannot answer whole is read from its whole tree: %s", async (_why, change, read) => {
+    const w = forkWorld();
+    change(w);
+    const r = await run(w, only);
+    expect(r.code).toBe(0);
+    expect(forkScan(r)).toMatchObject({ read, changed_files: null });
+    expect(loaderPaths(r)).toEqual(WHOLE);
+    expect(r.text("skill-copies.md")).toContain(`- the fork acme/old-skills (${read}): `);
+  });
+
+  test("a fork cached from a whole-tree read before the compare rule keeps it, says so, and its text files move apart", async () => {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    const args = [...only, "--cache-dir", cacheDir];
+    expect((await run(forkWorld(), args)).code).toBe(0);
+    // Each repository's file as the code before the compare rule wrote it: no forkRead, no
+    // changed, and a fork's text files in its blobs, not in lines of their own.
+    const texts = Object.fromEntries(
+      [...OLD_FILES, ...EXTRA].map((file) => [blobSha(file.text), file.text])
+    );
+    const dir = path.join(cacheDir, "repository");
+    for (const file of readdirSync(dir)) {
+      const entry = JSON.parse(readFileSync(path.join(dir, file), "utf8")) as {
+        key: string;
+        value: { blobs: Record<string, string>; tree: TreeEntry[] };
+      };
+      if (entry.key.startsWith("acme/old-skills\0")) {
+        for (const kept of entry.value.tree) {
+          const text = texts[kept.sha];
+          if (text !== undefined && text.length <= 100_000) entry.value.blobs[kept.sha] = text;
+        }
+      }
+      writeFileSync(
+        path.join(dir, file),
+        JSON.stringify(entry, (key, value) =>
+          key === "forkRead" || key === "changed" || key === "forkFilesApart" ? undefined : value
+        )
+      );
+    }
+    rmSync(path.join(cacheDir, "fork-files"), { recursive: true });
+    const w = forkWorld();
+    const r = await run(w, args);
+    expect(forkScan(r)).toMatchObject({
+      read: "whole tree: read before the compare rule",
+      changed_files: null,
+    });
+    expect(loaderPaths(r)).toEqual(WHOLE);
+    // Every text file came from the cache: no compare, and no blob read alone but the binary one.
+    expect(
+      w.calls.filter((call) => /\/compare\/|^repos\/[^/]+\/[^/]+$/.test(call[1] ?? ""))
+    ).toEqual([]);
+    const binary = blobSha(OLD_FILES.find((file) => file.path === "assets/data.json")?.text ?? "");
+    expect(
+      w.calls.filter((call) => /\/git\/blobs\//.test(call[1] ?? "") && !call[1]?.endsWith(binary))
+    ).toEqual([]);
+    // The file moved its fork texts to their own lines, and keeps only the skill's text.
+    const moved = cachedEntry(cacheDir, "acme/old-skills");
+    expect(moved?.forkFilesApart).toBe(true);
+    expect(moved?.forkRead).toBe("whole tree: read before the compare rule");
+    expect(Object.values(moved?.blobs ?? {}).some((text) => text.includes("skill://beta"))).toBe(
+      false
+    );
+    expect(readdirSync(path.join(cacheDir, "fork-files"))).toHaveLength(1);
+  });
+
+  test("a fork cached after the compare rule keeps its changed files, with no compare made again", async () => {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    const args = [...only, "--cache-dir", cacheDir];
+    const first = await run(forkWorld(), args);
+    const w = forkWorld();
+    const second = await run(w, args);
+    expect(w.calls).toEqual([]);
+    expect(forkScan(second)).toEqual(forkScan(first));
+    expect(loaderPaths(second)).toEqual(["docs/changed.md", "docs/new-name.md"]);
+  });
+});
+
 describe("a truncated tree", () => {
   /** The F6 tree served the way GitHub serves a truncated one: the root's recursive read and the
    *  skills/ directory's are truncated, so both are read one level down. */
@@ -1419,16 +1714,30 @@ describe("a truncated tree", () => {
     expect(Math.max(...w.treeBatches)).toBeGreaterThan(1);
     expect(byDirectory.text("skill-copies.tsv")).toBe(whole.text("skill-copies.tsv"));
     expect(byDirectory.text("manifests.tsv")).toBe(whole.text("manifests.tsv"));
-  });
+  }, 30_000);
+
+  test("a tree whose whole read fails is walked by directory into the same copies", async () => {
+    const whole = await run(world(), ["--only", "cybermonklabs/legion"]);
+    const w = truncatedWorld();
+    w.trees.set(`cybermonklabs/legion ${LEGION_ROOT} recursive`, "unexpected end of JSON input");
+    const walked = await run(w, ["--only", "cybermonklabs/legion"]);
+    const legion = walked.table("repositories.tsv")[0];
+    expect(legion?.error).toBe("");
+    expect(legion?.tree_read).toMatch(/^by directory, \d+ reads$/);
+    expect(walked.text("skill-copies.tsv")).toBe(whole.text("skill-copies.tsv"));
+    expect(walked.text("manifests.tsv")).toBe(whole.text("manifests.tsv"));
+  }, 30_000);
 
   test("the batched walk and the REST walk give the same kept entries and counts", async () => {
     const read = async (refuse: boolean) => {
       const w = truncatedWorld();
       w.refuseTreeBatches = refuse;
       w.treeTurns = 5;
+      const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+      scratch.push(cacheDir);
       const result = await listCopies(
         parseConfig(CONFIG),
-        { at: AT, only: ["cybermonklabs/legion"], maxSearchCalls: 0 },
+        { at: AT, only: ["cybermonklabs/legion"], maxSearchCalls: 0, cacheDir },
         {
           gh: w.gh,
           sleep: w.sleep,
@@ -1438,17 +1747,19 @@ describe("a truncated tree", () => {
           peakRssBytes: () => 0,
         }
       );
-      const repo = result.repositories[0];
       return {
         w,
-        count: repo?.treeEntries,
-        kept: repo?.tree.map((entry) => JSON.stringify(entry)).sort(),
+        count: result.repositories[0]?.treeEntries,
+        kept: cachedEntry(cacheDir, "cybermonklabs/legion")
+          ?.tree.map((entry) => JSON.stringify(entry))
+          .sort(),
       };
     };
     const batched = await read(false);
     const rest = await read(true);
     expect(batched.count).toBeGreaterThan(0);
     expect(batched.count).toBe(rest.count);
+    expect(batched.kept?.length).toBeGreaterThan(0);
     expect(batched.kept).toEqual(rest.kept);
     // Refused batches are halved, then each subtree is read over REST, under the per-repository cap.
     expect(rest.w.treeBatches).toEqual([]);
@@ -1521,10 +1832,50 @@ describe("a truncated tree", () => {
     // the reads ending out of name order.
     expect(six.w.maxTreeRepositories).toBe(REPOSITORY_JOBS);
     expect(six.w.maxTreeReads).toBe(READ_CALLS);
-    expect(six.w.maxTreeReadsOfOne).toBe(READ_CALLS_PER_REPOSITORY);
+    // The run's slots are shared, so the walk may hold fewer than its own cap.
+    expect(six.w.maxTreeReadsOfOne).toBeLessThanOrEqual(READ_CALLS_PER_REPOSITORY);
     expect(six.ended.at(-1)).toBe("acme/old-skills");
     expect(six.files["repositories.tsv"]).toContain("cybermonklabs/small-4");
     expect(six.files).toEqual(one.files);
+  }, 30_000);
+});
+
+describe("the read slots", () => {
+  test("a freed slot goes to the repository holding the fewest, so a small repository passes two large walks", async () => {
+    const slots = new ReadSlots(READ_CALLS, READ_CALLS_PER_REPOSITORY);
+    const started: string[] = [];
+    const open: { repository: string; end: () => void }[] = [];
+    const call = (repository: string) =>
+      slots.run(repository, () => {
+        const gate = Promise.withResolvers<void>();
+        started.push(repository);
+        open.push({ repository, end: gate.resolve });
+        return gate.promise;
+      });
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const end = async (repository: string) => {
+      const index = open.findIndex((read) => read.repository === repository);
+      open.splice(index, 1)[0]?.end();
+      await settle();
+    };
+    // Two large walks queue a level of ten subtree reads each: four of each start, the rest wait.
+    const all = [
+      ...Array.from({ length: 10 }, () => call("acme/walk-a")),
+      ...Array.from({ length: 10 }, () => call("acme/walk-b")),
+    ];
+    await settle();
+    expect(started).toEqual([...Array(4).fill("acme/walk-a"), ...Array(4).fill("acme/walk-b")]);
+    // A small repository's read waits behind them, then takes the first slot a walk frees.
+    all.push(call("acme/small"));
+    await end("acme/walk-a");
+    expect(started.at(-1)).toBe("acme/small");
+    // Between the walks, both holding three once walk-b's read ends, the slot goes to the read
+    // that waited first: walk-a's.
+    await end("acme/walk-b");
+    expect(started.at(-1)).toBe("acme/walk-a");
+    while (open.length > 0) await end(open[0]?.repository ?? "");
+    await Promise.all(all);
+    expect(started).toHaveLength(21);
   });
 });
 
@@ -1593,13 +1944,61 @@ describe("a run started again over --cache-dir", () => {
 });
 
 describe("the memory a run holds", () => {
-  test("a tree keeps only the entries the list uses, and counts the rest", async () => {
+  /** The world with twelve made-up forks of acme/skills, acme/fork-00 to acme/fork-11 (first by
+   *  name), each holding a skill and PAGES text pages of about PAGE_BYTES bytes that name it, and
+   *  a parent the run cannot read, so each is read from its whole tree. */
+  const FORKS = Array.from({ length: 12 }, (_, n) => `acme/fork-${String(n).padStart(2, "0")}`);
+  const PAGES = 20;
+  const PAGE_BYTES = "text of a made-up page ".length * 4_000;
+  const forksWorld = () => {
     const w = world();
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      ...FORKS.map((nameWithOwner) => ({
+        nameWithOwner,
+        isFork: true,
+        isArchived: false,
+        defaultBranchRef: { name: "main" },
+        parent: { id: "R_madeup", name: "skills", owner: { id: "U_madeup", login: "acme" } },
+      })),
+    ]);
+    for (const fork of FORKS) {
+      const files: MadeFile[] = [
+        {
+          path: "skills/alpha/SKILL.md",
+          text: skill(`name: alpha\ndescription: A copy in ${fork}.`),
+        },
+        ...Array.from({ length: PAGES }, (_, n) => ({
+          path: `docs/page-${n}.md`,
+          text: `# ${fork} page ${n}\n\nLoad skill://alpha.\n\n${"text of a made-up page ".repeat(4_000)}\n`,
+        })),
+      ];
+      w.addFiles(files);
+      w.addRepository(fork, treeOf(fork, files));
+    }
+    return w;
+  };
+  /** Every string `value` holds, however deep. */
+  const stringsIn = (value: unknown, seen = new Set<object>()): string[] => {
+    if (typeof value === "string") return [value];
+    if (value === null || typeof value !== "object" || seen.has(value)) return [];
+    seen.add(value);
+    const values =
+      value instanceof Map ? [...value.keys(), ...value.values()] : Object.values(value);
+    return values.flatMap((item) => stringsIn(item, seen));
+  };
+
+  test("a tree keeps only the entries the list uses, on disk once its step is done", async () => {
+    const w = world();
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
     const result = await listCopies(
       parseConfig(CONFIG),
-      { at: AT, only: [], maxSearchCalls: 0 },
+      { at: AT, only: [], maxSearchCalls: 0, cacheDir },
       { gh: w.gh, sleep: w.sleep, now: w.now, out: () => {}, err: () => {}, peakRssBytes: () => 0 }
     );
+    // The run keeps no tree past its repository's step.
+    expect(result.repositories.every((repo) => repo.tree.length === 0)).toBe(true);
     const wholeTrees: [string, TreeEntry[]][] = [
       ["cybermonklabs/legion", legionTree().entries],
       ["acme/skills", treeOf("acme/skills", [...madeUpFiles(), ...ACME_FILES])],
@@ -1609,14 +2008,15 @@ describe("the memory a run holds", () => {
       const repo = result.repositories.find((candidate) => candidate.repository === repository);
       expect(repo?.treeEntries).toBe(entries.length);
       const kept = entries.filter((entry) => keepsEntry(entry, repo?.fork ?? false));
-      expect(repo?.tree.map((entry) => entry.path).sort()).toEqual(
-        kept.map((entry) => entry.path).sort()
-      );
+      expect(
+        cachedEntry(cacheDir, repository)
+          ?.tree.map((entry) => entry.path)
+          .sort()
+      ).toEqual(kept.map((entry) => entry.path).sort());
       expect(kept.length).toBeLessThan(entries.length);
     }
     const tree = (repository: string) =>
-      result.repositories
-        .find((candidate) => candidate.repository === repository)
+      cachedEntry(cacheDir, repository)
         ?.tree.map((entry) => entry.path)
         .sort();
     // No directory, no reference file of a skill, no plain file of a repository that is no fork.
@@ -1630,6 +2030,58 @@ describe("the memory a run holds", () => {
       "skills/alpha/SKILL.md",
     ]);
   });
+
+  test("what a run keeps holds no blob text: its skills parsed, its forks' hits, no page and no body", async () => {
+    const w = forksWorld();
+    const result = await listCopies(
+      parseConfig(CONFIG),
+      { at: AT, only: FORKS, maxSearchCalls: 0 },
+      { gh: w.gh, sleep: w.sleep, now: w.now, out: () => {}, err: () => {}, peakRssBytes: () => 0 }
+    );
+    // Each fork's pages were read, and each named alpha, so each is a loader row...
+    for (const fork of FORKS) {
+      expect(
+        result.loaders.filter((row) => row.repository === fork && row.skill === "alpha")
+      ).toHaveLength(PAGES);
+    }
+    // ...but no string the result holds is a page's text, a SKILL.md's body or a manifest's.
+    const held = stringsIn(result);
+    expect(held.filter((text) => text.includes("text of a made-up page"))).toEqual([]);
+    expect(held.filter((text) => text.includes("# A made-up skill"))).toEqual([]);
+    const marketplace = ACME_FILES.find((file) => file.path === ".claude-plugin/marketplace.json");
+    expect(held.filter((text) => text === marketplace?.text)).toEqual([]);
+    expect(held.some((text) => text === "A copy in acme/fork-03.")).toBe(true);
+  }, 60_000);
+
+  test("the memory a run holds does not grow with the blobs its repositories read", async () => {
+    const w = forksWorld();
+    const steps: number[] = [];
+    const scans: number[] = [];
+    const sample = (line: string) => {
+      const into = line.startsWith("copies: tree ")
+        ? steps
+        : line.startsWith("copies: reading the fork acme/fork-")
+          ? scans
+          : undefined;
+      if (into === undefined) return;
+      Bun.gc(true);
+      into.push(heapSize());
+    };
+    await listCopies(
+      parseConfig(CONFIG),
+      { at: AT, only: FORKS, maxSearchCalls: 0, repositoryJobs: 1 },
+      { gh: w.gh, sleep: w.sleep, now: w.now, out: () => {}, err: sample, peakRssBytes: () => 0 }
+    );
+    const read = FORKS.length * PAGES * PAGE_BYTES;
+    expect(read).toBeGreaterThan(20 * 1024 ** 2);
+    // One repository at a time, the forks alone: after each fork's step and before each fork's
+    // scan, the heap holds about what it held after the first.
+    expect(steps).toHaveLength(FORKS.length);
+    expect(scans).toHaveLength(FORKS.length);
+    const grown = (samples: number[]) => (samples[FORKS.length - 1] ?? 0) - (samples[0] ?? 0);
+    expect(grown(steps)).toBeLessThan(4 * 1024 ** 2);
+    expect(grown(scans)).toBeLessThan(4 * 1024 ** 2);
+  }, 60_000);
 
   test("the run's peak resident memory is in its summary", async () => {
     const r = await run(world(), ["--only", "cybermonklabs/legion", "--max-search-calls", "0"]);
