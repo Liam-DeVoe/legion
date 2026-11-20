@@ -18,7 +18,7 @@ package api
 // refuses each of them.
 //
 // The refusal reads the request's credential, as optionalActor resolved it
-// (requireActorAndCredential), and never the actor that a body names. A bearer that proves no
+// (requestWriter), and never the actor that a body names. A bearer that proves no
 // session names its session in the body, and that body can name any session
 // (bearerSessionActor). The shared token whose body names the daemon's session is still the
 // shared token, so R26 refuses it.
@@ -84,7 +84,7 @@ type legionStatusStep struct {
 // legionStatusWriter is the writer of a call, as R26 reads it.
 type legionStatusWriter struct {
 	// credential is the request's credential, as optionalActor resolved it
-	// (requireActorAndCredential). A nil credential holds no scope.
+	// (requestWriter). A nil credential holds no scope.
 	credential *model.Credential
 	// system is true for Dispatch's own writer, which acts for no request and which R26 never
 	// refuses. No request sets it. Today nothing sets it: the system writer of

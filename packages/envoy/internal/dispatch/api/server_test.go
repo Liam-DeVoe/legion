@@ -166,6 +166,8 @@ type testServerOptions struct {
 	// the person scope nor the legion-status scope. False is the deployment that has not turned
 	// it on, which every test but legion_status_scope_test.go's runs as.
 	legionStatusScope bool
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -313,6 +315,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OutboxPublishes:   options.outboxPublishes,
 		Metrics:           options.metrics,
 		LegionStatusScope: options.legionStatusScope,
+		ParentStatusRule:  ParentStatusRule{on: options.parentStatusRule},
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
