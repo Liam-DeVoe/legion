@@ -28,6 +28,7 @@ const kept = (key: string, fields: Partial<KeptWrite> = {}): KeptWrite => ({
   carried: KEYED_METHOD,
   detail: null,
   key,
+  keyed: true,
   kind: "write",
   label: "CORE-1 set to done",
   login: "alice",
@@ -121,6 +122,41 @@ test("a missing carried is read as what the entry sent, and one that is written 
       "kept-nothing": null,
       "older-sent": "PATCH",
       "older-unsent": null,
+    });
+  } finally {
+    tab.close();
+  }
+});
+
+// Whether a write goes under its key is kept with it (`KeptWrite.keyed`); an entry of an older
+// shape holds no such field, and `load` reads it as keyed whatever the entry holds, a kept PUT or
+// a key that carried a DELETE among them: this build sends every write under its key but the one
+// its spec sends under none (`WriteSpec.keyed`), so it makes an older entry's write again under
+// that key, to the path it was kept with, and its Retry asks again under the key. A field that
+// is there is read as written.
+test("a missing keyed is read as keyed whatever the entry's method, and one written as written", () => {
+  const tab = keptTab();
+  const entry = (key: string, fields: Record<string, unknown>) =>
+    tab.storage.setItem(
+      `dispatch.write:${key}`,
+      JSON.stringify({ ...kept(key), version: 1, keyed: undefined, ...fields })
+    );
+  try {
+    entry("older-put", {
+      request: { body: { pinned: true }, method: "PUT", path: "/api/v1/me/issues/CORE-1/state" },
+    });
+    entry("older-patch", {});
+    entry("older-carried-delete", { carried: "DELETE", request: null, sent: false });
+    entry("older-nothing", { carried: null, request: null, sent: false });
+    entry("kept-unkeyed", { keyed: false, request: null, sent: false });
+
+    const loaded = tab.page().load("alice");
+    expect(Object.fromEntries(loaded.map((write) => [write.key, write.keyed]))).toEqual({
+      "kept-unkeyed": false,
+      "older-carried-delete": true,
+      "older-nothing": true,
+      "older-patch": true,
+      "older-put": true,
     });
   } finally {
     tab.close();

@@ -33,7 +33,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -319,7 +318,9 @@ func (s *server) v2IssueRows() []routeRow {
 				"/api/v2/artifacts/{id}/versions), its depth and the node it was reached via. limit 1 to 200 (default " +
 				"50) and offset; {items, total, limit, offset, truncated}, truncated where the closure was cut at its " +
 				"bound. The answer carries an ETag, which moves with the issue's events, each member's newest version " +
-				"and the page; If-None-Match answers 304. 404 ISSUE_NOT_FOUND.",
+				"and the page; If-None-Match answers 304. The closure's walk runs under a 2 s statement_timeout, and a " +
+				"walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 " +
+				"ISSUE_NOT_FOUND.",
 			Handler:  s.listIssueReferencesV2,
 			Resource: "references", Kind: kindCollection,
 			Query: issueReferencesV2Query{},
@@ -737,15 +738,16 @@ func loadReferenceRowsV2(ctx context.Context, q queryer, refKeys []string) (map[
 
 // issueReferenceMembersV2 is the issue key names and its reference closure as GET
 // /api/v2/issues/{key}/references answers it: the closure GET /api/v1/issues/{key}/references
-// reads (issueReferenceMembers), each document as its row (loadReferenceRowsV2), and whether the
-// closure was cut at its bound. A key no issue carries answers loadIssue's refusal.
+// reads (issueReferenceMembers), under the same bound (issueClosure), each document as its row
+// (loadReferenceRowsV2), and whether the closure was cut at its depth bound. A key no issue
+// carries answers loadIssue's refusal.
 func (s *server) issueReferenceMembersV2(ctx context.Context, key string) (model.Issue, []referenceMemberV2, bool, error) {
 	pool := s.deps.Store.Pool
 	issue, err := s.loadIssue(ctx, pool, key)
 	if err != nil {
 		return model.Issue{}, nil, false, err
 	}
-	closure, truncated, err := refs.Closure(ctx, pool, issue.Key)
+	closure, truncated, err := s.issueClosure(ctx, issue.Key)
 	if err != nil {
 		return model.Issue{}, nil, false, err
 	}

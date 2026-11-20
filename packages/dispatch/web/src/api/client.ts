@@ -334,6 +334,37 @@ export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
 }
 
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`
@@ -383,6 +414,13 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
+// costs the database the whole bound each time, so an automatic retry only multiplies that cost
+// and shows nothing more. The page offers its own Retry instead.
+export function isReferencesTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
 // wrote it while two builds serve one database during a release. It is not a repairable state, and
 // a replacement would delete the element. A later read can reach a build that reads it, so the read
@@ -423,10 +461,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
+// definitive or too costly to send again at once; any other failure (dropped connection, a read
+// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
+// couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -434,7 +472,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
-    !isDocumentUnloadable(error)
+    !isDocumentUnloadable(error) &&
+    !isReferencesTimeout(error)
   );
 }
 
@@ -602,17 +641,27 @@ export function artifactVersionPath(
  *  written in the browser and for a title typed with nothing under it, and a multipart form - the
  *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
  *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
- *  the name alone. */
+ *  the name alone. An upload that names the base it replaces carries it either way, as the field
+ *  `precondition`, which the form sends as the object's JSON text. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v2/issues/{key}/artifacts", "post"> | FormData {
   if (input.file === undefined) {
-    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
+    return {
+      actor: input.actor,
+      content: input.content,
+      name: input.name,
+      precondition: input.precondition,
+      summary: input.summary,
+    };
   }
   const form = new FormData();
   form.set("name", input.name);
   if (input.summary !== undefined) {
     form.set("summary", input.summary);
+  }
+  if (input.precondition !== undefined) {
+    form.set("precondition", JSON.stringify(input.precondition));
   }
   if (input.actor !== undefined) {
     form.set("actor", JSON.stringify(input.actor));
@@ -1030,6 +1079,9 @@ export class DispatchApiClient {
     return this.put("/api/v2/repositories/{owner}/{repo}", repoParams(repo), input, bounds);
   }
 
+  /** `DELETE /api/v2/repositories/{owner}/{repo}`: remove the repository's mapping. A
+   *  repository with no mapping answers the same 204, so a removal made again after one that
+   *  landed needs no `removedEvenIfGone`. */
   async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v2/repositories/{owner}/{repo}", repoParams(repo), bounds);
   }
@@ -1660,6 +1712,52 @@ export class DispatchApiClient {
       { id },
       { include: ["text"] }
     )) as ArtifactText;
+  }
+
+  /** The markdown, version and whole-document token of the document `owner` holds under `slug`,
+   *  which may be its slug or an unambiguous filename, as the upload of a name reads the base it
+   *  replaces: the row of the owner's list at that exact slug, else the one row of that filename
+   *  (`slug=`, `include=text`; a project's own documents, `issue=none`). `404
+   *  ARTIFACT_NOT_FOUND` where the owner holds nothing under the name, which is what the first
+   *  upload of a name reads; `400 ARTIFACT_REFERENCE_AMBIGUOUS` where more than one document
+   *  answers to the filename; `400 NOT_DOCUMENT` where a file or a picture does, which carries no
+   *  text. Each is the refusal the read by slug of `/api/v1` gave. A conversation holds files and
+   *  pictures and no document at all, which is why its owner is not one this takes. */
+  async ownerArtifactText(
+    owner: { issue: string } | { project: string },
+    slug: string
+  ): Promise<{ readonly markdown: string; readonly token: string; readonly version: number }> {
+    const items =
+      ("issue" in owner
+        ? await this.read(
+            "/api/v2/issues/{key}/artifacts",
+            { key: owner.issue },
+            { include: ["text"], slug }
+          )
+        : await this.read(
+            "/api/v2/projects/{key}/artifacts",
+            { key: owner.project },
+            { include: ["text"], issue: "none", slug }
+          )
+      ).items ?? [];
+    const label = `${"issue" in owner ? owner.issue : owner.project}/${slug}`;
+    const named =
+      items.find((row) => row.slug === slug) ?? (items.length === 1 ? items[0] : undefined);
+    if (named === undefined) {
+      if (items.length === 0) throw artifactNotFound(label);
+      throw new ApiError(400, {
+        code: "ARTIFACT_REFERENCE_AMBIGUOUS",
+        error: `"${slug}" names ${items.length} documents; use a slug: ${items.map((row) => `${row.slug} (${row.name})`).join(", ")}`,
+      });
+    }
+    const { markdown, token, version } = named;
+    if (markdown === undefined || token === undefined || version == null) {
+      throw new ApiError(400, {
+        code: "NOT_DOCUMENT",
+        error: `${label} is a ${named.kind}, not a document`,
+      });
+    }
+    return { markdown, token, version };
   }
 
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {

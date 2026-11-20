@@ -420,10 +420,12 @@ With neither, it makes an empty document under `--name`, which a person or an ag
 afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
 its text on stdin. Every issue is created with a `spec.md`, and the command refuses an upload
 under the name of a document the issue already holds, so this one carries `--force`, which writes
-the next version of it:
+the next version of it, and the token of the version it replaces, which
+`dispatch doc-read --issue LEGION-1` prints:
 
 ```sh
-dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force <<'EOF'
+dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force \
+  --precondition-json '{"document":"sha256:…"}' <<'EOF'
 # Design
 EOF
 ```
@@ -439,6 +441,12 @@ A `--path` upload under a `--name` that ends in `.md` or `.markdown` is sent as 
 the path's extension, so `--name plan.md --path plan.txt` stores a document. The answer names the
 kind Dispatch stored: `a document (kind doc; …)`, `a file (kind file; …)` or
 `a picture (kind image; …)`.
+
+An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
+That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
+A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
+An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as

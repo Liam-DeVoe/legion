@@ -69,7 +69,8 @@ type routeShape struct {
 	Params any
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
-	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
+	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
+	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
 	// OtherAdvice are the advice shapes the success answer carries in Advice's place where it
 	// carries another: withSuggestions answers suggestionsOnlyAdvice for a write with no issue

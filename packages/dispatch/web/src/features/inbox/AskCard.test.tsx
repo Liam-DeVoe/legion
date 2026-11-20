@@ -1,16 +1,15 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { type AnswerAskInput, ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
@@ -27,109 +26,16 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import {
+  answeredAsk,
+  firstAnswer,
+  installAskCardApiMocks,
+  renderCard,
+  thread,
+} from "./ask-card-fixture";
 import { ThreadBody } from "./ThreadBody";
 
-let whoAmI: Mock<typeof api.whoAmI>;
-let getReferences: Mock<typeof api.getReferences>;
-let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
-
-beforeEach(() => {
-  whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
-  getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    items: [],
-    limit: 50,
-    node: graphNode({ id: "ask-1", kind: "ask" }),
-    offset: 0,
-    total: 0,
-  });
-  // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
-  // nobody is subscribed here, so the card lists its followers alone.
-  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
-});
-
-afterEach(() => {
-  whoAmI.mockRestore();
-  getReferences.mockRestore();
-  getIssueSubscribers.mockRestore();
-  jest.useRealTimers();
-});
-
-const firstAnswer: AskAnswer = {
-  at: "2026-10-08T01:00:00Z",
-  selected: ["Ship"],
-  text: "First note",
-  user: "alice",
-};
-
-function answeredAsk(overrides: Partial<AskV2> = {}): AskV2 {
-  return {
-    anchor: null,
-    answer: firstAnswer,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "session-1", kind: "session" },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    document: null,
-    edited_at: null,
-    id: "ask-1",
-    issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
-    issue_key: "CORE-1",
-    kind: "question",
-    last_reply: null,
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    priority: null,
-    question: "Which release path?",
-    ref: "dispatch://CORE-1/ask/ask-1",
-    state: "answered",
-    urgency: "med",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-/** The ask read with its thread, as `getAsk` answers it and the card holds it: its answers
- *  (the recorded one alone, unless given) and its replies. */
-function thread(
-  ask: AskV2,
-  answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer],
-  replies: Comment[] = []
-): AskWithThread {
-  return {
-    ...ask,
-    thread: {
-      answers,
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies,
-      route: null,
-      route_status: null,
-      route_holder: null,
-      route_status_reason: null,
-    },
-  };
-}
-
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, view };
-}
+installAskCardApiMocks();
 
 test("the answerer can change an answer and sees both answers immediately", async () => {
   const user = userEvent.setup();
@@ -432,7 +338,7 @@ for (const shape of ["inline", "collapsed"] as const) {
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
-      expect(card.screen.observed()).toEqual([newest]);
+      expectSameElements(card.screen.observed(), [newest]);
       await dwellOn(card.screen, newest);
       expect(card.mark.mock.calls).toEqual([
         ["ask-1", { read_through: "2026-10-08T04:00:00.5Z" }, keyedAttempt],
@@ -446,7 +352,7 @@ for (const shape of ["inline", "collapsed"] as const) {
     const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
-      expect(card.screen.observed()).toEqual([]);
+      expect(card.screen.observed().length).toBe(0);
       expect(card.mark).not.toHaveBeenCalled();
     } finally {
       card.cleanup();
@@ -467,7 +373,7 @@ test("an answer given after every reply is what the mark watches and reads throu
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
-    expect(card.screen.observed()).toEqual([record]);
+    expectSameElements(card.screen.observed(), [record]);
     await dwellOn(card.screen, record);
     expect(card.mark.mock.calls).toEqual([["ask-1", { read_through: answer.at }, keyedAttempt]]);
   } finally {

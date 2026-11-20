@@ -52,10 +52,14 @@ func documentErrorCode(err error) (apicode.Code, bool) {
 }
 
 // editPreconditionCurrent is the `current` object of editPreconditionError: the document token
-// and the block tokens the write found, which a caller re-reads its precondition from.
+// and the block tokens the write found, which a caller re-reads its precondition from, and the
+// number of the version the document stands at, which a refusal whose caller read it beside the
+// write carries (an upload). An edit refuses without reading the version rows and names none,
+// which is what the omitted field says.
 type editPreconditionCurrent struct {
 	Blocks   []model.EditBlockPrecondition `json:"blocks"`
 	Document string                        `json:"document"`
+	Version  *int                          `json:"version,omitempty"`
 }
 
 // editPreconditionError is the 409 PRECONDITION_FAILED body every document write answers a
@@ -65,6 +69,30 @@ type editPreconditionError struct {
 	Current    editPreconditionCurrent          `json:"current"`
 	Error      string                           `json:"error"`
 	Mismatches []model.EditPreconditionMismatch `json:"mismatches"`
+}
+
+// editPreconditionBody reads that body off the refusal, with the name and status r's version
+// answers PRECONDITION_FAILED with: the live document token, the block tokens the write found,
+// and the mismatches that named them. The version is the caller's to fill in, since the write
+// reads no version rows: an edit's refusal names none, and an upload's names the number it read
+// beside its write and adds the sentence saying where a current token is printed
+// (writeUploadDocumentError).
+func editPreconditionBody(r *http.Request, failed *docs.ErrPreconditionFailed) (editPreconditionError, int) {
+	currentBlocks := make([]model.EditBlockPrecondition, 0)
+	for _, mismatch := range failed.Mismatches {
+		if mismatch.Scope == "block" && mismatch.Current != nil {
+			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
+				ID: mismatch.BlockID, Token: *mismatch.Current,
+			})
+		}
+	}
+	code, status := refusalPair(r, apicode.PreconditionFailed)
+	return editPreconditionError{
+		Code:       code,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
+		Error:      failed.Error(),
+		Mismatches: failed.Mismatches,
+	}, status
 }
 
 // editLostError is the 409 EDIT_LOST_TO_CONCURRENT_CHANGE body a document write answers when a
@@ -137,24 +165,8 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 
 	var preconditionFailed *docs.ErrPreconditionFailed
 	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		code, status := refusalPair(r, apicode.PreconditionFailed)
-		WriteJSON(w, status, editPreconditionError{
-			Code: code,
-			Current: editPreconditionCurrent{
-				Blocks:   currentBlocks,
-				Document: preconditionFailed.CurrentDocument,
-			},
-			Error:      preconditionFailed.Error(),
-			Mismatches: preconditionFailed.Mismatches,
-		})
+		body, status := editPreconditionBody(r, preconditionFailed)
+		WriteJSON(w, status, body)
 		return
 	}
 	// A write whose text a concurrent browser change removed before the write could be versioned

@@ -66,10 +66,17 @@ const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that s
 	"another's slug or documents share a file name."
 
 // artifactUploadText is what the descriptions of the three uploads say alike.
-const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file " +
-	"part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an " +
-	"image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file " +
-	"under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. " +
+const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or " +
+	"multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown " +
+	"file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its " +
+	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
+	"that artifact's next version. An upload that replaces a document the owner already holds names the token of the " +
+	"version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
+	"upload's precondition field holds the same JSON object): one that names none is 400 PRECONDITION_REQUIRED, and a " +
+	"token behind the live document is 409 PRECONDITION_FAILED, whose current names the live token and the number of " +
+	"the version the document stands at; both write nothing. A precondition naming blocks, or on an upload stored as a " +
+	"file, is 400 INVALID_PRECONDITION, and one on a first upload of a name, which replaces no version, is 409 " +
+	"PRECONDITION_FAILED. " +
 	"An issue's plan, Verification document and decisions document are always documents: a file or an image under " +
 	"the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, " +
 	"decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored " +
@@ -1426,7 +1433,8 @@ type artifactUploadV2 struct {
 
 // formUploadInput is what a multipart upload stores, its declared fields and its file read by the
 // decoder: refused as multipartArtifactUpload refuses the form, a primary named, a content field
-// beside the file, or no file at all.
+// beside the file, or no file at all. Its precondition field holds the same JSON object a JSON
+// body's precondition holds, as /api/v1's multipart precondition field does.
 func formUploadInput(body jsonArtifactUpload, file *uploadFile) (artifactUploadInput, error) {
 	switch {
 	case body.Primary != nil:
@@ -1438,10 +1446,11 @@ func formUploadInput(body jsonArtifactUpload, file *uploadFile) (artifactUploadI
 	}
 	name := strings.TrimSpace(body.Name)
 	return artifactUploadInput{
-		name:        name,
-		content:     file.Content,
-		contentType: uploadContentType(file.ContentType, name),
-		summary:     strings.TrimSpace(body.Summary),
-		supplied:    body.Actor,
+		name:         name,
+		content:      file.Content,
+		precondition: body.Precondition,
+		contentType:  uploadContentType(file.ContentType, name),
+		summary:      strings.TrimSpace(body.Summary),
+		supplied:     body.Actor,
 	}, nil
 }

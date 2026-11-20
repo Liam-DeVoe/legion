@@ -427,7 +427,7 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 	}
 }
 
-func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
+func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, newDispatchRequest(t, method, target, body, login))
@@ -437,7 +437,7 @@ func dispatchRequest(t *testing.T, handler http.Handler, method, target string, 
 // newDispatchRequest is the request dispatchRequest serves: body as JSON, from login where one is
 // given. It fails t for a body it cannot encode, so a test that serves on a goroutine of its own
 // builds the request here, on the test's goroutine.
-func newDispatchRequest(t *testing.T, method, target string, body any, login string) *http.Request {
+func newDispatchRequest(t testing.TB, method, target string, body any, login string) *http.Request {
 	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
@@ -573,7 +573,7 @@ func assertRefusal(t *testing.T, request string, status int, body []byte, code, 
 	}
 }
 
-func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
+func decodeBody[T any](t testing.TB, response *httptest.ResponseRecorder) T {
 	t.Helper()
 	var value T
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
@@ -1197,7 +1197,7 @@ func TestArtifactVersions(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"artifact"`
 	}](t, notes)
-	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
+	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": uploadBaseField(t, handler, uploaded.Artifact.ID)}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
 	if replacement.Code != http.StatusCreated {
 		t.Fatalf("replace document: status=%d body=%s", replacement.Code, replacement.Body.String())
 	}
@@ -1749,7 +1749,8 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 		t.Fatalf("upload Report.md: status=%d body=%s", dashed.Code, dashed.Body.String())
 	}
 	versioned := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
-		"name": "report.md",
+		"name":         "report.md",
+		"precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "report.md")),
 	}, "report.md", "text/markdown", []byte("# Revision"), "alice")
 	if versioned.Code != http.StatusCreated {
 		t.Fatalf("upload report.md version 2: status=%d body=%s", versioned.Code, versioned.Body.String())

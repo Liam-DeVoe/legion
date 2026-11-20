@@ -100,7 +100,7 @@ function statusWrite(
     presentation: "indicator",
   } as const;
   return fields.target === undefined
-    ? writes.run({ ...press, write: attemptOf(patch, answer) })
+    ? writes.run({ ...press, method: "PATCH", write: attemptOf(patch, answer) })
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
 
@@ -119,6 +119,7 @@ function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>)
     file,
     kind: plainWrite,
     label: `Upload of ${file.name}`,
+    method: "POST",
     presentation: "indicator",
     write: attemptOf(uploadOf(file), answer),
   });
@@ -223,6 +224,7 @@ test("one key per press, reused by every attempt the store makes", async () => {
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         keys.push(bounds.key);
@@ -287,6 +289,7 @@ test("Stop trying ends a late write, and Retry keeps its key until Dispatch has 
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           keys.push(bounds.key);
@@ -335,6 +338,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
           detail: null,
           kind: plainWrite,
           label: "Comment resolved",
+          method: "PUT",
           presentation: "indicator",
           write: attemptOf(put, hang),
         })
@@ -492,6 +496,31 @@ test("a kept /api/v1 write answered 410 is dropped from the store and made no mo
       expect(writes.rows()).toEqual([]);
     } finally {
       wire.restore();
+      tab.close();
+    }
+  });
+});
+
+// A write pressed in this page before the app takes up what a reload kept is kept in the tab from
+// its press, so the take-up finds it there too: it is this page's write, already in its line, and
+// is not taken up a second time beside itself. The app's resume runs in the shell's effect, which
+// React runs after every effect of the shell's children, so a child's write on mount comes first.
+test("a write pressed before the take-up of a reload's writes is not taken up beside itself", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      const hang = () => Promise.withResolvers<never>().promise;
+      void statusWrite(writes, hang).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "sending" } });
+
+      writes.resume("alice");
+      await settle();
+      expect(writes.rows().map((write) => write.key)).toEqual([key]);
+      expect(tab.kept(key)).toMatchObject({ login: "alice" });
+    } finally {
       tab.close();
     }
   });
@@ -829,6 +858,7 @@ async function lapsedWrites() {
       file,
       kind: plainWrite,
       label: "Upload of spec.md",
+      method: "PATCH",
       presentation: "indicator",
       write: attemptOf(patch, () => {
         attempts += 1;
@@ -841,6 +871,7 @@ async function lapsedWrites() {
       detail: { draft: "My only copy of this" },
       kind: draftWrite,
       label: "Message",
+      method: "PATCH",
       presentation: "composer",
       write: attemptOf(patch, () => Promise.reject(verdict)),
     })
@@ -934,6 +965,7 @@ test("a write answered 401 is asked again under its key, and whoami is read agai
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         keys.push(bounds.key);
@@ -986,6 +1018,51 @@ test("a write answered 401 again while its person is still signed in is refused"
   });
 });
 
+// Two writes answered 401 at once, while the sign-in check the first one asked for is still out:
+// the second's ask cancels that check and starts its own (`askSignInAgain`). The first waits for
+// that newer check's answer rather than reading the cancelled check as no answer, so each write is
+// Dispatch's refusal at its second 401, as a write alone is.
+test("two writes answered 401 at once while the sign-in check is out are each refused at their second 401", async () => {
+  await onFakeClock(async () => {
+    const client = signedIn("alice");
+    const whoami = new QueryObserver(client, {
+      // The check answers a while after it is asked, on the held clock, so the second write's ask
+      // comes while the first write's check is still out.
+      queryFn: () => {
+        const check = Promise.withResolvers<{ event_head: string; kind: "user"; login: string }>();
+        setTimeout(() => check.resolve({ event_head: "0", kind: "user", login: "alice" }), 200);
+        return check.promise;
+      },
+      queryKey: ["whoami"],
+      staleTime: Number.POSITIVE_INFINITY,
+    });
+    const stop = whoami.subscribe(() => {});
+    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    try {
+      const attempts = { first: 0, second: 0 };
+      const refusedWrite = (which: "first" | "second") =>
+        statusWrite(
+          writes,
+          () => {
+            attempts[which] += 1;
+            return Promise.reject(
+              new ApiError(401, { code: "UNAUTHENTICATED", error: "sign in again" })
+            );
+          },
+          { label: `The ${which} write` }
+        ).catch((error: unknown) => error);
+      const first = refusedWrite("first");
+      const second = refusedWrite("second");
+      await tick(10_000);
+      expect(attempts).toEqual({ first: 2, second: 2 });
+      expect(await first).toMatchObject({ status: 401 });
+      expect(await second).toMatchObject({ status: 401 });
+    } finally {
+      stop();
+    }
+  });
+});
+
 // W32, W50. A sign-out still out when the session lapses has done what it was for: it lands, with
 // no answer, rather than waiting to sign the person out again the moment they sign back in, or
 // being refused and leaving its surface to keep what the person chose to discard.
@@ -1000,6 +1077,7 @@ test("a sign-out still out lands when the session lapses", async () => {
         inline: true,
         kind: plainWrite,
         label: "Sign out",
+        method: "POST",
         presentation: "indicator",
         write: () => {
           attempts += 1;
@@ -1033,6 +1111,7 @@ test("LOGIN_CHANGED drops every write of its login and reads whoami again", asyn
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           sentLogin = bounds.login;
@@ -1150,6 +1229,7 @@ test("a change of who is signed in undoes the writes it drops before the kinds l
             kind: rememberingWrite,
             label: "CORE-1 remembered",
             presentation: "indicator",
+            method: "POST",
             write: () => Promise.withResolvers<never>().promise,
           })
           .catch(() => {});
@@ -1162,6 +1242,51 @@ test("a change of who is signed in undoes the writes it drops before the kinds l
     } finally {
       told = undefined;
     }
+  });
+});
+
+// A sign-out that lands is told, with the person it signed out, once their writes are gone,
+// whichever way it lands: this page's (`signedOut`), another tab's (`dropLogin`), and a lapse that
+// is another tab's sign-out landing - one still holding the writes, or one whose tab went just
+// before it (`releaseUnsettled`). The page forgets the drafts the person typed on that word
+// (`app.tsx`). A plain lapse, another person's sign-in and the preload's `clear` land none, and
+// tell no one.
+test("a landed sign-out tells whom it signed out, and a lapse or another person's sign-in tells no one", async () => {
+  await onFakeClock(async () => {
+    const ways: Record<string, (writes: Writes) => void> = {
+      "this page's sign-out": (writes) => writes.signedOut("alice"),
+      "another tab's sign-out": (writes) => writes.dropLogin("alice"),
+      "a lapse under another tab's sign-out": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+      "a lapse just after a gone tab's sign-out": (writes) => {
+        writes.holdFor("alice");
+        writes.releaseUnsettled("alice");
+        writes.signedIn(undefined);
+      },
+      "a lapse": (writes) => writes.signedIn(undefined),
+      "another person's sign-in": (writes) => writes.signedIn("bob"),
+      "the preload's clear": (writes) => writes.clear(),
+    };
+    const heard: string[] = [];
+    for (const [name, way] of Object.entries(ways)) {
+      const { writes } = storeOf();
+      writes.signedIn("alice");
+      void statusWrite(writes, () => Promise.withResolvers<never>().promise).catch(() => {});
+      await settle();
+      const stop = writes.onSignedOut((login) => {
+        heard.push(`${name}: ${login}, ${writes.rows().length} writes left`);
+      });
+      way(writes);
+      stop();
+    }
+    expect(heard).toEqual([
+      "this page's sign-out: alice, 0 writes left",
+      "another tab's sign-out: alice, 0 writes left",
+      "a lapse under another tab's sign-out: alice, 0 writes left",
+      "a lapse just after a gone tab's sign-out: alice, 0 writes left",
+    ]);
   });
 });
 
@@ -1188,6 +1313,7 @@ test("a sign-out out holds its person's writes until Dispatch answers it", async
           inline: true,
           kind: plainWrite,
           label: "Sign out",
+          method: "POST",
           presentation: "indicator",
           write: () => answer,
         })
@@ -1309,6 +1435,7 @@ test("a quiet write is never shown refused and is let go after five minutes", as
           detail: null,
           kind: plainWrite,
           label: "Read mark",
+          method: "PATCH",
           presentation: "quiet",
           write: attemptOf(patch, answer),
         })
@@ -1402,6 +1529,7 @@ test("a resent DELETE answered 404 lands", async () => {
       detail: null,
       kind: plainWrite,
       label: "Source removed",
+      method: "DELETE",
       presentation: "indicator",
       write: attemptOf(remove, () => {
         attempts += 1;
@@ -1660,6 +1788,7 @@ test("a route that keeps failing at the connection backs off to its cap while ot
           detail: null,
           kind: plainWrite,
           label: "CORE-1 set to done",
+          method: "PATCH",
           presentation: "indicator",
           write: (bounds) => api.send(patch, bounds),
         })
@@ -1741,6 +1870,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to todo",
+        method: "PATCH",
         presentation: "indicator",
         target: "issue:CORE-1",
         write: async () => {
@@ -1769,6 +1899,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
       detail: null,
       kind: plainWrite,
       label: "CORE-2 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         attempts += 1;
@@ -2049,6 +2180,53 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
       expect(tab.kept(spent)).toMatchObject({ carried: "PATCH", sent: true, version: 1 });
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// Whether a write goes under its key is its press's to say (`WriteSpec.keyed`: every write does,
+// a `PUT` as well as a `POST`, but one whose spec sends it under none, as the sign-out's does),
+// and a reload reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write
+// its kind makes again from its own record, kept before any attempt of it went out, holds none.
+// So the indicator says of the unkeyed one that came back interrupted that its Retry sends the
+// same change again, and of the keyed one that it asks again under the same key.
+test("a reload reads back whether each write goes under its key, with no request to read it from", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    try {
+      const before = new Writes(signedIn(), tab.page(), memoryFiles());
+      const hang = () => Promise.withResolvers<never>().promise;
+      for (const method of ["PUT", "POST"] as const) {
+        void before
+          .run({
+            detail: null,
+            kind: composedWrite,
+            label: method,
+            method,
+            presentation: "indicator",
+            write: hang,
+            ...(method === "PUT" ? { keyed: false as const } : {}),
+          })
+          .catch(() => {});
+      }
+      await settle();
+      for (const write of before.rows()) {
+        const entry = tab.kept(write.key) as { pressedAt: number; request: unknown };
+        expect(entry.request).toBeNull();
+        tab.storage.setItem(
+          `dispatch.write:${write.key}`,
+          JSON.stringify({ ...entry, pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1 })
+        );
+      }
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      after.resume("alice");
+      await settle();
+      expect(Object.fromEntries(after.rows().map((write) => [write.label, write.keyed]))).toEqual({
+        POST: true,
+        PUT: false,
+      });
+    } finally {
       tab.close();
     }
   });

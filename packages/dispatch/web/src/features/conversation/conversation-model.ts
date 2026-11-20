@@ -314,6 +314,21 @@ export function buildConversations({
   );
 }
 
+/** Every message `messages` holds, replies with their roots, and every comment of `comments`, by
+ *  id: the replies a composer's host lists (`ListedReplies`), whatever a filter, a fold or a Clear
+ *  shows of them, since the host's own controls reach the Reply of each. */
+export function listedReplies(
+  messages: readonly Pick<MessageThreadV2, "id" | "replies">[],
+  comments: readonly { readonly id: string }[] = []
+): ReadonlySet<string> {
+  const ids = new Set(comments.map((comment) => comment.id));
+  for (const { id, replies } of messages) {
+    ids.add(id);
+    for (const reply of replies ?? []) ids.add(reply.id);
+  }
+  return ids;
+}
+
 /** Whether `conversation` belongs in the bucket `filter` names: an ask is closed once it is
  *  answered, resolved or retracted, a comment thread once it is resolved or its suggestion is
  *  decided, a handoff always is, and a message thread never is. A predicate rather than a list

@@ -326,6 +326,9 @@ var (
 	PlanApprovedByReview = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
 	PossibleDuplicate    = both("POSSIBLE_DUPLICATE", http.StatusConflict)
 	PreconditionFailed   = both("PRECONDITION_FAILED", http.StatusConflict)
+	// PreconditionRequired refuses an upload that replaces a document that already exists and
+	// names no token of the version it replaces (#3000).
+	PreconditionRequired = both("PRECONDITION_REQUIRED", http.StatusBadRequest)
 	// PriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (ProjectExists): a second create would write its own history over
 	// the first write's.
@@ -353,6 +356,7 @@ var (
 	// wording the issue board's own drag is refused with (the api package's issue_rank.go).
 	RankInput                      = both("RANK_INPUT", http.StatusBadRequest)
 	ReasonRequired                 = both("REASON_REQUIRED", http.StatusBadRequest)
+	ReferencesTimeout              = both("REFERENCES_TIMEOUT", http.StatusServiceUnavailable)
 	ReplyForbidden                 = both("REPLY_FORBIDDEN", http.StatusForbidden)
 	RequestBodyUnreadable          = both("REQUEST_BODY_UNREADABLE", http.StatusBadRequest)
 	RequestTooLarge                = both("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge)

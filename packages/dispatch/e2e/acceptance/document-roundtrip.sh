@@ -41,10 +41,30 @@ case "$project_status" in
     ;;
 esac
 
+work="$(mktemp -d)"
+readonly work
+trap 'rm -rf "$work"' EXIT
+
+# A run after the first finds the project and the document its last run left, and Dispatch refuses
+# a replacement that names no token, so the upload names the token of the version it replaces where
+# the project holds that document; a first run finds none and sends none. The read names the
+# document as the list's `slug` filter, which keeps the project's own document whose slug or file
+# name it is: $name is the caller's to set and may carry a space or a `#`, so it goes URL-encoded,
+# and an unencoded name would be read as a document the project does not hold, letting the upload
+# report the 400 PRECONDITION_REQUIRED that follows as the cause. A list with no such row is that
+# first run, and any other answer stops the script where it came.
+curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" --get \
+  --data-urlencode "slug=$name" --data 'issue=none' --data 'include=text' \
+  "$DISPATCH_URL/api/v2/projects/$project/artifacts"
+base="$(jq --raw-output --arg name "$name" \
+  '.items | map(select(.name == $name or .slug == $name)) | .[0].token // empty' \
+  <"$work/documents")"
+readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
-    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' '{name: $name, content: $content}')" \
+    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' --arg base "$base" \
+      'if $base == "" then {name: $name, content: $content} else {name: $name, content: $content, precondition: {document: $base}} end')" \
     "$DISPATCH_URL/api/v2/projects/$project/artifacts"
 )"
 readonly artifact

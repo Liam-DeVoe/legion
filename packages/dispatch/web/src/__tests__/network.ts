@@ -97,6 +97,20 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v2/me/marks", () =>
     Response.json(emptyPage satisfies Result<"/api/v2/me/marks", "get">)
   ),
+  // The base an upload names: before it posts a markdown file, the Upload control reads the
+  // token of the document the owner already holds under that name, the owner's list at that slug
+  // with its text (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`,
+  // `api.ownerArtifactText`), so every page that can take a dropped or pasted `.md` reads it. The
+  // owner holds no such document in a unit test's world, which is an empty page and what
+  // `captureUploadBase` takes as no base, so the upload it sends is the one those pages asserted
+  // before this read existed. A list read with no `slug` is no base read and is left to the file
+  // that answers it. A test about the base spies `api.ownerArtifactText` and never reaches this.
+  http.get("/api/v2/issues/:key/artifacts", ({ request }) =>
+    new URL(request.url).searchParams.has("slug") ? Response.json(emptyPage) : undefined
+  ),
+  http.get("/api/v2/projects/:key/artifacts", ({ request }) =>
+    new URL(request.url).searchParams.has("slug") ? Response.json(emptyPage) : undefined
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is

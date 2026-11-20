@@ -701,9 +701,11 @@ func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	artifacts := "/api/v1/issues/" + issue.Key + "/artifacts"
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "# Notes\n\nThe first draft.\n")
-	secondDraft := dispatchRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/artifacts", map[string]string{
+	first := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "# Notes\n\nThe first draft.\n")
+	// The second draft replaces the first, so it names the token of the version it replaces (#3000).
+	secondDraft := dispatchRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "notes.md", "content": "# Notes\n\nThe second draft, which says a good deal more than the first.\n",
+		"precondition": uploadBase(t, handler, first.Artifact.ID),
 	}, "alice")
 	if secondDraft.Code != http.StatusCreated {
 		t.Fatalf("upload the second draft under /api/v2: %d %s", secondDraft.Code, secondDraft.Body.String())

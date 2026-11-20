@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -663,7 +664,7 @@ func (s *server) issueReferenceMembers(
 	if err != nil {
 		return model.Issue{}, nil, false, err
 	}
-	closure, truncated, err := refs.Closure(ctx, s.deps.Store.Pool, issue.Key)
+	closure, truncated, err := s.issueClosure(ctx, issue.Key)
 	if err != nil {
 		return model.Issue{}, nil, false, err
 	}
@@ -688,6 +689,60 @@ func (s *server) issueReferenceMembers(
 		})
 	}
 	return issue, members, truncated, nil
+}
+
+// referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
+// read transaction's statement_timeout and on its context. On 2026-11-20 from 00:27Z the walk held
+// Dispatch's Cloud SQL instance at full CPU: every `dispatch read --issue` and the Artifacts tab
+// ask for it, and Query Insights gave that one statement 31,299 s of execution in 20 minutes, 12
+// times every other statement together. A walk cut at the bound answers 503 REFERENCES_TIMEOUT,
+// which the CLI prints as references unavailable, rather than holding a connection and a CPU for
+// as long as the walk takes. dispatch://INFRA-4704 rewrites the walk.
+const referencesClosureBound = 2 * time.Second
+
+// boundedClosure runs refs.Closure in a read transaction of its own under referencesClosureBound.
+// The rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the
+// read's context has expired exactly when the rollback matters, and pgx answers a rollback on an
+// expired context by destroying the connection instead of returning it to the pool.
+func (s *server) boundedClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
+	defer cancel()
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		defer cancelRollback()
+		_ = tx.Rollback(rollback)
+	}()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = '%dms'", referencesClosureBound.Milliseconds())); err != nil {
+		return nil, false, err
+	}
+	return refs.Closure(ctx, tx, issueKey)
+}
+
+// closureBoundHit says whether boundedClosure's walk ended at its bound: Postgres cancelled the
+// statement (SQLSTATE 57014) or the context expired first.
+func closureBoundHit(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var pgError *pgconn.PgError
+	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
+}
+
+// issueClosure is the issue's reference closure both versions' reads of it answer
+// (issueReferenceMembers, issueReferenceMembersV2), walked under referencesClosureBound
+// (boundedClosure): a walk past the bound reads nothing and is refused 503 REFERENCES_TIMEOUT, to
+// be asked again later.
+func (s *server) issueClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+	closure, truncated, err := s.boundedClosure(ctx, issueKey)
+	if err != nil && closureBoundHit(err) {
+		return nil, false, errorf(apicode.ReferencesTimeout,
+			"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound)
+	}
+	return closure, truncated, err
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {

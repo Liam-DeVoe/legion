@@ -23,7 +23,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
 /**
@@ -105,8 +106,14 @@ function DeclineDialog({
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* The server's own words where it gave any - the note is too long, the ask is an
-                  approval request, it is already closed - since each says what to do next. */}
-              {apiErrorMessage(error, "Could not decline this question. Try again.")}
+                  approval request, it is already closed - since each says what to do next. A
+                  decline the reader stopped may have been made, and the button below is a press
+                  of its own, under a key of its own. */}
+              {error instanceof SendStoppedError
+                ? stoppedWriteNote("your decline", "made", {
+                    anew: "Pressing Decline to answer again sends a new decline.",
+                  })
+                : apiErrorMessage(error, "Could not decline this question. Try again.")}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -131,6 +138,11 @@ function DeclineDialog({
       </div>
     </>
   );
+}
+
+/** One press of the decline: the ask it is of (`AskPress`) and what it sends. */
+interface DeclinePress extends AskPress {
+  readonly input: DeclineAskInput;
 }
 
 /**
@@ -162,24 +174,26 @@ export function DeclineControl({
   const submitGuard = useSubmitGuard();
   const [open, setOpen] = useState(false);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
-  // the shell's indicator carries it only while it is out.
+  // the shell's indicator carries it only while it is out. Each press carries the ask it
+  // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
+  // card is drawn for by then.
   const write = useOutstandingAnswerWrite({
-    askId: ask.id,
-    label: () => `Decline of “${ask.question}”`,
-    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
+    label: (press: DeclinePress) => `Decline of “${press.ask.question}”`,
+    method: "POST",
+    write: (press: DeclinePress, bounds) => decline(press.ask.id, press.input, bounds),
     onSettled: () => submitGuard.release(),
-    onSuccess: (declined) => {
+    onSuccess: (declined, press) => {
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline; the
       // write answers the ask without its thread, which stays the one the card holds.
       if (declined !== null) {
-        queryClient.setQueryData<AskWithThread>(["ask-thread", ask.id], (current) =>
+        queryClient.setQueryData<AskWithThread>(["ask-thread", press.ask.id], (current) =>
           current === undefined ? undefined : { ...current, ...declined, thread: current.thread }
         );
       }
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-      invalidateOwnerReads(queryClient, ask);
-      onDeclined?.(ask.id);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+      invalidateOwnerReads(queryClient, press.ask);
+      onDeclined?.(press.ask.id);
     },
   });
 
@@ -201,7 +215,9 @@ export function DeclineControl({
             setOpen(false);
           }}
           onSubmit={(note) =>
-            submitGuard.guard(() => write.mutate(note === "" ? {} : { reason: note }))
+            submitGuard.guard(() =>
+              write.mutate({ ask, input: note === "" ? {} : { reason: note } })
+            )
           }
           saving={write.isPending}
         />

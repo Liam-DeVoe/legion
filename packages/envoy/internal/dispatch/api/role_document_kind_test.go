@@ -193,9 +193,11 @@ func convertAPlanStoredAsAFile(t *testing.T, api string) {
 			fileReview.Code, fileReview.Body.String())
 	}
 
-	// The converted plan takes every later write a document takes.
-	if again := dispatchRequest(t, handler, http.MethodPost, uploads, map[string]string{
+	// The converted plan takes every later write a document takes. The upload replaces the
+	// document the conversion made, so it names the token of the version it replaces (#3000).
+	if again := dispatchRequest(t, handler, http.MethodPost, uploads, map[string]any{
 		"name": "plan.md", "content": markdown + "\nThe plan's second draft.\n",
+		"precondition": uploadBase(t, handler, plan),
 	}, "alice"); again.Code != http.StatusCreated || decodeBody[uploadedArtifact](t, again).Version.Number != 3 {
 		t.Fatalf("a later Markdown upload under plan.md: status=%d body=%s; want 201 version 3", again.Code, again.Body.String())
 	}

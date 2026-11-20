@@ -9,13 +9,7 @@ import {
   secondaryButtonCompact,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  expiredRetryNote,
-  SendExpiredError,
-  SendInterruptedError,
-  SendStoppedError,
-  sameKeyRetryNote,
-} from "./keyed-write";
+import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
 
@@ -24,19 +18,19 @@ import { useWriteSelection, useWrites, type Write } from "./write-store";
 export const API_V1_ENDED_REASON =
   "this change was kept from before Dispatch was updated, and Dispatch no longer accepts it. Make it again.";
 
-/** Why the refused write was not saved, in the reader's words. */
-function refusalReason(refusal: Error): string {
-  if (refusal instanceof SendInterruptedError) {
-    return `this page was closed before Dispatch confirmed it. ${sameKeyRetryNote("saved")}`;
+/** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
+ *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
+ *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`).
+ *  A kept write the end of `/api/v1` refused can be sent nowhere (`API_V1_ENDED_REASON`). */
+function refusalReason(keyed: boolean, refusal: Error): string {
+  if (!(refusal instanceof SendStoppedError)) {
+    if (isApiV1Ended(refusal)) return API_V1_ENDED_REASON;
+    return apiErrorMessage(refusal, "Dispatch could not be reached");
   }
-  if (refusal instanceof SendExpiredError) {
-    return `Dispatch has not confirmed it. ${expiredRetryNote("saved")}`;
-  }
-  if (refusal instanceof SendStoppedError) {
-    return `Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`;
-  }
-  if (isApiV1Ended(refusal)) return API_V1_ENDED_REASON;
-  return apiErrorMessage(refusal, "Dispatch could not be reached");
+  const retry = retryNote(keyed, refusal, "saved");
+  return refusal instanceof SendInterruptedError
+    ? `this page was closed before Dispatch confirmed it. ${retry}`
+    : `Dispatch has not confirmed it. ${retry}`;
 }
 
 /** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
@@ -121,7 +115,7 @@ export function PendingWritesIndicator(): ReactNode {
                 {row.status === "refused" ? (
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      Not saved: {row.label} — {refusalReason(row.refusal)}
+                      Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
                     </span>
                     {isApiV1Ended(row.refusal) ? null : (
                       <button
