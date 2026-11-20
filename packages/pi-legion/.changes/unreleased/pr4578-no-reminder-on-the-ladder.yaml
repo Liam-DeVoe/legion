@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The phase reminder sends nothing while the daemon's provider-error ladder holds the claim's task.
+  A refused turn armed a reminder five minutes out, which put one more prompt into a session the
+  provider was refusing before the ladder's own pause was over. The ladder's next send starts a
+  turn, and that turn's end decides the next reminder.
