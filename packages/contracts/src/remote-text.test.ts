@@ -63,6 +63,16 @@ const REQUIRED_CATEGORIES = [
   "r4-not-a-url",
   "r4-empty",
   "r4-unreadable-clean",
+  "html-reference",
+  "r4-html-text",
+  "brace-escape",
+  "percent-u-escape",
+  "long-unicode-escape",
+  "octal-escape",
+  "full-width",
+  "r4-full-width-text",
+  "path-parameter",
+  "scheme-not-a-scheme",
 ];
 
 interface RemoteRow {

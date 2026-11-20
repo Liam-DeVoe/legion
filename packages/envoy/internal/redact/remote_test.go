@@ -23,7 +23,9 @@ var remoteCategories = []string{
 	"trailing-punctuation", "trailing-punctuation-in-value", "json-body", "two-urls",
 	"bare-segment", "ipv6", "scheme-case", "other-scheme", "user-only", "r4-no-url",
 	"r4-clean-url", "r4-prose-after-url", "r4-percent", "r4-email-without-url", "r4-not-a-url",
-	"r4-empty", "r4-unreadable-clean",
+	"r4-empty", "r4-unreadable-clean", "html-reference", "r4-html-text", "brace-escape",
+	"percent-u-escape", "long-unicode-escape", "octal-escape", "full-width", "r4-full-width-text",
+	"path-parameter", "scheme-not-a-scheme",
 }
 
 // remoteRow is one row of testdata/remote.json.

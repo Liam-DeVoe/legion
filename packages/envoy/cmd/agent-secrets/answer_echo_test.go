@@ -102,3 +102,51 @@ func TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes(t *testing.T) {
 		})
 	}
 }
+
+// TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide: a front door in the broker's place
+// answers a renewal with an HTML page, no envelope, that writes a credential's URL with its
+// separators as HTML character references, named, decimal and hexadecimal. The renewal's error,
+// the --pod refusal line and renewLoop's stderr line print none of the credential: the rule decodes
+// the references of a URL's separators before it reads a field (redact.Remote), so doStatus's page
+// is read as a reader of the page sees it (the review of #4368 at 63bd188095, class B). Captures
+// agent-secrets.page-references/<case>, /<case>/pod-refusal and /<case>/renew-stderr.
+func TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, page string }{
+		{"named", "<p>Sign in again at https:&sol;&sol;" + redacttest.User + "&colon;" + redacttest.Password + "&commat;issuer.example&sol;path&quest;access_token&equals;" + redacttest.Token + "</p>"},
+		{"decimal", "<p>Sign in again at https:&#47;&#47;" + redacttest.User + "&#58;" + redacttest.Password + "&#64;issuer.example&#47;path&#63;access_token&#61;" + redacttest.Token + "</p>"},
+		{"hex", "<p>Sign in again at https:&#x2F;&#x2f;" + redacttest.User + "&#x3A;" + redacttest.Password + "&#x40;issuer.example&#x2F;path&#x3F;access_token&#x3D;" + redacttest.Token + "</p>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprint(w, c.page)
+			}))
+			defer server.Close()
+			base := brokeraddr.New(server.URL)
+			signer := &fileSigner{key: key, enrollmentID: "enr-page"}
+			_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-page", "")
+			if renewErr == nil {
+				t.Fatal("the renewal answered no error")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var stderr bytes.Buffer
+			renewLoop(ctx, newClient(base), signer, "enr-page", "", &stderr, func(time.Duration) <-chan time.Time {
+				cancel()
+				return nil
+			})
+			for what, text := range map[string]string{
+				"":              renewErr.Error(),
+				"/pod-refusal":  podRefusal("agent-secrets enroll", "renew", podIdentity{}, base, renewErr),
+				"/renew-stderr": stderr.String(),
+			} {
+				redacttest.RequireNone(t, "agent-secrets.page-references/"+c.name+what, text)
+			}
+		})
+	}
+}

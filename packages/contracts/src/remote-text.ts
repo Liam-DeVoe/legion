@@ -13,30 +13,121 @@ import { isPublicRequestName } from "./public-request-names";
 export const WORDS_NOT_READABLE =
   "(not printed: the answer's words hold a URL the rule cannot read as clean)";
 
-/** The escapes the rule's step 7 rejects, lower-cased: of `/`, `:`, `@`, `?`, `#`, `=`, `&`, `%`
- *  and `\`, each as `%XX`, `\u00XX` and `\xXX`. */
-const ENCODED_SEPARATORS = ["2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"].flatMap((hex) => [
-  `%${hex}`,
-  `\\u00${hex}`,
-  `\\x${hex}`,
-]);
+/** The characters an encoding of a URL hides from step 1, which steps 0 and 7 name. Go's
+ *  `separators`. */
+const SEPARATORS = "/:@?#=&%\\";
+
+/** The escapes the rule's step 7 rejects, lower-cased: of each of {@link SEPARATORS}, as `%XX`,
+ *  `\u00XX`, `\xXX`, `%u00XX` and `\U000000XX`, and as a three-digit octal escape. */
+const ENCODED_SEPARATORS = [...SEPARATORS].flatMap((separator) => {
+  const code = separator.charCodeAt(0);
+  const hex = code.toString(16);
+  return [
+    `%${hex}`,
+    `\\u00${hex}`,
+    `\\x${hex}`,
+    `%u00${hex}`,
+    `\\u000000${hex}`,
+    `\\${code.toString(8).padStart(3, "0")}`,
+  ];
+});
+
+/** Whether `lower` holds a `\u{...}` escape whose hexadecimal digits, any number of leading zeros
+ *  among them, name one of {@link SEPARATORS}. Go's `braceEscape`. */
+function braceEscape(lower: string): boolean {
+  for (const [, digits] of lower.matchAll(/\\u\{([0-9a-f]+)\}/g)) {
+    const code = Number.parseInt(digits as string, 16);
+    if (code < 0x80 && SEPARATORS.includes(String.fromCharCode(code))) return true;
+  }
+  return false;
+}
+
+/** An HTML character reference as a page's reader takes it: hexadecimal, decimal or named, its
+ *  `;` optional. Go's `characterReference`. */
+const CHARACTER_REFERENCE = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?/g;
+
+/** The named character references of {@link SEPARATORS}. Go's `namedSeparators`. */
+const NAMED_SEPARATORS: Readonly<Record<string, string>> = {
+  sol: "/",
+  colon: ":",
+  commat: "@",
+  quest: "?",
+  num: "#",
+  equals: "=",
+  amp: "&",
+  AMP: "&",
+  percnt: "%",
+  bsol: "\\",
+};
+
+/** One {@link CHARACTER_REFERENCE} as {@link decodeSeparators} reads it: the separator it names,
+ *  `&` and the rest of a name that begins with amp, or the reference as it is. Go's
+ *  `separatorReference`. */
+function separatorReference(
+  reference: string,
+  hex: string | undefined,
+  decimal: string | undefined,
+  name: string | undefined
+): string {
+  const semicolon = reference.endsWith(";");
+  if (name === undefined) {
+    const digits = hex ?? decimal ?? "";
+    const code = Number.parseInt(digits, hex === undefined ? 10 : 16);
+    return code < 0x80 && SEPARATORS.includes(String.fromCharCode(code))
+      ? String.fromCharCode(code)
+      : reference;
+  }
+  const separator = Object.hasOwn(NAMED_SEPARATORS, name) ? NAMED_SEPARATORS[name] : undefined;
+  if (separator !== undefined && (semicolon || separator === "&")) return separator;
+  if (name.startsWith("amp") || name.startsWith("AMP")) {
+    return `&${name.slice(3)}${semicolon ? ";" : ""}`;
+  }
+  return reference;
+}
+
+/**
+ * `field` as a reader sees it (step 0): each full-width form of printable ASCII (U+FF01 to
+ * U+FF5E) as that character, and each character reference of one of {@link SEPARATORS} as that
+ * separator, until none is left. A named reference needs its `;`, as a page's reader takes it, but
+ * for `&amp`, which a reader also takes as the start of a longer name (`&ampquest;` is
+ * `&quest;`). Go's `decodeSeparators`.
+ */
+function decodeSeparators(field: string): string {
+  for (;;) {
+    const decoded = field
+      .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+      .replace(CHARACTER_REFERENCE, separatorReference);
+    if (decoded === field) return field;
+    field = decoded;
+  }
+}
 
 /**
  * The rule for one field another party wrote. It answers the field with each URL's user
- * information removed, each query and fragment value removed (the names stay) and each bare query
- * or fragment segment removed, only when it can read every URL in the field with certainty, and
- * `undefined` otherwise. The grammar is Go's `redact.Remote`, step for step:
+ * information removed, each query and fragment value removed (the names stay), each bare query
+ * or fragment segment removed and each path parameter's value removed (`;jsessionid=`), only when
+ * it can read every URL in the field with certainty, and `undefined` otherwise. The grammar is
+ * Go's `redact.Remote`, step for step:
+ *  0. The field is first read with each full-width form of printable ASCII as that character and
+ *     each HTML character reference of a URL's separators as that separator, until none is left
+ *     ({@link decodeSeparators}). Where that reading differs from the field, steps 1 to 8 read it:
+ *     a field they cannot read is not readable, and one whose reading removes anything prints as
+ *     that reading. Otherwise steps 1 to 8 read the field as it came.
  *  1. A URL starts at a scheme (`[A-Za-z][A-Za-z0-9+.-]*`), `:` and two slashes, or at two
  *     slashes not preceded by a scheme character, `:` or a slash. Either slash may be a
- *     backslash; step 3 rejects such a start.
+ *     backslash; step 3 rejects such a start. A `:` and two slashes that no scheme comes before
+ *     (`x;://host`, `9://host`, `://host`) also start a URL, at the first character of their
+ *     token, and step 3 reads that run as not readable.
  *  2. A run is the text from a URL start to the next ASCII whitespace or the end of the field.
  *     When it does not end inside a query or a fragment, the characters `.,;:!?)]}'"` at its end
  *     are not part of it; when it does, they are part of the last value.
- *  3. Not readable when a run holds `%`, `\`, a quote, `<`, `>`, a backtick, a control character
- *     or any non-ASCII character; when its authority holds more than one `@`; when it holds an
- *     `@` after its authority; or when a port is not all digits.
- *  4. Not readable when a query or fragment segment (split on `&` and `;`) has a value that holds
- *     `=` or `?`.
+ *  3. Not readable when a run does not begin with two slashes or with a scheme, `:` and two
+ *     slashes; when it holds `%`, `\`, a quote, `<`, `>`, a backtick, a control character or any
+ *     non-ASCII character; when its authority holds more than one `@`; when it holds an `@` after
+ *     its authority; or when a port is not all digits.
+ *  4. Not readable when a query or fragment segment (split on `&` and `;`), or a path parameter
+ *     (a segment's `;name=value`), has a value that holds `=` (and, in a query or a fragment,
+ *     `?`).
  *  5. Not readable when a token, trimmed as in 2, holds an `@` with a `:` before it; in a token
  *     that holds a URL start this reads the text before the start.
  *  6. Not readable when a token after the token that holds the first URL start holds an `@`;
@@ -45,7 +136,8 @@ const ENCODED_SEPARATORS = ["2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"
  *     unreserved characters and a `:` that ends its token, and more text follows
  *     (`https://user: password/x`, {@link splitUserInfo}).
  *  7. Not readable when the field holds an encoded `/`, `:`, `@`, `?`, `#`, `=`, `&`, `%` or `\`
- *     (`%2F`, `\u002F`, `\x2F` and their kin, in any case).
+ *     (`%2F`, `\u002F`, `\x2F`, `%u002F`, `\U0000002F`, `\u{2f}`, the octal `\057`, and their
+ *     kin, in any case).
  *  8. The field is read again with its ASCII whitespace removed ({@link markersAccounted}), and
  *     fails closed: from the earliest URL start step 1 finds in that text or in a token of the
  *     field, every `?`, `#`, `@` and key-led `=` must lie inside a run the first reading read as
@@ -61,8 +153,20 @@ const ENCODED_SEPARATORS = ["2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"
  * Its answer is not meant to be read by the rule again.
  */
 export function readRemoteText(field: string): string | undefined {
+  const decoded = decodeSeparators(field);
+  if (decoded !== field) {
+    const read = readField(decoded);
+    if (read !== decoded) return read;
+  }
+  return readField(field);
+}
+
+/** Steps 1 to 8 of {@link readRemoteText}, read on `field` as it is. Go's `readField`. */
+function readField(field: string): string | undefined {
   const lower = field.toLowerCase();
-  if (ENCODED_SEPARATORS.some((encoded) => lower.includes(encoded))) return undefined;
+  if (ENCODED_SEPARATORS.some((encoded) => lower.includes(encoded)) || braceEscape(lower)) {
+    return undefined;
+  }
   // What the reading of field's tokens did with each code unit (unset outside every run), which
   // step 8 compares with; a field with no whitespace has no second reading.
   const read: number[] | undefined = /[ \t\n\v\f\r]/.test(field) ? [] : undefined;
@@ -459,7 +563,8 @@ function goQuote(text: string): string {
   return `${out}"`;
 }
 
-/** Where the first URL in `token` starts (step 1), or -1. */
+/** Where the first URL in `token` starts (step 1), or -1. A `:` and two slashes that no scheme
+ *  comes before start a URL at the token's first character, which {@link readRun} refuses. */
 function urlStart(token: string): number {
   for (let i = 0; i + 1 < token.length; i++) {
     if (
@@ -469,8 +574,7 @@ function urlStart(token: string): number {
       isSlash(token[i + 2])
     ) {
       const start = schemeStart(token, i);
-      if (start >= 0) return start;
-      continue;
+      return start >= 0 ? start : 0;
     }
     if (
       isSlash(token[i]) &&
@@ -486,12 +590,24 @@ function urlStart(token: string): number {
 /** The run at the start of `text`, which runs to its end, read (steps 2, 3 and 4): as it prints,
  *  its length in `text`, and whether it ends inside a query or a fragment; `undefined` where it is
  *  not readable. It calls `cut` with each span of `text`, `[from, to)`, that it removes: the user
- *  information with its `@`, each value, and each bare segment. */
+ *  information with its `@`, each value, each bare segment and each path parameter's value. */
 function readRun(
   text: string,
   cut: (from: number, to: number) => void
 ): { shown: string; length: number; inQuery: boolean } | undefined {
-  const head = isSlash(text[0]) ? 2 : text.indexOf(":") + 3;
+  let head = 2;
+  if (!isSlash(text[0])) {
+    const colon = text.indexOf(":");
+    if (
+      !/^[A-Za-z][A-Za-z0-9+.-]*$/.test(text.slice(0, Math.max(colon, 0))) ||
+      colon + 2 >= text.length ||
+      !isSlash(text[colon + 1]) ||
+      !isSlash(text[colon + 2])
+    ) {
+      return undefined;
+    }
+    head = colon + 3;
+  }
   const inQuery = /[?#]/.test(text.slice(head));
   const run = inQuery ? text : trimRunEnd(text);
   for (let i = 0; i < run.length; i++) if (runRefuses(run.charCodeAt(i))) return undefined;
@@ -522,7 +638,9 @@ function readRun(
     path = path.slice(0, question);
     queryAt += question;
   }
-  let shown = run.slice(0, head) + host + path;
+  const shownPath = pathParameters(path, afterAt, cut);
+  if (shownPath === undefined) return undefined;
+  let shown = run.slice(0, head) + host + shownPath;
   for (const [part, partAt] of [
     [query, queryAt],
     [fragment, fragmentAt],
@@ -549,6 +667,36 @@ function readRun(
     }
   }
   return { shown, length: run.length, inQuery };
+}
+
+/** `path`, a run's path, as it prints, with each segment's `;name=value` parameter's value removed
+ *  (`cut`, `path` starting at offset `at`), the name and `=` kept; a parameter with no `=` stays.
+ *  `undefined` where a value holds `=`. Go's `pathParameters`. */
+function pathParameters(
+  path: string,
+  at: number,
+  cut: (from: number, to: number) => void
+): string | undefined {
+  if (!path.includes(";")) return path;
+  let shown = "";
+  for (let k = 0; ; ) {
+    const semi = path.indexOf(";", k);
+    if (semi < 0) return shown + path.slice(k);
+    shown += path.slice(k, semi + 1);
+    k = semi + 1;
+    const stop = path.slice(k).search(/[/;]/);
+    const end = stop < 0 ? path.length - k : stop;
+    const parameter = path.slice(k, k + end);
+    const equals = parameter.indexOf("=");
+    if (equals >= 0) {
+      if (parameter.slice(equals + 1).includes("=")) return undefined;
+      shown += parameter.slice(0, equals + 1);
+      if (equals + 1 < parameter.length) cut(at + k + equals + 1, at + k + end);
+    } else {
+      shown += parameter;
+    }
+    k += end;
+  }
 }
 
 /** Whether `host`'s port, if it names one, is all digits: after `]:` for a bracketed IPv6 host,

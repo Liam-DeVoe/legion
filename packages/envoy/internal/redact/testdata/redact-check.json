@@ -1838,6 +1838,24 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "githubapp.answer-echo"
+      },
+      {
+        "row": "oidc-discovery-references",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/oidc/references_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.discovery-references/body-userinfo/NewKeys"
+      },
+      {
+        "row": "agentsecrets-page-references",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.page-references/named"
       }
     ],
     "boundary_fields": {
@@ -3899,6 +3917,20 @@
       }
     },
     {
+      "id": "oidc-discovery-references",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryErrorPrintsNoCredentialItsReferencesHide",
+      "production": "redact.Remote's step 0 (decodeSeparators) through go-oidc's discovery error, oidc.NewKeys and CheckClient (redact.LibraryError)"
+    },
+    {
+      "id": "agentsecrets-page-references",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide",
+      "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.doStatus's page, apiError and renewLoop"
+    },
+    {
       "id": "record-interleaved",
       "requirement": "r3-each-site",
       "package": "./internal/oidc",
@@ -5433,6 +5465,26 @@
       "site": "githubapp Client.send: a GitHub refusal echoing the Authorization its request carried",
       "source": "the answer census of #4368 at its round-4 head",
       "guard": "githubapp-answer-echo"
+    },
+    {
+      "site": "go-oidc's discovery error (oidc.NewKeys, CheckClient): a page or reason phrase whose URL's separators are HTML character references",
+      "source": "the review of #4368 at 63bd188095, class B",
+      "guard": "oidc-discovery-references"
+    },
+    {
+      "site": "agent-secrets client.doStatus: a non-envelope HTML page whose URL's separators are HTML character references",
+      "source": "the review of #4368 at 63bd188095, class B",
+      "guard": "agentsecrets-page-references"
+    },
+    {
+      "site": "redact.Remote and readRemoteText: \\u{2f}, %u002F, \\U0000002F, octal escapes, full-width forms and ;jsessionid= path parameters",
+      "source": "the review of #4368 at 63bd188095, residuals",
+      "guard": "fixture-go"
+    },
+    {
+      "site": "redact.Remote and readRemoteText: a :// that no scheme comes before (x;://host, 9://host, ://host)",
+      "source": "#4368 round 4, the step-1 gap",
+      "guard": "fixture-ts"
     }
   ]
 }

@@ -1,6 +1,11 @@
 package redact
 
-import "strings"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+)
 
 // WordsNotReadable is what a message prints in place of a remote field the rule cannot read as
 // clean (Remote, Field). It is a different case from brokeraddr.WordsNotPrinted, which an address
@@ -13,18 +18,30 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 // true, only when it can read every URL in the field with certainty; otherwise "" and false.
 //
 // The grammar, applied to the field:
+//  0. A page can write a URL's separators as HTML character references and a field can write
+//     them as full-width forms, which a reader of either sees as the separators. So the rule first
+//     reads the field with each full-width form of printable ASCII (U+FF01 to U+FF5E) as that
+//     ASCII character, and each character reference of '/', ':', '@', '?', '#', '=', '&', '%' or
+//     '\' - decimal, hexadecimal or named, its ';' optional where a page's reader takes it without
+//     one - as that separator, until none is left (decodeSeparators). Where that reading differs
+//     from the field, the rule reads it by steps 1 to 8: a field it cannot read is not readable,
+//     and one whose reading removes anything prints as that reading. Otherwise the field is read
+//     by steps 1 to 8 as it came, so a field whose references hide nothing prints as before.
 //  1. A URL starts at a scheme ([A-Za-z][A-Za-z0-9+.-]*) followed by ':' and two slashes, or at
 //     two slashes not preceded by a scheme character, ':' or a slash. Either slash may be a
-//     backslash, since a browser reads one as a slash; step 3 rejects such a start.
+//     backslash, since a browser reads one as a slash; step 3 rejects such a start. A ':' and two
+//     slashes that no scheme comes before (x;://host, 9://host, ://host) also start a URL, at the
+//     first byte of their token, and step 3 reads that run as not readable.
 //  2. A run is the text from a URL start to the next ASCII whitespace or the end of the field.
 //     When it does not end inside a query or a fragment, the characters .,;:!?)]}'" at its end
 //     are not part of it; when it does, they are part of the last value.
-//  3. Not readable when a run holds a '%', a '\', a quote, '<', '>', a backtick, a control
-//     character or any non-ASCII character (U+2028 and U+2029 among them); when its authority
-//     (before the first '/', '?' or '#') holds more than one '@'; when it holds an '@' after its
-//     authority; or when a port is not all digits.
-//  4. Not readable when a query or fragment segment (split on '&' and ';') has a value that
-//     holds '=' or '?'.
+//  3. Not readable when a run does not begin with two slashes or with a scheme, ':' and two
+//     slashes; when it holds a '%', a '\', a quote, '<', '>', a backtick, a control character or
+//     any non-ASCII character (U+2028 and U+2029 among them); when its authority (before the first
+//     '/', '?' or '#') holds more than one '@'; when it holds an '@' after its authority; or when
+//     a port is not all digits.
+//  4. Not readable when a query or fragment segment (split on '&' and ';'), or a path parameter
+//     (a segment's ;name=value), has a value that holds '=' (and, in a query or a fragment, '?').
 //  5. Not readable when a whitespace-delimited token, trimmed as in 2, holds an '@' with a ':'
 //     before it (user:secret@10.0.0.5:443, proxy=user:pw@host). In a token that holds a URL
 //     start this reads the text before the start; the run itself is read by 3 and 4, so a URL
@@ -37,8 +54,10 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 //     parenthesis or a port ('https://github.com': in git's errors) is prose.
 //  7. An encoded URL has no start for 1 to find, so not readable when the field holds an encoded
 //     '/', ':', '@', '?', '#', '=', '&', '%' or '\': %2F, %3A, %40, %3F, %23, %3D, %26, %25 or
-//     %5C, the same as \u00XX, or as \xXX, in any case. An encoded '%' catches a URL encoded more
-//     than once; a '%' with no such pair after it, as in "100%", is ordinary text.
+//     %5C, the same as \u00XX, \xXX, %u00XX and \U000000XX, in any case, as \u{XX} with any
+//     number of leading zeros, or as an octal escape (\057, \072, \100, \077, \043, \075, \046,
+//     \045, \134). An encoded '%' catches a URL encoded more than once; a '%' with no such pair
+//     after it, as in "100%", is ordinary text.
 //  8. Whitespace can split a URL or a credential however many gaps it puts in it, so the rule
 //     reads the field again with its ASCII whitespace removed (markersAccounted) and fails
 //     closed: from the earliest URL start step 1 finds in that text or in a token of the field
@@ -57,11 +76,24 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 //   - the same inside a JSON member ({"proxy":"user: pw@host"}), whose key is followed by '":'
 //     and not by '=', so it is a quoted label, an address and nothing that leads a credential.
 //
-// A field with no URL comes back as it is. Remote does not quote: Field puts its answer through
-// OneLine. Its answer is not meant to be read by the rule again: a run whose last value was
-// removed can end in '=' with text after it. The TypeScript half is readRemoteText in
+// A field with no URL comes back as it is. Steps 1 to 8 otherwise remove the user information,
+// each query and fragment value (the names stay), each bare query or fragment segment, and each
+// path parameter's value (;jsessionid=, its name kept). Remote does not quote: Field puts its
+// answer through OneLine. Its answer is not meant to be read by the rule again: a run whose last
+// value was removed can end in '=' with text after it. The TypeScript half is readRemoteText in
 // packages/contracts/src/remote-text.ts; both are held to the fixture at testdata/remote.json.
 func Remote(field string) (string, bool) {
+	if decoded := decodeSeparators(field); decoded != field {
+		shown, ok := readField(decoded)
+		if !ok || shown != decoded {
+			return shown, ok
+		}
+	}
+	return readField(field)
+}
+
+// readField is Remote's steps 1 to 8, read on field as it is.
+func readField(field string) (string, bool) {
 	if encodedSeparator(field) {
 		return "", false
 	}
@@ -271,14 +303,15 @@ func Field(field string) string {
 	return WordsNotReadable
 }
 
-// urlStart is where the first URL in token starts (Remote's step 1), or -1.
+// urlStart is where the first URL in token starts (Remote's step 1), or -1. A ':' and two slashes
+// that no scheme comes before start a URL at the token's first byte, which readRun refuses.
 func urlStart(token string) int {
 	for i := 0; i+1 < len(token); i++ {
 		if token[i] == ':' && i+2 < len(token) && slash(token[i+1]) && slash(token[i+2]) {
 			if start := schemeStart(token, i); start >= 0 {
 				return start
 			}
-			continue
+			return 0
 		}
 		if slash(token[i]) && slash(token[i+1]) && (i == 0 || !schemeByte(token[i-1]) && token[i-1] != ':' && !slash(token[i-1])) {
 			return i
@@ -290,11 +323,16 @@ func urlStart(token string) int {
 // readRun reads the run at the start of text, which runs to text's end (Remote's steps 2, 3 and
 // 4): it answers the run as it prints, its length in text, whether it ends inside a query or a
 // fragment, and whether it is readable, and calls cut with each span of text, [from, to), that
-// it removes: the user information with its '@', each value, and each bare segment.
+// it removes: the user information with its '@', each value, each bare segment and each path
+// parameter's value.
 func readRun(text string, cut func(from, to int)) (shown string, length int, inQuery, ok bool) {
 	head := 2
 	if !slash(text[0]) {
-		head = strings.IndexByte(text, ':') + 3
+		colon := strings.IndexByte(text, ':')
+		if !scheme(text[:max(colon, 0)]) || colon+2 >= len(text) || !slash(text[colon+1]) || !slash(text[colon+2]) {
+			return "", 0, false, false
+		}
+		head = colon + 3
 	}
 	run := text
 	inQuery = strings.ContainsAny(run[head:], "?#")
@@ -336,7 +374,11 @@ func readRun(text string, cut func(from, to int)) (shown string, length int, inQ
 	var b strings.Builder
 	b.WriteString(run[:head])
 	b.WriteString(host)
-	b.WriteString(path)
+	shownPath, ok := pathParameters(path, head+authEnd, cut)
+	if !ok {
+		return "", 0, false, false
+	}
+	b.WriteString(shownPath)
 	for _, part := range []struct {
 		text string
 		at   int
@@ -376,6 +418,57 @@ func readRun(text string, cut func(from, to int)) (shown string, length int, inQ
 	return b.String(), len(run), inQuery, true
 }
 
+// scheme reports whether s is a URL scheme, [A-Za-z][A-Za-z0-9+.-]* (Remote's step 1).
+func scheme(s string) bool {
+	if s == "" || !letter(s[0]) {
+		return false
+	}
+	for i := range len(s) {
+		if !schemeByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// pathParameters is path, a run's path, as it prints, with each segment's ;name=value parameter's
+// value removed (cut, path starting at offset at), the name and '=' kept; a parameter with no '='
+// stays, since a segment's text is a path's (Remote's step 4). It answers false where a value
+// holds '='.
+func pathParameters(path string, at int, cut func(from, to int)) (string, bool) {
+	if strings.IndexByte(path, ';') < 0 {
+		return path, true
+	}
+	var b strings.Builder
+	for k := 0; ; {
+		semi := strings.IndexByte(path[k:], ';')
+		if semi < 0 {
+			b.WriteString(path[k:])
+			return b.String(), true
+		}
+		b.WriteString(path[k : k+semi+1])
+		k += semi + 1
+		end := strings.IndexAny(path[k:], "/;")
+		if end < 0 {
+			end = len(path) - k
+		}
+		parameter := path[k : k+end]
+		if name, value, named := strings.Cut(parameter, "="); named {
+			if strings.IndexByte(value, '=') >= 0 {
+				return "", false
+			}
+			b.WriteString(name)
+			b.WriteByte('=')
+			if value != "" {
+				cut(at+k+len(name)+1, at+k+end)
+			}
+		} else {
+			b.WriteString(parameter)
+		}
+		k += end
+	}
+}
+
 // digitPort reports whether host's port, if it names one, is all digits: after "]:" for a
 // bracketed IPv6 host, and after the first ':' otherwise. A '[' with no ']' is not read.
 func digitPort(host string) bool {
@@ -398,18 +491,24 @@ func digitPort(host string) bool {
 	return strings.Trim(port, "0123456789") == ""
 }
 
-// encodedSeparators are the escapes Remote's step 7 rejects, lower-cased: of '/', ':', '@', '?',
-// '#', '=', '&', '%' and '\', each as %XX, \u00XX and \xXX.
+// separators are the bytes an encoding of a URL hides from step 1, which steps 0 and 7 name.
+const separators = `/:@?#=&%\`
+
+// encodedSeparators are the escapes Remote's step 7 rejects, lower-cased: of each of separators,
+// as %XX, \u00XX, \xXX, %u00XX and \U000000XX, and as a three-digit octal escape.
 var encodedSeparators = func() []string {
 	var all []string
-	for _, hex := range []string{"2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"} {
-		all = append(all, "%"+hex, `\u00`+hex, `\x`+hex)
+	for i := range len(separators) {
+		hex := strconv.FormatUint(uint64(separators[i]), 16)
+		octal := strconv.FormatUint(uint64(separators[i]), 8)
+		all = append(all, "%"+hex, `\u00`+hex, `\x`+hex, "%u00"+hex, `\u000000`+hex, `\`+strings.Repeat("0", 3-len(octal))+octal)
 	}
 	return all
 }()
 
-// encodedSeparator reports whether field holds one of encodedSeparators, in any case. None holds
-// whitespace, so a field holds one exactly where one of its tokens does.
+// encodedSeparator reports whether field holds one of encodedSeparators, in any case, or a
+// \u{...} escape of one (braceEscape). None holds whitespace, so a field holds one exactly where
+// one of its tokens does.
 func encodedSeparator(field string) bool {
 	lower := strings.ToLower(field)
 	for _, e := range encodedSeparators {
@@ -417,7 +516,103 @@ func encodedSeparator(field string) bool {
 			return true
 		}
 	}
-	return false
+	return braceEscape(lower)
+}
+
+// braceEscape reports whether lower holds a \u{...} escape whose hexadecimal digits, any number
+// of leading zeros among them, name one of separators.
+func braceEscape(lower string) bool {
+	for rest := lower; ; {
+		i := strings.Index(rest, `\u{`)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+3:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			return false
+		}
+		v, err := strconv.ParseUint(rest[:end], 16, 32)
+		if err == nil && v < 0x80 && strings.IndexByte(separators, byte(v)) >= 0 {
+			return true
+		}
+	}
+}
+
+// characterReference is an HTML character reference as a page's reader takes it: hexadecimal,
+// decimal or named, its ';' optional.
+var characterReference = regexp.MustCompile(`&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?`)
+
+// namedSeparators are the named character references of separators.
+var namedSeparators = map[string]byte{
+	"sol": '/', "colon": ':', "commat": '@', "quest": '?', "num": '#', "equals": '=', "amp": '&',
+	"AMP": '&', "percnt": '%', "bsol": '\\',
+}
+
+// decodeSeparators is field as a reader sees it (Remote's step 0): each full-width form of
+// printable ASCII as that character, and each character reference of one of separators as that
+// separator, until none is left. A named reference needs its ';', as a page's reader takes it,
+// but for &amp, which a reader also takes as the start of a longer name (&ampquest; is &quest;).
+// Each pass that changes the field shortens it, so the loop ends.
+func decodeSeparators(field string) string {
+	for {
+		decoded := characterReference.ReplaceAllStringFunc(fullWidthASCII(field), separatorReference)
+		if decoded == field {
+			return field
+		}
+		field = decoded
+	}
+}
+
+// fullWidthASCII is s with each full-width form of printable ASCII (U+FF01 to U+FF5E) as that
+// ASCII character; every other byte, one that is not UTF-8 among them, stays as it is.
+func fullWidthASCII(s string) string {
+	if !strings.ContainsRune(s, utf8.RuneError) && strings.IndexFunc(s, isFullWidth) < 0 {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isFullWidth(r) {
+			b.WriteByte(byte(r - 0xFEE0))
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+func isFullWidth(r rune) bool { return 0xFF01 <= r && r <= 0xFF5E }
+
+// separatorReference is ref, one characterReference, as decodeSeparators reads it: the separator
+// it names, "&" and the rest of a name that begins with amp, or ref as it is.
+func separatorReference(ref string) string {
+	m := characterReference.FindStringSubmatch(ref)
+	semicolon := strings.HasSuffix(ref, ";")
+	if m[3] == "" {
+		digits, base := m[2], 10
+		if m[1] != "" {
+			digits, base = m[1], 16
+		}
+		v, err := strconv.ParseUint(digits, base, 32)
+		if err == nil && v < 0x80 && strings.IndexByte(separators, byte(v)) >= 0 {
+			return string(rune(v))
+		}
+		return ref
+	}
+	name := m[3]
+	if c, ok := namedSeparators[name]; ok && (semicolon || c == '&') {
+		return string(c)
+	}
+	if strings.HasPrefix(name, "amp") || strings.HasPrefix(name, "AMP") {
+		rest := name[3:]
+		if semicolon {
+			rest += ";"
+		}
+		return "&" + rest
+	}
+	return ref
 }
 
 // trimRunEnd is s without the characters .,;:!?)]}'" it ends in (Remote's steps 2 and 5).
