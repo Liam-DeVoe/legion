@@ -47,6 +47,7 @@ export function useIssueSubscribers(issueKey: string): IssueSubscribers {
   if (subscribers.error !== null) lastFailure.current = subscribers.error;
   const unsubscribe = useKeyedWrite({
     write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issueKey, sessionId, bounds),
+    method: "DELETE",
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, rows.find((row) => row.session_id === sessionId)?.title)} ${CONTROL_LABELS.unsubscribed_from} ${issueKey}`,

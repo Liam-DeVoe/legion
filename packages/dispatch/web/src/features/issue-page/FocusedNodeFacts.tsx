@@ -23,7 +23,7 @@ import {
   rowAnsweredWithError,
   withGuidance,
 } from "../conversation/delivery";
-import { AskHandOn } from "../inbox/AskCard";
+import { AskHandOn } from "../inbox/AskHandOn";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
@@ -149,6 +149,7 @@ function ItemControls({
   });
   const retry = useKeyedWrite({
     label: () => CONTROL_LABELS.retry_delivery,
+    method: "POST",
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] });

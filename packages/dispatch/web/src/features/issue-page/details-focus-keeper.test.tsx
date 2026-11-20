@@ -9,7 +9,7 @@ import { onFakeClock } from "../../__tests__/fake-clock";
 import { useDetailsFocusKeeper } from "../margin/details-focus-keeper";
 import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
-import { issue, stubMatchMedia } from "../margin/margin-fixture";
+import { DESKTOP_WIDTH, issue, stubViewport } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { useDrawerPage } from "./drawer-page";
@@ -619,7 +619,7 @@ function issueClient(): QueryClient {
 
 test("Details' own drawer keeps the focus inside it when the control that held it goes", async () => {
   const restore = chromiumLayout();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const user = userEvent.setup();
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
