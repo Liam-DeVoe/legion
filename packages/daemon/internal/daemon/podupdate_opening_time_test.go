@@ -55,8 +55,8 @@ func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
 
 // sweepHoldingAWrite is sweepHeldInAWrite for a sweep that may make no write for slow, such as a
 // tick of a roll whose last opening was asked at a tick before it: its first write for slow, if
-// it makes one, takes hold.
-func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) {
+// it makes one, takes hold and the return value says that it did.
+func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 	r.t.Helper()
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
@@ -69,6 +69,7 @@ func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) {
 		return enqueue(ctx, issue, payloads...)
 	}
 	r.tick()
+	return held
 }
 
 // An opening is dated from the moment the sweep makes it, not from the top of the sweep. The walk
@@ -282,6 +283,38 @@ func TestPodUpdateRoundsPerMinuteOpensNoLaterKeyOnceTheGapHoldsAnEarlierOne(t *t
 	rig.awaitRounds("tick 3", early, first, second)
 }
 
+// The key-order rule also applies when the per-minute budget has more than one opening left: a
+// gap that holds the earlier key spends the rest of the budget, rather than one opening.
+func TestPodUpdateRoundsPerMinuteOpensNoLaterKeyWhenTheGapHoldsAnEarlierOneWithTwoBudget(t *testing.T) {
+	early, slow, late, last := "ACME-1", "ACME-2", "ACME-3", "ACME-4"
+	rig := newLimitRig(t, early, slow, late, last)
+	rig.openSlowRound(slow, early, late, last)
+	rig.clock.advance(35 * time.Second)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(2)
+	top := rig.clock.Now()
+
+	// The gap first holds early; the walk then spends 20 seconds writing slow's ask before it
+	// reaches late.
+	rig.sweepHeldInAWrite(slow, 20*time.Second)
+	rig.wantPodUpdateRecord("the two-budget sweep whose walk held the earlier key", api.PodUpdateRounds{
+		Swept:                    true,
+		RoundsPerMinute:          new(2),
+		InRound:                  []string{slow},
+		WaitingOnRoundsPerMinute: []string{early, late, last},
+	})
+
+	// The next sweep opens early before late, with the two openings the budget permits.
+	rig.clock.advance(top.Add(time.Minute).Sub(rig.clock.Now()))
+	rig.tick()
+	rig.wantPodUpdateRecord("the next two-budget sweep", api.PodUpdateRounds{
+		Swept:                    true,
+		RoundsPerMinute:          new(2),
+		InRound:                  []string{early, slow, late},
+		WaitingOnRoundsPerMinute: []string{last},
+	})
+	rig.awaitRounds("the next two-budget sweep", early, slow, late)
+}
+
 // The roll of the cadence test above, with an issue whose key sorts before the roll drifting
 // after tick 1. Every tick's walk reaches that issue first, and with each walk's write taking 15
 // seconds the last opening is 45 seconds old when it does: were the issues after it opened past
@@ -303,7 +336,10 @@ func TestPodUpdateRoundsPerMinuteAnIssueThatDriftsBehindTheRollOpensBeforeTheKey
 		// The regular tick: the tops of the sweeps are a minute apart, and each walk's write of
 		// the ask of the round opened last takes 15 seconds.
 		rig.clock.advance(top.Add(time.Duration(tick-1) * time.Minute).Sub(rig.clock.Now()))
-		rig.sweepHoldingAWrite(last, 15*time.Second)
+		held := rig.sweepHoldingAWrite(last, 15*time.Second)
+		if tick <= 2 && !held {
+			t.Fatalf("the roll's tick %d made no held write for %s's ask", tick, last)
+		}
 		for _, issue := range rig.s.podUpdateRoundsView().InRound {
 			if !slices.Contains(opened, issue) {
 				opened, last = append(opened, issue), issue
