@@ -45,9 +45,12 @@ s3() {
   fi
   return "$status"
 }
-deadline=$(( $(date +%s) + 60 ))
+# The S3 port's wait ends when the store answers; its 2 minutes decide only a store that never
+# does. They are the shard job's budget rule over the slowest store start read in CI, 66.2 s
+# (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object).
+deadline=$(( $(date +%s) + 120 ))
 until s3 10 "the S3 port's first request" -o /dev/null http://127.0.0.1:18333/; do
-  [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within a minute"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+  [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within two minutes"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
   sleep 1
 done
 packages/envoy/internal/tests3/one-collection.sh prepare dispatch-e2e-objects "$RUNNER_TEMP/weed.log"

@@ -222,7 +222,7 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 		// stands around it.
 		readyWait := `until s3 10 "the root" -o /dev/null http://127.0.0.1:18333/; do [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::no root"; exit 1; }; sleep 1; done`
 		// The check of the S3 port's wait, which ends its body but for its sleep, and within's.
-		portCheck := `[ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within a minute"; cat "$RUNNER_TEMP/weed.log"; exit 1; }` + "\n"
+		portCheck := `[ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within two minutes"; cat "$RUNNER_TEMP/weed.log"; exit 1; }` + "\n"
 		withinCheck := `    [ "$(date +%s)" -lt "$deadline" ] || fail "$message" "$seen"` + "\n"
 		// twoEdits plants two texts in the script, the second in the script the first made.
 		twoEdits := func(old1, new1, old2, new2 string) func() []string {
@@ -442,7 +442,7 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			// within's deadline adds within's own seconds: a number of its own, with the bound's
 			// text kept in a comment, so that scriptBounds' count of that text still reads 1.
 			{"within's deadline by a number of its own", script("  deadline=$(( $(date +%s) + seconds ))\n", "  deadline=$(( $(date +%s) + 100000 )) # deadline=$(( $(date +%s) + seconds ))\n"), "a wait of within other than its until right after"},
-			{"a deadline statement that assigns more", wait("deadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the S3 port's", "deadline=$(( $(date +%s) + 60 )) n=0\nuntil s3 10 \"the S3 port's"), noDue},
+			{"a deadline statement that assigns more", wait("deadline=$(( $(date +%s) + 120 ))\nuntil s3 10 \"the S3 port's", "deadline=$(( $(date +%s) + 120 )) n=0\nuntil s3 10 \"the S3 port's"), noDue},
 			// Each condition of a step's deadline statement: a whole number of literal seconds,
 			// added (+) to $(date +%s).
 			{"a step's deadline whose seconds a variable gives", wait("deadline=$(( $(date +%s) + 60 ))\nuntil s3 15", "s=99999999999\ndeadline=$(( $(date +%s) + $s ))\nuntil s3 15"), noDue},
