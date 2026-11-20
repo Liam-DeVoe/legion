@@ -28,7 +28,8 @@ import (
 // holds the lock, no intake statement waits on one) and log the times, since the wall clock is the
 // build farm's measure (k20) and a busy runner would fail it here.
 
-// The two keys of the change log's lock, pg_advisory_xact_lock(6900, 0) (delivery.LockChanges).
+// The two keys of the change log's lock, pg_advisory_xact_lock(6900, 0) (delivery's
+// lockChangesStatement).
 const (
 	changeLockClass  = 6900
 	changeLockObject = 0

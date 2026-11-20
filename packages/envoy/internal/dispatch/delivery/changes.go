@@ -81,12 +81,9 @@ const ChangeRetention = 24 * time.Hour
 // SettingsChannel is beside the settings row.
 const ChangesChannel = "delivery_changes"
 
-// lockChangesStatement takes the change log's lock for the rest of its transaction (LockChanges).
-const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
-
-// LockChanges takes, for the rest of tx, the change log's lock: the transaction advisory lock
-// (6900, 0) every insert into delivery_changes takes before it draws a seq, and holds to its
-// commit (migration 0100). A seq is therefore drawn only once every row below it has committed or
+// lockChangesStatement takes, for the rest of its transaction, the change log's lock: the
+// transaction advisory lock (6900, 0) every insert into delivery_changes takes before it draws a
+// seq, and holds to its commit (migration 0100). A seq is therefore drawn only once every row below it has committed or
 // rolled back, so a reader's cursor never skips a change row: a reader that has read through seq
 // never meets a row below it later.
 //
@@ -95,7 +92,7 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // the table, or last, in the change triggers of the statement that ends its transaction, after
 // the rows that statement writes. A writer that took it first beside one that takes it last on
 // the same rows would wait for the row the other holds while the other waited for the lock, a
-// deadlock; packages/envoy/AGENTS.md holds the table of every writer and each table's position.
+// deadlock. The writers that take it, by position:
 //
 //   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
 //     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
@@ -103,9 +100,9 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
-//   - First, with LockChanges: every write of the session groups (writeSessionGroup, after the
-//     reads that decide it); and the drain (DrainPending), which takes it before it locks the
-//     pending rows it moves.
+//   - First, with this statement queued ahead of its writes (queueLockChanges): every write of
+//     the session groups (writeSessionGroup, after the reads that decide it); and the drain
+//     (DrainPending), whose function takes it before it locks the pending rows it moves.
 //
 // Last is not after every row lock in a statement that changes several rows of a table with a
 // foreign key: Postgres fires the after-row triggers at the statement's end row by row, each row's
@@ -124,15 +121,10 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // No eval, refresher, Legion facts or repository mapping write takes it: their changes wait in the
 // outbox (delivery_changes_pending, migrations 20261117100001 and 20261117100020), and the drain
 // moves them into the log in a short transaction of its own after they commit.
-func LockChanges(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
-		return fmt.Errorf("take the delivery change log's lock: %w", err)
-	}
-	return nil
-}
+const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 
-// queueLockChanges queues the change log's lock (LockChanges) into batch, so the statements queued
-// after it run under it in the batch's one round trip.
+// queueLockChanges queues the change log's lock (lockChangesStatement) into batch, so the
+// statements queued after it run under it in the batch's one round trip.
 func queueLockChanges(batch *pgx.Batch) {
 	store.QueueExec(batch, "take the delivery change log's lock", lockChangesStatement)
 }
@@ -157,8 +149,8 @@ const drainBatch = 250
 //
 // A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
 // drains move rows in, not the order their writers committed in; every seq is still drawn under
-// the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each Legion
-// facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
+// the lock (lockChangesStatement), so a reader's cursor never skips a moved row. Its callers:
+// each Legion facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
 // the start of each pass; and the server's boot, before it serves. An eval write, the registry's
 // and the refresher's, and every write of a repository's mapping (DrainRepoProjectChange) drain
 // one batch instead (DrainAfterCommit), so a route that answers after its drain waits for one
@@ -230,8 +222,8 @@ func drainOneBatch(ctx context.Context, pool *store.Pool) (int64, error) {
 }
 
 // ChangesSince reads up to limit changes after seq, oldest first. Every seq is drawn under the
-// change log's lock (LockChanges), so a reader that has read through seq never meets a row below it
-// later: its cursor never skips a change row.
+// change log's lock (lockChangesStatement), so a reader that has read through seq never meets a
+// row below it later: its cursor never skips a change row.
 func ChangesSince(ctx context.Context, q Querier, seq int64, limit int) ([]Change, error) {
 	rows, err := q.Query(ctx, `
 		select seq, at, kind, coalesce(run_kind, ''), coalesce(repo, ''), coalesce(ref, ''), t_old, t_new

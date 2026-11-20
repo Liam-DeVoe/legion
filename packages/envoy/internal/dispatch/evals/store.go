@@ -83,9 +83,9 @@ const writeAttempts = 2
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
 // record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
-// take no lock, so the write never takes the change log's lock (delivery.LockChanges). Once it has
-// committed, committed moves a batch of the outbox into the log (drainChanges) before the caller
-// answers.
+// take no lock, so the write never takes the change log's lock (6900, delivery's
+// lockChangesStatement). Once it has committed, committed moves a batch of the outbox into the
+// log (drainChanges) before the caller answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")

@@ -561,9 +561,10 @@ func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 }
 
 // handOver writes the status write that hands an issue of a tree the sampler never saw
-// (Spec.Unobserved) to Legion, as an issue reaches Legion in production (AGENTS.md, "Handover"):
-// its move from `triage` to `todo`, by whoever hands it over, a person for an issue a person
-// filed and the tree's architect for a child it filed and releases. A person hands an issue over
+// (Spec.Unobserved) to Legion, as an issue reaches Legion in production
+// (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"): its move
+// from `triage` to `todo`, by whoever hands it over, a person for an issue a person filed and the
+// tree's architect for a child it filed and releases. A person hands an issue over
 // at the hour its work starts, just before its first worker event, since that is the hour this
 // history admits it: in a tree the sampler saw, the same issue's first phase starts at that hour,
 // with its slot where it holds one of its own, and it never waits in the line for one (only an
