@@ -58,6 +58,9 @@ type Server struct {
 	calls int
 	down  bool
 	held  map[string]bool
+	// until is the not_held_until the person route answers each person with while it answers them
+	// not held, as an IAP deployment's Dispatch does; a person with none is answered with none.
+	until map[string]time.Time
 	// asOf is the as_of of the person route's last answer: each answer's is the wall clock at
 	// Postgres's microsecond, moved past the last one's when the clock has not moved, as the times
 	// of Dispatch's reads only move forward.
@@ -79,7 +82,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	if _, err := rand.Read(bearer[:]); err != nil {
 		t.Fatalf("mint the stand-in's bearer: %v", err)
 	}
-	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}, held: map[string]bool{}}
+	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}, held: map[string]bool{}, until: map[string]time.Time{}}
 	for key, row := range rows {
 		row.Listed = slices.Clone(row.Listed)
 		s.rows[key] = row
@@ -118,9 +121,25 @@ func (s *Server) SetHeld(person string, held bool) {
 	s.held[person] = held
 }
 
-// standing is whether person is held and the as_of of this answer, later than every as_of the
-// stand-in answered before.
-func (s *Server) standing(person string) (bool, time.Time) {
+// SetNotHeldUntil makes the person route answer person (a lowercase login), while it answers them
+// not held, with not_held_until, as an IAP deployment's Dispatch answers every not-held person
+// with the last active Workspace Directory answer plus 24 hours, or with as_of itself once that
+// passed; the zero time answers none again, as Dispatch does outside IAP. A held answer names no
+// deadline whatever this says, as Dispatch's names none.
+func (s *Server) SetNotHeldUntil(person string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if until.IsZero() {
+		delete(s.until, person)
+		return
+	}
+	s.until[person] = until
+}
+
+// standing is whether person is held, the as_of of this answer, later than every as_of the
+// stand-in answered before, and the not_held_until it answers a not-held person with (the zero
+// time for none).
+func (s *Server) standing(person string) (bool, time.Time, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	asOf := time.Now().UTC().Truncate(time.Microsecond)
@@ -128,7 +147,10 @@ func (s *Server) standing(person string) (bool, time.Time) {
 		asOf = s.asOf.Add(time.Microsecond)
 	}
 	s.asOf = asOf
-	return s.held[person], asOf
+	if s.held[person] {
+		return true, asOf, time.Time{}
+	}
+	return false, asOf, s.until[person]
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
@@ -155,8 +177,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "INVALID_QUERY", "error": "person is required"})
 			return
 		}
-		held, asOf := s.standing(person)
-		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person), "held": held, "as_of": asOf.Format(time.RFC3339Nano)})
+		held, asOf, until := s.standing(person)
+		answer := map[string]any{"person": person, "member_kind": s.kind(person), "held": held, "as_of": asOf.Format(time.RFC3339Nano)}
+		if !until.IsZero() {
+			answer["not_held_until"] = until.UTC().Format(time.RFC3339Nano)
+		}
+		writeJSON(w, http.StatusOK, answer)
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)
 		row, held := s.rows[key]

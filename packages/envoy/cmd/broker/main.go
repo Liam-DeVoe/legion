@@ -528,7 +528,9 @@ func main() {
 	// The hold of refused people (internal/broker/hold) asks Dispatch through the exchange's own
 	// client, so the two share one cache of person answers and one call per person, and keeps
 	// each answer in person_standing for when Dispatch cannot be asked. With no Dispatch to ask
-	// the broker builds no gate and holds nobody, as before the hold.
+	// the broker builds no gate and holds nobody, as before the hold. An IAP deployment's broker
+	// sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate serves a person only on an answer with a
+	// deadline (hold.Config.RequireDeadline).
 	var holdGate *hold.Gate
 	if cfg.ProjectAccessURL != "" {
 		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
@@ -536,7 +538,7 @@ func main() {
 		// restart. config.Load holds the two settings to both or neither.
 		projects := projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
 		exchangeConfig.Projects = projects
-		holdGate = hold.New(hold.Config{Access: projects, Store: st, Log: slog.Default(), Metrics: registry})
+		holdGate = hold.New(hold.Config{Access: projects, Store: st, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
 		exchangeConfig.Hold = holdGate
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {

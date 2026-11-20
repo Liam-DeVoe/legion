@@ -835,10 +835,11 @@ func personOf(session *oauthstore.ExchangeSession) string {
 // heldRefusal is the token endpoint's answer for a credential of person, whose hold the gate
 // (ExchangeConfig.Hold) is asked here and the caller applies once the credential's own checks have
 // passed: nil for a person Dispatch does not hold, for no person and on a broker with no gate;
-// membership_held, naming the person, for a held one; and server_error while the gate cannot tell
-// (hold.ErrUncheckable), tested first, so a held answer the gate could not keep is server_error.
-// That one is refusedByDispatch when Dispatch refused the broker's own account, and otherwise says
-// why in hold.Reason's fixed words; the gate's own error goes to the log alone.
+// membership_held, naming the person in the gate's words (hold.Gate.HeldWords), for a held one; and
+// server_error while the gate cannot tell (hold.ErrUncheckable), tested first, so a held answer the
+// gate could not keep is server_error. That one is refusedByDispatch when Dispatch refused the
+// broker's own account, and otherwise says why in hold.Reason's fixed words; the gate's own error
+// goes to the log alone.
 func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	if person == "" {
 		return nil
@@ -854,7 +855,7 @@ func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	}
 	return (&oauth2.RFC6749Error{
 		ErrorField:       oauthwire.MembershipHeld,
-		DescriptionField: fmt.Sprintf("%s's credentials are held by Dispatch; they work again when %s signs in to Dispatch, or when Dispatch can confirm %s with Google again", person, person, person),
+		DescriptionField: p.exchange.Hold.HeldWords(person),
 		CodeField:        http.StatusBadRequest,
 	}).WithWrap(err).WithDebugError(err)
 }

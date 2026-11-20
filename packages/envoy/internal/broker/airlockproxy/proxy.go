@@ -680,17 +680,10 @@ func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, s
 	case errors.Is(err, hold.ErrUncheckable):
 		// Refused below, with any other error of the check, which decides nothing either.
 	case errors.Is(err, hold.ErrHeld):
-		return http.StatusForbidden, "MEMBERSHIP_HELD", heldWords(person)
+		return http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(person)
 	}
 	s.log.Error(holdUnreadable, "person", person, "error", err)
 	return http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + person + " cannot be read: " + hold.Reason(err)
-}
-
-// heldWords is what a held person's request is refused with and a held person's carried call is
-// ended with: who is held, and what ends the hold.
-func heldWords(person string) string {
-	return person + "'s credentials are held by Dispatch; they work again when " + person +
-		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
 }
 
 // serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted

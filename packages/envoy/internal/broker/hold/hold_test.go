@@ -101,12 +101,18 @@ type rig struct {
 }
 
 func newRig(dispatchURL string, account brokertoken.Account, st *store.Store) *rig {
+	return newRigWith(dispatchURL, account, st, false)
+}
+
+// newRigWith is newRig with the gate's RequireDeadline set as requireDeadline says, as
+// BROKER_HOLD_REQUIRES_DEADLINE sets it on an IAP deployment's broker.
+func newRigWith(dispatchURL string, account brokertoken.Account, st *store.Store, requireDeadline bool) *rig {
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
 	client := projectaccess.New(dispatchURL, account, nil)
 	client.UseClock(clock.read)
 	logged := &logs{}
 	registry := metrics.New()
-	gate := hold.New(hold.Config{Access: client, Store: st, Log: slog.New(logged), Metrics: registry, Now: clock.read})
+	gate := hold.New(hold.Config{Access: client, Store: st, Log: slog.New(logged), Metrics: registry, Now: clock.read, RequireDeadline: requireDeadline})
 	return &rig{gate: gate, client: client, clock: clock, logs: logged, registry: registry}
 }
 
@@ -177,11 +183,18 @@ func never(t *testing.T) (string, func() int) {
 // standing answers what the broker keeps for person, failing t when it cannot read it.
 func standing(t *testing.T, st *store.Store, person string) (held bool, answeredAt time.Time, found bool) {
 	t.Helper()
-	held, answeredAt, found, err := st.PersonStanding(context.Background(), person)
+	held, answeredAt, _, found = standingUntil(t, st, person)
+	return held, answeredAt, found
+}
+
+// standingUntil is standing with the deadline kept beside the answer, nil for none.
+func standingUntil(t *testing.T, st *store.Store, person string) (held bool, answeredAt time.Time, notHeldUntil *time.Time, found bool) {
+	t.Helper()
+	held, answeredAt, notHeldUntil, found, err := st.PersonStanding(context.Background(), person)
 	if err != nil {
 		t.Fatalf("PersonStanding(%s): %v", person, err)
 	}
-	return held, answeredAt, found
+	return held, answeredAt, notHeldUntil, found
 }
 
 // refuseWrites makes person_standing refuse every insert and update until allowWrites, as a
@@ -317,7 +330,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for i, c := range failures {
 		t.Run(c.name, func(t *testing.T) {
 			person := "held" + strconv.Itoa(i) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept); err != nil {
+			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 				t.Fatal(err)
 			}
 			r := newRig(c.dispatch(t), projectaccesstest.StaticAccount("token"), st)
@@ -334,7 +347,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 
 	t.Run("an answer naming a member kind the broker does not know", func(t *testing.T) {
 		const person = "guest@example.com"
-		if err := st.KeepPersonStanding(ctx, person, true, kept); err != nil {
+		if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 			t.Fatal(err)
 		}
 		r := newRig(answering(t, http.StatusOK, `{"person":"`+person+`","member_kind":"guest","held":false,"as_of":"`+asOf.Format(time.RFC3339Nano)+`"}`),
@@ -350,7 +363,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("a %d refusing the broker's own account", status), func(t *testing.T) {
 			person := "refused" + strconv.Itoa(status) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept); err != nil {
+			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
 				t.Fatal(err)
 			}
 			r := newRig(answering(t, status, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not listed"}`), projectaccesstest.StaticAccount("token"), st)

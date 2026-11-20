@@ -93,6 +93,53 @@ func TestPersonAnswersHeldAndAsOf(t *testing.T) {
 	}
 }
 
+// TestPersonAnswersNotHeldUntil: Person reads the person route's not_held_until, the deadline an
+// IAP deployment's Dispatch puts on every answer that is not held, and passes it on as Dispatch
+// spelled it; an answer naming none, as every answer outside IAP and every held one, answers the
+// zero time. Every read of one cached answer carries the same deadline, never one moved from the
+// moment it was read, and the stand-in answers the deadline its test sets on a not-held answer
+// alone, as Dispatch does.
+//
+// Control: askPerson decoding no not_held_until; ada's answer reads back with none, and the test
+// fails naming her.
+func TestPersonAnswersNotHeldUntil(t *testing.T) {
+	adaUntil := time.Date(2026, 11, 17, 0, 0, 5, 250_000_000, time.UTC)
+	answers := map[string]string{
+		"ada@example.com": `{"person":"ada@example.com","member_kind":"full","held":false,"as_of":"2026-11-16T00:00:05.25Z","not_held_until":"2026-11-17T00:00:05.25Z"}`,
+		"bob@example.com": `{"person":"bob@example.com","member_kind":"full","held":false,"as_of":"2026-11-16T00:00:06Z"}`,
+		"cy@example.com":  `{"person":"cy@example.com","member_kind":"full","held":true,"as_of":"2026-11-16T00:00:07Z"}`,
+	}
+	server, calls := personServer(t, func(person string, _ int) (int, string) { return http.StatusOK, answers[person] })
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 10, 0, time.UTC)}
+	client.UseClock(clock.read)
+	for _, c := range []struct {
+		person string
+		until  time.Time
+	}{{"ada@example.com", adaUntil}, {"bob@example.com", time.Time{}}, {"cy@example.com", time.Time{}}} {
+		got, err := client.Person(t.Context(), c.person)
+		if err != nil || !got.NotHeldUntil.Equal(c.until) {
+			t.Fatalf("Person(%s) = %+v, %v; want not_held_until %v", c.person, got, err, c.until)
+		}
+	}
+	clock.advance(projectaccess.CacheTTL - time.Second)
+	if got, err := client.Person(t.Context(), "ada@example.com"); err != nil || !got.NotHeldUntil.Equal(adaUntil) || calls() != 3 {
+		t.Fatalf("Person(ada) from the cache = %+v, %v after %d calls; want the deadline Dispatch answered, %v, and no new call", got, err, calls(), adaUntil)
+	}
+
+	standIn := projectaccesstest.NewServer(t, nil, map[string]string{"ada@example.com": projectaccess.MemberFull})
+	standIn.SetNotHeldUntil("ada@example.com", adaUntil)
+	answered := projectaccess.New(standIn.URL, standIn.Account, nil)
+	if got, err := answered.Person(t.Context(), "ada@example.com"); err != nil || got.Held || !got.NotHeldUntil.Equal(adaUntil) {
+		t.Fatalf("Person(ada) at the stand-in = %+v, %v; want not held until %v", got, err, adaUntil)
+	}
+	standIn.SetHeld("dee@example.com", true)
+	standIn.SetNotHeldUntil("dee@example.com", adaUntil)
+	if got, err := answered.Person(t.Context(), "dee@example.com"); err != nil || !got.Held || !got.NotHeldUntil.IsZero() {
+		t.Fatalf("Person(dee) at the stand-in, held with a deadline set = %+v, %v; want held and no deadline, as Dispatch answers a held person", got, err)
+	}
+}
+
 // TestPersonAnswersErrNoHeldFieldAndAsksAgainAfterFiveSeconds: an answer with no held, from a
 // Dispatch older than the hold, is ErrNoHeldField and never read as not held. Person answers it
 // from the cache for five seconds, and asks Dispatch again once five seconds have passed since it
