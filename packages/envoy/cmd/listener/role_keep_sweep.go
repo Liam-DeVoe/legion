@@ -226,8 +226,14 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 		if again {
 			var taken bool
 			if release, taken = cfg.roleKeepDrains.tryHold(role); taken {
+				// The records are read again under the guard; a read that fails keeps the ones
+				// already read, and one that fails other than by the connection's loss is logged.
 				if records != nil {
-					records, _ = cfg.client.TakeoverRecords(bus.WithLockHeld(handoverCtx), role)
+					reread, err := readTakenRecords(handoverCtx, cfg, role)
+					warnTakenRecordsUnread(cfg, role, err)
+					if err == nil {
+						records = reread
+					}
 				}
 				continue
 			}

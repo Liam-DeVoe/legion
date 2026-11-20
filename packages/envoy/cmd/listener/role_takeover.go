@@ -215,6 +215,9 @@ type takeoverFaultSet struct {
 	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
 	// takeover record in place of the write.
 	claimRecordWrite func(role, previous string) error
+	// recordsRead, when it returns an error, is the answer of a handover's read of the role's
+	// takeover records under the role's guard (readTakenRecords) in place of the read.
+	recordsRead func(role string) error
 }
 
 // takeoverFaultHooks is one listener's takeover-copy seam set (listenerDeliveryHandlerConfig's
@@ -304,12 +307,8 @@ func runTakenRoleDrain(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 		if !taken {
 			return
 		}
-		records, err := cfg.client.TakeoverRecords(bus.WithLockHeld(ctx), role)
-		if err != nil && !errors.Is(err, bus.ErrConnectionLost) {
-			cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
-				slog.String("role", role),
-				slog.String("error", err.Error()))
-		}
+		records, err := readTakenRecords(ctx, cfg, role)
+		warnTakenRecordsUnread(cfg, role, err)
 		if !errors.Is(err, bus.ErrConnectionLost) {
 			_, err = handOverTakenRole(ctx, cfg, role, records, owed)
 		}
@@ -323,6 +322,29 @@ func runTakenRoleDrain(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return
 		}
 	}
+}
+
+// readTakenRecords reads role's takeover records for a handover that holds the role's guard, under
+// a context marked so (bus.WithLockHeld), or answers the fault recordsRead gives in place of the
+// read.
+func readTakenRecords(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) ([]bus.StoredTakeoverRecord, error) {
+	if refuse := cfg.takeoverFaults.faults().recordsRead; refuse != nil {
+		if err := refuse(role); err != nil {
+			return nil, err
+		}
+	}
+	return cfg.client.TakeoverRecords(bus.WithLockHeld(ctx), role)
+}
+
+// warnTakenRecordsUnread logs, at WARN, a read of role's takeover records that failed other than
+// by the loss of the connection, which its caller retries once the connection is back.
+func warnTakenRecordsUnread(cfg listenerDeliveryHandlerConfig, role string, err error) {
+	if err == nil || errors.Is(err, bus.ErrConnectionLost) {
+		return
+	}
+	cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
+		slog.String("role", role),
+		slog.String("error", err.Error()))
 }
 
 // startTakenRoleDrain runs role's takeover drain (runTakenRoleDrain) on a goroutine of its own,

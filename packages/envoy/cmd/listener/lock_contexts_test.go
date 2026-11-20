@@ -97,7 +97,7 @@ var heldFreshContexts = map[string]heldFresh{
 	"(*github.com/sjawhar/envoy/cmd/listener.keptRoleOwed).settle -> the field github.com/sjawhar/envoy/cmd/listener.keptRoleOwed.ctx": {1,
 		"the handover caller's own context with its cancellation taken off (newKeptRoleOwed), which no guard marks: settle reads its writes back with the guard given back (drainKeptRole, handOverSweptLane), and the settled-confirm row reads that at run time"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> context.Background": {1,
-		"the wrapper's fallback for a JetStream call whose options carry no context; the takeover records' read under the guard passes nats.Context(ctx) (bus.Client.TakeoverRecords), which callContext returns"},
+		"the wrapper's fallback for a JetStream call whose options carry no context; the takeover records' read under the guard passes nats.Context(ctx) (bus.Client.TakeoverRecords), which callContext returns. This entry lets the fallback through whoever reaches it, and the check cannot see whether a caller under a guard passes nats.Context: a guarded caller that passes none would reach this fallback, under no mark, and the check would not name it"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> the field github.com/nats-io/nats.go.ContextOpt.Context": {2,
 		"the caller's own context, which its options carry (nats.Context(ctx)) and callContext returns: made by the caller, not here"},
 	"(github.com/sjawhar/envoy/internal/bus.contextRequests).with -> the field github.com/sjawhar/envoy/internal/bus.contextRequests.ctx": {1,
