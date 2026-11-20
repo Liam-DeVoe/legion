@@ -216,10 +216,11 @@ export default defineConfig({
     // chunk of their own now, and `@legion/contracts`' subpaths keep that package's reference
     // table and zod's schema modules out of a page that reads neither - in the editor's chunk
     // too (`ask-content-*.js`, 470,723 bytes), which imports that package by subpath alone
-    // (`packages/proof-editor/src/block-pointers.ts`). The entry has moved since: it is 496,982
-    // bytes at `381b29ad` on 2026-11-20. `web/src/asset-sizes-in-build.ts` holds it to 500,000
-    // bytes and keeps its history, and `bun run check:asset-sizes` reads it again; this
-    // `chunkSizeWarningLimit` is Vite's own warning and is over the ECharts chunk alone.
+    // (`packages/proof-editor/src/block-pointers.ts`). The entry has moved since: it was 496,982
+    // bytes at `381b29ad` on 2026-11-20, and is 497,475 at `1293f3d9` the same day.
+    // `web/src/asset-sizes-in-build.ts` holds it to 500,000 bytes and keeps its history, and
+    // `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
+    // warning and is over the ECharts chunk alone.
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
     // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.

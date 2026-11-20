@@ -40,6 +40,11 @@ test("Escape pressed outside an open dialog still closes it", async () => {
     </KeymapProvider>
   );
   try {
+    // The dialog takes the focus in the commit that opens it, and user-event sends its key to
+    // whatever holds the focus, so the focus the dialog took is given up here: the key has to
+    // reach the dialog from outside it, as one does after a press on the dialog's own text has
+    // given the focus to the page.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
     await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {

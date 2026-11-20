@@ -113,10 +113,11 @@ export function wsUrl(artifactId: string): string {
   return `${protocol}//${window.location.host}/ws/doc/${encodeURIComponent(artifactId)}`;
 }
 
-// Hocuspocus and Yjs load with the first document that connects, not with the issue route: the
-// same lazy boundary `createEditor` puts around the editor itself, named once in
-// `document-chunks.ts`, where the entry starts it too. The connect they resolve to is
-// synchronous, so a host has one place to react to the connection.
+// Hocuspocus and Yjs are no part of the issue route's chunk: they sit behind the same lazy
+// boundary `createEditor` puts around the editor itself, named once in `document-chunks.ts`. The
+// entry starts them beside the landing read of a page that draws a document, and the first
+// document that connects awaits them here. The connect they resolve to is synchronous, so a host
+// has one place to react to the connection.
 export async function loadDocumentTransport(): Promise<ConnectDocument> {
   const [
     { HocuspocusProvider, HocuspocusProviderWebsocket },

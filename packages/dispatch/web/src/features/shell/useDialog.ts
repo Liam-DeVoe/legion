@@ -127,8 +127,13 @@ export function useDialog<T extends HTMLElement>({
   const containerRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  // What held the focus as the dialog opened, read before the dialog moves the focus, so that
-  // closing gives the focus back there.
+  // What held the focus when the layout effect below ran in the commit that opened the dialog,
+  // read before the dialog moves the focus: the element the dialog was opened from, or, where a
+  // descendant took the focus earlier in that commit - by `autoFocus` or by a layout effect of
+  // its own, both of which run before this hook's layout effect - that descendant. Closing gives
+  // the focus back to it while it is still in the document, and to the body otherwise: a
+  // descendant that the close unmounts has left the document by the time the passive effect
+  // below cleans up, so the focus then goes to the body and not to the opener.
   const openerRef = useRef<HTMLElement | null>(null);
   useKeymapScope(open ? DIALOG_SCOPE : null);
   useKeymap(

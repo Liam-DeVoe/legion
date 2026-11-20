@@ -16,10 +16,12 @@ import { MARGIN_COLUMN_CLASS, marginColumnWidth } from "./margin-width";
  * The margin is mounted on every route, and draws nothing on most of them - it returns null on a
  * desktop route that has no margin (`Margin.tsx`) - but it carries the comment composer, the
  * thread cards and the Markdown surfaces under them, a tenth of what the entry chunk used to
- * make every first page load parse. Nothing of it is on any route's first frame, so the shell
- * loads it the way `features/doc/editor.ts` loads the editor: behind `import()`, beside the
- * component it loads rather than in the shell, since the margin's rule for what it draws is the
- * margin's own.
+ * make every first page load parse. Nothing of it is on any route's first frame, so its code
+ * sits behind `import()`, as the editor's library does (`features/doc/document-chunks.ts`), and
+ * the `import()` is beside the component it loads rather than in the shell, since the margin's
+ * rule for what it draws is the margin's own. Unlike the editor's library, which the entry starts
+ * beside the landing read of a page that draws a document, nothing asks for it before the page
+ * has drawn.
  *
  * On a landing whose page draws a live document, "after the first paint" is still before the
  * content, so the margin waits for the document's first block as well (`useContentDrawn`,

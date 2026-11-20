@@ -2165,12 +2165,12 @@ BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciph
 BROWSER_BINARIES_STEP = "Build the binaries and the dashboard the browser suite runs"
 # The whole step, pinned: it builds the four Go commands, and starts
 # .github/scripts/dispatch-browser-build-dashboards.sh beside them for the dashboard and, on the
-# full lane, the second rollout bundle, as two background jobs it waits on by process id. The go
-# command stays in the step's own text, where this entry pins it, and not in that script, which
-# starts no go command: a script Run is no form this gate can hold (its comment says why).
-# Nothing in the step is in the simple form check-ci-filters.sh reduces - a `cd`, a `&`, a `$!`,
-# a `${{ }}` - so the entry below pins the text and names the one closure its go command
-# compiles.
+# full lane, the second rollout bundle, as two background jobs it waits on by process id. Its two
+# go commands, chained in one background subshell, stay in the step's own text, where this entry
+# pins them, and not in that script, which starts no go command: a script Run is no form this
+# gate can hold (its comment says why). Nothing in the step is in the simple form
+# check-ci-filters.sh reduces - a `cd`, a `&`, a `$!`, a `${{ }}` - so the entry below pins the
+# text and names the one closure its go commands compile.
 BROWSER_BINARIES_SCRIPT = """\
 set -euo pipefail
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"

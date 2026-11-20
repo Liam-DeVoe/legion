@@ -54,7 +54,8 @@ export const editorAttributes = {
 // Dispatch's own node views travel with it (`ask-block.ts`): they are written against
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
-// before its first paint - which is the very thing this `import()` is here to prevent.
+// before its first paint - which is the very thing the `import()` in `document-chunks.ts` is
+// there to prevent.
 
 export const createEditor: CreateEditor = async (root, options) => {
   // `renderChunk` and not a bare call: this runs when a document mounts, so a reader is waiting

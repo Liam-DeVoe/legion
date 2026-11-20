@@ -20,8 +20,8 @@
  * scripts, the styles, the fonts and the pictures are no reads either, because they are the
  * build's cost and not the server's answer about this page. The live stream is not a read and
  * cannot be counted here even by accident: it is a WebSocket upgrade to `/ws/live`
- * (`web/src/api/live-socket.ts:207-208`), which is no GET of those two prefixes, and Playwright
- * reports it as a websocket rather than as a request.
+ * (`web/src/api/live-socket.ts`, `liveSocketUrl`), which is no GET of those two prefixes, and
+ * Playwright reports it as a websocket rather than as a request.
  *
  * What a WAVE is. R3's words are "a group of reads of which none starts after the first response
  * of the next group arrives". Read over the recorded times that is one grouping and only one:
@@ -59,9 +59,9 @@
  * only once the page has rendered, after the landing read has answered. A landing that draws a
  * document - the issue page and the document page - has the document's chunks started there as
  * well (`loadDocumentChunks`: the editor's library and the Yjs transport, each list named in
- * `web/src/features/doc/document-chunks.ts`), so its transport chunk is asked for before the
- * landing read is sent too; without that start, the transport comes down only once the document
- * mounts.
+ * `web/src/features/doc/document-chunks.ts`), so a chunk of each list - the editor's library and
+ * the transport - is asked for before the landing read is sent too; without that start, each
+ * comes down only once the document mounts.
  *
  * A reader who turned the new issue page on draws the whole shell, on every page, through a chunk
  * of its own (`web/src/features/issue-page/frame-chunk.ts`): the frame shell, which holds the new
@@ -157,10 +157,17 @@ interface Measurement {
    *  and the path it was asked at, so the report names the chunk's file; undefined when it never
    *  was before the landing ended. */
   readonly routeChunk: { readonly at: number; readonly path: string } | undefined;
-  /** When the document's transport chunk was first asked for, as `routeChunk.at` is read;
-   *  undefined for a landing that draws no document, or when it never was before the landing
-   *  ended. */
-  readonly documentChunkAt: number | undefined;
+  /** When each of the landing's document chunks (`Landing.documentChunks`) was first asked for,
+   *  as `routeChunk.at` is read; a chunk with no entry was never asked for before the landing
+   *  ended, and a landing that draws no document has none. */
+  readonly documentChunkAt: ReadonlyMap<DocumentChunk, number>;
+}
+
+/** One chunk of a live document that the entry starts beside the landing read: what the report
+ *  calls it, and the file it is asked for at. */
+interface DocumentChunk {
+  readonly name: string;
+  readonly path: RegExp;
 }
 
 /** One page this row lands on cold. */
@@ -182,14 +189,16 @@ interface Landing {
    *  turned the new issue page on store that choice here (`withIssuePage`), since each landing
    *  is a context of its own. */
   readonly prepare?: (context: BrowserContext) => Promise<void>;
-  /** For a landing that draws a live document, the Yjs transport's chunk, which the entry starts
-   *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`,
-   *  over the two lists `web/src/features/doc/document-chunks.ts` names). It is a chunk whose name
-   *  stands whether or not the start is there: the libraries those lists import are chunks of
-   *  their own either way. The start asks for the editor's library and the transport in one
-   *  call, so one of its chunks asked in time shows that the start ran. The row holds the entry
-   *  to this one because Yjs is the library the transport cannot open a document without. */
-  readonly documentChunk?: RegExp;
+  /** For a landing that draws a live document, the document's chunks the entry starts beside the
+   *  landing read (`web/src/app.tsx`, `loadDocumentChunks`, over the two lists
+   *  `web/src/features/doc/document-chunks.ts` names): one chunk of each list. Each is a chunk
+   *  whose name stands whether or not the start is there: the libraries those lists import are
+   *  chunks of their own either way. The start asks for both lists in one call, but a list
+   *  dropped from that call leaves the other's chunks asked in time, so a chunk asked in time
+   *  shows only that its own list was started, and the row holds the entry to a chunk of each:
+   *  the editor's library, which the editor cannot draw a block without, and Yjs, which the
+   *  transport cannot open a document without. */
+  readonly documentChunks?: readonly DocumentChunk[];
   /** R3's bound on the whole landing, where it sets one. It sets one for the issue page alone. */
   readonly bounds?: { readonly reads: number; readonly waves: number };
 }
@@ -305,7 +314,7 @@ function stamp(ms: number): string {
 }
 
 /** One landing's whole waterfall: a heading, then every read in start order with its wave, then
- *  when the page's route chunk was asked for, and the document's transport chunk where the page
+ *  when the page's route chunk was asked for, and each of the document's chunks where the page
  *  draws a document. */
 function waterfallOf({ documentChunkAt, landing, reads, routeChunk, waves }: Measurement): string {
   const lines = [
@@ -323,10 +332,9 @@ function waterfallOf({ documentChunkAt, landing, reads, routeChunk, waves }: Mea
   const routeChunkAsked =
     routeChunk === undefined ? "    never" : `${stamp(routeChunk.at)}  ${routeChunk.path}`;
   lines.push(`  route chunk  asked ${routeChunkAsked}`);
-  if (landing.documentChunk !== undefined) {
-    lines.push(
-      `  document chunk  asked ${documentChunkAt === undefined ? "    never" : stamp(documentChunkAt)}`
-    );
+  for (const chunk of landing.documentChunks ?? []) {
+    const at = documentChunkAt.get(chunk);
+    lines.push(`  ${chunk.name} chunk  asked ${at === undefined ? "    never" : stamp(at)}`);
   }
   return lines.join("\n");
 }
@@ -347,14 +355,16 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     const from = performance.now();
     const { ended, reads } = recordReads(tab, from);
     let routeChunk: Measurement["routeChunk"];
-    let documentChunkAt: number | undefined;
+    const documentChunkAt = new Map<DocumentChunk, number>();
     tab.on("request", (request) => {
       const { pathname } = new URL(request.url());
       if (routeChunk === undefined && landing.routeChunk.test(pathname)) {
         routeChunk = { at: performance.now() - from, path: pathname };
       }
-      if (documentChunkAt === undefined && landing.documentChunk?.test(pathname)) {
-        documentChunkAt = performance.now() - from;
+      for (const chunk of landing.documentChunks ?? []) {
+        if (!documentChunkAt.has(chunk) && chunk.path.test(pathname)) {
+          documentChunkAt.set(chunk, performance.now() - from);
+        }
       }
     });
     await tab.goto(landing.address);
@@ -408,9 +418,13 @@ async function seedWorld(): Promise<World> {
   return { document: rollout.artifact.slug, issue: issue.key };
 }
 
-/** The Yjs transport's chunk, which the two landings that draw a document hold the entry to
- *  starting beside their landing read (`Landing.documentChunk` says why this chunk). */
-const TRANSPORT_CHUNK = /\/assets\/yjs-[\w-]{8}\.js$/u;
+/** The chunks the two landings that draw a document hold the entry to starting beside their
+ *  landing read (`Landing.documentChunks` says why these two): the editor's library
+ *  (`@legion/proof-editor`, and not `lib-headless`, whose name begins the same way) and Yjs. */
+const DOCUMENT_CHUNKS: readonly DocumentChunk[] = [
+  { name: "editor library", path: /\/assets\/lib-[\w-]{8}\.js$/u },
+  { name: "transport", path: /\/assets\/yjs-[\w-]{8}\.js$/u },
+];
 
 /** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded
  *  through `frame-chunk.ts`), the route chunk of both landings of a reader who turned that page
@@ -467,7 +481,7 @@ function landingsOf(world: World): Landing[] {
       bounds: { reads: ISSUE_READ_BOUND, waves: WAVE_BOUND },
       name: "issue page",
       routeChunk: /\/assets\/IssuePage-[\w-]{8}\.js$/u,
-      documentChunk: TRANSPORT_CHUNK,
+      documentChunks: DOCUMENT_CHUNKS,
       ownData: issueData,
     },
     board,
@@ -494,7 +508,7 @@ function landingsOf(world: World): Landing[] {
       content: (page) => documentEditor(page).locator("[data-block-id]").first(),
       name: "document page",
       routeChunk: /\/assets\/DocumentPage-[\w-]{8}\.js$/u,
-      documentChunk: TRANSPORT_CHUNK,
+      documentChunks: DOCUMENT_CHUNKS,
       // The read this page gates on: `DocumentPage` holds everything else until
       // `["artifact-ref", "CORE/<slug>"]` answers with the document's id
       // (`web/src/features/document/DocumentPage.tsx`, `web/src/api/useProjectArtifact.ts`), and
@@ -607,16 +621,19 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
           "(web/src/app.tsx, preloadRouteChunk)"
       );
     }
-    if (landing.documentChunk !== undefined && landingRead !== undefined) {
-      if (measurement.documentChunkAt === undefined) {
-        faults.push(`the ${landing.name} never asked for its document's transport chunk`);
-      } else if (measurement.documentChunkAt >= landingRead.startedAt) {
-        faults.push(
-          `the ${landing.name} asked for its document's transport chunk at ` +
-            `${stamp(measurement.documentChunkAt)}, after the landing read was sent at ` +
-            `${stamp(landingRead.startedAt)}: the entry no longer starts the document's chunks ` +
-            "beside that read (web/src/app.tsx, preloadRouteChunk, loadDocumentChunks)"
-        );
+    if (landingRead !== undefined) {
+      for (const chunk of landing.documentChunks ?? []) {
+        const at = measurement.documentChunkAt.get(chunk);
+        if (at === undefined) {
+          faults.push(`the ${landing.name} never asked for its document's ${chunk.name} chunk`);
+        } else if (at >= landingRead.startedAt) {
+          faults.push(
+            `the ${landing.name} asked for its document's ${chunk.name} chunk at ${stamp(at)}, ` +
+              `after the landing read was sent at ${stamp(landingRead.startedAt)}: the entry no ` +
+              "longer starts the document's chunks beside that read (web/src/app.tsx, " +
+              "preloadRouteChunk, loadDocumentChunks)"
+          );
+        }
       }
     }
   }

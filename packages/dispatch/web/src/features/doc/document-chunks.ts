@@ -8,12 +8,12 @@ import { importWhenOnline } from "../shell/chunk-loads";
  * `loadDocumentTransport` (`connection.ts`) the Yjs transport when it connects. The entry starts
  * both lists beside the landing read of a page that draws a document (`app.tsx`,
  * `preloadRouteChunk`), so they come down while that read is out rather than after its answer.
- * Started through `editor.ts` and `connection.ts` instead, each list waited for its own module's
- * chunk to arrive and run first, and the Yjs transport was asked for a chunk's round trip after
- * the route chunk: on a server that answers the landing read in a few dozen milliseconds, after
- * that answer (`e2e/landing-reads.e2e.ts`). This module holds no code of either list, only the
- * `import()` calls, so the entry carries their names and none of their bytes. Calling a list
- * twice costs one download: a module is fetched and parsed once.
+ * Started through `editor.ts` and `connection.ts`, each list would wait for that module's own
+ * chunk to arrive and run first, and the Yjs transport would be asked for a chunk's round trip
+ * after the route chunk: on a server that answers the landing read in a few dozen milliseconds,
+ * after that answer (`e2e/landing-reads.e2e.ts`). This module holds no code of either list,
+ * only the `import()` calls, so the entry carries their names and none of their bytes. Calling a
+ * list twice costs one download: a module is fetched and parsed once.
  */
 
 /** The editor's own library and Dispatch's node views on it (`ask-block.ts`), with its sheet.

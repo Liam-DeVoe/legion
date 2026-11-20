@@ -219,27 +219,28 @@ GITHUB_SHA, and the `test.beforeAll` of e2e/two-builds.multiprocess.e2e.ts fails
 two entries match. It is built on the full lane alone, the only lane that runs the
 multiprocess job, so a pull-request run pays nothing for it.
 
-The three builds run at once, each waited on by its own process id: the step starts the go
-build and .github/scripts/dispatch-browser-build-dashboards.sh as two background jobs, and
-that script starts the two bundle builds as two of its own. That is what puts the bundles'
-time inside the go build's rather than after it, and each `wait` is read on its own so that a
-child which failed fails this step and the line printed beside it names which build it was:
-one `wait` under `set -e` would end the step at the first failure and leave the others
-unreported. The step takes the runner's default bash and writes no `shell:` key, since
-ci_filter_coverage.py's shell_reason counts one as something that can move what a go command
-compiles, and the step's whole run: text is pinned in .github/scripts/ci_job_reads.py's
-dispatch_browser gate.
+The builds run beside one another, each background job waited on by its own process id:
+the step starts its two go builds, chained in one subshell, and
+.github/scripts/dispatch-browser-build-dashboards.sh as two background jobs, and that
+script starts the two bundle builds of the full lane (the dashboard alone on any other) as
+jobs of its own. That is what puts the bundles' time inside the go builds' rather than after
+it, and each `wait` is read on its own so that a child which failed fails this step and the
+line printed beside it names which build it was: one `wait` under `set -e` would end the
+step at the first failure and leave the others unreported. The step takes the runner's
+default bash and writes no `shell:` key, since ci_filter_coverage.py's shell_reason counts
+one as something that can move what a go command compiles, and the step's whole run: text is
+pinned in .github/scripts/ci_job_reads.py's dispatch_browser gate.
 
-Why the bundles are a script and the go build is not. A `run:` body of more than ten lines is
-a script (.github/ci-notes/README.md), and a body that held all three builds, each with its
-wait and its error line, would run past ten. The go build cannot be the script's: a go
+Why the bundles are a script and the go builds are not. A `run:` body of more than ten lines is
+a script (.github/ci-notes/README.md), and a body that held all four builds, each with its
+wait and its error line, would run past ten. The go builds cannot be the script's: a go
 command a script holds is a script Run of the dispatch_browser gate, and that gate can hold
 none, since around_job reads every job of this workflow and the shard and alone jobs'
 `container:` drops such a Run out of check-ci-filters.sh's reduction (ci_job_reads.py's
-comment on the gate says so). So the go command stays in the step's own pinned text, and the
-two bundle builds, which start no go command, are the script, with the same commands, the
+comment on the gate says so). So the two go commands stay in the step's own pinned text, and
+the two bundle builds, which start no go command, are the script, with the same commands, the
 same waits and the same error lines. The copy under $RUNNER_TEMP is made once both bundles
-have built, whether or not the go build has ended; a go build that fails still fails the
+have built, whether or not the go builds have ended; a go build that fails still fails the
 step, and the uploads after it, which carry no `if:`, do not run.
 
 The two trees are copied under $RUNNER_TEMP for the upload after the step, so that archive

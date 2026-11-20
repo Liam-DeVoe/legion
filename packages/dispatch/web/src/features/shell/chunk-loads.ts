@@ -102,11 +102,14 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * then rejects online, propagates like any online failure and reaches `reloadForChunkFailure`,
  * which reloads while the tab's budget lasts.
  *
- * What loads through it: the chunks of a document - the editor, Yjs, Hocuspocus and the
- * pending-edit store, code-split so the issue route does not pay for them until a document
- * mounts (`features/doc/editor.ts`, `features/doc/connection.ts`,
- * `features/doc/ProofDocument.tsx`) - the kinds of write the write store's take-up waits for
- * (`features/writes/write-hosts.tsx`, `loadWriteKinds`), and every `lazyChunk`.
+ * What loads through it: the chunks of a document - the editor's library and its node views,
+ * Yjs, Hocuspocus and the pending-edit store, code-split so the issue route's chunk carries none
+ * of them, which the entry starts beside the landing read of a page that draws a document and a
+ * document awaits as it mounts and connects (`features/doc/document-chunks.ts`,
+ * `loadEditorLibrary` and `loadTransportModules`), the Yjs a past version awaits
+ * (`features/doc/editor.ts`, `createDoc`) and the pending-edit store a removed document's edits
+ * are deleted from (`features/doc/ProofDocument.tsx`) - the kinds of write the write store's
+ * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), and every `lazyChunk`.
  */
 export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
   for (;;) {

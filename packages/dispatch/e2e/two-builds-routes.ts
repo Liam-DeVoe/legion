@@ -59,9 +59,9 @@ export const lazyPieces = {
     "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
-    "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
-    "and the document's Yjs stack: yjs, @hocuspocus/provider, pending-edits and pending-sync " +
-    "(features/doc/connection.ts)",
+    "the document editor, @legion/proof-editor and its stylesheet, and the document's Yjs " +
+    "stack: yjs, @hocuspocus/provider, pending-edits and pending-sync, both lists imported in " +
+    "features/doc/document-chunks.ts",
   "event-refresh":
     "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
     "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",

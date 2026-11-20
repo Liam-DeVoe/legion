@@ -989,7 +989,7 @@ function connection(page: Page): Locator {
 /** A change of the registry reaches an open live view on the shell's next poll of the agent list
  *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`), a page timer that one
  *  jump of the page's clock fires (`spendPageTime`, `e2e/agents.ts`). The jump puts the page's date
- *  back on the wall clock after it, which is what lets the row below take eight of them: left
+ *  back on the wall clock after it, which is what lets the row below take seven of them: left
  *  ahead, the date would read the live socket as silent past `LIVE_SOCKET_SILENT_MS` between two
  *  of the server's real-time heartbeats, the page would replace the socket, and the new one would
  *  send again the subscribe the row asserts is sent once. A listener that is down refuses the
