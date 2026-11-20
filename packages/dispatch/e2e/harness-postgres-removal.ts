@@ -112,6 +112,7 @@ import {
   holdersOf,
   type Postmaster,
   postmasterOf,
+  processName,
   type StatReader,
   servedElsewhere,
   statReader,
@@ -187,10 +188,11 @@ function held({ holders, unread }: Holding): boolean {
 function heldPhrase(path: string, { holders, unread }: Holding): string {
   const phrases = [
     ...(holders.length > 0
-      ? [`${listOf(holders)} still ${holders.length === 1 ? "holds" : "hold"}`]
+      ? [`${listOf(holders.map(processName))} still ${holders.length === 1 ? "holds" : "hold"}`]
       : []),
     ...unread.map(
-      ({ process, path: named, why }) => `${process} may hold, as it names ${named}, ${why}`
+      ({ process, path: named, why }) =>
+        `${processName(process)} may hold, as it names ${named}, ${why}`
     ),
   ];
   return `${path}, which ${listOf(phrases)}`;
@@ -462,9 +464,9 @@ async function removePostmaster(
     after = await holdersOf(claim.path, spellings, uid, reader);
     if (held(after)) {
       const deadline = Date.now() + postmasterChildrenMs;
+      // Each process by the pid the read kept, never read back out of the text a line names it by.
       const named = [...after.holders, ...after.unread.map(({ process }) => process)];
-      const ending = named.flatMap((process) => {
-        const pid = Number(process.slice(process.lastIndexOf(" ") + 1));
+      const ending = named.flatMap(({ pid }) => {
         try {
           return [{ pid, start: startOf(readFileSync(`/proc/${pid}/stat`, "utf8")) }];
         } catch {

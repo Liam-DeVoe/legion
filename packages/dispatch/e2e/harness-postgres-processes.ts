@@ -423,13 +423,26 @@ async function identities(
   return found;
 }
 
-/** What `holdersOf` read of a directory: each process that holds it, "<program> <pid>", and each
- *  process it cannot judge, since a path that process names (`path`) has no answer of the read,
- *  with why (`whyUnread`). */
+/** A process a holder read names: its program, the name of the file it runs, and its pid. The
+ *  start waits for it by its pid (`removePostmaster` of `e2e/harness-postgres-removal.ts`); a line
+ *  names it as `processName` writes it. */
+export interface HolderProcess {
+  readonly program: string;
+  readonly pid: number;
+}
+
+/** How a line names `process`: "<program> <pid>". */
+export function processName({ program, pid }: HolderProcess): string {
+  return `${program} ${pid}`;
+}
+
+/** What `holdersOf` read of a directory: each process that holds it, and each process it cannot
+ *  judge, since a path that process names (`path`) has no answer of the read, with why
+ *  (`whyUnread`). */
 export interface Holding {
-  readonly holders: readonly string[];
+  readonly holders: readonly HolderProcess[];
   readonly unread: readonly {
-    readonly process: string;
+    readonly process: HolderProcess;
     readonly path: string;
     readonly why: string;
   }[];
@@ -507,8 +520,11 @@ export async function holdersOf(
   }
   // What each process names, from `/proc` alone: whether an argument spells the directory as the
   // mark does, and each path it names, its working directory first.
-  const named: { readonly process: string; readonly spelt: boolean; readonly paths: string[] }[] =
-    [];
+  const named: {
+    readonly process: HolderProcess;
+    readonly spelt: boolean;
+    readonly paths: string[];
+  }[] = [];
   for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
     try {
       if (Number(pid) === postmaster || lstatSync(`/proc/${pid}`).uid !== uid) continue;
@@ -525,7 +541,7 @@ export async function holdersOf(
         }
       });
       named.push({
-        process: `${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`,
+        process: { program: basename(readlinkSync(`/proc/${pid}/exe`)), pid: Number(pid) },
         spelt: args.some((argument) => spellings.some((path) => names(argument, path))),
         paths: outsideOwnClaims(pid, [
           cwd,
@@ -568,8 +584,8 @@ export async function holdersOf(
     known.set(path, answer);
     return answer;
   };
-  const holders: string[] = [];
-  const unread: { process: string; path: string; why: string }[] = [];
+  const holders: HolderProcess[] = [];
+  const unread: { process: HolderProcess; path: string; why: string }[] = [];
   for (const { process, spelt, paths } of named) {
     const judged = paths.map(inside);
     if (spelt || judged.includes(true)) {
