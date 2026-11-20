@@ -11,12 +11,14 @@
 # namespace and kind's standard storage class. kind_k runs kubectl against that file and context
 # alone, so the caller's kubeconfig and its current context are never read. kind picks the API
 # server's host port as one free when it looks, and on a busy host another socket can take it
-# before docker binds it. Docker refuses that bind in one of two forms: `failed to bind host port
-# … address already in use` where another process holds the port, and `Bind for <address> failed:
-# port is already allocated` where another container does (both seen from controller-sweep-kind.sh
-# on 2026-11-20). A create kind fails on either is made again, the cluster deleted by its name
-# first, up to kind_sandbox_create_tries tries, each retry named by a note; a create that fails for
-# any other reason fails the run, naming kind's last line (lib/kind-sandbox.test.ts).
+# before docker binds it. Docker refuses that bind with `address already in use` where another
+# process holds the port (`failed to bind host port …` since docker 28, `Error starting userland
+# proxy: … bind: …` before it) and `port is already allocated` where another container does (both
+# seen from controller-sweep-kind.sh on 2026-11-20); those two phrases are the stable part. A create
+# kind fails on either is made again, the cluster deleted by its name first, up to
+# kind_sandbox_create_tries tries, each retry named by a note; a create that fails for any other
+# reason fails the run, naming kind's `ERROR:` and docker's `docker:` lines (lib/kind-sandbox.test.ts).
+# The verdict of each create is kind's own exit (PIPESTATUS), whether or not the caller sets pipefail.
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
 # kind_sandbox_install_gvisor WORK installs gVisor's dated release, pinned by sha512, into the
@@ -49,14 +51,16 @@ kind_k() { kubectl --kubeconfig "$kind_kubeconfig" --context "$kind_context" "$@
 
 kind_sandbox_create() {
   kind_cluster=$1 kind_context=kind-$1 kind_kubeconfig=$2/kubeconfig kind_node=$1-control-plane
-  local try log bind
+  local try log bind said
   for ((try = 1; ; try++)); do
     log=$2/kind-create-$try.log
-    if "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s 2>&1 | tee "$log"; then
+    if "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s 2>&1 | tee "$log"; [ "${PIPESTATUS[0]}" -eq 0 ]; then
       break
     fi
-    bind=$(grep -m 1 -E 'failed to bind host port .*address already in use|Bind for [^ ]+ failed: port is already allocated' "$log") ||
-      fail "kind could not create cluster $kind_cluster: $(grep -v '^[[:space:]]*$' "$log" | tail -n 1)"
+    if ! bind=$(grep -m 1 -E 'address already in use|port is already allocated' "$log"); then
+      said=$(grep -E '^(ERROR|docker): ' "$log" | paste -sd ' ' -)
+      fail "kind could not create cluster $kind_cluster: ${said:-$(grep -v '^[[:space:]]*$' "$log" | tail -n 1)}"
+    fi
     [ "$try" -lt "$kind_sandbox_create_tries" ] ||
       fail "kind could not create cluster $kind_cluster in $try tries, each failing on a host port bind; the last: $bind"
     note "kind create cluster try $try of $kind_sandbox_create_tries failed on a host port another socket took ($bind); deleting cluster $kind_cluster and trying again"
