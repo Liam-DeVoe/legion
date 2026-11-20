@@ -892,13 +892,15 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // (podKind.asksExtendedRunTime), a microVM pod's as a gVisor pod's; and the configuration the pod
 // is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
-// without rebuilding the launch that built it (drift.go). Neither stop-eviction annotation is in
-// that shape, and the conditional one is not either: the only thing that moves it is a request,
-// which the shape already holds, so a pod whose annotation would move is drifted by its
-// reservation alone, while putting the annotation in the shape would change the shape string of
-// every pod of every deployment at this release and open a fleet-wide update round for a value
-// that did not change. A microVM pod's labels carry labelSandbox beside its kind's, on the
-// template alone, so the Sandbox and its Secrets carry exactly the labels a gVisor pod's do.
+// without rebuilding the launch that built it (drift.go); and, under a configured leak check
+// setting, the checker digest the pod was built under (leakCheckerAnnotation). Neither
+// stop-eviction annotation is in that shape, and the conditional one is not either: the only thing
+// that moves it is a request, which the shape already holds, so a pod whose annotation would move
+// is drifted by its reservation alone, while putting the annotation in the shape would change the
+// shape string of every pod of every deployment at this release and open a fleet-wide update
+// round for a value that did not change. A microVM pod's labels carry labelSandbox beside its
+// kind's, on the template alone, so the Sandbox and its Secrets carry exactly the labels a gVisor
+// pod's do.
 func (r *Runtime) podTemplate(l launch) podTemplate {
 	_, providersMounts := r.providers()
 	runtimeClass, selector, tolerations := r.placement(l)
