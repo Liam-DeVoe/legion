@@ -41,22 +41,24 @@
  *    name, once per owner whose listing succeeded (`org:` or `user:`, as `users/<owner>` gives its
  *    type) or, with `--only`, once per named repository (`repo:`). One search stands for the brief's
  *    five patterns (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the
- *    quoted name): `searchFor` says why. Each hit file is read, at its repository's commit of
+ *    quoted name): `searchTerms` says why. Each hit file is read, at its repository's commit of
  *    step 1, and kept only where the skill's name is in it as a whole name (not inside a longer
  *    name), outside a skill; `mentions` then sorts each mention by those patterns. Each query's
  *    `total_count` and `incomplete_results`, its hits and their verdicts, and each failure go to
- *    `queries.jsonl`. A query whose `total_count` reaches 1,000, and each query of a name in
+ *    `queries.jsonl`. An owner's query whose `total_count` reaches 1,000 is run again once per
+ *    repository of that owner that holds a skill; so is an owner's query of a name in
  *    `COMMON_WORD_NAMES` (a short list of plain English words kept in this file, `dispatch` and
- *    `envoy` among them; a plain word not on it is run again only when it reaches 1,000), is run
- *    again once per repository of that owner that holds a skill. A fork, which code search leaves
- *    out, is read from its tree instead when it holds a skill: each text blob (`TEXT_EXTENSIONS`,
- *    or a name in `TEXT_NAMES`) of at most `FORK_SCAN_MAX_BYTES` bytes outside a skill is read and
- *    searched for every skill name. Pacing: GitHub allows 10 code searches a minute per token, and
- *    each owner has its own token, so the owners' searches run at once, each owner's one at a time
- *    (GitHub asks for one client's requests to be serial) and paced by its own limit: at most
- *    `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a wait for
- *    `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, and a call refused for its rate limit
- *    run again after its `retry-after`, else its reset, else the reset `gh api rate_limit` gives.
+ *    `envoy` among them; a plain word not on it is run again only when it reaches 1,000) when that
+ *    query was not read whole (`rerunsOf` says why one read whole is not). A fork, which code
+ *    search leaves out, is read from its tree instead when it holds a skill: each text blob
+ *    (`TEXT_EXTENSIONS`, or a name in `TEXT_NAMES`) of at most `FORK_SCAN_MAX_BYTES` bytes outside
+ *    a skill is read and searched for every skill name. Pacing: GitHub allows 10 code searches a
+ *    minute per token, and each owner has its own token, so the owners' searches run at once, each
+ *    owner's one at a time (GitHub asks for one client's requests to be serial) and paced by its
+ *    own limit: at most `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a
+ *    wait for `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, and a call refused for its
+ *    rate limit run again after its `retry-after`, else its reset, else the reset `gh api
+ *    rate_limit` gives.
  *    `--max-search-calls <n>` stops searching after n calls; every query it leaves out is in
  *    `queries.jsonl` as not run. A query whose hits GitHub counts past its 1,000-result cap (or the
  *    budget cut short) keeps how many it left unread (`unread`), and skill-copies.md lists it.
@@ -2232,6 +2234,41 @@ async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord
   record.unread = Math.max(0, (record.total_count ?? 0) - record.items_read);
 }
 
+/**
+ * The searches an owner-wide search (`job`, which ran as `record`) is run again as: one per
+ * repository of that owner in `holders` (each repository holding a skill, forks left out since
+ * code search does not index them), or none.
+ *   - A search whose `total_count` reaches GitHub's cap of 1,000 results is run again, whatever
+ *     its name: the cap hid hits.
+ *   - A search of a name in COMMON_WORD_NAMES is run again only when it was not read whole: it
+ *     failed, GitHub marked it `incomplete_results`, or it left hits unread. An owner-wide search
+ *     (`org:` or `user:`) covers each repository of the owner, so a search of the same terms in
+ *     one of them gives a subset of its hits; once every hit of the owner-wide search was read,
+ *     the per-repository searches can give no file it did not. A common word is named here
+ *     because its owner-wide search is the one likely to be cut short, not because its hits
+ *     differ.
+ * A search the call budget left not run is not run again: the budget is spent.
+ */
+function rerunsOf(job: SearchJob, record: QueryRecord, holders: readonly string[]): SearchJob[] {
+  if (job.reason !== "owner" || record.status === "not run") return [];
+  const capped = (record.total_count ?? 0) >= 1000;
+  const readWhole =
+    record.status === "ok" && record.incomplete_results === false && record.unread === 0;
+  const common = Object.hasOwn(COMMON_WORD_NAMES, job.name);
+  if (!capped && !(common && !readWhole)) return [];
+  const reason = capped
+    ? "run again per repository: total_count reached 1,000"
+    : "run again per repository: a common word whose owner-wide search was not read whole";
+  return holders
+    .filter((repository) => repository.split("/")[0] === job.owner)
+    .map((repository) => ({
+      name: job.name,
+      scope: `repo:${repository}`,
+      owner: job.owner,
+      reason,
+    }));
+}
+
 /** Runs the jobs: each owner's in order, one at a time, and the owners' at once, so each owner's
  *  token is paced by its own limit while the others' run. `followUps` gives, for a job that ran,
  *  more jobs, each queued at the end of its own owner's queue. Returns one record per job: the
@@ -3047,25 +3084,14 @@ export async function listCopies(
     scopes.map((scope) => ({ name, ...scope }))
   );
   io.err(`copies: ${baseJobs.length} code searches for ${names.length} names`);
-  // An owner's search of a name at the 1,000 cap, or of a common word, is run again once per
-  // repository of that owner holding a skill, queued behind that owner's own searches.
-  const reruns = (job: SearchJob, record: QueryRecord): SearchJob[] => {
-    if (job.reason !== "owner") return [];
-    const capped = (record.total_count ?? 0) >= 1000;
-    if (!capped && !Object.hasOwn(COMMON_WORD_NAMES, job.name)) return [];
-    const reason = capped
-      ? "run again per repository: total_count reached 1,000"
-      : "run again per repository: a common word";
-    return repositories
-      .filter((repo) => repo.owner === job.owner && !repo.fork && withSkill.has(repo.repository))
-      .map((repo) => ({
-        name: job.name,
-        scope: `repo:${repo.repository}`,
-        owner: repo.owner,
-        reason,
-      }));
-  };
-  const records = await runSearches(search, baseJobs, io, reruns);
+  // An owner's search that `rerunsOf` names is run again once per repository of that owner
+  // holding a skill, queued behind that owner's own searches.
+  const holders = repositories
+    .filter((repo) => !repo.fork && withSkill.has(repo.repository))
+    .map((repo) => repo.repository);
+  const records = await runSearches(search, baseJobs, io, (job, record) =>
+    rerunsOf(job, record, holders)
+  );
 
   // Each hit file, read at its repository's commit, kept where it names the skill.
   const byRepository = new Map(repositories.map((repo) => [repo.repository.toLowerCase(), repo]));

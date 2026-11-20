@@ -921,15 +921,13 @@ describe("the full run over the owners", () => {
     );
   });
 
-  test("a common word's queries run again per repository holding a skill, and no query word is one the pod's gh refuses", () => {
+  test("a common word whose owner-wide search was read whole is not run again, and no query word is one the pod's gh refuses", () => {
     const queries = r.queries().filter((query) => query.type === "search");
-    const reruns = queries.filter(
-      (query) => query.reason === "run again per repository: a common word"
+    // dispatch and envoy are common words; every owner-wide search here is read whole.
+    expect(queries.some((query) => query.name === "dispatch" && query.reason === "owner")).toBe(
+      true
     );
-    expect(new Set(reruns.map((query) => query.name))).toEqual(new Set(["dispatch", "envoy"]));
-    expect(new Set(reruns.map((query) => query.scope))).toEqual(
-      new Set(["repo:cybermonklabs/legion", "repo:acme/skills"])
-    );
+    expect(queries.filter((query) => query.reason !== "owner")).toEqual([]);
     for (const query of queries) {
       for (const word of String(query.q).split(/\s+/)) {
         if (word.includes(":")) expect(word).toMatch(/^[A-Za-z][A-Za-z-]*:[^\s"'()\\]+$/);
@@ -1184,6 +1182,49 @@ describe("a truncated tree", () => {
     ).toBe(true);
     expect(byDirectory.text("skill-copies.tsv")).toBe(whole.text("skill-copies.tsv"));
     expect(byDirectory.text("manifests.tsv")).toBe(whole.text("manifests.tsv"));
+  });
+});
+
+describe("an owner-wide search run again per repository", () => {
+  // Each owner-wide answer below is read whole but these: `dispatch` (a common word) marked
+  // incomplete in cybermonklabs, `dispatch` left with hits unread in acme (a count of 120 with no
+  // item given), and `beta` (no common word) at the 1,000 cap in acme. `envoy`, a common word, is
+  // read whole in both owners.
+  const w = world();
+  w.search = (q) => {
+    if (q === '"dispatch" org:cybermonklabs')
+      return { body: { total_count: 3, incomplete_results: true, items: [] } };
+    if (q === '"dispatch" user:acme')
+      return { body: { total_count: 120, incomplete_results: false, items: [] } };
+    if (q === '"beta" user:acme')
+      return { body: { total_count: 1000, incomplete_results: false, items: [] } };
+    return { body: EMPTY_SEARCH };
+  };
+  let r: Run;
+  beforeAll(async () => {
+    r = await run(w);
+  });
+
+  test("a common word whose owner-wide search was incomplete or left hits unread is run again in each repository holding a skill", () => {
+    const reruns = r
+      .queries()
+      .filter((query) => query.type === "search" && query.reason !== "owner");
+    const common =
+      "run again per repository: a common word whose owner-wide search was not read whole";
+    const capped = "run again per repository: total_count reached 1,000";
+    // The owners run at once, so their reruns interleave: compare them in a fixed order.
+    expect(reruns.map((query) => `${query.q} | ${query.reason}`).sort()).toEqual(
+      [
+        `"dispatch" repo:cybermonklabs/legion | ${common}`,
+        `"beta" repo:acme/skills | ${capped}`,
+        `"dispatch" repo:acme/skills | ${common}`,
+      ].sort()
+    );
+  });
+
+  test("a common word read whole is not run again", () => {
+    const envoy = r.queries().filter((query) => query.type === "search" && query.name === "envoy");
+    expect(envoy.map((query) => query.reason)).toEqual(["owner", "owner"]);
   });
 });
 
