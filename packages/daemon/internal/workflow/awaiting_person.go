@@ -41,7 +41,13 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 		return "", nil
 	}
 	if kind == "session" {
-		ownsTree, err := store.SessionClaimsTree(ctx, tx, issue.Tree, id)
+		// A session that claims within the root's tree is one of the issues whose gate root the
+		// root is on the Dispatch chain (record.Chains.GateTree), not of the tree its record stores.
+		chains, err := record.ReadChains(ctx, tx, store, issue.Project, []string{issue.Key})
+		if err != nil {
+			return "", err
+		}
+		ownsTree, err := store.SessionClaimsOf(ctx, tx, chains.GateTree(issue.Key), id)
 		if err != nil || ownsTree {
 			return "", err
 		}

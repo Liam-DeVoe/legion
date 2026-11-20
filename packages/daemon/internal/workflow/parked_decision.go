@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -52,14 +51,18 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	return nil
 }
 
-// treeRoot is the record of the root of key's tree, nil when key is not recorded: key's own row
-// when it is its tree's root, read once.
+// treeRoot is the record of key's gate root on the Dispatch chain (gateRootOf), nil when key is not
+// recorded: key's own row when it holds its own gate.
 func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
 	issue, err := e.store.Issue(ctx, tx, key)
-	if err != nil || issue == nil || issue.Tree == key {
+	if err != nil || issue == nil {
 		return issue, err
 	}
-	return e.store.Issue(ctx, tx, issue.Tree)
+	root, _, err := e.gateRootOf(ctx, tx, *issue)
+	if err != nil {
+		return nil, err
+	}
+	return &root, nil
 }
 
 // ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's
@@ -244,15 +247,20 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 	return nil
 }
 
-// ArchitectHears says whether root has an architect to hear a person's decision now: it is its
-// tree's root, it does not linger, it has not left the workflow, and it does not wait in `todo`
-// for an admission slot (record.WaitsForSlot, read with steps, the design-gate steps the
-// deployment gates). It is the one reading of that question the daemon
-// has, so the hand-over of what a row named (HandOverKept) and the hold of a root architect's task
-// that names decisions (supervise's Deps.RootHears, the daemon's rootHears) never drift: a root
-// that hears is told at once, and one that does not keeps what it is owed until it runs again.
+// ArchitectHears says whether root has an architect to hear a person's decision now: it holds its
+// own design gate on the Dispatch chain (record.Chains.HoldsOwnGate), it does not linger, it has
+// not left the workflow, and it does not wait in `todo` for an admission slot (record.WaitsForSlot,
+// read with steps, the design-gate steps the deployment gates). It is the one reading of that
+// question the daemon has, so the hand-over of what a row named (HandOverKept) and the hold of a
+// root architect's task that names decisions (supervise's Deps.RootHears, the daemon's rootHears)
+// never drift: a root that hears is told at once, and one that does not keeps what it is owed
+// until it runs again.
 func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, steps []record.DesignStep) (bool, error) {
-	if !ArchitectHearsSlotted(root) {
+	chains, err := record.ReadChains(ctx, tx, store, root.Project, []string{root.Key})
+	if err != nil {
+		return false, err
+	}
+	if !ArchitectHearsSlotted(root, chains.HoldsOwnGate(root.Key)) {
 		return false, nil
 	}
 	waits, err := record.WaitsForSlot(ctx, tx, store, root, steps)
@@ -260,13 +268,14 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 }
 
 // ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
-// admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
-// is left is the rest of that one reading. Admission asks it of the roots its selection holds
-// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
-// in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
-// of those.
-func ArchitectHearsSlotted(root record.Issue) bool {
-	return claim.IsTreeRoot(root.Key, root.Tree) && !root.Lingers() && !record.OutOfWorkflow(root.Status)
+// admission slot, given whether it holds its own design gate on the chain the caller read
+// (holdsGate), which reads nothing: record.WaitsForSlot answers false for such a root, so what is
+// left is the rest of that one reading. Admission asks it of the roots its selection holds
+// (admit's readSlotHolders, through architectServed), over its pass's own chains: each holds a
+// slot, stands past its review in a tree that runs, or was released for a wait in a tree that runs,
+// and no queued root is one of those.
+func ArchitectHearsSlotted(root record.Issue, holdsGate bool) bool {
+	return holdsGate && !root.Lingers() && !record.OutOfWorkflow(root.Status)
 }
 
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which

@@ -990,7 +990,8 @@ func (d *chainDaemon) decide(answers map[string]map[string]string) {
 }
 
 // notices asks the notice router which architect each notice of each row's issue reaches, as the
-// outbox asks it when it delivers one, over the claims the supervisor holds.
+// outbox asks it when it delivers one, over the claims the supervisor holds: one route read for
+// every row's issue (readNoticeRoute), as a ready's release reads it.
 func (d *chainDaemon) notices(answer func(key, label, value string)) {
 	t := d.t
 	ctx := context.Background()
@@ -999,9 +1000,16 @@ func (d *chainDaemon) notices(answer func(key, label, value string)) {
 		t.Fatalf("begin the notice reads of %s: %v", d.project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	routes := map[string]noticeRoute{}
+	keys := make([]string, len(d.rows))
+	for i, row := range d.rows {
+		keys[i] = row.key
+	}
+	route, err := d.runner.readNoticeRoute(ctx, tx, d.project, keys)
+	if err != nil {
+		t.Fatalf("read the notice route of %s: %v", d.project, err)
+	}
 	for _, row := range d.rows {
-		issue, route, err := d.runner.readNoticeRoute(ctx, tx, row.key, routes)
+		issue, err := route.issue(row.key)
 		if err != nil && !errors.Is(err, errNoticeUnroutable) {
 			t.Fatalf("read the notice route of %s: %v", row.key, err)
 		}
@@ -1010,7 +1018,7 @@ func (d *chainDaemon) notices(answer func(key, label, value string)) {
 				answer(row.key, probe.label, "unroutable")
 				continue
 			}
-			token, err := noticeArchitect(route.project, route.issues, issue, probe.notice, d.runner.holdsItsRole)
+			token, err := noticeArchitect(route, issue, probe.notice, d.runner.holdsItsRole)
 			switch key, ok := d.tokens[token]; {
 			case err != nil:
 				answer(row.key, probe.label, "unroutable")

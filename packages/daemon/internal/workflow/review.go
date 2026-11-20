@@ -571,23 +571,21 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
-// walk from issue itself, as the outbox routes a notice of issue's phase, over the architect
-// claims of issue's tree this transaction reads (record.ReadOwnerWalk). That is issue's own
-// architect while its claim holds its role, else the nearest one above it whose claim does, else
-// the tree root's. A tree root is its own without a read.
+// walk from issue itself on the Dispatch chain, as the outbox routes a notice of issue's phase,
+// over the architect claims this transaction reads (record.ReadOwnerWalk, R18 of
+// dispatch://INFRA-3320). That is issue's own architect while its claim holds its role, else the
+// nearest one above it in Legion's work whose claim does, else its gate root's. Where the walk
+// meets a chain the copy cannot show to its top, it is issue's own, where the walk starts: the
+// issues above the gap are not known until the daemon reads Dispatch again.
 func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return issue.Tree, nil
-	}
-	project, err := claim.ProjectToken(issue.Project)
+	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, issue.Project, []string{issue.Key})
 	if err != nil {
 		return "", err
 	}
-	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, project, issue.Tree)
-	if err != nil {
-		return "", err
+	if owner := walk.Owner(issue.Key, false); owner != "" {
+		return owner, nil
 	}
-	return walk.Owner(issue, false), nil
+	return issue.Key, nil
 }
 
 // answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,

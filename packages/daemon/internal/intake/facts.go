@@ -393,20 +393,18 @@ type BasisChangesRead struct {
 
 func (f BasisChangesRead) namedIssue() (string, bool) { return f.Issue, true }
 
-// ReparentRead is the re-parent seed's read (record.ReparentSeed) of the new Dispatch parent of a
-// root that ran as a tree of its own and that a person made a child of a live tree: the root
-// (Issue), the parent, the root of the live tree the parent is in (Tree), and why the root stays a
-// tree of its own (Ran). BasisVersion is the version of the parent's primary document that R1's
-// path can rest the root on (dispatch://INFRA-3320, R1 and R2): the document's latest version,
-// where a person approved that version, the parent carries the legion label, Dispatch shows it
-// neither retro nor done, and that version marks requirement blocks. It is 0 where any of those
-// fails. The workflow posts the message on the root and tells the architect of Tree, and names
-// R1's path only where BasisVersion is set.
+// ReparentRead is the re-parent seed's read (record.ReparentSeed) of the new Dispatch parent of an
+// issue in Legion's work whose parent changed (R18 of dispatch://INFRA-3320): the issue, the seed
+// as the engine queued it, and BasisVersion, the version of the new parent's primary document that
+// R1's path can rest the issue on (R1 and R2): the document's latest version, where a person
+// approved that version, the parent carries the legion label, Dispatch shows it neither retro nor
+// done, and that version marks requirement blocks. It is 0 where any of those fails, or where the
+// issue has no new parent. The workflow queues one reparented notice for each distinct architect
+// among the issue's own, the one above it before and the one above it now, and names R1's path
+// only where BasisVersion is set.
 type ReparentRead struct {
 	Issue        string
-	Parent       string
-	Tree         string
-	Ran          string
+	Seed         record.ReparentSeed
 	BasisVersion int
 }
 
@@ -1117,12 +1115,16 @@ type HandoffComplete struct {
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 
-// BackwardMove asks the workflow to return to an earlier phase.
+// BackwardMove asks the workflow to return to an earlier phase. Architect is the caller's
+// architect claim token where an architect asked for the move, "" where the issue's own phase
+// worker did: the workflow holds an architect's move to the ownership rule again on the Dispatch
+// chain it reads where the fact commits (workflow's architectCallRefusal).
 type BackwardMove struct {
 	Issue     string
 	Requester claim.Role
 	To        phase.Phase
 	Reason    string
+	Architect claim.Token
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1138,11 +1140,14 @@ const (
 // RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
 // answered as it did, which a retry writes into the task the restarted role is given and into
 // the daemon's own log line for the release; it is empty for a response that names none, which
-// leaves the daemon's own words in both.
+// leaves the daemon's own words in both. Architect is the caller's architect claim token, "" for
+// the operator's retry of a failed root architect, which no architect sends (workflow's
+// architectCallRefusal).
 type RetryOrEscalate struct {
-	Issue    string
-	Decision RetryOrEscalateDecision
-	Reason   string
+	Issue     string
+	Decision  RetryOrEscalateDecision
+	Reason    string
+	Architect claim.Token
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1166,8 +1171,12 @@ type RestartPhase struct {
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
-// SignOff records the architect's post-production-check approval.
-type SignOff struct{ Issue string }
+// SignOff records the architect's post-production-check approval. Architect is the caller's
+// architect claim token (workflow's architectCallRefusal).
+type SignOff struct {
+	Issue     string
+	Architect claim.Token
+}
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 
@@ -1205,6 +1214,11 @@ func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 // blocks the root's documents read as a view on, the nearest reviewed ancestor that marks
 // requirement blocks (api's viewOf), "" where there is none or the root is no view on it. A
 // registration of another step reads no view and carries "".
+//
+// Architect is the caller's architect claim token, "" for a registration the workflow makes
+// itself (a person's handover registering its gate): the workflow holds the caller to the
+// ownership rule again on the Dispatch chain it reads where the fact commits (workflow's
+// architectCallRefusal).
 type GateRegistered struct {
 	Issue string
 	// Step is the design-gate step this registration records, which register_gate resolved
@@ -1225,15 +1239,18 @@ type GateRegistered struct {
 	ReviewedBy              dispatch.Actor
 	Basis                   *record.GateBasis
 	ViewOf                  string
+	Architect               claim.Token
 }
 
 func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
-// CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
-// the reason it gives: a human decided no change at the design gate, or the issue is moot.
+// CloseRoot is a root's architect ending its run before its first phase starts, with the reason it
+// gives: a human decided no change at the design gate, or the issue is moot. Architect is the
+// caller's architect claim token (workflow's architectCallRefusal).
 type CloseRoot struct {
-	Issue  string
-	Reason string
+	Issue     string
+	Reason    string
+	Architect claim.Token
 }
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
@@ -1646,6 +1663,27 @@ type Refusal struct {
 	Status  int
 	Code    string
 	Message string
+}
+
+// ChainUnknown is the 409 CHAIN_UNKNOWN refusal of a call on key, whose Dispatch chain the
+// daemon's copy cannot show to its top (record.Chain.Known, R16 of dispatch://INFRA-3320), so who
+// may act on key is not known: its message names the issue and the link the copy lacks or the key
+// that repeats, and says that the daemon reads Dispatch again (decision 4 of
+// dispatch://INFRA-4730). The workflow answers it where an architect's call commits, and the API
+// before it.
+func ChainUnknown(key string, chain record.Chain) *Refusal {
+	var why string
+	switch chain.Cause {
+	case record.ChainMissingRow:
+		why = fmt.Sprintf("the daemon's copy of Dispatch holds no row of %s, on the chain of %s", chain.At, key)
+	case record.ChainRepeats:
+		why = fmt.Sprintf("the Dispatch chain of %s reaches %s twice", key, chain.At)
+	case record.ChainTooLong:
+		why = fmt.Sprintf("the Dispatch chain of %s runs past %d links at %s", key, record.MaxChainLinks, chain.At)
+	default:
+		why = fmt.Sprintf("the daemon has not read the Dispatch chain of %s past %s", key, chain.At)
+	}
+	return &Refusal{Status: 409, Code: "CHAIN_UNKNOWN", Message: fmt.Sprintf("%s, so who may act on %s is not known; the daemon reads Dispatch again, and the call can be made again once the chain is known", why, key)}
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

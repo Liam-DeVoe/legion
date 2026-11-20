@@ -88,7 +88,7 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		root, run := held.issue, read.runs[held.token]
 		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
 		now := a.now()
-		took, err := a.architectTookNothing(ctx, tx, root, row, run, floor, now)
+		took, err := a.architectTookNothing(ctx, tx, root, row, run, read.chains.HoldsOwnGate(root.Key), floor, now)
 		if err != nil {
 			return nil, err
 		}
@@ -335,7 +335,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // it, so the arm reads the roots the rule of R5 reaches and no others, as R7 says. Those
 // readings are asked last, so a root whose claim holds no such task costs no read.
 func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseEntry,
-	run record.RoleRun, floor stallFloor, now time.Time,
+	run record.RoleRun, holdsGate bool, floor stallFloor, now time.Time,
 ) (string, error) {
 	held := run.Claim
 	if held == nil || held.Pending == nil {
@@ -355,7 +355,7 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 	if now.Sub(from) <= workflow.StrandedReleaseWake {
 		return "", nil
 	}
-	served, err := a.architectServed(ctx, tx, root, row, run)
+	served, err := a.architectServed(ctx, tx, root, row, run, holdsGate)
 	if err != nil || !served {
 		return "", err
 	}

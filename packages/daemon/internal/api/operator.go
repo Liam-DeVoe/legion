@@ -426,8 +426,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, "spawn") {
 		return
 	}
+	// An operator's tree is named for the issue it grew from, so the architect of its own issue is
+	// the gate holder's (supervise.Claim.HoldsGate); a workflow start writes the mark again from the
+	// Dispatch chain.
 	c := supervise.Claim{
 		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
+		HoldsGate: claim.IsTreeRoot(req.Issue, req.Tree),
 	}
 	if s.refusedWhilePaused(w, r, "spawn", c) {
 		return

@@ -2622,14 +2622,16 @@ type Store interface {
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
-	// EarlierNotices is every unfinished notice row of tree's issues written before row id, oldest
-	// first: the rows the fence reads, from which the daemon keeps those that go to the same
-	// architect as the later one (its earlierNoticeFor), since a child's own architect and the
-	// root's each take notices of the one tree.
+	// EarlierNotices is every unfinished notice row of the issues of Dispatch project project
+	// written before row id, oldest first: the rows the fence reads, from which the daemon keeps
+	// those that go to the same architect as the later one (its earlierNoticeFor). Which
+	// architect a notice goes to is read on the Dispatch chain when it is delivered (R18 of
+	// dispatch://INFRA-3320), and a change of parent can move it, so the read is the project's and
+	// not one tree's.
 	// Each row comes whole, its next_at among it, so the holder can wait for the moment the row it
 	// waits behind is due rather than climb a backoff to it (the daemon's deliverNotice, whose
 	// fence waits with wait.Until for a catch-up the wake pacing holds).
-	EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, id int64) ([]OutboxRow, error)
+	EarlierNotices(ctx context.Context, tx pgx.Tx, project string, id int64) ([]OutboxRow, error)
 	// RoleRun reads one role's run of an issue generation: its queued supervise rows and the claim
 	// with token.
 	RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error)

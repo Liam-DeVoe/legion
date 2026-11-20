@@ -972,10 +972,12 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 //
 // A claim on an issue the daemon does not record hears, as it holds for the phase: there is no
 // record only for a claim the workflow never made.
+// The claim asking is a gate holder's architect (supervise's treeRoot, which reads the claim's
+// HoldsGate), so the root read is the claim's own issue, never the tree it stores.
 func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ supervise.Delivery) (bool, error) {
 	var hears bool
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		root, err := w.records.Issue(ctx, tx, c.Tree)
+		root, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || root == nil {
 			hears = err == nil
 			return err
@@ -983,7 +985,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 		hears, err = workflow.ArchitectHears(ctx, tx, w.records, *root, w.gatedSteps)
 		return err
 	}); err != nil {
-		return false, fmt.Errorf("read whether the root of %s has an architect to hear its task: %w", c.Tree, err)
+		return false, fmt.Errorf("read whether the root %s has an architect to hear its task: %w", c.Issue, err)
 	}
 	return hears, nil
 }

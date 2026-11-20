@@ -128,11 +128,12 @@ func (r *adoptionRig) token(issue string, role claim.Role) claim.Token {
 	return mustClaimToken(r.t, issue, role)
 }
 
-// put records each issue as the workflow holds it.
+// put records each issue as the workflow holds it, with its row of the copy (putChainIssue), so
+// each stands on a known Dispatch chain.
 func (r *adoptionRig) put(issues ...record.Issue) {
 	r.t.Helper()
 	for _, issue := range issues {
-		putOutboxIssue(r.t, r.pool, r.records, issue)
+		putChainIssue(r.t, r.pool, r.records, issue)
 	}
 }
 

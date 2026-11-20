@@ -176,7 +176,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
-		root, ok := byKey[issue.Tree]
+		// The tree is the issue's gate root on the pass's Dispatch chains (record.Chains.StateTree).
+		root, ok := byKey[facts.Chains.StateTree(issue.Key)]
 		if !ok {
 			continue
 		}

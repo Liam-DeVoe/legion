@@ -6,7 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -40,8 +39,11 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
-	if !claim.IsTreeRoot(root.Key, root.Tree) {
-		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s; close_root ends a tree root, and a child leaves with park_child "+parkRule, root.Key, root.Tree)), nil
+	// A root is one on the Dispatch chain this transaction reads, closed by its own architect
+	// (architectCallRefusal, R18 of dispatch://INFRA-3320): an issue under another in Legion's
+	// work is no root whatever tree its record stores.
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *root, closeCall); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	if !closableAtPhase(root.Phase) || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — at admitted, whether or not it holds its slot, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil

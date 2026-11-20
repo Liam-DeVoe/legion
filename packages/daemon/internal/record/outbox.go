@@ -499,6 +499,13 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// To is the issue whose architect a reparented notice tells (ReparentedNotice): R18 of
+	// dispatch://INFRA-3320 tells three architects of a change of parent, the issue's own, the one
+	// above it before and the one above it now, each once, so each notice names the one it is for
+	// rather than reaching whichever architect owns the issue when it is delivered. Every other
+	// kind carries none and goes to the architect that owns its issue (the daemon's
+	// noticeArchitect).
+	To string `json:"to,omitempty"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -1330,23 +1337,58 @@ func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation}
 }
 
-// ReparentSeed reads the new Dispatch parent of a root that ran as a tree of its own and that a
-// person has made a child of a live tree (workflow's tellReparented), and applies what it finds
-// as a fact that posts the message on the row's issue, the re-parented root, and queues the
-// child-status notice to the architect of the parent's tree. The engine does no I/O, so the read
-// of whether the parent carries the legion label, holds a person's approval of its primary
+// ReparentSeed is R18's notice of a change of parent (dispatch://INFRA-3320): an event moved the
+// Dispatch parent of the row's issue, an issue in Legion's work, to a parent it has not been told
+// of (Issue.ToldParent), and the engine queued this row in the event's own transaction (workflow's
+// tellParentChange). It names the issue's run and phase entry at the move, its old and its new
+// parent and what goes on, which stays (R17): the phase under way, whether it holds an admission
+// slot, and its design-gate steps with their basis. The engine does no I/O, so the read of
+// whether the new parent carries the legion label, holds a person's approval of its primary
 // document's latest version and marks requirement blocks in it, which decides whether the words
-// name the path of a view on that parent, waits on this row.
+// name R1's path, waits on this row; what it reads comes back as a fact (intake.ReparentRead)
+// that queues one reparented notice for each distinct architect among the issue's own, the one
+// above it before and the one above it now.
+//
+// Parent, Tree and Ran are the fields INFRA-4728's row carried, and the release before requires
+// each (decision 15 of dispatch://INFRA-4730): a row of that shape a daemon left at its first boot
+// on this release carries no run, and is told as R18 says, its old parent read from the record.
 type ReparentSeed struct {
-	// Parent is the root's new Dispatch parent, whose labels and primary document the row reads.
+	// Parent is the issue's new Dispatch parent, whose labels and primary document the row reads;
+	// "" where the change took its parent away.
 	Parent string `json:"parent"`
-	// Tree is the root of the live tree Parent belongs to, whose architect the notice goes to.
+	// Tree is the gate root on the issue's chain when the row was queued, where the release before
+	// sends its notice of the row (R22).
 	Tree string `json:"tree"`
-	// Ran is why the root stays a tree of its own (workflow's RanAsRoot), which the words name.
+	// Ran is what goes on in Legion's words, which the release before writes into its notice.
 	Ran string `json:"ran"`
+	// Generation and Entry are the issue's run and its phase entry when its parent changed.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
+	// OldParent is the Dispatch parent the record held before the event, "" where it held none.
+	OldParent string `json:"oldParent,omitempty"`
+	// Phase is the phase under way, and Slot whether the issue holds an admission slot.
+	Phase phase.Phase `json:"phase,omitempty"`
+	Slot  bool        `json:"slot,omitempty"`
+	// Steps is each design-gate step the issue holds itself, with its basis, in step order.
+	Steps []ReparentStep `json:"steps,omitempty"`
 }
 
 func (ReparentSeed) OutboxKind() OutboxKind { return OutboxKindReparentSeed }
+
+// ReleaseBefore says whether the seed is a row of INFRA-4728's shape, which names no run: the one
+// shape a seed this release queues never takes (NewOutboxRow refuses it).
+func (s ReparentSeed) ReleaseBefore() bool { return s.Generation == 0 }
+
+// ReparentStep is one design-gate step an issue holds itself when its parent changes: the step,
+// whether it stands open, and the ancestor and its document's version it rests on or waits on
+// (GateBasis), "" and 0 for a step that rests on none.
+type ReparentStep struct {
+	Step         DesignStep `json:"step"`
+	Open         bool       `json:"open,omitempty"`
+	Basis        string     `json:"basis,omitempty"`
+	BasisVersion int        `json:"basisVersion,omitempty"`
+	Pending      bool       `json:"pending,omitempty"`
+}
 
 // LingerClose records the issue generation whose linger should close.
 type LingerClose struct {
@@ -2079,9 +2121,13 @@ func RetryBackoff(attempts int) time.Duration {
 	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
 }
 
-// NewOutboxRow encodes one validated payload for durable delivery at nextAt.
+// NewOutboxRow encodes one validated payload for durable delivery at nextAt. A payload this
+// release writes also carries what a row an earlier release left lacks (newPayloadRefusal).
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(issue, payload); err != nil {
+		return OutboxRow{}, err
+	}
+	if err := newPayloadRefusal(payload); err != nil {
 		return OutboxRow{}, err
 	}
 	encoded, err := json.Marshal(payload)
@@ -2089,6 +2135,18 @@ func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (Outbox
 		return OutboxRow{}, fmt.Errorf("encode outbox payload: %w", err)
 	}
 	return OutboxRow{Kind: payload.OutboxKind(), Issue: issue, Payload: encoded, NextAt: nextAt}, nil
+}
+
+// newPayloadRefusal refuses a payload this release queues without what a row of its kind written
+// by an earlier release lacks, and which that row is still decoded without (DecodeOutboxPayload):
+// a re-parent seed names the issue's run (R17 of dispatch://INFRA-3320), while a row of
+// INFRA-4728's shape names none (ReparentSeed.ReleaseBefore). Its phase entry may be the zero
+// entry of an issue no phase has started, which is told all the same.
+func newPayloadRefusal(payload OutboxPayload) error {
+	if seed, ok := payload.(ReparentSeed); ok && seed.Generation == 0 {
+		return fmt.Errorf("a re-parent seed names the issue's generation when its parent changed")
+	}
+	return nil
 }
 
 // DecodeOutboxPayload strictly decodes a row's typed payload.
@@ -2367,8 +2425,17 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a pending-basis seed names the root's step and document, the ancestor's document and the version its request asks approval of, the request and the generation that registered the step")
 		}
 	case ReparentSeed:
-		if value.Parent == "" || value.Tree == "" || value.Ran == "" {
-			return fmt.Errorf("a re-parent seed names the root's new parent, the live tree that parent is in and why the root stays a tree of its own")
+		if value.Tree == "" || value.Ran == "" {
+			return fmt.Errorf("a re-parent seed names the gate root the release before tells and what goes on")
+		}
+		if value.ReleaseBefore() {
+			// INFRA-4728's shape, which a daemon of that release left at this release's first boot:
+			// its new parent is the one thing it is about.
+			if value.Parent == "" {
+				return fmt.Errorf("a re-parent seed names its issue's new parent where it names no run, as a row of the release before does")
+			}
+		} else if value.Parent == value.OldParent {
+			return fmt.Errorf("a re-parent seed names a change of parent: its old and its new parent are both %q", value.Parent)
 		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
@@ -2420,6 +2487,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if volume := value.Volume; volume != nil && (volume.PodUID == "" || volume.Trimmer == "" || volume.Episode <= 0) {
 			return fmt.Errorf("a volume-near-full notice requires the pod it is of, the trimmer that swept it and the episode it was in")
 		}
+		if (value.Kind == ReparentedNotice) != (value.To != "") {
+			return fmt.Errorf("a %s notice names the architect it tells only when it is a reparented notice", value.Kind)
+		}
+		if value.Kind == ReparentedNotice && value.Reason == "" {
+			return fmt.Errorf("a reparented notice carries the words of the change of parent it tells")
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
@@ -2460,6 +2533,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Volume != nil {
 			return fmt.Errorf("a %s controller notice carries a volume sweep; a filling issue pod's volume is its own architect's to read", value.Kind)
+		}
+		if value.To != "" {
+			return fmt.Errorf("a %s controller notice names an architect to tell; only a reparented notice does, and it goes to that architect", value.Kind)
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
@@ -2736,6 +2812,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // dispatch://INFRA-3320 R10): the start it holds, each open child and what ends the wait. It
 // replaces the phase-finished notice that start would have sent, and carries that notice's summary
 // and verdict.
+//
+// `reparented` tells an architect that the Dispatch parent of an issue in Legion's work changed
+// (ReparentedNotice, R18 of dispatch://INFRA-3320).
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2743,7 +2822,7 @@ var validNoticeKinds = []NoticeKind{
 	"basis-ended", "basis-changes-requested", "resting-root",
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault",
+	"session-lost", "session-store-fault", ReparentedNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2753,6 +2832,14 @@ var validNoticeKinds = []NoticeKind{
 // volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
 // architect is who can stop or redirect it.
 const VolumeNearFullNotice NoticeKind = "volume-near-full"
+
+// ReparentedNotice is R18's notice of a change of parent (dispatch://INFRA-3320): the Dispatch
+// parent of an issue in Legion's work changed, and the issue's own architect, the architect above
+// it before and the one above it now are each told once, each by a notice of its own that names
+// it (Notice.To). Its reason names the old and the new parent and what goes on, which stays
+// (R17): the phase under way, the slot it holds, its design-gate steps and their basis, and,
+// where the new parent opens it, R1's path (workflow's reparentRead).
+const ReparentedNotice NoticeKind = "reparented"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

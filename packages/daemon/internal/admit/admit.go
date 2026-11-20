@@ -2220,7 +2220,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				opened = opened || facts.GatesOpen(issue.Key)
 			case record.LineFirstPhase:
-				if err := a.engine.StartFirstPhase(ctx, tx, issue, rows[issue.Key].Blockers); err != nil {
+				if err := a.engine.StartFirstPhase(ctx, tx, issue, facts.Chains.HoldsOwnGate(issue.Key), rows[issue.Key].Blockers); err != nil {
 					return admitted, released, err
 				}
 			}
@@ -3103,6 +3103,9 @@ type slotReading struct {
 	holders []slotHolder
 	runs    map[claim.Token]record.RoleRun
 	entries map[record.PhaseRole]record.PhaseEntry
+	// chains is the pass's own reading of the Dispatch chains (record.LineFacts.Chains), which
+	// says whether a root's issue holds its own design gate (architectServed).
+	chains *record.Chains
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
@@ -3213,6 +3216,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	if read.entries, err = a.store.PhaseEntries(ctx, tx, weighed); err != nil {
 		return slotReading{}, fmt.Errorf("read the phase entries of %d slot holders: %w", len(weighed), err)
 	}
+	read.chains = facts.Chains
 	return read, nil
 }
 
@@ -3278,7 +3282,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 			continue
 		}
 		if held.role == claim.RoleArchitect {
-			reached, err := a.architectReached(ctx, tx, held.issue, entry, run)
+			reached, err := a.architectReached(ctx, tx, held.issue, entry, run, read.chains.HoldsOwnGate(held.issue.Key))
 			if err != nil {
 				return nil, err
 			}
@@ -3314,12 +3318,12 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 // The same three hold for an architect whose phases row names no entry at all, which the pass
 // hands an entry rather than resumes (raiseArchitectEntry, workflow.Engine.StartArchitect).
 func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun,
+	run record.RoleRun, holdsGate bool,
 ) (bool, error) {
 	if _, pending := workflow.ArchitectStartPending(root, entry.Entry, run); pending {
 		return false, nil
 	}
-	return a.architectServed(ctx, tx, root, entry, run)
+	return a.architectServed(ctx, tx, root, entry, run, holdsGate)
 }
 
 // architectServed is whether the own architect of a root the selection holds is one the sweep has
@@ -3343,9 +3347,9 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // (dispatch://INFRA-2614). The pure reading is asked first, so the reach's read of the hand-over
 // row is made only for a root that hears.
 func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun,
+	run record.RoleRun, holdsGate bool,
 ) (bool, error) {
-	if !workflow.ArchitectHearsSlotted(root) {
+	if !workflow.ArchitectHearsSlotted(root, holdsGate) {
 		return false, nil
 	}
 	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root, entry, run)

@@ -237,3 +237,20 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 	m.claim.Tree, m.claim.TreeEpoch = tree, 0
 	return m.persist(ctx)
 }
+
+// MarkGate records on the claim whether its issue holds its own design gate, as the Dispatch chain
+// reads it when the claim is started (Claim.HoldsGate, record.Chains.HoldsOwnGate): the daemon's
+// outbox writes it at each start, so a change of parent that makes the issue a root, or takes a
+// root under a parent that holds the gate, reaches the claim's next launch. The mark is what the
+// machine reads a gate holder's architect by (Claim.treeRoot); a claim already marked so writes
+// nothing.
+func (m *Machine) MarkGate(ctx context.Context, holds bool) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.HoldsGate == holds {
+		return nil
+	}
+	m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
+	m.claim.HoldsGate = holds
+	return m.persist(ctx)
+}

@@ -1727,25 +1727,25 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 
 // notice publishes a notice row to its architect (noticeArchitect), on that architect's own role
 // topic, and to nothing else: a catch-up to the architect of its own issue, whose state it states,
-// and every other notice to the architect that owns its issue. Every notice kind is for an
+// a reparented notice to the architect it names, and every other notice to the architect that
+// owns its issue on the Dispatch chain (R18 of dispatch://INFRA-3320). Every notice kind is for an
 // architect, and no claim subscribes to an issue topic (packages/pi-legion/src/claim-session.ts),
-// so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
-// its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
-// behind an earlier notice of its tree that is held for the same architect, so each architect is
-// told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
-// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
-// topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
-// can hold its role again — relaunching, a root the operator suspended and can resume, or the
-// architect of a catch-up's own issue suspended while that issue is in the workflow, which its
-// next start resumes — the row is held for it; once nobody will hold that role for this notice —
-// the claim has failed or retired, or its tree lingers or has closed — the row finishes
-// undelivered with one log line. So does a row whose architect cannot be resolved from the record
-// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
-// whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
-// the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
-// launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
-// undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision).
+// so no issue topic carries one. The architect and the earlier notices it waits behind are read
+// from one snapshot of the chains (notice_routing.go). A notice waits behind an earlier notice of
+// the project that is held for the same architect, so each architect is told in the order the
+// notices were written: on its backoff (errNoticeWaits), or, when the earlier row is itself due at
+// a moment still ahead, at that moment and once (wait.Until). A notice whose owner walk meets a
+// chain the copy cannot show to its top waits too, until the chain is known. A role topic with no
+// live holder refuses the publish (notify.ErrNoHolder): while the architect's claim can hold its
+// role again — relaunching, suspended by the operator or by a stop of its issue, or released for
+// being idle — the row is held for it; once nobody will hold that role for this notice — the claim
+// has failed or retired, or this daemon does not supervise it — the row finishes undelivered with
+// one log line. So does a row whose architect cannot be resolved from the record
+// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a
+// catch-up while its issue is out of the workflow by its status or its phase
+// (record.InWorkflow), whose next launch writes a fresh one. A person's spec decision in a notice
+// that finishes undelivered because nobody will hold the role goes to the controller instead
+// (parkDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
@@ -1829,7 +1829,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if r.supervisor == nil {
 		return errors.New("notice executor has no claim supervisor")
 	}
-	issue, tree, err := r.readNoticeTree(ctx, row)
+	issue, snapshot, err := r.readNoticeTree(ctx, row)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
 		return nil
@@ -1843,8 +1843,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	}
 	// A catch-up goes to the architect of its own issue and to no other (noticeArchitect), so it is
 	// judged against that architect's claim and that issue's generation: a child's catch-up is
-	// superseded by the child's architect's later launch, never by its tree root's.
-	architect, err := noticeArchitect(tree.project, tree.issues, issue, payload, r.holdsItsRole)
+	// superseded by the child's architect's later launch, never by the one above it. A notice whose
+	// owner walk meets a chain the copy cannot show to its top waits (errNoticeWaits).
+	architect, err := noticeArchitect(snapshot.noticeRoute, issue, payload, r.holdsItsRole)
 	if err != nil {
 		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
 	}
@@ -1855,37 +1856,27 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			// (settleTold); one that never published hands its decisions to a fresh catch-up, since
 			// the newer catch-up was composed from what nobody claimed and left them out.
 			_, told := payload.Published(row.ID)
-			if err := r.supersededKept(ctx, tree.root.Key, row.ID, told); err != nil {
+			if err := r.supersededKept(ctx, row.Issue, row.ID, told); err != nil {
 				return err
 			}
 			r.log.Info("outbox catch-up finished without publishing: a newer catch-up supersedes it", "row", row.ID, "issue", row.Issue,
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-		// A child out of the workflow (record.InWorkflow: by its status, or done, as a parked child
-		// stays when a person writes a running status on it without a todo) has its architect
+		// An issue out of the workflow (record.InWorkflow: by its status, or done, as a parked
+		// issue stays when a person writes a running status on it without a todo) has its architect
 		// suspended or retired with its launch and its generation kept, so nothing supersedes the
 		// row. It finishes here, before any publish, since no ready queues a catch-up while the
-		// child is out of the workflow (workflow's claimReady, the same rule) and its next launch
-		// writes a fresh one. A root's catch-up is not judged by this check: besides the endings
-		// every notice has, it ends when a newer one supersedes it (catchUpSuperseded, above), when
-		// its architect stopped with its finished tree (stoppedWithTree, below), or when no session
-		// holds its role and its claim will not hold it again (noticeAnswered's architectEnded).
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) {
+		// issue is out of the workflow (workflow's claimReady, the same rule) and its next launch
+		// writes a fresh one. A root is no exception: a stop leaves every issue's claims suspended
+		// alike (R20 of dispatch://INFRA-3320).
+		if !record.InWorkflow(issue) {
 			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
 	}
 	notice, key := payload.Published(row.ID)
-	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
-		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
-			return err
-		}
-		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "state", held.State, "stopping", held.Stopping)
-		return nil
-	}
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
@@ -1900,7 +1891,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
-	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, due := earlierNoticeFor(snapshot, architect, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
 		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
@@ -1915,7 +1906,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
-	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+	return r.noticeAnswered(ctx, row, payload, snapshot, architect, published)
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one
@@ -2612,16 +2603,27 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
 			}
 		}
+		// Whether the issue holds its own design gate is read on the Dispatch chain at each start and
+		// written on the claim (supervise.Claim.HoldsGate, record.Chains.HoldsOwnGate), since
+		// supervise holds no store: it is what the machine reads a gate holder's architect by, for
+		// the stop refusal, the exit suspension, the superseding of a task and the root's hearing
+		// guard (R18 of dispatch://INFRA-3320).
+		holdsGate, err := r.holdsOwnGate(ctx, issue)
+		if err != nil {
+			return err
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
 			machine, _, err = r.supervisor.Create(ctx, supervise.Claim{
-				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued,
+				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued, HoldsGate: holdsGate,
 			}, "")
 			if err != nil {
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
+		} else if err := machine.MarkGate(ctx, holdsGate); err != nil {
+			return fmt.Errorf("mark the gate of claim %s: %w", token, err)
 		}
 		// The task this start gives the claim, nil for a start that carries none. It is built here,
 		// before the start is recorded, because the record reads it: a task the claim holds back
@@ -3813,24 +3815,28 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
-// seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
-// made a child of a live tree (record.ReparentSeed), whether R1's path is open on its new parent
-// (dispatch://INFRA-3320, R1 and R2; reparentBasisVersion), and applies what it read as a fact
-// (intake.ReparentRead), whose workflow handler posts the message on the root and tells the
-// architect of the parent's tree. The read decides only the words: a parent R1's path is closed
-// on gets today's words. The fact's id is the row's, so a run of the same row again is a
-// duplicate, and the seed of a later move is a fact of its own.
+// seedReparent reads, for the row's issue, an issue in Legion's work whose Dispatch parent changed
+// (record.ReparentSeed, R18 of dispatch://INFRA-3320), whether R1's path is open on its new parent
+// (R1 and R2; reparentBasisVersion), and applies what it read as a fact (intake.ReparentRead),
+// whose workflow handler queues one reparented notice for each distinct architect among the
+// issue's own, the one above it before and the one above it now. The read decides only the words:
+// a parent R1's path is closed on, and a move to no parent, get no word of it. A row of
+// INFRA-4728's shape is read and applied the same way, and the handler reads what it lacks from
+// the record. The fact's id is the row's, so a run of the same row again is a duplicate, and the
+// seed of a later move is a fact of its own.
 func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
 	if r.dispatch == nil {
 		return errors.New("re-parent seed executor has no Dispatch client")
 	}
-	version, err := r.reparentBasisVersion(ctx, payload.Parent)
-	if err != nil {
-		return err
+	var version int
+	if payload.Parent != "" {
+		var err error
+		if version, err = r.reparentBasisVersion(ctx, payload.Parent); err != nil {
+			return err
+		}
 	}
 	id := fmt.Sprintf("reparent-seed:%s:%d", row.Issue, row.ID)
-	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.ReparentRead{Issue: row.Issue, Parent: payload.Parent, Tree: payload.Tree,
-		Ran: payload.Ran, BasisVersion: version}, r.handlers...); err != nil {
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.ReparentRead{Issue: row.Issue, Seed: payload, BasisVersion: version}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the re-parent seed of %s: %w", row.Issue, err)
 	}
 	return nil
@@ -3875,6 +3881,25 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 		return fmt.Errorf("apply linger expiration for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// holdsOwnGate says whether issue holds its own design gate on the Dispatch chain as the copy shows
+// it now (record.Chains.HoldsOwnGate, R15 of dispatch://INFRA-3320): a root, or an issue that ran
+// as one and keeps its gate under a parent in Legion's work. It is read in a read-only transaction
+// of its own just before a start acts, as every fence of a row is.
+func (r *outbox) holdsOwnGate(ctx context.Context, issue record.Issue) (bool, error) {
+	var holds bool
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		chains, err := record.ReadChains(ctx, tx, r.records, issue.Project, []string{issue.Key})
+		if err != nil {
+			return err
+		}
+		holds = chains.HoldsOwnGate(issue.Key)
+		return nil
+	}); err != nil {
+		return false, fmt.Errorf("read whether %s holds its own design gate: %w", issue.Key, err)
+	}
+	return holds, nil
 }
 
 // designGateClosed says whether the design gate of the issue's tree is closed, which holds the

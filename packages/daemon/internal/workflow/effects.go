@@ -109,8 +109,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
 // of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
 // not linger, up and between turns, in no update round, holding no task it still works, with no
-// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
-// waiting to be prompted; the role, not the state, tells a fault from health. The last three
+// acting stop and no queued start. Ready and idle are both a process
+// waiting to be prompted; the role, not the state, tells a fault from health. The last two
 // terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
 // its way to is named. Admission's repair of a role behind its entry (admit's owedEntryRoles)
 // can name the same claim when it is behind the entry its phases row names, and both then send
@@ -141,7 +141,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 		return false
 	}
 	stop := actingStop(run, root)
-	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+	return stop == 0 && !queuedStartActs(run, stop, issue.Phase)
 }
 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
@@ -490,11 +490,12 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 
 // ownArchitectRun is the run of issue's own architect at issue's generation, its queued rows and
 // its claim (record.Store.RoleRun), and false for an issue with no architect of its own to start:
-// a tree root, whose architect is admission's, started with its tree, and an issue whose key makes
-// no claim token. reviveArchitect and ownArchitectStarting read it.
+// an issue that holds its own design gate on the Dispatch chain (record.Chains.HoldsOwnGate), whose
+// architect is admission's, started with its run, and an issue whose key makes no claim token.
+// reviveArchitect and ownArchitectStarting read it.
 func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.RoleRun, bool, error) {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return record.RoleRun{}, false, nil
+	if holds, err := e.holdsOwnGate(ctx, tx, issue); err != nil || holds {
+		return record.RoleRun{}, false, err
 	}
 	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {

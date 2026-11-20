@@ -284,17 +284,17 @@ const (
 // way the notice is queued: a registration (tellRegisteredBasis), the end of a pending wait, and a
 // resting root's close or its leaving the workflow each call it with the event it tells.
 //
-// Where the daemon records the ancestor in no live tree (ancestorInLiveTree) it queues nothing
-// and records nothing as told: no architect of the ancestor would hear it, and the ancestor's start
-// task at its admission names the roots that rest on it. Otherwise each event is told once
-// (restingRootEvent), marked in the notice's own transaction.
+// Where no architect of the ancestor is in Legion's work on its Dispatch chain (ancestorReached)
+// it queues nothing and records nothing as told: no architect of the ancestor would hear it, and
+// the ancestor's start task at its admission names the roots that rest on it. Otherwise each
+// event is told once (restingRootEvent), marked in the notice's own transaction.
 func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, event restingRootEvent, what string) error {
-	live, err := e.ancestorInLiveTree(ctx, tx, basis.Issue)
+	reached, err := e.ancestorReached(ctx, tx, basis.Issue)
 	if err != nil {
 		return err
 	}
-	if !live {
-		e.logOnCommit(ctx, "workflow: the daemon records the ancestor in no live tree, so no resting-root notice is queued", "issue", root.Key,
+	if !reached {
+		e.logOnCommit(ctx, "workflow: no architect of the ancestor is in Legion's work on its Dispatch chain, so no resting-root notice is queued", "issue", root.Key,
 			"ancestor", basis.Issue, "event", string(event))
 		return nil
 	}
@@ -319,21 +319,20 @@ func servesSentence(root, ancestor string, serves []string) string {
 	return fmt.Sprintf("The checks of %s serve these requirements of %s: %s.", root, ancestor, strings.Join(serves, ", "))
 }
 
-// ancestorInLiveTree says whether the daemon records key in a live tree: key is recorded, and the
-// root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
-// reaches an architect.
-func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+// ancestorReached says whether a notice keyed by key reaches an architect: the daemon records key,
+// and its Dispatch chain has a gate root at or above it in Legion's work (record.Chains.GateRoot),
+// where the owner walk of a notice on key ends (R18 of dispatch://INFRA-3320). An unknown chain
+// has none, and the notice is not queued.
+func (e *Engine) ancestorReached(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	ancestor, err := e.store.Issue(ctx, tx, key)
-	if err != nil || ancestor == nil || ancestor.Tree == "" {
+	if err != nil || ancestor == nil {
 		return false, err
 	}
-	root := ancestor
-	if !claim.IsTreeRoot(ancestor.Key, ancestor.Tree) {
-		if root, err = e.store.Issue(ctx, tx, ancestor.Tree); err != nil || root == nil {
-			return false, err
-		}
+	chains, err := record.ReadChains(ctx, tx, e.store, ancestor.Project, []string{key})
+	if err != nil {
+		return false, err
 	}
-	return record.TreeLive(ctx, e.store, tx, *root)
+	return chains.GateRoot(key) != "", nil
 }
 
 // tellRestingLeft tells the architect of each ancestor that root rests on (R8) that root has left
@@ -852,9 +851,10 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 // tellBasisChanges passes on review, a person's changes request on the version of the ancestor's
 // document that gate, a step of root, stands open on, made after the approval the step opened on
 // (R3): basis-changes-requested to the root's architect, naming the ancestor's document, the
-// version, the person and their reason, and, where the daemon records the ancestor in a live tree
-// (ancestorInLiveTree), the same keyed by the ancestor, so it reaches the architect that owns the
-// ancestor (the outbox's owningArchitect), naming the root and the requirements it serves. The step
+// version, the person and their reason, and, where an architect of the ancestor is in Legion's
+// work on its Dispatch chain (ancestorReached), the same keyed by the ancestor, so it reaches the
+// architect that owns the ancestor (the outbox's owningArchitect), naming the root and the
+// requirements it serves. The step
 // stays open. Each review is told once, whatever carries it (the live event, a seed's read) and in
 // whatever order: the told-once mark is keyed by the review's place in the ancestor's event log
 // (reviewPlace), as tellChanges marks a changes request on the root's own document, so a second
@@ -884,10 +884,10 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 	if err := e.notice(ctx, tx, root.Key, told); err != nil {
 		return err
 	}
-	live, err := e.ancestorInLiveTree(ctx, tx, basis.Issue)
-	if err != nil || !live {
+	reached, err := e.ancestorReached(ctx, tx, basis.Issue)
+	if err != nil || !reached {
 		if err == nil {
-			e.logOnCommit(ctx, "workflow: the daemon records the ancestor in no live tree, so its architect is not told the changes request", "issue", root.Key,
+			e.logOnCommit(ctx, "workflow: no architect of the ancestor is in Legion's work on its Dispatch chain, so it is not told the changes request", "issue", root.Key,
 				"ancestor", basis.Issue)
 		}
 		return err

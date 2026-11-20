@@ -134,7 +134,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return engine.StartFirstPhase(ctx, tx, *issue, nil)
+			return engine.StartFirstPhase(ctx, tx, *issue, true, nil)
 		})
 	}
 	openTheGate()

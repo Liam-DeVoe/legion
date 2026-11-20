@@ -761,9 +761,19 @@ type ClaimView struct {
 	WakeWaiting *WakeWaiting
 }
 
-// treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
-// when its tree closes.
-func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
+// treeRoot is whether the claim is the architect of an issue that holds its own design gate (R15
+// of dispatch://INFRA-3320): a root's, or one that ran as a root and keeps its gate under a parent
+// in Legion's work. It is the claim the stop refusal, the exit suspension, the superseding of an
+// unconfirmed task and the root's hearing guard (asksRoot) treat as the gate holder's own, which
+// ends only at its issue's close. supervise holds no store, so it reads the mark the outbox writes
+// on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate),
+// handing claim.IsTreeArchitect the issue as the gate root where the mark says it is one.
+func (c Claim) treeRoot() bool {
+	if !c.HoldsGate {
+		return false
+	}
+	return claim.IsTreeArchitect(c.Role, c.Issue, c.Issue)
+}
 
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,
 // StreamTurnEnd, IssueTurnEnded, StreamPromptResult, StreamClosed, StreamLateRefusal,

@@ -3616,24 +3616,24 @@ func (s *Postgres) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Is
 	return issues, nil
 }
 
-func (s *Postgres) EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, id int64) ([]OutboxRow, error) {
+func (s *Postgres) EarlierNotices(ctx context.Context, tx pgx.Tx, project string, id int64) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and id < $2 and issue in (select key from issues where tree = $3)
-		order by id`, string(OutboxKindNotice), id, tree)
+		where kind = $1 and id < $2 and issue in (select key from issues where project = $3)
+		order by id`, string(OutboxKindNotice), id, project)
 	if err != nil {
-		return nil, fmt.Errorf("read the notices of %s before row %d: %w", tree, id, err)
+		return nil, fmt.Errorf("read the notices of %s before row %d: %w", project, id, err)
 	}
 	defer rows.Close()
 	earlier := []OutboxRow{}
 	for rows.Next() {
 		row, err := scanOutbox(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read the notices of %s before row %d: %w", tree, id, err)
+			return nil, fmt.Errorf("read the notices of %s before row %d: %w", project, id, err)
 		}
 		earlier = append(earlier, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the notices of %s before row %d: %w", tree, id, err)
+		return nil, fmt.Errorf("read the notices of %s before row %d: %w", project, id, err)
 	}
 	return earlier, nil
 }

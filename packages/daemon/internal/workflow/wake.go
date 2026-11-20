@@ -420,8 +420,10 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil || issue == nil {
 		return false, err
 	}
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil || root == nil {
+	// The run the wake serves is the one its issue's gate root on the Dispatch chain stands in
+	// (gateRootOf), not the stored tree's.
+	root, _, err := e.gateRootOf(ctx, tx, *issue)
+	if err != nil {
 		return false, err
 	}
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {

@@ -338,6 +338,20 @@ func (c *Chains) Under(key string) []string {
 	return c.under[key]
 }
 
+// GateTree is key and the issues in Legion's work whose gate root is key (R15: "its tree" of a gate
+// root), key first and the rest by key: what a question about the agents of a gate root's tree
+// reads where the stored tree was read, a session's claim of one of them among them. An issue under
+// key whose gate root is another gate holder below key is that holder's, not key's.
+func (c *Chains) GateTree(key string) []string {
+	tree := []string{key}
+	for _, issue := range c.Under(key) {
+		if c.GateRoot(issue) == key {
+			tree = append(tree, issue)
+		}
+	}
+	return tree
+}
+
 // Children is key's children in the copy at any status, by key, for a key the read started from
 // (ReadChains): every record of the project not done, every todo row of its copy and each extra
 // key. A key the read did not start from has none read.

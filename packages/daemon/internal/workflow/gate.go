@@ -88,6 +88,11 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	// An architect's registration is held to the chain this transaction reads: the gate is taken
+	// from the architect of an issue that holds its own gate, on that issue (architectCallRefusal).
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, gateCall); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
 	if refusal, err := e.acceptedBasis(ctx, tx, fact); err != nil || refusal.Refusal != nil {
 		return refusal, err
 	}
@@ -314,8 +319,11 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if err := e.notice(ctx, tx, key, record.Notice{Kind: "design-changes-requested", Version: version, Reason: reason, Actor: reviewer, Ref: stepRef(key, step)}); err != nil {
 		return err
 	}
-	if issue.Phase != phase.Admitted || !claim.IsTreeRoot(issue.Key, issue.Tree) {
+	if issue.Phase != phase.Admitted {
 		return nil
+	}
+	if holds, err := e.holdsOwnGate(ctx, tx, *issue); err != nil || !holds {
+		return err
 	}
 	if mark.Seq > 0 {
 		return e.store.TakeInThrough(ctx, tx, issue.Key, mark.Seq)
@@ -562,8 +570,11 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 // all arrived the row is the read's or newer. A fence placed above Since could instead refuse, for
 // good, an event newer than the read. Only a root's asks are mirrored.
 func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered) (record.RootAsk, error) {
-	if fact.RequestAsk == "" || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if fact.RequestAsk == "" {
 		return record.RootAsk{}, nil
+	}
+	if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil || !holds {
+		return record.RootAsk{}, err
 	}
 	turn := "human"
 	if fact.RequestWaitsOnAgent {
@@ -633,9 +644,12 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 		return nil
 	}
 	since := fact.Since.Seq
-	if fact.RequestAsk == "" || since <= 0 || !claim.IsTreeRoot(root.Key, root.Tree) || request.WaitingOnSeq > since || request.Seq > since ||
+	if fact.RequestAsk == "" || since <= 0 || request.WaitingOnSeq > since || request.Seq > since ||
 		!request.WithHuman() || !request.GateRequestOf(gateRequestOf(gate, e.gatesStep(gate.Step))) {
 		return nil
+	}
+	if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil || !holds {
+		return err
 	}
 	e.logOnCommit(ctx, "workflow: a registration hands a design document to the person", "issue", root.Key, "step", gate.Step,
 		"version", gate.LatestVersion, "since_seq", since)
@@ -652,7 +666,7 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 // waiting, keeping its slot, rather than standing at admitted until its architect registers again. A request the mirror already holds
 // is the mirror's; a gate of another generation or document is left as it is.
 func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.GateRequestFound) (intake.Result, error) {
-	root, err := e.recordedRoot(ctx, tx, fact.Issue)
+	root, _, err := e.recordedRoot(ctx, tx, fact.Issue)
 	if err != nil || root == nil || root.Generation != fact.Generation || fact.RequestAsk == "" {
 		return intake.Result{}, err
 	}
@@ -1060,24 +1074,31 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
 	}
-	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
+	// The gate's tree is key and the issues in Legion's work whose gate root key is on the Dispatch
+	// chain (record.Chains.GateTree), whatever tree their records store.
+	chains, err := record.ReadChains(ctx, tx, e.store, root.Project, []string{key})
 	if err != nil {
 		return err
 	}
+	tree := chains.GateTree(key)
 	// The members first, then the root's architect, since the gate is the root's. A member in
 	// accepting is passed over, since that phase is an architect's own: the root's is the root's
 	// architect, told once below, and a child's own architect is not told of the root's gate, whose
 	// merge hold reaches the child's merger once it holds merging.
-	recipients := make([]roleRecipient, 0, len(members)+1)
-	for _, member := range members {
+	recipients := make([]roleRecipient, 0, len(tree)+1)
+	for _, held := range tree {
+		member, recorded := chains.Record(held)
+		if !recorded {
+			continue
+		}
 		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
 			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
 		}
 	}
-	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
+	recipients = append(recipients, roleRecipient{issue: key, role: claim.RoleArchitect, row: key})
 	told, err := e.addressRoles(root.Project, recipients,
 		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
-			"tree", root.Tree, "step", string(step), "version", version, "open", open))
+			"tree", key, "step", string(step), "version", version, "open", open))
 	if err != nil {
 		return err
 	}
@@ -1087,22 +1108,22 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	var body string
 	switch {
 	case open && len(onBasis) > 0:
-		body = gateOpenedOnBasis(root.Tree, step, document, version, onBasis)
+		body = gateOpenedOnBasis(key, step, document, version, onBasis)
 	case open:
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, version, step, document)
+			"A merge the closed gate held is released.", key, version, step, document)
 	default:
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
+			"stands open again.", key, version, step, document)
 	}
 	for _, to := range told {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
 		}
 	}
-	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", key,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }

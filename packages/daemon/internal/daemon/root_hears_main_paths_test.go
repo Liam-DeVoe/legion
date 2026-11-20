@@ -155,9 +155,11 @@ func (r *mainPathRig) waitingRoot() record.Issue {
 		Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 5}
 }
 
+// put records issue with its row of the copy (putChainIssue), so the root stands on a known
+// Dispatch chain and holds its own design gate there (record.Chains.HoldsOwnGate).
 func (r *mainPathRig) put(issue record.Issue) {
 	r.t.Helper()
-	putOutboxIssue(r.t, r.pool, r.records, issue)
+	putChainIssue(r.t, r.pool, r.records, issue)
 }
 
 func (r *mainPathRig) issue() record.Issue {

@@ -170,8 +170,12 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record.Issue, held func(string) bool) (bool, error) {
 	answered := false
 	for _, root := range issues {
-		if (held != nil && held(root.Key)) || !claim.IsTreeRoot(root.Key, root.Tree) ||
-			!root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
+		if (held != nil && held(root.Key)) || !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
+			continue
+		}
+		if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil {
+			return answered, err
+		} else if !holds {
 			continue
 		}
 		gates, err := e.store.GatesOf(ctx, tx, root.Key)

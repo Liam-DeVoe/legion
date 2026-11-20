@@ -266,7 +266,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
 			continue
 		}
-		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
+		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains.HoldsOwnGate(entry.Issue.Key), rows[entry.Issue.Key].Blockers); err != nil {
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
 	}

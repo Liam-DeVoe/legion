@@ -65,7 +65,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2},
-		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own from 2026-11-01"},
+		// R18's notice of a change of parent, which goes on carrying the fields the release before
+		// requires beside its own (dispatch://INFRA-4730's decision 15).
+		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "its run, its phase and its gate steps stay with it", Generation: 2, Entry: 5,
+			OldParent: "LEGION-299", Phase: phase.Implementing, Slot: true,
+			Steps: []ReparentStep{{Step: DesignStepSpec, Open: true, Basis: "LEGION-100", BasisVersion: 3}}},
+		Notice{Kind: ReparentedNotice, To: "LEGION-300", Reason: "LEGION-208's Dispatch parent moved from LEGION-299 to LEGION-301."},
 		Notice{Kind: "basis-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec", Reason: "name the rollback path"},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -476,9 +481,12 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 			GateSeed{ArtifactID: "artifact-208", Step: DesignStepSpec, Version: 1}},
 		OutboxKindPendingBasisSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
 			PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1"}},
-		// R18's notice of a change of parent names the issue's run and entry it tells of
-		// (dispatch://INFRA-4730's t6), and tells the architects through notices of its own.
-		OutboxKindReparentSeed: {carries("Generation"), carries("Entry"),
+		// R18's notice of a change of parent names the issue's run it tells of (dispatch://INFRA-4730's
+		// t6), and tells the architects through notices of its own. It names the phase entry too,
+		// for the words, but is told at whatever entry the issue stands, the zero entry of an issue
+		// whose first phase has not started included.
+		OutboxKindReparentSeed: {carries("Generation"),
+			lacks("a change of parent is told whatever phase entry the issue stands at, the zero entry of an issue no phase has started included, so the entry it names is in its words and fences nothing"),
 			lacks("it reads the new parent from Dispatch and tells the architects through notices of its own, which route by the chain when they are delivered"),
 			ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own"}},
 		OutboxKindLingerClose:     {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
@@ -1370,6 +1378,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: ReparentedNotice, Phase: phase.Planning, To: "LEGION-300",
+			Reason: "LEGION-500 moved from under LEGION-208 to under LEGION-300 in Dispatch; its planning phase goes on."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

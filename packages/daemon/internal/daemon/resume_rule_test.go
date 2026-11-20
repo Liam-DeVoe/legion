@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -494,13 +495,14 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 }
 
-// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue, the
-// admission slot its phase keeps (record.KeepsSlot: none past its review), its tree's lifecycle and
-// the root's own issue lifecycle, as admission leaves a root it promoted — and each of claims,
-// bound to its issue's lifecycle as the daemon binds a claim it admits, that issue's lifecycle
-// opened as admission opens it for each issue it starts, and its pending delivery written too when
-// it carries one (AdmitClaim alone writes only the claim row). Each tree takes the next free slot,
-// so a test may seed more than one running tree.
+// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue and
+// its row of the copy, as a reading of Dispatch leaves it (so the root stands on a known Dispatch
+// chain, record.Chains), the admission slot its phase keeps (record.KeepsSlot: none past its
+// review), its tree's lifecycle and the root's own issue lifecycle, as admission leaves a root it
+// promoted — and each of claims, bound to its issue's lifecycle as the daemon binds a claim it
+// admits, that issue's lifecycle opened as admission opens it for each issue it starts, and its
+// pending delivery written too when it carries one (AdmitClaim alone writes only the claim row).
+// Each tree takes the next free slot, so a test may seed more than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)
@@ -520,6 +522,11 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
+		var parent string
+		if root.Parent != nil {
+			parent = *root.Parent
+		}
+		seedCopyRow(t, tx, root.Key, parent, cmp.Or(root.DispatchStatus, root.Status), 1)
 		if !record.KeepsSlot(root) {
 			return nil
 		}

@@ -352,14 +352,15 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	}
 	// The record keeps the repository it was recorded with, so a newer event resolving the issue
 	// to another is not applied, which the issue is told. This runs before any fence below: an
-	// edit of the repository alone changes no status. So does the telling of a root a person has
-	// made a child of a live tree (tellReparented), which is a parent change and often no status
-	// change at all.
+	// edit of the repository alone changes no status. So does the telling of a change of the
+	// issue's Dispatch parent (tellParentChange, R18 of dispatch://INFRA-3320), which is often no
+	// status change at all, and which reads the parent the record held before admission records
+	// the event.
 	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
 		if err := e.NoteRepositoryKept(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
 			return intake.Result{}, err
 		}
-		if err := e.tellReparented(ctx, tx, issue, fact); err != nil {
+		if err := e.tellParentChange(ctx, tx, issue, fact); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -1001,7 +1002,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 
 // claimFailed holds the issue whose phase worker's claim failed — a budget ran out — and tells the
 // architect and the controller of the hold; the worker-died that comes with it is the architect's
-// alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
+// alone. The architect of an issue that holds its own design gate on the Dispatch chain
+// (holdsOwnGate, R18 of dispatch://INFRA-3320) failing holds nothing, since a phase is its
+// worker's; it is told as a
 // worker-died of the architect, lingering or not, and the controller hears it from a row of its
 // own, because every notice of the tree that no child's own architect takes reaches that
 // architect and nobody inside the tree is left to act on its own. That is why the architect's
@@ -1048,7 +1051,13 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
+	holds := false
+	if fact.Role == claim.RoleArchitect {
+		if holds, err = e.holdsOwnGate(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	if holds {
 		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
 			Reason: deathReason(fact, false)})
 	}
@@ -1805,8 +1814,16 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.Held || issue.Hold == nil {
+	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	// The architect's answer is held to the chain this transaction reads (architectCallRefusal);
+	// the operator's retry carries no architect.
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, retryCall); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
+	if issue.Phase != phase.Held || issue.Hold == nil {
+		return intake.Result{}, nil
 	}
 	if fact.Decision == intake.EscalateDecision {
 		// Recorded on the issue as well as sent: the controller reads holds from the record at every
@@ -1994,6 +2011,11 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	// An architect's move is held to the chain this transaction reads (architectCallRefusal); a
+	// phase worker's carries no architect and is its own phase's to ask.
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, backwardCall); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
 	// A parent waiting on its children stands in no phase a move back acts on, so the move is
 	// refused with the wait's own code before the table is read, which would only say that no
 	// backward row serves the phase (dispatch://INFRA-3320 R11).
@@ -2139,6 +2161,12 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	// The caller is held to the chain this transaction reads, before anything about the issue's
+	// phase is answered: a sign-off a change of parent took from it is the new owner's to make
+	// (architectCallRefusal, decision 5 of dispatch://INFRA-4730).
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, signOffCall); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {
 		return e.waitingRefusal(ctx, tx, *issue, "sign_off")
@@ -2428,15 +2456,16 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
-// waited, which the notice's reason says instead. A tree's own root gets no notice: the
-// architect this would tell is the root's own, which the phase-finished of the move out of
-// admitted already tells (noticeFor).
-func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
-	if err := e.gateOpened(ctx, tx, issue); err != nil {
+// waited, which the notice's reason says instead. An issue that holds its own design gate on the
+// Dispatch chain (holdsGate, record.Chains.HoldsOwnGate, which the admission pass reads on its
+// own chains) gets no notice: the architect this would tell is its own, which the phase-finished
+// of the move out of admitted already tells (noticeFor).
+func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, holdsGate bool, waited []string) error {
+	if err := e.gateOpened(ctx, tx, issue, holdsGate); err != nil {
 		return err
 	}
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		e.logOnCommit(ctx, "workflow: the root of this tree takes its slot and starts its own first phase", "issue", issue.Key)
+	if holdsGate {
+		e.logOnCommit(ctx, "workflow: an issue that holds its own gate takes its slot and starts its own first phase", "issue", issue.Key)
 		return nil
 	}
 	if len(waited) == 0 {
@@ -2455,17 +2484,18 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
 // row here.
 //
-// A child's own architect starts between the two (StartFirstPhase says why here): the plain start
+// The own architect of an issue that does not hold its own gate (holdsGate, as StartFirstPhase
+// reads it) starts between the two (StartFirstPhase says why here): the plain start
 // (childArchitectStart), with no phase, task, entry or slot mark, so it waits for the branch row
 // as every start of the issue does and for no slot. It is queued before the planner's start
 // because the outbox runs an issue's starts one at a time, oldest first, so the architect's claim
 // exists by the planner's launch. That is the order the outbox tries, not one it holds to: a start
 // that fails and backs off holds back none of the rows behind it.
-func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue, holdsGate bool) error {
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err
 	}
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+	if !holdsGate {
 		if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
 			return err
 		}
