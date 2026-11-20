@@ -301,7 +301,7 @@ A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose 
 what it writes belongs to no project such a viewer could be held to.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
-`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
 Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
 The session check holds the rows classed *the calling session's* whose path names a session
@@ -4629,8 +4629,9 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  Every caller reads the same answer, whatever projects it sees: a repository's name is no project's content.
-  The Legion daemon asks it for every repository it serves, for `legion state`.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
+  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
 
