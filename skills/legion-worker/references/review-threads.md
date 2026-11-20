@@ -4,6 +4,7 @@ Read it when you reply on, list or resolve a review thread, or judge a bot's fin
 With no reviewer step, the implementer lists unresolved bot threads before each completion, including retro;
 it replies to and resolves each it fixes or declines, and records it in `Threads`.
 It names each declined thread, by node id with its reason, to the task's architect: in its completion summary when it implements, and at retro in the Dispatch message of `skill://legion-retro` step 5, since a retro summary holds two sentences.
+At retro it answers the threads it finds; a run still going may open more, so retro's message names each such run (`skill://legion-retro` step 5).
 
 - Reply on each thread you answer, one disposition reply per thread:
   the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, the reviewer's reason in its own words.

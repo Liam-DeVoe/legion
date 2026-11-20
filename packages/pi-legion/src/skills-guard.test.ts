@@ -794,6 +794,32 @@ test("retro never waits for a CI run, as the implementer's prompt says", () => {
   ).toEqual([]);
 });
 
+// Nothing ensures a head's runs have ended by retro on a task with no reviewer step, so retro
+// answers the bot threads it finds and its message names each run still going, which may open
+// more; and a check the body claims that has not concluded at the head is named as a risk.
+test("a run still going at retro is named in its message and as a risk", () => {
+  const prompts = path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts");
+  expect([
+    ...lacks("legion-retro/SKILL.md", [
+      /\*\*Runs still going:\*\*[^*]*name[^*]*time you read it[^*]*may open more bot threads/,
+      /not concluded[^.]*`Runs still going` line/,
+      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*each check whose run has not concluded/,
+    ]),
+    ...lacks("legion-worker/references/pr-body.md", [
+      /check that has not concluded at the head[^.]*implementer names that check under `Not proven \/ risk`/,
+    ]),
+    ...lacks("legion-worker/references/review-threads.md", [
+      /At retro it answers the threads it finds[^.]*run still going/,
+    ]),
+  ]).toEqual([]);
+  expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
+    /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
+  );
+  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
+    /at your retro too, the threads you find there, naming in its message each run still going/
+  );
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.

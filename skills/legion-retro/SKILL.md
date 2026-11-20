@@ -35,7 +35,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI.
-     Name it in step 5's message and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
+     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
@@ -43,7 +43,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or, where the task has a tester step, `to: testing` for the tester's result;
      name the check's block id in the reason.
 
-   - With no reviewer step, list unresolved bot threads as `skill://legion-worker/references/review-threads.md` says.
+   - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
      A thread needing a fix sends the task back to `implementing`, with the thread in the reason.
 
 2. **Get a second reading.**
@@ -55,7 +55,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    When no point qualifies, write no comment and say so in step 5's message.
 
 4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
-   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
 
@@ -71,6 +71,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    **Results read:** implementer <check and result>, tester <check and result, where the task has a tester step>.
 
    **Declined threads:** <with no reviewer step, each bot thread step 1 declined, by node id with its reason, or none>
+
+   **Runs still going:** <each run whose check had not concluded when you read `dispatch results`, by its name with the time you read it, and that it may open more bot threads; or none>
 
    **Production check:** <the command or user action that will show the change working in production>
    **Carried by:** <the deploy or restart that carries the merge there>
