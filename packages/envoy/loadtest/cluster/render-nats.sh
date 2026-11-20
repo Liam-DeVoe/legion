@@ -93,11 +93,13 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-# helm comes from its module at the pinned version, which go fetches through its module proxy: the
-# fetch and its build run under network-install.sh's bound for go, outside any module of this
-# repository as `go run` of it did, so a proxy that stalls fails this script by name, and the render
-# then runs the binary that built.
-(cd -- "$tmp" && GOBIN="$tmp/bin" "$here/../../../../.github/scripts/network-install.sh" go -- go install "$HELM")
+# helm comes from its module at the pinned version, outside any module of this repository as `go
+# run` of it did. go-fetch.sh fetches it through the module proxy under network-install.sh's bound
+# for go, so a proxy that stalls fails this script by name; the build then reads only the module
+# cache (GOPROXY a file:// proxy of it), so the bound never times its compile, and the render runs
+# the binary that built.
+"$here/../../../../.github/scripts/go-fetch.sh" "$HELM"
+(cd -- "$tmp" && GOBIN="$tmp/bin" GOPROXY="file://$(go env GOMODCACHE)/cache/download" go install "$HELM")
 (cd -- "$tmp" && "$tmp/bin/helm" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 

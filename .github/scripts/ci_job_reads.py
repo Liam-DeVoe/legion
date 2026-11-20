@@ -3631,6 +3631,8 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
         (".github/scripts/network-install.sh", f"{at('envoy-smoke', 'Pull test container images')}: the action runs each pull through it"),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)}: packages/envoy/docker/Dockerfile's "
+                                        "go-licenses RUN bind-mounts it and fetches the tool with it"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",

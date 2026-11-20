@@ -102,11 +102,13 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #               is 20 s, so 60 s an attempt. Playwright 1.64.1's own timeout is a socket's idle
 #               time, 30 s, which a server that sends one byte every 5 s never reaches: such a
 #               download had not ended after 900 s.
-#   go          a go command that names a fetch (`go install <module>@<version>`, `go mod
-#               download`). Slowest: 57.8 s (median 45.3 s), envoy-go-checks' render of the NATS
-#               chart with helm v3.20.2 fetched and built by go, in job 135979451658, of 20 green
-#               jobs; of the Dockerfiles' go RUNs: 44.1 s, the worker image's `go mod download` in
-#               job 136046630907. 2 × 57.8 s is 115.6 s, so 120 s an attempt.
+#   go          a go download alone: `go mod download`, and the `go get` with which go-fetch.sh
+#               fetches a tool's modules. A go command that compiles runs outside this script, from
+#               the module cache with the network off (go-fetch.sh's header says why; rule 22
+#               refuses a compile under this kind). Slowest of the downloads: 44.1 s, the worker
+#               image's `go mod download` of its 380 MiB of modules, in job 136046630907, of 40 green
+#               builds; gopls's downloads ended at 6.1 s of its install in worker-image run
+#               44772738928. 2 × 44.1 s is 88.2 s, so 120 s an attempt.
 #   elan        elan's install of the Lean toolchain lean-toolchain names, with its check for a newer
 #               elan before it (a read of github.com; both happen only when the toolchain is not
 #               installed). Slowest of the 37 green airlock-lean jobs of 30 days that downloaded it:
