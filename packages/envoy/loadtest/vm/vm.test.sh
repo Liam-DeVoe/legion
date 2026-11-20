@@ -1092,10 +1092,21 @@ run_fn() {
 # its event names the time it measured.
 clock_us() { printf '%s\n' "${EPOCHREALTIME//[!0-9]/}"; }
 
+# record_remote_pid FILE PID: the pid and start time a load-machine pid file holds. Every test
+# fixture that simulates such a file writes through this helper, so it cannot turn a bare pid into
+# a valid process record.
+record_remote_pid() {
+  local start
+  start=$(process_start "$2")
+  [ -n "$start" ] || fail "the stand-in process (pid $2) had no start time"
+  printf '%s %s\n' "$2" "$start" >"$1"
+}
+
 # victim FILE: a stand-in for a process that a kill of the load machine ends: one that ignores
-# TERM, so only the KILL ends it, its pid in FILE and in VICTIM, under a parent of the suite's own
-# whose pid is in VICTIM_PARENT. Only that parent reaps it, so a case that stops the parent keeps
-# the dead process in the table for as long as it likes, as a slow reaper on a loaded machine does.
+# TERM, so only the KILL ends it, its pid and start time in FILE and its pid in VICTIM, under a
+# parent of the suite's own whose pid is in VICTIM_PARENT. Only that parent reaps it, so a case
+# that stops the parent keeps the dead process in the table for as long as it likes, as a slow
+# reaper on a loaded machine does.
 victim() {
   rm -f -- "$1" "$tmp/victim"
   mkdir -p -- "$(dirname -- "$1")"
@@ -1110,7 +1121,7 @@ victim() {
     "$REAL_SLEEP" 0.1
   done
   VICTIM=$(cat "$tmp/victim")
-  printf '%s\n' "$VICTIM" >"$1"
+  record_remote_pid "$1" "$VICTIM"
 }
 
 # victim_hold: the stand-in's parent stopped, and seen stopped (stop_process), so that from here on
@@ -2841,7 +2852,7 @@ pass "check tries every production address of the deployment file from every mac
 
 # 4 and 8 again, over a second up of the same run: the stub embedder the first left running
 # holds its port, and the instance now holds the database.
-first_stub=$(cat "$remote/work/stub-embed.pid")
+first_stub=$(cut -d' ' -f1 "$remote/work/stub-embed.pid")
 [ -n "$first_stub" ] || fail "up recorded no pid for the stub embedder"
 [ "$(cat "$fake/stub-port")" = "$first_stub" ] ||
   fail "the stub embedder up started does not hold the port it serves on"
@@ -2856,7 +2867,7 @@ start_at=$(line_at 'loadgen	stub-embed')
 [ -n "$stop_at" ] || fail "the second up did not stop the stub embedder the first left running"
 [ -n "$start_at" ] && ((stop_at < start_at)) ||
   fail "the second up started its stub embedder (line ${start_at:-none}) before it stopped the one before it (line $stop_at)"
-second_stub=$(cat "$remote/work/stub-embed.pid")
+second_stub=$(cut -d' ' -f1 "$remote/work/stub-embed.pid")
 [ "$second_stub" != "$first_stub" ] || fail "the second up started no stub embedder of its own (pid $second_stub)"
 [ "$(cat "$fake/stub-port")" = "$second_stub" ] ||
   fail "the stub embedder of the second up does not hold the port, so it wrote no certificate of its own"
@@ -3511,7 +3522,7 @@ for kill_case in "${kill_cases[@]}"; do
   ran_out=""
   if [ -e "$tmp/kill-rc" ]; then
     read -r kill_rc kill_end <"$tmp/kill-rc"
-    if kill_ran_out && [ "$(cat "$pid_file" 2>/dev/null)" = "$VICTIM" ]; then
+    if kill_ran_out && [ "$(cut -d' ' -f1 "$pid_file" 2>/dev/null)" = "$VICTIM" ]; then
       printf "NOTE: %s's %s before this case continued the stand-in's parent, and it said so, which is right; its return once the parent reaps is not read this time\n" "$fn" "$ran_out"
     else
       victim_fail "$fn returned $kill_rc while the process it ended (pid $VICTIM) was still in the load machine's process table, its parent not yet having reaped it: $(cat "$tmp/out")"
@@ -3549,6 +3560,21 @@ for kill_case in "${kill_cases[@]}"; do
   [ ! -e "$pid_file" ] || fail "$fn left its pid file $pid_file on the load machine"
 done
 pass "the tunnel's, the load's and the stub embedder's kills each return only once the process they ended is gone from the load machine's process table, reaped by its parent"
+
+# A pid without the start time that records its identity is not a process record: a reused pid
+# must be refused rather than signalled.
+bare_pid_file=${kill_cases[0]#* }
+victim "$bare_pid_file"
+printf '%s\n' "$VICTIM" >"$bare_pid_file"
+run_fn tunnel_kill
+((RC == 1)) ||
+  victim_fail "tunnel_kill accepted a bare pid file for a live process (pid $VICTIM)"
+grep -qF "recorded start does not match the process there, so it is not signalled" "$tmp/out" ||
+  victim_fail "tunnel_kill did not name the bare pid file it refused: $(cat "$tmp/out")"
+kill -0 "$VICTIM" 2>/dev/null ||
+  victim_fail "tunnel_kill signalled the process a bare pid file named (pid $VICTIM)"
+victim_end
+pass "a bare pid file is refused by name and its process is not signalled"
 
 # The same parent, never continued while the kill runs: the kill's wait, cut to a second here,
 # runs out, and the kill says which process it could not end. The wait is judged on the load
@@ -3595,7 +3621,7 @@ for kill_case in "${kill_cases[@]}"; do
   ((RC == 1)) || victim_fail "$fn ended with $RC, not 1, with the process it ended (pid $VICTIM) still there: $(cat "$tmp/out")"
   grep -qF "(pid $VICTIM) is still in the generator VM's process table 1 s after its SIGKILL" "$tmp/out" ||
     victim_fail "$fn did not name the process it could not end (pid $VICTIM), with its ssh's own lines around the script's: $(cat "$tmp/out")"
-  [ "$(cat "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
+  [ "$(cut -d' ' -f1 "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
     victim_fail "$fn removed its pid file $pid_file, which still names a live process"
   mapfile -t reads <"$tmp/kill-clock.log"
   ((${#reads[@]} >= 2)) ||
@@ -3640,14 +3666,14 @@ for kill_case in "${kill_cases[@]}"; do
     victim_fail "$fn ended with $RC, not 1, although its ssh never reached the load machine and the process its pid file names (pid $VICTIM) still runs: $(cat "$tmp/out")"
   grep -qF "($pid_file on the generator VM) failed: its ssh exited 255 and said 'ssh: connect to host 10.138.0.22 port 22: Connection timed out'" "$tmp/out" ||
     victim_fail "$fn did not name its pid file $pid_file, its ssh's exit 255 and what that ssh said: $(cat "$tmp/out")"
-  [ "$(cat "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
+  [ "$(cut -d' ' -f1 "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
     victim_fail "$fn removed its pid file $pid_file, though its ssh never reached the process the file names"
   PATH=$tmp/hangs:$PATH run_fn SSH_SECONDS=1 "$fn"
   ((RC == 1)) ||
     victim_fail "$fn ended with $RC, not 1, although its ssh timed out and the process its pid file names (pid $VICTIM) still runs: $(cat "$tmp/out")"
   grep -qF "($pid_file on the generator VM) failed: its ssh exited 124 and said 'nothing'" "$tmp/out" ||
     victim_fail "$fn did not name its pid file $pid_file and its ssh's exit 124, timeout's: $(cat "$tmp/out")"
-  [ "$(cat "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
+  [ "$(cut -d' ' -f1 "$pid_file" 2>/dev/null)" = "$VICTIM" ] ||
     victim_fail "$fn removed its pid file $pid_file, though its ssh timed out before it reached the process the file names"
   victim_end
 done
@@ -3681,7 +3707,7 @@ run_fn REMOTE_GONE_SECONDS=1 stub_embed_start
   victim_fail "stub_embed_start went on, status $RC, although the stub embedder an earlier up started (pid $VICTIM) was still there: $(cat "$tmp/out")"
 grep -qF "the stub embedder an earlier up started on the generator VM is not shown gone (the line above says why), and while it runs it holds the port this one needs" "$tmp/out" ||
   victim_fail "stub_embed_start does not name the earlier stub embedder it could not end: $(cat "$tmp/out")"
-[ "$(cat "$remote/work/stub-embed.pid" 2>/dev/null)" = "$VICTIM" ] ||
+[ "$(cut -d' ' -f1 "$remote/work/stub-embed.pid" 2>/dev/null)" = "$VICTIM" ] ||
   victim_fail "stub_embed_start started a stub embedder beside the earlier one it could not end: $(cat "$tmp/out")"
 kill -CONT "$VICTIM_PARENT"
 wait "$VICTIM_PARENT" || true
@@ -3708,7 +3734,7 @@ grep -qF "step after-load is refused: the step's loadgen run an earlier step lef
   victim_fail "the step's refusal does not name the earlier load it could not end: $(cat "$tmp/out")"
 grep -qF "the step's loadgen run (pid $VICTIM) is still in the generator VM's process table 10 s after its SIGKILL" "$tmp/out" ||
   victim_fail "the step's kill of the earlier load did not name it (pid $VICTIM): $(cat "$tmp/out")"
-[ "$(cat "$load_file" 2>/dev/null)" = "$VICTIM" ] ||
+[ "$(cut -d' ' -f1 "$load_file" 2>/dev/null)" = "$VICTIM" ] ||
   victim_fail "the refused step's pid file $load_file no longer names the earlier load (pid $VICTIM): $(cat "$load_file" 2>/dev/null)"
 [ "$(load_runs)" = "$runs_before" ] ||
   victim_fail "the refused step started a load beside the earlier one: $(cat "$fake/loadgen-run.log" 2>/dev/null)"
@@ -4137,7 +4163,7 @@ jj_after() {
     "$REAL_SLEEP" 0.1
   done
   "$REAL_SLEEP" 3
-  jj_pid=$(cat "$jj_file" 2>/dev/null || true)
+  jj_pid=$(cut -d' ' -f1 "$jj_file" 2>/dev/null || true)
 }
 # jj_end: what the late start left, ended: the pid its file names, and the tunnel's or the
 # stand-in's own record of its pid.
@@ -4158,7 +4184,7 @@ for row in "tunnel 10 2 0" "tunnel 1 4 0" "tunnel 1 4 2" "tunnel 1 4 3" "tunnel 
     body='tunnel_start late || echo "the start returned 1"; tunnel_stop'
   else
     # shellcheck disable=SC2016 # the text the load's start carries, matched as it is
-    what="the step's loadgen run" jj_file=${kill_cases[1]#* } match='echo $$ >'
+    what="the step's loadgen run" jj_file=${kill_cases[1]#* } match='pid_file=$1; shift; start='
     body="load_start $(printf %q "$jj_dir") 300 $(printf %q "$jj_dir/stand-in")"
     body+="; until [ -e $(printf %q "$jj_dir/carried") ]; do $(printf %q "$REAL_SLEEP") 0.05; done; load_stop"
   fi

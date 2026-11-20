@@ -1227,7 +1227,7 @@ stub_embed_start() {
     die "the stub embedder an earlier up started on the $LOAD_VM VM is not shown gone (the line above says why), and while it runs it holds the port this one needs"
   key_file=$(remote_secret embed-key "$(cfg .secrets.embed_key)")
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c 'rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & echo "$!" >"$6/stub-embed.pid"' \
+  on_vm "$LOAD_VM" sh -c 'rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & pid=$!; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat"); printf "%s %s\n" "$pid" "$start" >"$6/stub-embed.pid"' \
     sh "$remote" "$key_file" "$work/stub-embed.pem" "0.0.0.0:$(port_of stub_embed)" "$(vm_host "$LOAD_VM")" "$work" ||
     die "starting loadgen stub-embed on the $LOAD_VM VM failed"
   local waited=0
@@ -2268,7 +2268,7 @@ tunnel_start() {
   fi
   TUNNEL_OPEN=started
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  if ! on_vm "$LOAD_VM" sh -c 'pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & echo "$!" >"$pid_file"' \
+  if ! on_vm "$LOAD_VM" sh -c 'pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & pid=$!; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat"); printf "%s %s\n" "$pid" "$start" >"$pid_file"' \
     sh "$(pprof_tunnel_pid_file)" "$(pprof_tunnel_log)" \
     "${cmd[@]}" -i "$identity" -o StrictHostKeyChecking=accept-new \
     -o "UserKnownHostsFile=$(remote_run)/known_hosts" \
