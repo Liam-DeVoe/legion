@@ -415,6 +415,14 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a hand-back while a write holds the lock", func(t *testing.T) {
 		row := startGivenUpRow(t)
 		publisher := row.outsideHold(t)
+		// The link moves until the subtest holds the write, so the stop's drain and its read of the
+		// connection before the hand-back answer; the 30 s wait is only a guard, so that a call
+		// slower than callNATS's wait on a loaded runner does not withhold the hand-back the row
+		// reads. The subtest puts callNATS's own wait back before it holds the write, and the
+		// hand-back's publish, which starts after the hook, waits only that long for the held lock.
+		// Registered after startGivenUpRow, so the wait is restored before the row's teardown runs.
+		wait := callNATSWait.Swap(int64(30 * time.Second))
+		t.Cleanup(func() { callNATSWait.Store(wait) })
 		// The hand-back waits in its hook, before its publish, until the subtest holds the write
 		// lock. Every wait and every failure is on the subtest's goroutine, not the handler's, so
 		// the hand-back reaching its publish and the write taking the lock each have a bound and a
@@ -433,13 +441,16 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			}
 		}
 		row.delivery().beforeHandBackPublish.Store(&hook)
-		// The stop gives the handler up at its start, and the handler hands its message back.
+		// The stop gives the handler up at its start. The handler's hand-back comes before the
+		// drain has answered and is withheld; once the drain has answered, the stop hands back the
+		// message it took from behind the key, and that hand-back waits in the hook.
 		stopped := row.stopUnder(cancelled())
 		select {
 		case <-reached:
 		case <-time.After(30 * time.Second):
 			t.Fatal("control: no hand-back reached its publish within 30 s")
 		}
+		callNATSWait.Store(wait)
 		row.hold.HoldWriteLock(t, row.conn)
 		close(held)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)

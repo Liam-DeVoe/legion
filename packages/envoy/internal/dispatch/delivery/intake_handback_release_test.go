@@ -75,13 +75,13 @@ func (r *durableEvents) count() int {
 // holder's link while the stop's hand-back of the waiting message waits, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline is
-// intakeStopBudget, shrunk to stopBudget.
-func stopWithAHeldHandBack(t *testing.T) heldHandBack {
+// intakeStopBudget, set to budget.
+func stopWithAHeldHandBack(t *testing.T, budget time.Duration) heldHandBack {
 	t.Helper()
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	before := intakeStopBudget
+	intakeStopBudget = budget
+	t.Cleanup(func() { intakeStopBudget = before })
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -189,8 +189,16 @@ func (r heldHandBack) handBackPending() bool {
 	}
 }
 
-// stopBudget is the stop's deadline in the rows below (intakeStopBudget).
+// stopBudget is the stop's deadline in the rows whose stop must reach its deadline with the
+// hand-back still pending (intakeStopBudget): short, since each waits it out.
 const stopBudget = 3 * time.Second
+
+// landingBudget is the stop's deadline in the row whose hand-back must land before it. Every step
+// of that row between the stop's start and the link moving (the write's hold, the stop's own calls
+// under it, the subtest's wait for the stop to start waiting for its hand-back) is spent from it, so
+// it is long: with stopBudget, CI job 136549646454 of envoy-go-race saw the stop's deadline pass
+// before the hand-back landed, and the subtest then read the hold the finalizer keeps.
+const landingBudget = 30 * time.Second
 
 // holdLive reports whether the delivery durable's hold still names a holder, live.
 func holdLive(t *testing.T, pool *store.Pool) bool {
@@ -285,10 +293,11 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // publish (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers
 // published to the durable and the durable's creations, on a connection of its own, and every step
 // waits for an event:
-//   - a hand-back that lands before the stop's deadline: the stop goes on without the publish (its
-//     log line). Then, before the link moves, the stop is seen waiting for its hand-back with its
-//     hold live (handBacksWaiting). Once the link moves, the hold is released by the time the stop
-//     returns, and the hand-back reached the server before the standby created the durable.
+//   - a hand-back that lands before the stop's deadline (landingBudget): the stop goes on without
+//     the publish (its log line). Then, before the link moves, the stop is seen waiting for its
+//     hand-back with its hold live (handBacksWaiting). Once the link moves, the hold is released by
+//     the time the stop returns, and the hand-back reached the server before the standby created the
+//     durable.
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
 //     holder then, and the standby has not created the durable. With the link still held, the hold is
@@ -326,7 +335,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		hook := func() { signal.Do(func() { close(waiting) }) }
 		handBacksWaiting.Store(&hook)
 		t.Cleanup(func() { handBacksWaiting.Store(nil) })
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, landingBudget)
 		waitFor(t, 30*time.Second, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
@@ -356,7 +365,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a hand-back still pending at the stop's deadline", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, stopBudget)
 		select {
 		case <-row.stopped:
 		case <-time.After(30 * time.Second):
@@ -387,7 +396,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, stopBudget)
 		select {
 		case <-row.stopped:
 		case <-time.After(30 * time.Second):
