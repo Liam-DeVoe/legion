@@ -537,6 +537,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
+	// The CI read and the comparison share one reader, so the repository and its default branch
+	// are read once for both.
 	reader := newComparisonReader(s, at)
 	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
