@@ -21,7 +21,17 @@ body: |-
     `400 AMBIGUOUS_ISSUE_REF`. Two issues that stored the two forms before this release keep them:
     each still writes its own links, a read by `owner/repo#<n>` still answers
     `AMBIGUOUS_ISSUE_REF` naming both, and the pull request's head and results go to the issue whose
-    key comes first in byte order.
+    key comes first in byte order. Two writes at the same moment are held to the same rule: each
+    link write, and the create that `dispatch issue --external` makes, waits for any other write
+    of a link to the same pull request to finish before it checks, so the second is refused with
+    `409 EXTERNAL_LINK_TAKEN`, or the create answers the issue that holds the link, and never are
+    both forms stored.
+
+    A pull request whose URL an issue links is that issue's in any repository, also one the issue
+    does not resolve to: the results compare the issue's checks with its head, and the timeline
+    names the issue for it. A branch, a title, a body or a commit message that names an issue is
+    still held to the pull request's own repository, and a pull request whose head is in a fork
+    still has no issue.
 time: 2026-11-19T20:36:28.000000000Z
 custom:
     Issue: pr4209
