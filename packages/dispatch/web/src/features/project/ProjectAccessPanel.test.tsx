@@ -670,7 +670,7 @@ for (const { code, status, server, shown, retry } of [
     code: "PRIVATE_PROJECTS_UNAVAILABLE",
     status: 409,
     server:
-      "the project stays public: the hub nats://hub-0.envoy.svc:4222 did not admit the admission proof's connection: authorization violation",
+      "the project stays public: a switch to private first proves that every hub serving private projects admits Dispatch through its auth service and that every listener replica reads the private projects, and that proof failed: this deployment names no hub to prove (DISPATCH_PRIVATE_HUBS)",
     shown:
       "Dispatch could not confirm just now that CORE's messages would reach only the people who may see it, so CORE stays public: try again in a moment, and if this keeps happening, ask the deployment's operator.",
     retry: true,
@@ -678,7 +678,8 @@ for (const { code, status, server, shown, retry } of [
   {
     code: "LOCK_TIMEOUT",
     status: 409,
-    server: "the owner-row lock was not taken within 1m0s: another write holds it",
+    server:
+      "the owner-row lock was not taken in time: another write holds it; nothing was changed; try again once the write that holds it ends",
     shown:
       "Another change to who may see a project was still being saved, so Dispatch did not make CORE private: try again in a moment.",
     retry: true,
