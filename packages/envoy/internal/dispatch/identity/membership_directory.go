@@ -86,12 +86,13 @@ func (m *Membership) ConfirmDirectory(ctx context.Context, email string) (Refres
 
 // directoryFlight starts, or joins, the one Directory check of email in flight in this process.
 // Like a refresh, the check belongs to the person, not to the request that found it due: it runs on
-// a context of its own, apart from the caller's cancellation, bounded by DirectoryFlight, the one
-// deadline the check and the write of its outcome share, so a caller that stops waiting (Standing)
-// leaves it to write its outcome, and a write that misses the deadline is Failed.
+// detached(ctx), apart from the caller's cancellation and pool bookkeeping, bounded by
+// DirectoryFlight, the one deadline the check and the write of its outcome share, so a caller that
+// stops waiting (Standing) leaves it to write its outcome, and a write that misses the deadline is
+// Failed.
 func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan singleflight.Result {
 	return m.checks.DoChan(email, func() (any, error) {
-		checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DirectoryFlight)
+		checkCtx, cancel := context.WithTimeout(detached(ctx), DirectoryFlight)
 		defer cancel()
 		outcome, err := m.checkDirectory(checkCtx, email)
 		return outcome, err

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -192,14 +193,27 @@ func (m *Membership) ConfirmFor(ctx context.Context, email string) (RefreshOutco
 // flight starts, or joins, the one refresh of email in flight in this process. The refresh
 // belongs to the person, not to the request that found it due: a browser hanging up must neither
 // cancel it nor have its cancellation read as the issuer's refusal, and a caller that stops
-// waiting (Standing) leaves it to run to its own bound.
+// waiting (Standing) leaves it to run to its own bound. It runs on detached(ctx).
 func (m *Membership) flight(ctx context.Context, email string) <-chan singleflight.Result {
 	return m.refreshes.DoChan(email, func() (any, error) {
-		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		refreshCtx, cancel := context.WithTimeout(detached(ctx), refreshTimeout)
 		defer cancel()
 		outcome, err := m.refresh(refreshCtx, email)
 		return outcome, err
 	})
+}
+
+// detached is the context a flight - a refresh, or a Directory check - runs on, from ctx, the
+// context of the request or pass that started it: ctx's values, none of its cancellation or
+// deadline, and none of the request's own pool bookkeeping. A flight outlives the request and
+// writes the person's state, never the request's work, so it takes no commit step
+// (store.WithoutBeforeCommit): a keyed request's step taken by the flight's transaction would mark
+// the request's Idempotency-Key committed for a write it never made. And it holds a hold mark of
+// its own (store.ForConcurrentWorker): sharing the request's would have the pool read the
+// request's held connection as the flight's, and the flight's as the request's, and refuse the
+// second one (store.ErrNestedAcquire), once the request goes on after Standing stops waiting.
+func detached(ctx context.Context) context.Context {
+	return store.ForConcurrentWorker(store.WithoutBeforeCommit(context.WithoutCancel(ctx)))
 }
 
 // outcomeOf is the RefreshOutcome and error of a finished flight.
