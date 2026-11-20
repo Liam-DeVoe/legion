@@ -64,7 +64,7 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
 			"DISPATCH_APP_PEM_B64":     pemText,
 			"DISPATCH_GITHUB_API_BASE": github.server.URL,
-			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
+			"DISPATCH_VERDICT_APP_ID":  ciReconcileVerdictApp,
 			// The pass's bound as well as the loop's period: five minutes is longer than any
 			// test may wait for a pass.
 			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",

@@ -64,6 +64,7 @@ granularity they need using wildcard patterns.
 | Mention (repo-level) | `notifications.github.{owner}.{repo}.mention` |
 | Mention (resource-level) | `notifications.github.{owner}.{repo}.{type}.{number}.mention` |
 | Actions job finished on the default branch, of a run with no PR (`githubJobSubject`) | `notifications.github.{owner}.{repo}.job.{run_id}.completed` |
+| Merge queue group, the PR number read from `head_ref` (`githubMergeGroupSubject`) | `notifications.github.{owner}.{repo}.merge_group` |
 
 ### Subscription granularity
 

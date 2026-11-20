@@ -383,6 +383,23 @@ func VerdictAppSetting(get func(string) string, current, former string) (value, 
 	return "", current
 }
 
+// VerdictAppID is VerdictAppSetting's value as the text of the number GitHub's own objects carry
+// an App's id as: "" when neither setting holds one, and a refusal naming the setting it was read
+// from for a value that is no positive decimal number. A leading zero is dropped, so a value
+// written with one still matches the app.id of the App's own checks. The listener and Dispatch
+// read their verdict App through it, so one value is one App in both.
+func VerdictAppID(get func(string) string, current, former string) (string, error) {
+	raw, name := VerdictAppSetting(get, current, former)
+	if raw == "" {
+		return "", nil
+	}
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		return "", fmt.Errorf("%s=%q (expected the verdict App's numeric ID)", name, raw)
+	}
+	return strconv.FormatUint(id, 10), nil
+}
+
 func GithubIsBotSender(body map[string]any) bool {
 	return strings.EqualFold(nestedString(body, "sender", "type"), "Bot")
 }
@@ -498,6 +515,9 @@ func SlackEnvelopes(input SlackEnvelopeInput) []Envelope {
 func githubTopic(owner string, repo string, event string, body map[string]any) string {
 	if runID, _, ok := githubActionsJob(event, body); ok {
 		return GithubJobSubject(owner, repo, runID, "completed")
+	}
+	if event == "merge_group" {
+		return GithubMergeGroupSubject(owner, repo)
 	}
 	if event == "push" {
 		refType, refName, ok := githubPushRefSegments(body)
@@ -952,11 +972,14 @@ func githubSummary(event string, body map[string]any) string {
 		}
 		summary = fmt.Sprintf("job %s run %s %s", first(nestedString(body, "check_run", "name"), 90), runID, status)
 	case "merge_group":
+		group := repository
+		if number := githubMergeGroupNumber(body); number != "" {
+			group += "#" + number
+		}
 		summary = fmt.Sprintf(
-			"merge group %s: %s#%s into %s (%s)",
+			"merge group %s: %s into %s (%s)",
 			action,
-			repository,
-			githubMergeGroupNumber(body),
+			group,
 			strings.TrimPrefix(nestedString(body, "merge_group", "base_ref"), "refs/heads/"),
 			shortSHA(nestedString(body, "merge_group", "head_sha")),
 		)

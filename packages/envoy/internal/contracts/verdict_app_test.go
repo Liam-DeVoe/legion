@@ -1,10 +1,11 @@
 package contracts
 
 import (
-	"bytes"
 	"log"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The verdict App's id and GitHub Actions' App's, as the text of the numbers GitHub's own JSON
@@ -18,11 +19,11 @@ const (
 // f logged.
 func logged(t *testing.T, f func()) string {
 	t.Helper()
-	var buffer bytes.Buffer
-	previous, flags := log.Writer(), log.Flags()
+	restore := logtest.Keep(t)
+	defer restore()
+	var buffer logtest.Buffer
 	log.SetOutput(&buffer)
 	log.SetFlags(0)
-	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
 	f()
 	return buffer.String()
 }
@@ -123,9 +124,10 @@ func TestVerdictAppSuitesAreLeftOutOfTheCIRecord(t *testing.T) {
 }
 
 // The verdict App's own legion-verdict run is the Legion daemon's output, not a CI result, so it
-// is no part of a head's CI record either, and it is logged as left out. A legion-verdict run of
-// any other App is still mapped, for the verdict rule to drop as untrusted where the caller logs
-// it (ReviewerVerdictDecision), and the verdict App's tester run is mapped as a verdict.
+// is no part of a head's CI record either, in any state, and it is logged as left out. A
+// legion-verdict run of any other App is still mapped, for the verdict rule to drop as untrusted
+// where the caller logs it (ReviewerVerdictDecision), and the verdict App's tester run is mapped as
+// a verdict.
 func TestLegionVerdictRunOfTheVerdictAppIsLeftOutOfTheCIRecord(t *testing.T) {
 	run := func(name, app string) map[string]any {
 		return ciBody("check_run", "completed", map[string]any{
@@ -133,16 +135,23 @@ func TestLegionVerdictRunOfTheVerdictAppIsLeftOutOfTheCIRecord(t *testing.T) {
 			"completed_at": "2026-11-20T03:00:00Z", "app": map[string]any{"id": app},
 		})
 	}
-	var observations []CIObservation
-	lines := logged(t, func() {
-		observations = GithubCIObservations("check_run", run(LegionVerdictCheck, verdictApp), verdictApp)
-	})
-	if len(observations) != 0 {
-		t.Fatalf("the verdict App's legion-verdict run maps to %+v, want it left out", observations)
-	}
-	for _, want := range []string{"ci: left out the verdict App's own legion-verdict run", "check_run=700", "app_id=" + verdictApp, "repo=acme/widgets", "pr=42"} {
-		if !strings.Contains(lines, want) {
-			t.Errorf("the log %q does not hold %q", lines, want)
+	for _, c := range []struct{ action, status string }{
+		{action: "created", status: "queued"},
+		{action: "created", status: "in_progress"},
+		{action: "completed", status: "completed"},
+	} {
+		body := run(LegionVerdictCheck, verdictApp)
+		body["action"] = c.action
+		body["check_run"].(map[string]any)["status"] = c.status
+		var observations []CIObservation
+		lines := logged(t, func() { observations = GithubCIObservations("check_run", body, verdictApp) })
+		if len(observations) != 0 {
+			t.Fatalf("the verdict App's %s legion-verdict run maps to %+v, want it left out", c.status, observations)
+		}
+		for _, want := range []string{"ci: left out the verdict App's own legion-verdict run", "check_run=700", "app_id=" + verdictApp, "repo=acme/widgets", "pr=42"} {
+			if !strings.Contains(lines, want) {
+				t.Errorf("%s: the log %q does not hold %q", c.status, lines, want)
+			}
 		}
 	}
 	if observations := GithubCIObservations("check_run", run(LegionVerdictCheck, actionsApp), verdictApp); len(observations) != 1 {

@@ -52,7 +52,16 @@ notifications.github.<owner>.<repo>.pr.<n>.checks     a commit's checks have all
 notifications.github.<owner>.<repo>.push.branch.<ref> a branch push
 notifications.github.<owner>.<repo>.workflow.<file>.<action>  a workflow run with no pull request
 notifications.github.<owner>.<repo>.job.<run_id>.completed    a finished Actions job on the default branch, of a run with no pull request
+notifications.github.<owner>.<repo>.merge_group      a merge queue group: checks requested, or destroyed
 ```
+
+A `merge_group` event's payload names its `action`, the group's `head_sha`, `head_ref` and
+`base_ref`, and `number`, the pull request the group adds, read from `head_ref`
+(`refs/heads/gh-readonly-queue/<base>/pr-<number>-<base sha>`); `number` is left out for a ref
+that names none. A commit status is published nowhere. The `checks` settlement leaves out the check
+suites of the verdict App (`ENVOY_VERDICT_APP_ID`) and every `legion-verdict` run: the App's suite
+is the empty one GitHub makes on each push, and `legion-verdict` is the Legion daemon's own output,
+not a CI result.
 
 A dot in an owner, repository, or ref name is written `_` in the subject, so `acme/site.io` is
 `notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once.
@@ -543,7 +552,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves the bucket as it is. `/healthz` reports the age in use as `session_max_age`. |
 | `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
-| `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
+| `ENVOY_VERDICT_APP_ID` | Required with `github`: the id of the verdict App, the GitHub App whose `legion-verdict`, `tester` and `architect` check runs are Legion's verdicts. While it is unset, the listener reads the former `ENVOY_REVIEWER_APP_ID`. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 

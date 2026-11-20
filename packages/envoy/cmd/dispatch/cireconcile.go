@@ -2,9 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -20,24 +18,14 @@ import (
 )
 
 // verdictAppID is DISPATCH_VERDICT_APP_ID as a reconcile pass takes it, read from the former
-// DISPATCH_REVIEWER_APP_ID while it is unset (contracts.VerdictAppSetting): the text of the number
+// DISPATCH_REVIEWER_APP_ID while it is unset (contracts.VerdictAppID): the text of the number
 // GitHub's own check run objects carry under app.id, which the pass compares a verdict check's App
 // against (contracts.ReviewerVerdictDecision) and leaves that App's own check suites out of the
 // record by. Unset it is empty, and the pass then records no verdict check run at all. Anything
 // but a positive decimal number refuses startup naming the variable it was read from, as
 // DISPATCH_APP_ID's own reader does (auth.LoadAppFromEnv).
 func verdictAppID(env settingValues) (string, error) {
-	raw, name := contracts.VerdictAppSetting(env.get, "DISPATCH_VERDICT_APP_ID", "DISPATCH_REVIEWER_APP_ID")
-	if raw == "" {
-		return "", nil
-	}
-	id, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil || id == 0 {
-		return "", fmt.Errorf("%s=%q (expected the verdict App's numeric ID)", name, raw)
-	}
-	// The number as GitHub spells it, so a value written with a leading zero still matches the
-	// app.id of the checks the verdict App posted.
-	return strconv.FormatUint(id, 10), nil
+	return contracts.VerdictAppID(env.get, "DISPATCH_VERDICT_APP_ID", "DISPATCH_REVIEWER_APP_ID")
 }
 
 // registeredInstance carries this process's row in the registry of live server processes from

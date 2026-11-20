@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -510,9 +511,11 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 			// (contracts.VerdictAppsOwn), so the pass leaves them out of the record as the
 			// listener does; another App's legion-verdict run the verdict rule below drops.
 			if contracts.VerdictAppsOwn(observation, r.VerdictAppID) {
-				r.Logger.Debug("ci: left out the verdict App's own "+of.what,
-					of.label, of.nameOf(observation), "app_id", observation.AppID,
-					"repository", head.repository(), "pr", head.number, "sha", head.sha)
+				if r.Logger.Enabled(ctx, slog.LevelDebug) {
+					r.Logger.Debug("ci: left out the verdict App's own "+of.what,
+						of.label, of.nameOf(observation), "app_id", observation.AppID,
+						"repository", head.repository(), "pr", head.number, "sha", head.sha)
+				}
 				continue
 			}
 			if of.verdict && !r.recordVerdict(observation, head) {

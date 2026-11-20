@@ -26,9 +26,25 @@ func TestLoadWebhookConfig(t *testing.T) {
 		},
 		{
 			name:             "github enabled with secret and verdict app ID",
-			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "app123"},
+			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "5341240"},
 			wantGitHub:       true,
-			wantVerdictAppID: "app123",
+			wantVerdictAppID: "5341240",
+		},
+		{
+			name:             "a verdict app ID with a leading zero is read as GitHub spells the number",
+			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "05341240"},
+			wantGitHub:       true,
+			wantVerdictAppID: "5341240",
+		},
+		{
+			name:    "a verdict app ID that is no number → error naming it",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "app123"},
+			wantErr: `ENVOY_VERDICT_APP_ID="app123"`,
+		},
+		{
+			name:    "a former app ID that is no number → error naming the former name",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": "0"},
+			wantErr: `ENVOY_REVIEWER_APP_ID="0"`,
 		},
 		{
 			name: "github verdict app ID is trimmed",
@@ -92,9 +108,9 @@ func TestLoadWebhookConfig(t *testing.T) {
 				"ENVOY_GITHUB_WEBHOOK_SECRET":     "s",
 				"ENVOY_SLACK_SIGNING_SECRET":      "s",
 				"ENVOY_GHOSTWISPR_SIGNING_SECRET": "s",
-				"ENVOY_VERDICT_APP_ID":            "app123",
+				"ENVOY_VERDICT_APP_ID":            "5341240",
 			},
-			wantGitHub: true, wantSlack: true, wantGhostW: true, wantVerdictAppID: "app123",
+			wantGitHub: true, wantSlack: true, wantGhostW: true, wantVerdictAppID: "5341240",
 		},
 		{
 			name: "whitespace trimming",
@@ -102,9 +118,9 @@ func TestLoadWebhookConfig(t *testing.T) {
 				"ENVOY_WEBHOOKS":              " github , slack ",
 				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
 				"ENVOY_SLACK_SIGNING_SECRET":  "s",
-				"ENVOY_VERDICT_APP_ID":        "app123",
+				"ENVOY_VERDICT_APP_ID":        "5341240",
 			},
-			wantGitHub: true, wantSlack: true, wantVerdictAppID: "app123",
+			wantGitHub: true, wantSlack: true, wantVerdictAppID: "5341240",
 		},
 		{
 			name:    "unknown provider → error",
@@ -281,7 +297,7 @@ func TestLoadWebhookConfigRepositoryRenames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ENVOY_WEBHOOKS", "github")
 			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
-			t.Setenv("ENVOY_VERDICT_APP_ID", "app123")
+			t.Setenv("ENVOY_VERDICT_APP_ID", "5341240")
 			t.Setenv("ENVOY_GITHUB_REPOSITORY_RENAMES", tc.renames)
 
 			cfg, err := LoadWebhookConfig()

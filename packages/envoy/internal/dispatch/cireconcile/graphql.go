@@ -473,7 +473,7 @@ func statusObject(sum *maphash.Hash, entry graphQLStatusContext) (status object,
 //   - startedAt and completedAt are the webhook's started_at and completed_at, which order two
 //     observations of one run;
 //   - the suite's app.databaseId is the webhook's app.id, the App that created the run, which the
-//     review-App rule reads.
+//     verdict App's rule reads.
 //
 // The head commit's oid is the webhook's head_sha: GraphQL's CheckRun has no head sha of its
 // own, and the commit the query read the suite from is the commit the run ran at.

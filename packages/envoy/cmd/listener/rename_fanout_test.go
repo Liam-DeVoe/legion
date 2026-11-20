@@ -210,7 +210,7 @@ func startRenameCase(t *testing.T, machineID, renames string) *renameCase {
 	env := []string{
 		"ENVOY_WEBHOOKS=github",
 		"ENVOY_GITHUB_WEBHOOK_SECRET=" + renameSecret,
-		"ENVOY_REVIEWER_APP_ID=1",
+		"ENVOY_VERDICT_APP_ID=1",
 	}
 	if renames != "" {
 		env = append(env, "ENVOY_GITHUB_REPOSITORY_RENAMES="+renames)

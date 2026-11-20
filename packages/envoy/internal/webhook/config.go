@@ -70,9 +70,12 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ENVOY_GITHUB_REPOSITORY_RENAMES: %w", err)
 			}
-			verdictAppID, name := contracts.VerdictAppSetting(os.Getenv, "ENVOY_VERDICT_APP_ID", "ENVOY_REVIEWER_APP_ID")
+			verdictAppID, err := contracts.VerdictAppID(os.Getenv, "ENVOY_VERDICT_APP_ID", "ENVOY_REVIEWER_APP_ID")
+			if err != nil {
+				return nil, err
+			}
 			if verdictAppID == "" {
-				return nil, fmt.Errorf("%s required when github enabled", name)
+				return nil, fmt.Errorf("ENVOY_VERDICT_APP_ID required when github enabled")
 			}
 			cfg.GitHub = &GitHubWebhook{
 				Secret:            secret,

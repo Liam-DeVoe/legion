@@ -384,7 +384,7 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 		"ENVOY_API_TOKEN=redelivered-listener-token",
 		"ENVOY_WEBHOOKS=github",
 		"ENVOY_GITHUB_WEBHOOK_SECRET=" + redeliveredSecret,
-		"ENVOY_REVIEWER_APP_ID=1",
+		"ENVOY_VERDICT_APP_ID=1",
 	}
 	cmd.ExtraFiles = []*os.File{socket}
 	output := &processOutput{}

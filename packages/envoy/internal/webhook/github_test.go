@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"log"
 	"maps"
@@ -944,11 +945,8 @@ func TestGitHubHandlerStatus(t *testing.T) {
 // id, so a read of the listener's log tells which App's webhook delivers. A delivery without the
 // headers names neither value, and the line keeps both keys.
 func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
-	var logged bytes.Buffer
-	previous, flags := log.Writer(), log.Flags()
-	log.SetOutput(&logged)
+	logtest.Keep(t)
 	log.SetFlags(0)
-	defer func() { log.SetOutput(previous); log.SetFlags(flags) }()
 	body := []byte(`{
 		"action": "created",
 		"issue": {"number": 42, "title": "test issue"},
@@ -958,7 +956,8 @@ func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
 	}`)
 	post := func(delivery string, headers map[string]string) string {
 		t.Helper()
-		logged.Reset()
+		logged := &logtest.Buffer{}
+		log.SetOutput(logged)
 		handler := GitHubHandler("s", "@legion", "5341240", &mockPublisher{}, &mockRecorder{})
 		req := httptest.NewRequest("POST", "/webhook/github", bytes.NewReader(body))
 		req.Header.Set("X-GitHub-Delivery", delivery)
@@ -1132,7 +1131,7 @@ type listenerCI struct {
 	handler http.HandlerFunc
 	pub     *mockPublisher
 	rec     *mockRecorder
-	logged  *bytes.Buffer
+	logged  *logtest.Buffer
 }
 
 const (
@@ -1143,11 +1142,10 @@ const (
 
 func newListenerCI(t *testing.T, verdictApp string) *listenerCI {
 	t.Helper()
-	logged := &bytes.Buffer{}
-	previous, flags := log.Writer(), log.Flags()
+	logtest.Keep(t)
+	logged := &logtest.Buffer{}
 	log.SetOutput(logged)
 	log.SetFlags(0)
-	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
 	ci := &listenerCI{t: t, pub: &mockPublisher{}, rec: &mockRecorder{}, logged: logged}
 	ci.handler = GitHubHandler("s", "@legion", verdictApp, ci.pub, ci.rec)
 	return ci
