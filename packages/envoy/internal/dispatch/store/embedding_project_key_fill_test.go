@@ -198,7 +198,9 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 	ownerless := seedOwnerlessWindow(t, database)
 	stillAt := embeddingPhysicalRow(t, database, ownerless)
 
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	// The labelling half alone: the whole pass then swaps in the partitioned table, which stores
+	// every row in a new tuple, and the tuple below is how this test reads that no label was written.
+	if _, err := database.labelEmbeddingProjectKeys(ctx); err != nil {
 		t.Fatalf("label the stored rows: %v", err)
 	}
 

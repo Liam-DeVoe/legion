@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // ErrEmbeddingProjectKeyProgressGone is the row 20261109120100 creates for the fill to record
@@ -201,7 +203,9 @@ const fillEmbeddingProjectKeysBatchQuery = `
 // the one column of the cursor row a reader outside the pass needs: the process that keeps
 // trying for the lease until the labelling is over reads it between tries
 // (api.RunEmbeddingProjectKeyFill), and reads it rather than calling the fill again, which would
-// write the fill's own "nothing to do" line every interval for the life of the process.
+// write the fill's own "nothing to do" line every interval for the life of the process. The pass
+// is finished once the rows are labelled and embeddings is the partitioned table
+// (partitionEmbeddings), so a database still holding the unpartitioned one reads false.
 //
 // It costs one row of a one-row table by its only key and takes no lock: a pass running in
 // another process holds that row `for update` only for the length of a batch, and a reader that
@@ -212,18 +216,33 @@ func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("read whether the embeddings project_key fill is finished: %w",
 			embeddingProjectKeyProgressGone(err))
 	}
-	return done, nil
+	if !done {
+		return false, nil
+	}
+	return s.embeddingsPartitioned(ctx)
 }
 
 // FillEmbeddingProjectKeys labels the embeddings rows stored before 20261109120000 added
-// project_key, and answers how many of them gained a project. The boot starts it in the
-// background under a lease (api.RunEmbeddingProjectKeyFill): the pass is one to two hours on a
-// deployment of a million vectors (EmbeddingProjectKeyBatch), and until it has recorded itself
-// done an unlabelled row is invisible to the column's own predicate - which is worse than the
-// release before this one, since that release found the row through the owner each meaning arm
-// joins. So a project-scoped meaning search is answered by that older, joined predicate until
-// this pass records itself done (api/search.go, meaningProjectScope), the server serves while
-// the pass runs, and every batch moves rows onto the predicate the column exists for.
+// project_key, and answers how many of them gained a project; then it moves embeddings onto the
+// table partitioned by that project (partitionEmbeddings). The boot starts it in the background
+// under a lease (api.RunEmbeddingProjectKeyFill): each half is one to two hours on a deployment
+// of a million vectors (EmbeddingProjectKeyBatch, EmbeddingPartitionCopyBatch), and until the
+// labelling has recorded itself done an unlabelled row is invisible to the column's own
+// predicate - which is worse than the release before this one, since that release found the row
+// through the owner each meaning arm joins. So a project-scoped meaning search is answered by
+// that older, joined predicate until the labelling records itself done (api/search.go,
+// meaningProjectScope), the server serves while the pass runs, and every batch moves rows onto
+// the predicate the column exists for. It answers an error, and the runner tries again, until
+// both halves are done.
+func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
+	labelled, err := s.labelEmbeddingProjectKeys(ctx)
+	if err != nil {
+		return labelled, err
+	}
+	return labelled, s.partitionEmbeddings(ctx)
+}
+
+// labelEmbeddingProjectKeys is FillEmbeddingProjectKeys' first half, the labelling.
 //
 // A pass already finished costs one row: the progress row 20261109120100 creates says so, and
 // this reads nothing else. Otherwise it loops, each iteration one short transaction that takes
@@ -238,7 +257,7 @@ func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
 // in the one line that costs it, and the lines are distinct sentences rather than one sentence in
 // two tenses, so a reader of a stopped deployment's log can tell a fill still running from a fill
 // that finished.
-func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
+func (s *Store) labelEmbeddingProjectKeys(ctx context.Context) (int64, error) {
 	var fromKind, fromID string
 	var done bool
 	if err := s.Pool.QueryRow(ctx, "select kind, id, done from embeddings_project_key_backfill").
@@ -314,4 +333,175 @@ func (s *Store) fillEmbeddingProjectKeysBatch(ctx context.Context) (int64, bool,
 		return 0, false, fmt.Errorf("commit an embeddings project_key fill batch: %w", err)
 	}
 	return labelled, finished, nil
+}
+
+// EmbeddingPartitionCopyBatch is how many embeddings rows one transaction of partitionEmbeddings'
+// copy carries to embeddings_partitioned (20261120105330). What a row costs there is its vector:
+// a new TOAST value of about 6 KB and an insertion into its partition's HNSW graph, which is
+// most of it. The rows are taken FOR SHARE, so a write of one of them - the queue storing its
+// vector, an edit enqueueing its new text - waits for the batch's commit, and 200 rows keeps
+// that wait near the second EmbeddingProjectKeyBatch keeps it near for the labelling.
+const EmbeddingPartitionCopyBatch = 200
+
+// embeddingsPartitioned answers whether embeddings is the partitioned table yet, which it is
+// once embeddings_swap_in_partitioned has run.
+func (s *Store) embeddingsPartitioned(ctx context.Context) (bool, error) {
+	var partitioned bool
+	if err := s.Pool.QueryRow(ctx, embeddingsPartitionedQuery).Scan(&partitioned); err != nil {
+		return false, fmt.Errorf("read whether embeddings is partitioned by project: %w", err)
+	}
+	return partitioned, nil
+}
+
+const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid = 'embeddings'::regclass`
+
+// partitionEmbeddings is FillEmbeddingProjectKeys' second half: it copies every row of
+// embeddings into embeddings_partitioned, the table 20261120105330 built beside it, and then
+// swaps the two (embeddings_swap_in_partitioned). Writes made while it copies are carried over by
+// 20261120105818's trigger, so once the copy has read the last row the two tables hold the same
+// rows, and the swap holds both tables' ACCESS EXCLUSIVE locks for as long as it takes to compare
+// their counts and rename, bounded by pgmigrate.LockTimeout while it waits for them. A swap that
+// waits longer is given up and answered as an error, which the runner tries again.
+//
+// A database whose embeddings is partitioned already costs one catalog read. The copy resumes
+// from its cursor (embeddings_partitioned_copy), so a process killed mid-copy costs the next try
+// the batch it was in. It logs as the labelling does: a line that it began and where from, one
+// every embeddingProjectKeyProgressEvery while it copies, one when the copy finished, and one
+// when embeddings is swapped, with how long the swap held the two tables.
+func (s *Store) partitionEmbeddings(ctx context.Context) error {
+	partitioned, err := s.embeddingsPartitioned(ctx)
+	if err != nil {
+		return err
+	}
+	if partitioned {
+		slog.Info("dispatch: embeddings is partitioned by project already: there is nothing to copy")
+		return nil
+	}
+	var fromKind, fromID string
+	var done bool
+	if err := s.Pool.QueryRow(ctx, "select kind, id, done from embeddings_partitioned_copy").
+		Scan(&fromKind, &fromID, &done); err != nil {
+		return fmt.Errorf("read the embeddings partition copy's progress: %w", err)
+	}
+	if !done {
+		started := time.Now()
+		slog.Info("dispatch: the embeddings partition copy began",
+			"from_kind", fromKind, "from_id", fromID, "batch", EmbeddingPartitionCopyBatch)
+		// rows is every row the copy read, and inserted the rows of them the mirror had not
+		// carried over already: on a database that took writes while the copy ran, inserted is
+		// smaller, and the two together say how much of the table the copy itself moved.
+		var rows, inserted, batches int64
+		said := started
+		for !done {
+			var read, wrote int64
+			if read, wrote, done, err = s.copyEmbeddingsBatch(ctx); err != nil {
+				return err
+			}
+			rows += read
+			inserted += wrote
+			batches++
+			if now := time.Now(); !done && now.Sub(said) >= embeddingProjectKeyProgressEvery {
+				said = now
+				slog.Info("dispatch: the embeddings partition copy is copying",
+					"rows", rows, "inserted", inserted, "batches", batches, "elapsed", now.Sub(started))
+			}
+		}
+		slog.Info("dispatch: the embeddings partition copy finished",
+			"rows", rows, "inserted", inserted, "batches", batches, "duration", time.Since(started))
+	}
+	return s.swapInEmbeddingPartitions(ctx)
+}
+
+// copyEmbeddingsBatch copies the next EmbeddingPartitionCopyBatch rows of embeddings above the
+// copy's cursor, in embeddings' primary key order, and moves the cursor past them, in one
+// transaction, answering how many rows it read, how many of them it inserted (a row the mirror
+// carried over already is left as the mirror wrote it), and whether it took no further row, which
+// is the copy finished. The cursor is read and locked by a statement of its own, so the batch is
+// planned against its values as the labelling's is (fillEmbeddingProjectKeysCursorQuery).
+func (s *Store) copyEmbeddingsBatch(ctx context.Context) (read, inserted int64, finished bool, err error) {
+	ctx = WithTransactionTracking(ctx)
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("begin an embeddings partition copy batch: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var fromKind, fromID string
+	if err := tx.QueryRow(ctx, `select kind, id from embeddings_partitioned_copy for update`).
+		Scan(&fromKind, &fromID); err != nil {
+		return 0, 0, false, fmt.Errorf("take the embeddings partition copy's cursor: %w", err)
+	}
+	if err := tx.QueryRow(ctx, copyEmbeddingsBatchQuery, fromKind, fromID, EmbeddingPartitionCopyBatch).
+		Scan(&read, &inserted, &finished); err != nil {
+		return 0, 0, false, fmt.Errorf("copy a batch of embeddings rows into their partitions: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, false, fmt.Errorf("commit an embeddings partition copy batch: %w", err)
+	}
+	return read, inserted, finished, nil
+}
+
+// copyEmbeddingsBatchQuery is one batch of the copy. $1 and $2 are the cursor, $3 the batch size.
+//
+// The batch's rows are read FOR SHARE, and that lock is what makes the copy and
+// 20261120105818's mirror one ordering of each row's writes: a write of a row the batch holds
+// waits for the batch's commit, and then its trigger meets the copied row and writes over it,
+// where without the lock the write could land between the batch's read and its insert and be
+// overwritten by the older copy, or a delete could run there and the copy bring the row back.
+// A row written before the batch read it is in the mirror's table already, and the insert leaves
+// it as the mirror wrote it (do nothing).
+const copyEmbeddingsBatchQuery = `
+	with batch as materialized (
+		select e.kind, e.id, e.text_snapshot, e.content_hash, e.embedded_hash, e.model, e.embedding,
+		       e.attempt_count, e.confirmed_failures, e.next_attempt_at, e.dead, e.embedded_at,
+		       e.created_at, e.pending_since, e.dead_model, e.covers, e.project_key
+		  from embeddings e
+		 where (e.kind, e.id) > ($1::text, $2::text)
+		 order by e.kind, e.id
+		 limit $3
+		   for share
+	), last as (
+		select b.kind, b.id from batch b order by b.kind desc, b.id desc limit 1
+	), copied as (
+		insert into embeddings_partitioned (kind, id, text_snapshot, content_hash, embedded_hash, model,
+		                                    embedding, attempt_count, confirmed_failures, next_attempt_at,
+		                                    dead, embedded_at, created_at, pending_since, dead_model,
+		                                    covers, project_key)
+		select kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, attempt_count,
+		       confirmed_failures, next_attempt_at, dead, embedded_at, created_at, pending_since,
+		       dead_model, covers, project_key
+		  from batch
+		    on conflict (kind, id, project_key) do nothing
+		returning 1
+	), moved as (
+		update embeddings_partitioned_copy
+		   set kind = coalesce((select kind from last), embeddings_partitioned_copy.kind),
+		       id = coalesce((select id from last), embeddings_partitioned_copy.id),
+		       done = not exists (select 1 from last)
+		returning done
+	)
+	select (select count(*) from batch), (select count(*) from copied), (select done from moved)`
+
+// swapInEmbeddingPartitions runs embeddings_swap_in_partitioned in a transaction of its own,
+// waiting for the two tables' locks at most pgmigrate.LockTimeout, as a migration waits for its
+// own: while the swap waits for embeddings' ACCESS EXCLUSIVE lock, every read and write of the
+// table queues behind it, and a bound that long is the one a migration already makes them pay.
+func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
+	ctx = WithTransactionTracking(ctx)
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the embeddings partition swap: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, fmt.Sprintf("set local lock_timeout = %d", pgmigrate.LockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound the embeddings partition swap's lock wait: %w", err)
+	}
+	started := time.Now()
+	if _, err := tx.Exec(ctx, "select embeddings_swap_in_partitioned()"); err != nil {
+		return fmt.Errorf("swap the partitioned embeddings table in: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the embeddings partition swap: %w", err)
+	}
+	slog.Info("dispatch: embeddings is partitioned by project: the copy is swapped in", "held", time.Since(started))
+	return nil
 }
