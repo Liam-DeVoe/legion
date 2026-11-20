@@ -370,20 +370,24 @@ commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal.
-Where it cannot read the dry run, or where jj refuses a rewrite of the step because the commit it
-would make exists already, it prints one line, and the push runs as written, but for a commit id
-whose commit a metaedit of the step rewrote or rebased first, such as a commit whose empty author
-the step filled.
+Where it cannot read the dry run, it prints one line, and the push runs as written, but for a
+commit id whose commit a metaedit of the step rewrote or rebased first, such as a commit whose
+empty author the step filled.
 A push that names a commit that no jj command has imported yet, such as one that a `git commit`
 made, has a dry run that the step cannot read: the step's commands import nothing from git, so the
 dry run cannot find the commit, and the push imports it and sends it as it is.
 jj prints a commit id short, as its first 12 hex digits, and the step never has jj resolve such an
-id over the whole repository: it matches the id against the commits that the push can send, so
-another commit whose id starts the same, another issue's under tmux included, changes nothing, and
-two of those commits whose ids start the same make a dry run that the step cannot read.
-A commit's timestamps are whole seconds, so a retry of a refused push in the same second can ask
-jj for the commit that the first push's rewrite made: where that commit stands for the hidden
-commit that the push names, the push sends it.
+id over the whole repository, hidden commits included: it matches the id against the commits of
+the repository's bookmarks and tags and of the push's revision arguments, or, for jj's refusal of
+a commit with no author, against the mutable commits that no remote holds.
+Two commits of that set whose ids start the same, another issue's under tmux included, make a dry
+run that the step cannot read.
+A commit's timestamps are whole seconds, so a rewrite in the same second as an earlier rewrite of
+the same commit asks jj for a commit that exists already, which jj refuses.
+In a retry of a refused push that names the hidden commit that the first push's rewrite replaced,
+the step takes that commit, and the push sends it.
+In any other case, such as a retry after a `jj undo`, the step prints one line, and the push runs
+as after a dry run that the step cannot read.
 A process with no table runs no step, such as a controller or a pane of an earlier release.
 Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
 above to choose the `jj` it runs, and the same push, back with the same words, runs no second step.
