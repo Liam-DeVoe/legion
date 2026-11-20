@@ -713,7 +713,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 
 // heldFrame is how long the answer and exit rows of
 // TestTheRigWaitsForAFrameTheLauncherIsSlowToSend hold the frame they read: a second past 10 s,
-// which one frame of this package has already taken on a loaded machine (frameDeadline).
+// which one frame of this package has already taken on a loaded machine (frameWait).
 // heldHello is how long its hello row holds the launcher's first pass: a second past 20 s, a span
 // a fixed accept could have, and inside the pass's own bound, gitLockFirstPassBound.
 const (
@@ -722,9 +722,9 @@ const (
 )
 
 // What the launcher is slow to send is still read: the daemon end of the connection waits for
-// the launcher's connection and each frame until the test binary's own deadline (frameDeadline),
-// since nothing of the test's bounds what comes before them. Each row holds one frame through
-// something the row owns, and reads the frame when it comes.
+// the launcher's connection and hello up to helloBound and for each later frame up to frameBound,
+// the launcher's own bounds for them, and a span inside such a bound is read. Each row holds one
+// frame through something the row owns, and reads the frame when it comes.
 func TestTheRigWaitsForAFrameTheLauncherIsSlowToSend(t *testing.T) {
 	// A start's answer waits for the sweep's first pass over the clone the start names, which
 	// the pod's bundle restore runs after (gitLockSweep.learn). The pass is held where it removes

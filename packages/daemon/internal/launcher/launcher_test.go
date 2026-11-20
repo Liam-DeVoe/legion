@@ -161,18 +161,25 @@ func (g *rig) accept() shimwire.LauncherState {
 }
 
 // acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet. The accept waits as a frame read does
-// (frameDeadline): before a launcher whose working directory is a workspace connects, it runs
-// the sweep's first pass, for up to gitLockFirstPassBound.
+// hello names, which has not been acknowledged yet. The accept, any connection it passes over
+// and the hello's read share one wait of helloBound (helloWait).
 //
 // The listener is a port of the machine's loopback, which any process of the machine can reach,
 // and a launcher sends its hello first (manager.serve). So a connection that closes without
-// sending a byte is no launcher's, and acceptRole passes over it, logging its peer, and takes the
-// next. A launcher that never sends its hello still fails the accept by name at frameDeadline.
+// sending a byte, by an end of file or by a reset, is passed over, logging its peer, when it is
+// another process's, and the next connection is taken. Every launcher of this test process dials
+// through dialDaemon, which records the address each connection leaves from (launcherDials; a
+// PID-one launcher of namespaceRig writes its own to a file the rig names), so a connection that
+// closes without a byte from an address a launcher dialed is the launcher under test dropping its
+// own connection before its hello, and fails the case by name. A connection that sends part of a
+// hello and closes fails by name too, whoever made it, and so does a launcher that never sends
+// its hello.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
+	wait := helloWait(t)
+	deadline := time.Now().Add(wait)
 	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(frameDeadline(t)); err != nil {
+		if err := tcp.SetDeadline(deadline); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -180,31 +187,111 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	for {
 		conn, err := listener.Accept()
 		if os.IsTimeout(err) {
-			t.Fatalf("no launcher connected while the test waited for one, which an accept waits for until the test binary's deadline less %s (connections passed over, which sent nothing: %q): %v",
-				frameMargin, passedOver, err)
+			t.Fatalf("no launcher connected while the test waited for one, which an accept waits for up to %s (connections of other processes passed over, which sent nothing: %q): %v",
+				helloLimit(wait), passedOver, err)
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
 		c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
-		if err := conn.SetReadDeadline(frameDeadline(t)); err != nil {
+		if err := conn.SetReadDeadline(deadline); err != nil {
 			t.Fatal(err)
 		}
 		accepted := time.Now()
-		if _, err := c.reader.Peek(1); errors.Is(err, io.EOF) {
-			t.Logf("acceptRole: passed over the connection from %s, which closed %s after it was accepted without sending a byte: no launcher's",
-				conn.RemoteAddr(), time.Since(accepted).Round(time.Millisecond))
-			passedOver = append(passedOver, conn.RemoteAddr().String())
+		if _, err := c.reader.Peek(1); err != nil && !os.IsTimeout(err) {
+			from := conn.RemoteAddr().String()
+			if launcherDials.dialed(from) {
+				t.Fatalf("the launcher under test closed its connection from %s %s after it was accepted, without sending its hello: %v",
+					from, time.Since(accepted).Round(time.Millisecond), err)
+			}
+			t.Logf("acceptRole: passed over the connection from %s, which no launcher of this test dialed and which closed %s after it was accepted without sending a byte: %v",
+				from, time.Since(accepted).Round(time.Millisecond), err)
+			passedOver = append(passedOver, from)
 			_ = conn.Close()
 			continue
 		}
-		hello, ok := c.nextFor("the launcher's hello").(shimwire.LauncherHello)
+		hello, ok := c.nextBy("the launcher's hello", deadline, helloLimit(wait)).(shimwire.LauncherHello)
 		if !ok || hello.Role == "" || hello.LauncherID == "" {
 			t.Fatalf("hello = %#v", hello)
 		}
 		c.hello, c.passedOver = hello, passedOver
 		return c
+	}
+}
+
+// launcherDials is the address each launcher connection of this test process left from, as
+// dialDaemon records it, and the files PID-one launchers of namespaceRig write theirs to: what
+// acceptRole reads to tell the launcher under test from another process of the machine.
+var launcherDials = &dialRecord{from: map[string]bool{}}
+
+// launcherDialsEnv names the file a launcher started as a process of its own (namespaceRig)
+// appends the address of each of its connections to, one per line.
+const launcherDialsEnv = "LEGION_LAUNCHER_TEST_DIALS"
+
+// dialRecord is launcherDials' type: the addresses this process's launchers dialed from, and the
+// files the launchers of other processes the tests started write theirs to.
+type dialRecord struct {
+	mu    sync.Mutex
+	from  map[string]bool
+	files []string
+}
+
+// add records address, and appends it to the file launcherDialsEnv names when this process is a
+// launcher another test started.
+func (r *dialRecord) add(address string) {
+	r.mu.Lock()
+	r.from[address] = true
+	r.mu.Unlock()
+	if file := os.Getenv(launcherDialsEnv); file != "" {
+		out, err := os.OpenFile(file, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintln(out, address)
+			_ = out.Close()
+		}
+	}
+}
+
+// watch has dialed read file too, for as long as t runs: the file a launcher t started as a
+// process of its own records its connections in.
+func (r *dialRecord) watch(t *testing.T, file string) {
+	r.mu.Lock()
+	r.files = append(r.files, file)
+	r.mu.Unlock()
+	t.Cleanup(func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.files = slices.DeleteFunc(r.files, func(f string) bool { return f == file })
+	})
+}
+
+// dialed reports whether a launcher of this test, in this process or a process the test started,
+// dialed from address.
+func (r *dialRecord) dialed(address string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.from[address] {
+		return true
+	}
+	for _, file := range r.files {
+		body, _ := os.ReadFile(file)
+		if slices.Contains(strings.Split(string(body), "\n"), address) {
+			return true
+		}
+	}
+	return false
+}
+
+// Every launcher this test binary runs dials through the recording dialer, the PID-one launchers
+// it starts as processes of their own included, since they are this binary too.
+func init() {
+	dial := dialDaemon
+	dialDaemon = func(ctx context.Context, address string) (net.Conn, error) {
+		conn, err := dial(ctx, address)
+		if err == nil {
+			launcherDials.add(conn.LocalAddr().String())
+		}
+		return conn, err
 	}
 }
 
@@ -229,33 +316,56 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 	return state
 }
 
-// frameMargin is what frameDeadline leaves of the test binary's deadline: the longest wait the
-// cleanup of a connection's own launcher holds once the case has failed, a fleet's wait for Run
-// to return after its context ends (launcherLeaveBound; a rig's is 5 s), and a second for the
-// failure's own report. So the case ends and prints what it waited for before the binary's own
-// timeout panics, which names no wait and, without -v, prints none of the case's lines.
+// frameReport is the time a frame takes, once the launcher has it, to reach the test on a loaded
+// machine: the fixed span every rig read had before the rig took its waits from the launcher's own
+// bounds (10 s), which held every frame nothing of the launcher's held first. It is a judgement,
+// not a measurement of the launcher: the one frame known to outlast it waited for a restore, which
+// frameBound counts.
+const frameReport = 10 * time.Second
+
+// helloBound is the longest the launcher's own code takes to send a hello, and so the rig's wait
+// for a launcher's connection and its hello (acceptRole). A launcher whose working directory is a
+// workspace runs the git lock sweep's first pass before it dials, which the pass's own bound ends
+// between two of the clone's locks (gitLockFirstPassBound), and a launcher whose connection ended
+// dials again after reconnectDelay, which that bound covers; frameReport is the time to report the
+// hello. A launcher that serves the pod's test database runs its first ensure before it dials as
+// well, for up to testPGBound: no rig or fleet of these tests serves one before its hello (a
+// single-role launcher's Run returns before the test database starts).
+const helloBound = gitLockFirstPassBound + frameReport
+
+// frameBound is the longest the launcher's own code takes to send any frame after its hello, and
+// so the rig's wait for each (nextFor): a start's answer behind the pod's bundle restore, whose
+// budget (restoreBudget) is the longest bound the launcher holds ahead of a frame, and frameReport.
+// What else a frame waits for is a span the test makes itself: a role it started, a clone it built
+// for the sweep's pass over the clone a start names (gitLockSweep.learn).
+const frameBound = restoreBudget + frameReport
+
+// frameMargin is what the rig's waits leave of the test binary's deadline (testwait.Bounded): the
+// longest wait the cleanup of a connection's own launcher holds once the case has failed, a fleet's
+// wait for Run to return after its context ends (launcherLeaveBound; a rig's is 5 s), and a second
+// for the failure's own report. So a case whose wait the binary's deadline cuts short still ends
+// and prints what it waited for before the binary's own timeout panics, which names no wait and,
+// without -v, prints none of the case's lines (TestARigWaitEndsBeforeTheBinaryTimeoutPanics).
 const frameMargin = launcherLeaveBound + time.Second
 
-// frameDeadline is when the rig gives up on the launcher's connection (acceptRole) or its next
-// frame (nextFor): the test binary's own deadline less frameMargin, or never when the binary has
-// no deadline (-timeout 0). Each is an event the test waits for, and what the launcher does
-// before it has either no bound at all or a bound of the pod's, not of the test's. A connection
-// waits for the sweep's first pass when the launcher's working directory is a workspace, for up
-// to gitLockFirstPassBound. A start's answer waits for the sweep's first pass over the clone the
-// start names, which only the container's context ends (gitLockSweep.learn), and then for the
-// pod's bundle restore, whose budget is restoreBudget. A generation's exit waits for role-init to
-// make the role's namespaces and for the role to end, which nothing bounds. A fixed span is
-// therefore a guess, and on a loaded machine a guess of 10 s failed a case with its frame on the
-// way (generation 1's exit in TestTheFirstPassRunsBeforeTheBundleRestore, at a load of 256 to
-// 352). The rig waits instead as the package's other waits do (testwait): what is merely slow is
-// read, and what never comes fails, naming what the test waited for, before the binary's timeout
-// does.
-func frameDeadline(t *testing.T) time.Time {
-	deadline, ok := t.Deadline()
-	if !ok {
-		return time.Time{}
-	}
-	return deadline.Add(-frameMargin)
+// helloWait and frameWait are how long the rig waits for a hello and for a later frame, as the
+// package's other waits do (testwait.Bounded): the launcher's own bound for the frame, or what is
+// left of the test binary's deadline less frameMargin when that is sooner. What is merely slow is
+// read, and what never comes fails at the frame's bound, naming what the test waited for, and
+// leaves the binary's later cases their time (TestARigWaitThatGivesUpLeavesLaterCasesTheirTime). A
+// fixed 10 s failed a case on a loaded machine with its frame on the way, behind a restore
+// (generation 1's exit in TestTheFirstPassRunsBeforeTheBundleRestore, at a load of 256 to 352).
+func helloWait(t *testing.T) time.Duration { return testwait.Bounded(t, helloBound, frameMargin) }
+
+func frameWait(t *testing.T) time.Duration { return testwait.Bounded(t, frameBound, frameMargin) }
+
+// helloLimit and frameLimit say, in a failure, how long the wait that gave up was and why.
+func helloLimit(wait time.Duration) string {
+	return fmt.Sprintf("%s, the rig's wait for a hello (helloBound %s, or the test binary's deadline less %s)", wait.Round(time.Millisecond), helloBound, frameMargin)
+}
+
+func frameLimit(wait time.Duration) string {
+	return fmt.Sprintf("%s, the rig's wait for a frame (frameBound %s, or the test binary's deadline less %s)", wait.Round(time.Millisecond), frameBound, frameMargin)
 }
 
 // next is the launcher's next frame, whatever it is.
@@ -264,11 +374,19 @@ func (g *roleConn) next() shimwire.Frame {
 	return g.nextFor("the launcher's next frame")
 }
 
-// nextFor is the launcher's next frame, read until frameDeadline. A read that gives up names
-// what the test waited for, the connection's role and how long the read waited.
+// nextFor is the launcher's next frame, read for up to frameWait.
 func (g *roleConn) nextFor(what string) shimwire.Frame {
 	g.t.Helper()
-	if err := g.conn.SetReadDeadline(frameDeadline(g.t)); err != nil {
+	wait := frameWait(g.t)
+	return g.nextBy(what, time.Now().Add(wait), frameLimit(wait))
+}
+
+// nextBy is the launcher's next frame, read until deadline. A read that gives up names what the
+// test waited for, the connection's role, how long the read waited and the wait it gave up at
+// (limit).
+func (g *roleConn) nextBy(what string, deadline time.Time, limit string) shimwire.Frame {
+	g.t.Helper()
+	if err := g.conn.SetReadDeadline(deadline); err != nil {
 		g.t.Fatal(err)
 	}
 	began := time.Now()
@@ -279,8 +397,8 @@ func (g *roleConn) nextFor(what string) shimwire.Frame {
 			on = "role " + g.hello.Role + "'s launcher connection"
 		}
 		if os.IsTimeout(err) {
-			g.t.Fatalf("no frame came on %s in %s while the test waited for %s, which a read waits for until the test binary's deadline less %s: %v",
-				on, time.Since(began).Round(time.Millisecond), what, frameMargin, err)
+			g.t.Fatalf("no frame came on %s in %s while the test waited for %s, which a read waits for up to %s: %v",
+				on, time.Since(began).Round(time.Millisecond), what, limit, err)
 		}
 		g.t.Fatalf("%s ended while the test waited for %s: %v", on, what, err)
 	}
@@ -492,7 +610,9 @@ func TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild(t *testing.T) {
 // The launcher writes one line when the daemon acknowledges its hello, and one more at each later
 // acknowledgement, naming the daemon it reached and the launcher it is: a connected launcher's log
 // reads apart from one still dialing. A connection the daemon ends before acknowledging the hello
-// writes none.
+// writes none. The connection the daemon ends is taken as every connection of the rig is
+// (acceptRole), so another process's empty connection ahead of it, which this case makes, is
+// passed over here too.
 func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	g := newRig(t)
 	connected := func() []string {
@@ -509,48 +629,19 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 		t.Fatalf("after the first acknowledgement the launcher logged %q, want one line naming %s and launcher %s", lines, address, g.hello.LauncherID)
 	}
 
+	from := strayFrom(t, g.listener, "eof")
 	_ = g.conn.Close()
-	unacknowledged, err := g.listener.Accept()
-	if err != nil {
-		t.Fatal(err)
+	unacknowledged := acceptRole(t, g.listener)
+	if want := []string{from}; !slices.Equal(unacknowledged.passedOver, want) {
+		t.Fatalf("the rig passed over %q before it took the launcher's reconnect, want %q, the other process's connection that sent nothing", unacknowledged.passedOver, want)
 	}
-	if err := unacknowledged.SetReadDeadline(frameDeadline(t)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
-		t.Fatalf("the hello of the connection the daemon ends unacknowledged: %v", err)
-	}
-	_ = unacknowledged.Close()
+	_ = unacknowledged.conn.Close()
 	g.accept()
 	if lines := connected(); len(lines) != 2 {
 		t.Fatalf("after a dropped and an acknowledged hello the launcher logged %q, want a second line for the acknowledged one alone", lines)
 	}
 	if !strings.Contains(g.stderr.String(), "launcher: daemon connection: hello acknowledgement:") {
 		t.Fatalf("the launcher logged %q, want the unacknowledged hello's reconnect", g.stderr.String())
-	}
-}
-
-// A connection that closes without sending a byte is passed over, and the launcher's reconnect
-// behind it is taken (acceptRole). On a shared development machine a case failed once where it
-// took the reconnect of a dropped connection, with "the launcher connection ended while the test
-// waited for the launcher's hello: EOF" (TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive):
-// the connection the rig took ended before it sent a whole line, which a launcher's hello is.
-// Here the test makes such a connection itself, before the drop, so it waits ahead of the
-// launcher's reconnect, which comes reconnectDelay after the drop.
-func TestTheRigPassesOverAConnectionThatClosesWithoutAByte(t *testing.T) {
-	g := newRig(t)
-	stray, err := net.Dial("tcp", g.listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		time.Sleep(reconnectDelay / 4)
-		_ = stray.Close()
-	}()
-	_ = g.conn.Close()
-	g.accept()
-	if want := []string{stray.LocalAddr().String()}; !slices.Equal(g.passedOver, want) {
-		t.Fatalf("the rig passed over %q before it took the launcher's reconnect, want %q, the connection that sent nothing", g.passedOver, want)
 	}
 }
 

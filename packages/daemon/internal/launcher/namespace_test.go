@@ -165,11 +165,12 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	g.entries = filepath.Join(t.TempDir(), "pid-one-entries")
+	// The launcher is a process of its own here, so the addresses it dials from reach the rig
+	// through a file (launcherDials), which acceptRole reads for an empty connection.
+	dials := filepath.Join(t.TempDir(), "pid-one-dials")
+	launcherDials.watch(t, dials)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +178,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	environment := pidOneHelperEnvironment(t, "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
 		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
 		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(),
-		"LEGION_LAUNCHER_TEST_ENV_FILE="+g.entries)
+		"LEGION_LAUNCHER_TEST_ENV_FILE="+g.entries, launcherDialsEnv+"="+dials)
 	args := append(append(append([]string{}, prefix...), "/usr/bin/env", "-i"), environment...)
 	args = append(args, self, "-test.run=^TestLauncherPIDOneHelper$")
 	command := exec.Command("sudo", args...)
