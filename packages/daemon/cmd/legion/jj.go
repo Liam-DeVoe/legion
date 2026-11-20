@@ -151,16 +151,22 @@ type jjPush struct {
 
 // jjRevision is one revision argument of a push: the value of -c/--change or
 // -r/--revision/--revisions, or the revision of --named <name>=<revision>, which is the word at
-// index from offset on. ids are its commit-id words (jjIDWords), in order.
+// index from offset on. ids are its commit-id symbols (jjIDSymbols), in order.
 type jjRevision struct {
 	index, offset int
-	ids           []jjIDWord
+	ids           []jjIDSymbol
 }
 
-// jjIDWord is one commit-id word of a revision argument (jjIDWords): the bytes from start to end
-// of the push's word at index. It keys what the step follows from the word (jjStep.ids), so that
-// each word of an argument, and the same id in two places, is followed on its own.
-type jjIDWord struct{ index, start, end int }
+// newJJRevision is the revision argument that the word of args at index holds from offset on,
+// with its commit-id symbols (jjIDSymbols).
+func newJJRevision(args []string, index, offset int) jjRevision {
+	return jjRevision{index: index, offset: offset, ids: jjIDSymbols(args[index], index, offset)}
+}
+
+// jjIDSymbol is one commit-id symbol of a revision argument (jjIDSymbols): the bytes from start to
+// end of the push's word at index. It keys what the step follows from the symbol (jjStep.ids), so
+// that each symbol of an argument, and the same id in two places, is followed on its own.
+type jjIDSymbol struct{ index, start, end int }
 
 // jjGlobalValues are jj's global options whose value may be the next word: the list of the pod's
 // wrapper (packages/daemon/docker/jj), which finds the subcommand pair past them.
@@ -172,9 +178,9 @@ var jjPushValues = slices.Concat(jjGlobalValues, []string{"--remote", "-b", "--b
 // readJJPush reads args, a jj command line. It finds the subcommand pair as the pod's wrapper
 // (packages/daemon/docker/jj) finds it: the first two words that are no option and no option's
 // value, jj's global options being the ones that take one. Past the pair it reads `git push`'s
-// options too, and the commit-id words of each revision argument (jjIDWords). An option takes its
-// value as the next word, after `=` (`--change=X`, `-c=X`), or attached to a short name (`-cX`),
-// as clap reads each.
+// options too, and the commit-id symbols of each revision argument (jjIDSymbols). An option takes
+// its value as the next word, after `=` (`--change=X`, `-c=X`), or attached to a short name
+// (`-cX`), as clap reads each.
 func readJJPush(args []string) jjPush {
 	p := jjPush{args: args, pushOnly: map[int]bool{}}
 	var pair []string
@@ -216,10 +222,10 @@ func readJJPush(args []string) jjPush {
 				p.pushOnly[j] = true
 			}
 		case "-c", "--change", "-r", "--revision", "--revisions":
-			p.revisions = append(p.revisions, jjRevision{index: at, offset: offset, ids: jjIDWords(args[at], at, offset)})
+			p.revisions = append(p.revisions, newJJRevision(args, at, offset))
 		case "--named":
 			if eq := strings.IndexByte(args[at][offset:], '='); eq >= 0 {
-				p.revisions = append(p.revisions, jjRevision{index: at, offset: offset + eq + 1, ids: jjIDWords(args[at], at, offset+eq+1)})
+				p.revisions = append(p.revisions, newJJRevision(args, at, offset+eq+1))
 			}
 		}
 	}
@@ -249,24 +255,24 @@ func jjOption(arg string, values []string) (name string, offset int, ok bool) {
 	return "", 0, false
 }
 
-// jjIDWords is each commit-id word, in order, of the revision argument that word, the push's
+// jjIDSymbols is each commit-id symbol, in order, of the revision argument that word, the push's
 // word at index, holds from offset on. It reads the argument as jj's revset grammar does
 // (lib/src/revset.pest of jj 0.38 and 0.45): an identifier is parts of ASCII letters and digits,
 // `_`, `*`, `/` and bytes past ASCII (of which jj's XID_CONTINUE letters are made), joined by a
 // `.`, a `+` or a run of `-` only where another part follows (0.38 takes a single `-` and refuses
 // a run of them), so `C-` is C and the parents operator, `C+` C and the children operator, `C..D`
-// C, the range and D, and `a-b` one identifier. A commit-id word is an identifier that is
+// C, the range and D, and `a-b` one identifier. A commit-id symbol is an identifier that is
 // lower-case hex as a whole (isLowerHex) and that jj reads as a symbol (jjSymbol), outside a
 // string literal (`"…"` with its backslash escapes, or `'…'`). A commit id that is the whole
-// argument is its one word. A number, such as the 2 of `ancestors(C, 2)`, and an unquoted
-// pattern, such as the abc of `description(abc)`, are such words too. readIDs follows one only
-// where it starts the id of the one commit it resolves to, and where a metaedit of the step then
-// moves that commit, pushWords leaves the argument as written if jj refuses it with the full id
-// in the word's place, as it refuses a number there; a pattern jj takes so goes to the push with
-// the full id.
-func jjIDWords(word string, index, offset int) []jjIDWord {
+// argument is its one symbol. A number, such as the 2 of `ancestors(C, 2)`, and an unquoted
+// pattern, such as the abc of `description(abc)`, are such symbols too. readIDs follows one only
+// where it starts the id of the one commit it resolves to. Where another commit's full id then
+// stands in its place and jj refuses the argument so, as it refuses a number there, the dry run
+// gets the argument without the ids readIDs put in it, and the real push gets it as the role
+// wrote it (jjStep.refuses); a pattern jj takes so goes with the full id.
+func jjIDSymbols(word string, index, offset int) []jjIDSymbol {
 	revset := word[offset:]
-	var ids []jjIDWord
+	var ids []jjIDSymbol
 	for i := 0; i < len(revset); {
 		switch c := revset[i]; {
 		case c == '"':
@@ -286,7 +292,7 @@ func jjIDWords(word string, index, offset int) []jjIDWord {
 			start := i
 			i = jjIdentifierEnd(revset, i)
 			if isLowerHex(revset[start:i]) && jjSymbol(revset, start, i) {
-				ids = append(ids, jjIDWord{index: index, start: offset + start, end: offset + i})
+				ids = append(ids, jjIDSymbol{index: index, start: offset + start, end: offset + i})
 			}
 		default:
 			i++
@@ -295,13 +301,13 @@ func jjIDWords(word string, index, offset int) []jjIDWord {
 	return ids
 }
 
-// jjIdentifierByte is whether c can be part of a jj identifier (jjIDWords): an ASCII letter or
+// jjIdentifierByte is whether c can be part of a jj identifier (jjIDSymbols): an ASCII letter or
 // digit, `_`, `*`, `/`, or a byte past ASCII.
 func jjIdentifierByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '*' || c == '/' || c >= 0x80
 }
 
-// jjIdentifierEnd is the end in revset of the jj identifier that starts at i (jjIDWords): its
+// jjIdentifierEnd is the end in revset of the jj identifier that starts at i (jjIDSymbols): its
 // parts, and each `.`, `+` or run of `-` that another part follows.
 func jjIdentifierEnd(revset string, i int) int {
 	for {
@@ -341,26 +347,27 @@ func jjSymbol(revset string, start, end int) bool {
 // steps is whether the command is a push the step runs before.
 func (p jjPush) steps() bool { return p.push && !p.leave }
 
-// withRevisions is the command's words with each commit-id word of a revision argument
+// withRevisions is the command's words with each commit-id symbol of a revision argument
 // (jjRevision.ids) whose commit no longer stands for itself replaced, inside its argument, by the
-// full id of the commit that does (jjFollowed). Every other byte of the word stays as the role
-// wrote it: the option's own spelling, and the argument's `@`, bookmarks, change ids, functions,
-// strings and numbers. It is the dry run's words before dryRun adds to them, and the real push's
-// (pushWords) after a dry run the step read. With moved, it replaces only a word whose commit a
-// metaedit of the step moved (jjFollowed): the real push's words after a step that changes
-// nothing more (errJJAsWritten), which are the role's own but for such a commit (the step's loop
-// over a commit with no author can move one before a dry run it cannot read, and an earlier
-// metaedit one before a metaedit that jj refuses).
-func (p jjPush) withRevisions(ids map[jjIDWord]*jjFollowed, moved bool) []string {
+// full id of the commit that does (jjFollowed). A number or an unquoted pattern that starts the id
+// of such a commit is a commit-id symbol, and is replaced too (jjIDSymbols, jjStep.pushWords).
+// Every other byte of the word stays as the role wrote it: the option's own spelling, and the
+// argument's `@`, bookmarks, change ids, functions and quoted strings. It is the dry run's words
+// before dryRun adds to them, and the real push's (pushWords) after a dry run the step read. With
+// moved, it replaces only a symbol whose commit a metaedit of the step moved (jjFollowed): the
+// real push's words after a step that changes nothing more (errJJAsWritten), which are the role's
+// own but for such a commit (the step's loop over a commit with no author can move one before a
+// dry run it cannot read, and an earlier metaedit one before a metaedit that jj refuses).
+func (p jjPush) withRevisions(ids map[jjIDSymbol]*jjFollowed, moved bool) []string {
 	words := slices.Clone(p.args)
 	for _, r := range p.revisions {
 		arg, from := p.args[r.index], 0
 		var with strings.Builder
-		for _, w := range r.ids {
-			if f := ids[w]; f != nil && f.commit != f.origin && (f.moved || !moved) {
-				with.WriteString(arg[from:w.start])
+		for _, id := range r.ids {
+			if f := ids[id]; f != nil && f.commit != f.origin && (f.moved || !moved) {
+				with.WriteString(arg[from:id.start])
 				with.WriteString(f.commit)
-				from = w.end
+				from = id.end
 			}
 		}
 		if from > 0 {
@@ -375,7 +382,7 @@ func (p jjPush) withRevisions(ids map[jjIDWord]*jjFollowed, moved bool) []string
 // words that stay on the real push alone, then --dry-run, --ignore-working-copy, --color=never,
 // and `--config ui.quiet=false` as the last configuration, so that neither a flag nor the
 // repository's configuration silences it.
-func (p jjPush) dryRun(ids map[jjIDWord]*jjFollowed) []string {
+func (p jjPush) dryRun(ids map[jjIDSymbol]*jjFollowed) []string {
 	var words []string
 	for i, word := range p.withRevisions(ids, false) {
 		if !p.pushOnly[i] {
@@ -397,9 +404,10 @@ type jjStep struct {
 	env    []string // the environment of each, the loop guard's variable set
 	table  map[legionclaim.Role]runtime.GitIdentity
 	stderr io.Writer
-	// ids are the commit-id words of the revision arguments that name a commit (readIDs), each
-	// by its word and its place in that word: what the commit it names stands for now.
-	ids map[jjIDWord]*jjFollowed
+	// ids are the commit-id symbols of the revision arguments that name a commit (readIDs), each
+	// by the push's word that holds it and its place in that word: what the commit it names stands
+	// for now.
+	ids map[jjIDSymbol]*jjFollowed
 	// followed is each commit the step follows through its rewrites (advance).
 	followed []*jjFollowed
 	// rewrites are the commits a metaedit of the step rewrote or found rewritten already, in
@@ -409,7 +417,7 @@ type jjStep struct {
 
 // jjFollowed is a commit the step follows through each of its metaedits: origin, the commit id
 // the step read, and commit, the commit that stands for it now, of change; hidden is whether that
-// commit is hidden now. arg is whether it is a commit-id word's (readIDs), and moved whether a
+// commit is hidden now. arg is whether it is a commit-id symbol's (readIDs), and moved whether a
 // metaedit of the step moved it to another commit, the one that replaced it (advance) or the one
 // a rewrite before the step made of it already (existing), apart from readIDs' reading of a
 // hidden commit as its change's one visible commit.
@@ -426,10 +434,10 @@ type jjRewrite struct {
 }
 
 // jjStepFailure is a command of the step that failed: legion jj ends with code, after output,
-// what the command printed on standard error, and runs no push. Three go on past one: readIDs,
-// past the failure of its read of a commit-id word; pushWords, past the failure of its read of a
-// revision argument with its words replaced; and metaedit, past jj's refusal to make a commit that
-// exists already (jjCommitExists) and the failure of its read of that commit.
+// what the command printed on standard error, and runs no push. Three go on past one: readID,
+// past the failure of its read of a commit-id symbol; refuses, past the failure of its read of a
+// revision argument with its symbols replaced; and metaedit, past jj's refusal to make a commit
+// that exists already (jjCommitExists) and the failure of its read of that commit.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -458,66 +466,124 @@ func (s *jjStep) rewrite() error {
 	return s.setAuthors(heads)
 }
 
-// readIDs reads each commit-id word of each revision argument (jjRevision.ids) as a revset of its
-// own: the word is a commit id when the one commit it resolves to has an id that starts with it,
-// and is followed from that commit, by the word and its place in the argument. A hidden commit
-// whose change has exactly one visible commit stands for that commit, in the dry run and in the
-// real push. One whose change has none, or more than one, stands for itself. So does a word that
-// resolves to no commit, to more than one, or to one whose id does not start with it (a bookmark
-// or a tag of that name), and a word whose read fails (an ambiguous prefix, an operation's id, a
-// number no commit id starts with): jj alone may still push it, as it pushes a commit that a git
-// command made and that no jj command has imported yet. The step's commands run with
+// readIDs reads each commit-id symbol of each revision argument (jjRevision.ids) as a revset of
+// its own: the symbol is a commit id when the one commit it resolves to has an id that starts
+// with it, and is followed from that commit, by the symbol and its place in the argument, each on
+// its own (follow). The step reads each distinct text once (readID). A hidden commit whose change
+// has exactly one visible commit stands for that commit, in the dry run and in the real push. One
+// whose change has none, or more than one, stands for itself. So does a symbol that resolves to
+// no commit, to more than one, or to one whose id does not start with it (a bookmark or a tag of
+// that name), and a symbol whose read fails (an ambiguous prefix, an operation's id, a number no
+// commit id starts with): jj alone may still push it, as it pushes a commit that a git command
+// made and that no jj command has imported yet. The step's commands run with
 // --ignore-working-copy, so none of them imports it from git or can read it, and the real push
-// imports it. The dry run then fails as the read did, with jj's error, which the step cannot
-// read (dryRunFilled).
+// imports it. The dry run then fails as the read did, with jj's error, which the step cannot read
+// (dryRunFilled). A symbol that only looked like a commit id can stand for another commit so: the
+// 2 of `ancestors(C, 2)`, where 2 starts the id of one hidden commit, is no number once the full
+// id of the visible commit that stands for it is in its place. So readIDs then reads, once, each
+// revision argument whose symbols it replaced (refuses), and where jj refuses one, it follows none
+// of the symbols it replaced there: the dry run gets that argument as the role wrote it, and the
+// real push too, but for a commit id whose commit a metaedit of the step moves (pushWords).
 func (s *jjStep) readIDs() error {
-	s.ids = map[jjIDWord]*jjFollowed{}
+	s.ids = map[jjIDSymbol]*jjFollowed{}
+	reads := map[string]*jjIDRead{}
 	for _, r := range s.push.revisions {
-		for _, w := range r.ids {
-			word := s.push.args[w.index][w.start:w.end]
-			commits, err := s.read(word)
-			var failed jjStepFailure
-			if errors.As(err, &failed) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if len(commits) != 1 || !strings.HasPrefix(commits[0].commit, word) {
-				continue
-			}
-			f := s.follow(commits[0], true)
-			if f.hidden {
-				visible, err := s.visible([]string{f.change})
-				if err != nil {
+		for _, id := range r.ids {
+			symbol := s.push.args[id.index][id.start:id.end]
+			read, known := reads[symbol]
+			if !known {
+				var err error
+				if read, err = s.readID(symbol); err != nil {
 					return err
 				}
-				if now := visible[f.change]; len(now) == 1 {
-					f.commit, f.hidden = now[0], false
-				}
+				reads[symbol] = read
 			}
-			s.ids[w] = f
+			if read == nil {
+				continue
+			}
+			f := s.follow(read.commit, true)
+			if read.now != "" {
+				f.commit, f.hidden = read.now, false
+			}
+			s.ids[id] = f
+		}
+	}
+	words := s.push.withRevisions(s.ids, false)
+	for _, r := range s.push.revisions {
+		if !s.refuses(words, r) {
+			continue
+		}
+		for _, id := range r.ids {
+			if f := s.ids[id]; f != nil && f.commit != f.origin {
+				delete(s.ids, id)
+			}
 		}
 	}
 	return nil
 }
 
+// jjIDRead is what readID read of the text of a commit-id symbol: the commit it names, and now,
+// the visible commit that stands for that one where it is hidden and its change has exactly one
+// visible commit, else "".
+type jjIDRead struct {
+	commit jjCommitRead
+	now    string
+}
+
+// readID reads symbol, the text of a commit-id symbol, as readIDs does: nil where it names no
+// commit, or where its read fails.
+func (s *jjStep) readID(symbol string) (*jjIDRead, error) {
+	commits, err := s.read(symbol)
+	var failed jjStepFailure
+	if errors.As(err, &failed) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(commits) != 1 || !strings.HasPrefix(commits[0].commit, symbol) {
+		return nil, nil
+	}
+	read := &jjIDRead{commit: commits[0]}
+	if read.commit.hidden {
+		visible, err := s.visible([]string{read.commit.change})
+		if err != nil {
+			return nil, err
+		}
+		if now := visible[read.commit.change]; len(now) == 1 {
+			read.now = now[0]
+		}
+	}
+	return read, nil
+}
+
+// refuses is whether jj refuses revision argument r as words, the push's words with commit-id
+// symbols replaced (withRevisions), hold it: the guard of readIDs and pushWords. The step reads
+// the argument with `jj log -r <argument> -n 1` and an empty template, which resolves the revset
+// and prints nothing, and a read that fails is a refusal. An argument that words hold as the role
+// wrote it costs no read, and neither does one that is a single commit-id symbol as a whole: in
+// its place is the full id of a commit the step read or made, which jj always resolves.
+func (s *jjStep) refuses(words []string, r jjRevision) bool {
+	word := s.push.args[r.index]
+	if words[r.index] == word || len(r.ids) == 1 && r.ids[0].start == r.offset && r.ids[0].end == len(word) {
+		return false
+	}
+	_, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-n", "1", "-T", `""`, "-r", words[r.index][r.offset:])
+	return err != nil
+}
+
 // pushWords is the real push's words: withRevisions' (moved after a step that changes nothing
-// more, errJJAsWritten), but for a revision argument whose words withRevisions replaced and that
-// jj refuses so replaced. The step reads each such argument once, with `jj log -r <argument> -n 1`
-// and an empty template, which resolves the revset and prints nothing, and one whose read fails
-// goes to the push as the role wrote it, every word of it. A word that only looked like a commit
-// id makes such an argument: the 2 of `ancestors(C, 2)`, where 2 starts the id of one commit that
-// a metaedit of the step moved, is no number once that commit's full id stands in its place. The
-// push then sends what the role's words name, as jj alone does. An argument whose words
-// withRevisions left as they are costs no read.
+// more, errJJAsWritten), but for a revision argument that jj refuses so (refuses), which goes to
+// the push as the role wrote it, every byte of it. A symbol that only looked like a commit id
+// makes such an argument: the 2 of `ancestors(C, 2)`, where 2 starts the id of one commit that a
+// metaedit of the step moved, is no number once that commit's full id stands in its place. The
+// push then sends what the role's words name, as jj alone does. The argument's commit ids go to it
+// as the role wrote them too, C among them, though the step moved C: telling the symbols that only
+// looked like commit ids from the others would take a read of the argument for each of them.
 func (s *jjStep) pushWords(moved bool) []string {
 	words := s.push.withRevisions(s.ids, moved)
 	for _, r := range s.push.revisions {
-		if words[r.index] == s.push.args[r.index] {
-			continue
-		}
-		if _, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-n", "1", "-T", `""`, "-r", words[r.index][r.offset:]); err != nil {
+		if s.refuses(words, r) {
 			words[r.index] = s.push.args[r.index]
 		}
 	}
@@ -941,8 +1007,8 @@ func (s *jjStep) successor(old string, visible, before []string) (string, error)
 	return "", nil
 }
 
-// follow is the followed commit that c is now, or a new one that starts at c. A commit-id word's
-// (arg) is always new: it stands for what the role named, not a commit the step read.
+// follow is the followed commit that c is now, or a new one that starts at c. A commit-id
+// symbol's (arg) is always new: it stands for what the role named, not a commit the step read.
 func (s *jjStep) follow(c jjCommitRead, arg bool) *jjFollowed {
 	if !arg {
 		if i := slices.IndexFunc(s.followed, func(f *jjFollowed) bool { return !f.arg && f.commit == c.commit }); i >= 0 {

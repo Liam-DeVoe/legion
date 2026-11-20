@@ -150,3 +150,71 @@ func TestTheDryRunParserNamesABlockWithNoLine(t *testing.T) {
 		})
 	}
 }
+
+// The step finds the commit-id symbols of a revision argument as jj's revset grammar reads it
+// (jjIDSymbols), in order: each identifier that is lower-case hex as a whole and that jj reads as
+// a symbol, before or after an operator (`|`, `&`, `~`, `::`, `..`, `-`, `+`) or inside a
+// function's parentheses, and no commit-id symbol inside a string, of a function's name, of a
+// pattern, of a keyword argument's name, beside `@`, or of an identifier with a `-`, a `.` or a
+// `*` inside it. A number is such a symbol too: the step's read of the argument with the symbol
+// replaced (jjStep.refuses) is what leaves it as the role wrote it. A symbol's place is in the
+// push's word that holds the argument, past the option's own spelling.
+func TestTheRevisionReaderFindsEachCommitIDSymbol(t *testing.T) {
+	t.Parallel()
+	c, d := "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98"
+	for _, row := range []struct {
+		revision string
+		want     []string
+	}{
+		{revision: c, want: []string{c}},
+		{revision: c + "|" + d, want: []string{c, d}},
+		{revision: c + " | " + d, want: []string{c, d}},
+		{revision: "::" + c, want: []string{c}},
+		{revision: c + "::", want: []string{c}},
+		{revision: c + "::" + d, want: []string{c, d}},
+		{revision: c + "-", want: []string{c}},
+		{revision: c + "--", want: []string{c}},
+		{revision: c + "+", want: []string{c}},
+		{revision: c + ".." + d, want: []string{c, d}},
+		{revision: "~" + c + " & mutable()", want: []string{c}},
+		{revision: "present(" + c + ")", want: []string{c}},
+		{revision: "present(" + c[:12] + ")", want: []string{c[:12]}},
+		{revision: "commit_id(" + c + ")", want: []string{c}},
+		{revision: "ancestors(" + c + ", 2)", want: []string{c, "2"}},
+		{revision: "a-b"},
+		{revision: "abc-def"},
+		{revision: "abc--def"},
+		{revision: "abc*"},
+		{revision: "abc.def"},
+		{revision: `description("abc")`},
+		{revision: `description("a \"` + c + `\" b")`},
+		{revision: `description('` + c + `')`},
+		{revision: "exact:abc"},
+		{revision: "description(exact:abc)"},
+		{revision: "abc:def"},
+		{revision: "f(abc = " + c + ")", want: []string{c}},
+		{revision: "abc@origin"},
+		{revision: "main@abc"},
+		{revision: "abc@"},
+		{revision: "@"},
+		{revision: "@-"},
+		{revision: "kkmpptxzrspxrzommnulwmwkkqwworpl"},
+		{revision: "abc(" + c + ")", want: []string{c}},
+	} {
+		var got []string
+		for _, id := range jjIDSymbols(row.revision, 0, 0) {
+			got = append(got, row.revision[id.start:id.end])
+		}
+		if !slices.Equal(got, row.want) {
+			t.Errorf("jjIDSymbols(%q) found %q, want %q", row.revision, got, row.want)
+		}
+	}
+	for _, row := range []struct {
+		word   string
+		offset int
+	}{{word: "-c" + c, offset: 2}, {word: "--change=" + c, offset: 9}, {word: "nm=" + c + "-", offset: 3}} {
+		if got, want := jjIDSymbols(row.word, 4, row.offset), []jjIDSymbol{{index: 4, start: row.offset, end: row.offset + len(c)}}; !slices.Equal(got, want) {
+			t.Errorf("jjIDSymbols(%q, 4, %d) = %v, want %v", row.word, row.offset, got, want)
+		}
+	}
+}
