@@ -3580,7 +3580,7 @@ jobs:
             # KIND_TESTS, on kind clusters its parts bring up with
             # scripts/e2e/lib/kind-sandbox.sh and the Agent Sandbox CRD and manifest of
             # packages/daemon/internal/runtime/sandbox/testdata, against the worker image of this
-            # commit and the fake GitHub of packages/daemon/internal/fakegithub. Its rig-and-shares
+            # commit and the fake GitHub of packages/daemon/internal/fakegithub. Its rig
             # part compiles internal/kindtest's tests, whose closure is under packages/daemon and
             # packages/envoy/testprereq. The worker image is a read of the job however the run came
             # by it, its own image job's build or worker-image.yaml's, so this list names every
@@ -5916,9 +5916,9 @@ jobs:
   # packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it against the
   # worker image of this commit. Its parts, each a job of the called file, run the tests
   # .github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
-  # the rig's own measuring test and the share test in one, the burstable and controller sweep
-  # tests in another, the Sandbox runtime's live test in four, one group of its checks each, each
-  # of those six within about 24 minutes, and the two whole-tree tests in two more, one each:
+  # the rig's own measuring test in one, the share test in another, the burstable and controller
+  # sweep tests in a third, the Sandbox runtime's live test in four, one group of its checks each,
+  # each of those seven within about 24 minutes, and the two whole-tree tests in two more, one each:
   # tree-claude, within about 24 minutes too, and tree-stage4b, which no run has timed whole yet.
   # The image under test is the worker-image job's on a pull request where that job built the
   # head, handed down as `worker-image`, and otherwise the called file's image job builds it once

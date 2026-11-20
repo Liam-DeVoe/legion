@@ -1778,12 +1778,17 @@ KIND_STAGE4A_PACKAGE = "internal/runtime/sandbox"
 # by name alone. Each part stays within the time of daemon-go's median green run, about 24 minutes,
 # its setup included; the comment on each part's job gives its budget and the run that measured it.
 # -timeout is each test binary's own, more than half again over the longest binary of the part:
-# 20m for the first two, whose longest binaries took 675 s (the share test) and 654 s (the burstable
-# and sweep tests, about 734 s with a first load of the image's archive) in CI run 44561190194, and
-# 30m for a group's, about six minutes of rig and the run's setup and twelve at most of checks.
+# 15m for the rig's measuring test, which took 397 s in CI run 44635427552; 25m for the share test,
+# which took 675 s in CI run 44561190194 and 727 s in 44635427552 with a warm load of the image's
+# archive, about 810 s with the cold load of a part's first rig; 20m for the burstable and sweep
+# tests, whose binary took 654 s in CI run 44561190194 (about 734 s with a first load of the
+# image's archive); and 30m for a group's, about six minutes of rig and the run's setup and twelve
+# at most of checks.
 KIND_PARTS = {
-    "rig-and-shares": ("Run the rig's measuring test and the share test", "20m", {
+    "rig": ("Run the rig's measuring test", "15m", {
         "internal/kindtest": ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"],
+    }),
+    "shares": ("Run the share test", "25m", {
         "internal/daemon": ["TestShareVolumesMountInAnIssuePodLive"],
     }),
     "burstable-and-sweep": ("Run the burstable pod and controller sweep tests", "20m", {

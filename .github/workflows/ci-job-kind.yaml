@@ -39,14 +39,16 @@ name: CI job kind
 # KIND_TREE_FILES each; it builds each part's test step from them, and daemon-go's two `-skip`s from
 # their union (KIND_TESTS), and holds each step to what it builds.
 #
-# rig-and-shares runs the rig's measuring test, which times each piece of the rig by name (the
-# pinned kind's build, the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker
-# image's pull or load, the build FROM it of the image that trusts the fake GitHub's authority, the
-# push of both into the registry and the load into the node), then runs a Burstable Sandbox under
-# gVisor that clones a private repository from the fake GitHub and a gVisor pod that mounts an NFS
-# share of a server in the cluster, and logs `df -h` before the rig and with it up; and
+# rig runs the rig's measuring test, which times each piece of the rig by name (the pinned kind's
+# build, the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull
+# or load, the build FROM it of the image that trusts the fake GitHub's authority, the push of both
+# into the registry and the load into the node), then runs a Burstable Sandbox under gVisor that
+# clones a private repository from the fake GitHub and a gVisor pod that mounts an NFS share of a
+# server in the cluster, and logs `df -h` before the rig and with it up. shares runs
 # internal/daemon's share test, which launches an issue pod that mounts NFS shares through the
 # Sandbox runtime the daemon builds from a legion.yaml, and probes the image against broken shares.
+# The two have a part each: one after the other in one part they took 24.8 minutes in CI run
+# 44635427552, past the part budget.
 # burstable-and-sweep runs internal/daemon's two other live tests, which launch issue pods and a
 # project controller the same way, with small explicit reservations.
 #
@@ -155,20 +157,21 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  rig-and-shares:
+  rig:
     needs: image
     # Past the image job the caller's worker-image input skipped, and never past one that failed,
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # Budget, from the one part that ran every kind test but the tree's in CI run 44561190194 (job
-    # 135697731228): the steps before its tests took 2 min 37 s, 7 s of it Bun's, which this part
-    # does not install; internal/kindtest's and internal/daemon's test binaries took 78 s and 132 s
-    # to build under -p 1; the measuring test took 362 s, 85 s of it its rig's first load of the
-    # image's archive on the runner, and the share test 675 s. About 23 minutes in all, within the
-    # part budget of about 24. A hung test's own -timeout ends it first; 40 minutes lets a slow
-    # runner finish and say so rather than be cut off.
-    timeout-minutes: 40
+    # Budget, from CI run 44635427552 (job 135956925916), where the measuring test and the share
+    # test ran in one part, one after the other: the steps before its tests took 3 min 6 s, 78 s of
+    # it the disk's and 89 s the image archive's download; internal/kindtest's test binary took 64 s
+    # to build; and the measuring test took 397 s, 97 s of it its rig's first load of the image's
+    # archive on the runner. About 11 minutes in all, within the part budget of about 24. The test
+    # binary's -timeout is 15m, more than half again over 397 s; the job has that, the setup's four
+    # minutes on top, and five more for a failed test's upload, so a hung test's own -timeout ends
+    # it first and its state still uploads: 25 minutes.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,7 +202,7 @@ jobs:
           name: kind-worker-image-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-image
 
-      # The tests build their packages' test binaries, and the rig's library builds kind with `go
+      # The test builds its package's test binary, and the rig's library builds kind with `go
       # install`, which reads only kind's own module.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -207,27 +210,96 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
-      # The tests, by name, one package at a time (-p 1). .github/scripts/ci_job_reads.py builds
-      # this text from KIND_PARTS and holds the step to it. The image comes by the caller's
-      # reference or the image job's archive (internal/kindtest's ImageEnv and ImageArchiveEnv),
-      # and a failed test's state goes to kind-logs.
-      - name: Run the rig's measuring test and the share test
+      # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_PARTS and
+      # holds the step to it. The image comes by the caller's reference or the image job's archive
+      # (internal/kindtest's ImageEnv and ImageArchiveEnv), and a failed test's state goes to
+      # kind-logs.
+      - name: Run the rig's measuring test
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -p 1 -timeout 20m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestShareVolumesMountInAnIssuePodLive)$' ./internal/kindtest/ ./internal/daemon/
+        run: go test -v -count=1 -timeout 15m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub)$' ./internal/kindtest/
         working-directory: packages/daemon
 
-      # A failed test's state, one directory per test: the cluster's nodes, pods, the legion
-      # namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS and
-      # PostgreSQL servers', every event, the Agent Sandbox controller's log and the fake GitHub's
-      # requests.
+      # A failed test's state, in a directory of the test's own: the cluster's nodes, pods, the
+      # legion namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS
+      # and PostgreSQL servers', every event, the Agent Sandbox controller's log and the fake
+      # GitHub's requests.
       - name: Upload the rig's state at the failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kind-rig-and-shares-logs-${{ github.run_attempt }}
+          name: kind-rig-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  shares:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, from the same job of CI run 44635427552: the share test took 727 s there (675 s in run
+    # 44561190194), loading the image's archive warm (15 s) after the measuring test's rig; this
+    # part's rig loads it cold, as the measuring test's did (97 s), so about 810 s. Around it, the
+    # steps before the tests, about three minutes, and internal/daemon's test binary built cold,
+    # which with internal/kindtest's took 173 s under -p 1 in run 44635427552: about 20 minutes in
+    # all, within the part budget of about 24. The test binary's -timeout is 25m, more than half
+    # again over 810 s; the job has that, the setup's six minutes on top, five more for a failed
+    # test's upload and room to spare, so a hung test's own -timeout ends it first and its state
+    # still uploads: 40 minutes.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The test builds its package's test binary, and the rig's library builds kind with `go
+      # install`, which reads only kind's own module.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as the rig part runs its own.
+      - name: Run the share test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 25m -run '^(TestShareVolumesMountInAnIssuePodLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as the rig part uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-shares-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-logs
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -244,19 +316,20 @@ jobs:
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # Budget, from the same job of CI run 44561190194: the burstable test took 336 s and the
-    # controller sweep 318 s, each loading the image's archive warm there (9 s); this part's first
-    # rig loads it cold, as the measuring test's did (85 s), so about 12 minutes of tests. Around
-    # them, the steps before the tests, about two and a half minutes, and internal/daemon's test
-    # binary built cold, which with internal/kindtest's took 210 s under -p 1 there: about 18
-    # minutes in all. 40 minutes, as rig-and-shares.
+    # Budget, from the one part that ran every kind test but the tree's in CI run 44561190194 (job
+    # 135697731228): the burstable test took 336 s and the controller sweep 318 s, each loading the
+    # image's archive warm there (9 s); this part's first rig loads it cold, as the measuring test's
+    # did (85 s), so about 12 minutes of tests. Around them, the steps before the tests, about two
+    # and a half minutes, and internal/daemon's test binary built cold, which with
+    # internal/kindtest's took 210 s under -p 1 there: about 18 minutes in all. 40 minutes, as the
+    # shares part.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -279,7 +352,7 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
-      # The tests, by name, as rig-and-shares runs its own.
+      # The tests, by name, as the rig part runs its own.
       - name: Run the burstable pod and controller sweep tests
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
@@ -288,7 +361,7 @@ jobs:
         run: go test -v -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive|TestTheControllerOrphanSweepLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
-      # A failed test's state, one directory per test, as rig-and-shares uploads its own.
+      # A failed test's state, one directory per test, as the rig part uploads its own.
       - name: Upload the rig's state at the failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -329,7 +402,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -364,7 +437,7 @@ jobs:
       # The group by -run alone, the test's subtest of its name, and every check of it with it.
       # .github/scripts/ci_job_reads.py builds this text from KIND_PARTS, holds the group to the
       # ones live_test.go's liveGroups declares and the step to what it builds. The image comes as
-      # rig-and-shares' does, and a failed check's state goes to kind-logs.
+      # the rig part's does, and a failed check's state goes to kind-logs.
       - name: Run the Sandbox runtime's root group
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
@@ -373,7 +446,7 @@ jobs:
         run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^root$' ./internal/runtime/sandbox/
         working-directory: packages/daemon
 
-      # A failed group's state: rig-and-shares' upload, and the runtime's own log beside it.
+      # A failed group's state: the rig part's upload, and the runtime's own log beside it.
       - name: Upload the rig's state at the failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -406,7 +479,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -475,7 +548,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -543,7 +616,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -616,7 +689,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
@@ -642,7 +715,7 @@ jobs:
 
       # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_PARTS,
       # whose tests daemon-go's two `-skip`s name with the other parts', and holds the step to it.
-      # The image comes as rig-and-shares' does, and a failed test's state goes to kind-logs.
+      # The image comes as the rig part's does, and a failed test's state goes to kind-logs.
       - name: Run the Claude Code backend's tree test
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
@@ -651,7 +724,7 @@ jobs:
         run: go test -v -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
-      # A failed test's state: rig-and-shares' upload, and the daemon's, Dispatch's and the
+      # A failed test's state: the rig part's upload, and the daemon's, Dispatch's and the
       # listener's own logs beside it.
       - name: Upload the rig's state at the failure
         if: failure()
@@ -686,7 +759,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # rig-and-shares' comments say what the runner image gives the rig and why its disk is
+      # The rig part's comments say what the runner image gives the rig and why its disk is
       # cleared first.
       - name: Free the runner's disk of toolchains the rig does not use
         run: |
