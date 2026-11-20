@@ -1,164 +1,46 @@
 # Pi Shared
 
-Private workspace package (`@legion/pi-shared`, never published) holding what the two Oh My Pi
-plugins — `@sjawhar/pi-envoy` (`extensions/envoy.ts`) and `@sjawhar/pi-legion`
-(`extensions/legion.ts`) — both compile in: the versioned in-process interface between them, the
-host types, and the modules both entries use. It also holds the Legion modules that pi-legion and
-claude-envoy's MCP server both run — the daemon client, the claim boot, the `legion` tool's phase
-ops, the handoff report, the stale git lock note and the jj session attribution — none of which
-reads a host type, so
-each harness is a thin adapter over them. Each plugin's `bun build` inlines
-it into its own bundle, as it inlines `@legion/contracts` and `@legion/envoy-client`; only
-`@oh-my-pi/*` stays external. Nothing here imports either plugin's source, and neither plugin's
-shipped code imports the other's: that rule covers every non-test `.ts` under each plugin's
-`extensions/` and `src/` (`test/cross-imports.ts`, below) and never a test:
-`packages/pi-legion/extensions/legion-role-claim.test.ts` loads
-`packages/pi-envoy/extensions/envoy.ts` by relative path, and the harness's Legion pane runner
-(`runLegionPane`, below) names both plugin entries by path for the Oh My Pi child it spawns —
-paths, not imports — which the two Legion omp tests (`legion-phase-stall-omp.test.ts`,
-`legion-role-tools-omp.test.ts`) run through; `controller-start-omp.test.ts` names both by path
-for the interactive Oh My Pi it starts through `spawnInteractive`.
+`@legion/pi-shared` is a private workspace package, never published, that both Oh My Pi plugins compile in: `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`.
+It holds the in-process interface between them, the host types, and the Legion modules that pi-legion and claude-envoy's MCP server both run: the daemon client, the claim boot, the `legion` tool's phase ops and the phase reminder.
+Each plugin's `bun build` inlines it; only `@oh-my-pi/*` stays external.
+
+## Commands
+
+From this directory: `bun test` (one file: `bun test src/interface.test.ts`), `bunx tsc --noEmit`, `bunx biome check src/ test/`.
+
+## Rules
+
+- Code both plugins need goes here.
+  Neither plugin's shipped code imports the other's; a test may load the other plugin's entry by path (`test/cross-imports.ts` is the check).
+
+- The Legion modules here read no host type, so each harness stays a thin adapter over them.
 
 ## The interface (`src/interface.ts`)
 
-Each plugin bundles its own copy of this module, so the one shared object lives on `globalThis`
-under `ENVOY_PLUGIN_INTERFACE_KEY` and both copies reach it by `Symbol.for`. It is created by
-whoever touches it first (`envoyPluginInterface()`, get-or-create at that copy's version), so the
-plugins' factory order never matters; the Envoy entry *publishes* into it at factory time
-(`publishEnvoyPluginInterface(import.meta.url)`), and the Legion entry *reads* it at `session_start`
-and in `/legion-claim-controller` (`readEnvoyPluginInterface()`: `absent` until an Envoy entry
-published, `mismatch` when the publisher speaks another version, else `present`) and refuses to run
-otherwise. A second Envoy entry at the same version joins; one at another version warns once and
-publishes nothing, so the first publisher wins. The object carries:
+- Each plugin bundles its own copy of this module, so the shared object lives on `globalThis` under a `Symbol.for` key.
+  Resolve it with `envoyPluginInterface()` at each use and never cache it at module scope; `resetEnvoyPluginInterfaceForTests()` is the one test seam.
 
-- `roleClaim` — the role-claim bridge (`src/role-claim-bridge.ts`): Envoy's bound instances, the
-  sessions Legion drives, the one `regained` hook slot, and `slackRoleOwned`, which the Legion
-  entry's factory sets to true in the daemon-launched controller's process alone and the Envoy
-  entry reads when it restores a resumed session's registered interests: while it is true, every
-  registered Slack topic is unregistered and never restored, since only the subscriptions the
-  controller role owns may carry Slack mentions.
-- `injectedUserTurns` — the turns Envoy sent into each session
-  (`src/injected-user-turns.ts`). A `sendUserMessage` turn is found by its text; a typed
-  `sendUserInput` turn is found by the tag the host kept. Both entries match user messages and
-  tagged custom messages (the `skill-prompt` a `/skill:` creates) against that record.
-- `bootstrappedSession` — the transcript of the session this process bootstrapped as its Legion
-  identity (`src/subagent-session.ts`).
-- `startupTurn` — `{session, sentAt}` or undefined: the session whose first turn a start that runs
-  after Oh My Pi's startup owns, and when that start was sent (milliseconds since the epoch;
-  undefined while the start is due and not sent yet). The Legion entry sets it
-  (`src/startup-turn.ts`): the operator-launched controller marks its session unsent at
-  `session_start` (`markStartupTurnPending`), since it claims and sends only from
-  `/legion-controller-start`, which Oh My Pi runs after its startup; any claim that sends the
-  operator's controller its start message to an idle session marks it sent right before the send
-  (`markStartupTurnSent`: the claim `/legion-controller-start` runs, a later
-  `/legion-claim-controller`, or a re-claim after a session change); and the daemon-launched
-  controller marks it sent right before `claims/ready`. A start message queued as a follow-up behind
-  a turn the operator already started marks nothing: that run, the session's first, has already
-  started, and its `agent_start` cleared the unsent mark. That session's first `agent_start`, and
-  its `session_shutdown`, clear it, and so does a start command whose claim fails before the send or
-  hands over to a new session (`clearStartupTurn`; `packages/pi-legion/AGENTS.md`, "The
-  controller's start turn"). The Envoy entry reads it (`packages/pi-envoy/src/card-wake.ts`): while
-  it names the Envoy entry's own live session and its start was sent under 30 s ago, or is unsent
-  and the Envoy entry first read that unsent mark under 30 s ago (re-read every second until then),
-  a card that finds the session idle starts no turn and the startup wake waits for the start turn.
-- `taskValues` — `{taker}`: the claims' task values (`src/task-values.ts`). The Envoy entry hands
-  each task value its relay's task frames carry (`onTaskValue`, `@legion/envoy-client`'s consumer
-  delivery), and each new epoch of that relay, to `taker` (`publishTaskSignal`); the Legion
-  entry's claim boot sets `taker` (`takeTaskSignals`), one slot, as `roleClaim.regained` is.
-- `taskTurnPending` — `{session}` or undefined: the session whose task's turn is pending. The
-  Legion entry's take (`src/task-take.ts`) sets it from the moment it holds a value it will ask the
-  daemon to take until that task's turn starts or the take is refused or dropped, and from the
-  claim's registration until the read of its value after `claims/ready` has answered, whatever
-  value it holds (`awaitRead`), since the ready decision can write one
-  (`markTaskTurnPending`, `clearTaskTurnPending`). The Envoy entry reads it
-  (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own live session, a card
-  that finds the session idle starts no turn and its wake waits until the mark is gone.
+- The Envoy entry publishes into it at factory time.
+  The Legion entry reads it at `session_start` and refuses to run when it is absent or at another version.
 
-Every consumer resolves the object at each use through `envoyPluginInterface()`; nothing caches it
-at module scope, and `resetEnvoyPluginInterfaceForTests()` is the one test seam.
+- Any change to the shape of `EnvoyPluginInterface`, or to what either side reads from it, bumps `ENVOY_PLUGIN_INTERFACE_VERSION`.
+  Both plugins release from one commit, and the daemon's boot gate refuses a pair whose versions differ.
+  `packages/daemon/internal/daemon/promptreferences_omp_test.go` spells the number: change it in the same commit.
 
-**Symbols a Go probe reads from `globalThis`** (the daemon's boot gate evaluates them by their
-exact `Symbol.for` strings, so renaming one is a daemon change too):
+- The daemon's load probe (`packages/daemon/internal/daemon/probe.mjs`) reads `ENVOY_PLUGIN_INTERFACE_KEY`, `LEGION_PLUGIN_LOADED_KEY` and `LEGACY_LEGION_LOADED_KEY` by their `Symbol.for` strings, so renaming one is a daemon change too.
 
-| constant | `Symbol.for(...)` string | value |
-| --- | --- | --- |
-| `ENVOY_PLUGIN_INTERFACE_KEY` | `legion.pi-shared.envoy-plugin-interface` | the interface object; `version` and `publishers` are what a probe reads |
-| `LEGION_PLUGIN_LOADED_KEY` | `legion.pi-legion.loaded` | `{ from: import.meta.url, envoyInterface: ENVOY_PLUGIN_INTERFACE_VERSION }`, set by the Legion entry's factory |
-| `LEGACY_LEGION_LOADED_KEY` | `legion.pi-envoy.legion-loaded` | the pre-split `@sjawhar/pi-legion-envoy`'s marker; set means that package is loaded, and the Legion entry refuses to run beside it |
+- The fake probes in the daemon's Go tests print version 1 for both plugins on purpose: the gate compares the two numbers with each other, not with a release.
 
-**Bump rule.** Any change to the shape of `EnvoyPluginInterface`, or to what either side reads from
-it, bumps `ENVOY_PLUGIN_INTERFACE_VERSION`; both plugins release from the same commit, and the
-daemon's gate refuses a pair whose versions differ.
+- Store only process-wide state on the interface, never a function bound to one extension instance.
+  Oh My Pi re-binds every extension factory for each in-process `task` subagent, so a stored callback would be the last subagent's.
+  `roleClaim.regained` is the one listener slot, and only a path that establishes a Legion identity sets it.
 
-**The current version, 6.** Version 2 told the two separately bundled plugins that typed turns are
-tag-matched rather than text-matched and that a tagged `skill-prompt` is the person's turn;
-version 3 adds `roleClaim.slackRoleOwned`; version 4 adds `startupTurn`; version 5 lets
-`startupTurn.sentAt` be undefined (a start due and not sent yet) and has the Envoy entry read the
-mark; version 6 adds `taskValues`, which the Envoy entry publishes each relayed task value into
-and the Legion entry takes from, and `taskTurnPending`, which the Legion entry sets and the Envoy
-entry reads. The real readers are the
-Legion load marker (`extensions/legion.ts`), `readEnvoyPluginInterface`, the Envoy publisher's
-mismatch refusal and the daemon probe (`packages/daemon/probe.mjs`), which take
-`ENVOY_PLUGIN_INTERFACE_VERSION`, and
-the real-plugin OMP test (`packages/daemon/internal/daemon/promptreferences_omp_test.go`), which
-spells the number and is changed with it. The stage 1/2 shell stubs and fake Go probes
-deliberately print 1 for **both** plugins: the boot gate compares their numbers with each other,
-so they test matching/mismatching fixtures rather than a release value. A real pair at different
-versions refuses before a Legion pane runs.
+## Test harness (`test/`)
 
-**No per-instance state.** The interface holds process-wide state only — the arrays, the map, the
-record holder — never a function bound to one extension instance. Oh My Pi re-binds every
-extension factory for each in-process `task` subagent, so a per-instance callback stored here
-would be the last instance's, not the pane's
-(`docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md`). `roleClaim.regained`
-stays the one listener slot it is, written only by the paths that establish a Legion identity.
+- `test/omp-harness.ts` runs the real Oh My Pi binary that `LEGION_TEST_OMP` names, for each plugin's `*-omp.test.ts`.
+  `spawnRpc` takes absolute extension paths, since `import.meta.dir` here is not the caller's.
+  `spawnInteractive` drives the TUI under a pseudo-terminal, and `runLegionPane` runs one Legion pane against stand-ins for the daemon, the Envoy listener and the model gateway.
 
-## Test harness and the shared test rules (`test/`)
+- `test/host-registry.ts` is the `AgentRegistry` stand-in every plugin's mock host spreads in.
 
-`test/omp-harness.ts` runs the real Oh My Pi binary (`LEGION_TEST_OMP`) for each plugin's
-`*-omp.test.ts`; `test/omp-natives.ts` shares one natives cache per binary with the Go tests;
-`test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock spreads in.
-`spawnRpc` takes **absolute** extension paths — this module lives in another package than its
-callers, so `import.meta.dir` here is not the caller's — and pi-envoy's `dispatch-first-omp.test.ts`
-passes `path.join(import.meta.dir, "envoy.ts")`. `spawnInteractive` starts interactive `omp` (the
-TUI) with `spawnRpc`'s flags and environment under a pseudo-terminal (`Bun.Terminal`, 120 × 40 by
-default), `TERM=xterm-256color` and `OMP_SKIP_SETUP=1`, then the caller's words on its command
-line, and feeds every byte omp writes to a headless xterm (`@xterm/headless`) whose rendered
-screen, scrollback included, a case polls (`screen`); `write` types keystrokes, and `exited`
-resolves once the screen holds everything read before the exit. `runLegionPane` runs one Legion
-pane on the real binary: a stand-in for the daemon's claim and grant routes (`claims/register`
-answered from `contracts/fixtures/daemon-api/register.json`, `claims/ready`, `grants`, which the
-`legion` tool's
-own operations mint on) and the Envoy listener, a model gateway answering scripted replies and the
-run-end self-check, and both plugin entries by path; no stand-in `legion` is on the pane's PATH,
-since nothing in a pane runs `legion` from bash (LEGION-631). `name` keys every fixture string a
-case asserts (`<name>-grant-<n>`, `legion-<name>-<issue>-<role>`); `answer` is tried before the
-runner's routes (a case answers `handoff/complete` there), `prepare` runs before the profile and
-the spawn, and `quietMs` settles on gateway silence instead of the terminal `agent_end`. The pane
-it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`.
-
-## Where to look
-
-| Task | Location | Notes |
-| --- | --- | --- |
-| The interface | `src/interface.ts`, `src/interface.test.ts` | The key, the version, the types, `envoyPluginInterface`, `publishEnvoyPluginInterface`, `readEnvoyPluginInterface`, the test seam; the test holds the get-or-create order independence, the second publisher at the same and at another version, the three readings, and the exact `Symbol.for` strings the Go probe reads |
-| Modules both entries use | `src/role-claim-bridge.ts`, `src/injected-user-turns.ts`, `src/subagent-session.ts`, `src/tool-result.ts`, `src/pi-types.ts`, `src/omp-host.d.ts` | Each resolves the interface at each use; `omp-host.d.ts` is the ambient `@oh-my-pi/pi-coding-agent` declaration each plugin's `tsconfig` includes, plus this fork's `…/extensibility/extensions/send-user-input-handler` declaration |
-| Live conversation frames | `src/agent-stream.ts`, `src/agent-stream.test.ts` | `AgentStreamPublisher`: the session's own messages as the frames Dispatch's Agents page renders (LEGION-232), published only while a viewer's watch is armed and kept nowhere but the bounded in-process ring a `replay` answers from, with the settings, context-usage and command-list frames (`setSettings`, `setContext`, `setCommands`, `publishState`) and `modelReference`; the context frame says how full the session's context window is (`tokens`, `contextWindow`, INFRA-812) and is published only for a window above zero with a figure to go with it, since one host wiring answers `{tokens: 0, contextWindow, percent: null}` for a conversation well underway; it reads a host's message objects as `unknown` (`HostMessage`, `HostPart`) and takes its `publish` and `now` injected, so every host that publishes frames drives this one module, `packages/pi-envoy/extensions/envoy.ts` being one caller |
-| A person's turn from Dispatch | `src/accept-user-turn.ts`, `src/accept-user-turn.test.ts`, `src/dispatch-user-turn.ts` | `acceptUserTurn` is the accept step itself, taken by both Envoy plugins (`acceptedUserTurn` in `packages/pi-envoy/extensions/envoy.ts` and `accepted` in `packages/claude-envoy/src/user-turn-router.ts`), each host supplying its record of handled attempts (`handled`, `handle`, which the step awaits **before** Dispatch is asked), its Dispatch client, the session id it accepts as, and a `warn` it words itself (`UserTurnRefusal`: `handled`, `no-body`, `failed`); what it answers is `AcceptedUserTurnDelivery`, which both hosts name rather than restate. The order of its steps is the security property, and changing it changes both hosts, so the steps are that file's own and are exported nowhere: the candidate filter (the frames a person's direct Send or Aside could be, worth asking Dispatch to accept) and the reading of the accept's 200 (the body and mode it says to inject). `src/dispatch-user-turn.ts` holds what a host keeps of its own: `HANDLED_ATTEMPT_ENTRY`, `handledAttemptKey` and `handledAttempts` (the attempts a session's transcript records it already delivered, as a card or as a turn), `AcceptedUserTurn` (the body and mode an accepted attempt becomes) and `typedInputReply` (what the session answers on Dispatch for a person's typed text, capped to a Dispatch body), whose wording Dispatch's Agents page reads, so a changed byte is a dashboard change; the accept, typed-input and switch suites are in `packages/pi-envoy/extensions/envoy.test.ts`. |
-| Delivered pictures | `src/delivery-pictures.ts`, `src/delivery-pictures.test.ts` | `withDeliveredPictures`: what an Inbox delivery hands the model — its text alone, or the text followed by one image block per Dispatch picture it embeds, as `dispatch_read` shows them, a picture shown earlier named rather than sent again; `transcriptPictures`: the addresses a session's transcript already shows; a picture Dispatch cannot serve, or no Dispatch configuration at all, leaves the delivery its text |
-| Daemon client | `src/daemon-client.ts`, `src/daemon-client.test.ts` | `createLegionDaemonClient`: every claim, grant, workflow, controller and state route of `packages/daemon`, each response read through the schemas of `@legion/contracts/legion-api`, which strip a key they do not name (`LegionDaemonApiError` for a refusal, `LegionDaemonContractError` for a success the schema does not describe). pi-legion's claim and controller sessions and its `legion` tool use it, and so do the claim boot and phase ops below; the test reads the daemon's golden fixtures in `packages/contracts/fixtures/daemon-api/`. `claimCaller` builds the agent form (`ClaimCaller`: claim token, session, secret, generation) every claim route names its caller in, the one way every host builds it. `sendUntilAnswered` is the re-send policy of every request the daemon applies once however often it arrives (dispatch://INFRA-2811, the plan's departure 7 and decision 8): each attempt bounded by 5 minutes, and one the daemon gave no answer to (`daemonGaveNoAnswer`: a refused, reset or closed connection, an unreachable host or network, a connect or read timeout, a DNS failure, that bound, an uncoded 502/503/504) sent again unchanged, waits doubling from 500 ms to 30 s with no limit, until answered or stopped; the take and the seen report use it, and so does pi-legion's turn-outcome report, which also sends a 500 again (`alsoSendAgain`) |
-| Claim boot | `src/legion-claim-core.ts`, `src/legion-claim-core.test.ts` | `bootLegionClaim`: a claim's boot on `/legion/v1/claims/*`, the same on every harness — `claims/register`; `afterRegister`, where a host takes the registration's task value (`task`, `finished`) before anything else of the boot, so its task-turn mark stands before the role's kept lane arrives; the capability recorded (`setCapability`, before ready); `claims/ready`, which carries no capability report, retried on a 5xx or transport failure; the claim's task value read again (`claims/task`) into the host's `taskValue`, since the ready decision can write one (the relaunch record's task) the registration did not carry and the listener relays it only after the role claim has handed the kept lane over — a failed read is logged and the boot goes on; `afterReadyRead` once that read has answered, with a value, with none or with a logged failure, and never after a failed ready: until then no card may start a turn, the session's own direct message included, since the session's agent subject is open from its start (the plan's decision 15); the Envoy role claimed right after that (`claimRole`, dispatch://INFRA-2811): the daemon pushes no task, so nothing the kept lane hands over can take the turn of a task the ready decision wrote; and the regain listener (`onRoleRegained`), which reads the claim's task value again (`claims/task`) into the host's `taskValue` rather than sending the ready again. It answers `LegionClaimBoot`, or undefined for a boot that stopped: claude-envoy calls its `readTask` at a new epoch of its relay, and Oh My Pi calls none, since its take reads the value at a new epoch itself (`takeClaimTask`). The boot has no measurement step: the session measures its capability rows later, on the managed interval it runs while it is idle. A 4xx registration and any failure after it but that read — the host's `afterRegister`, the ready, the role claim, the refused role claim among them — are logged and `stop` the agent; the relaunch reads its claim's value at its own registration. A 5xx is logged and rejects, and a request that never reached the daemon rejects. `ClaimCapability` is the claim it records, and it carries the registration's `promptAgents` so those later measurements have them. The two adapters: `packages/pi-legion/src/claim-session.ts` (transcript recorded first, the take built and jj attribution run as `afterRegister`, where the take also starts holding its task-turn mark until the read after the ready has answered, `TaskTake.awaitRead`, which `afterReadyRead` ends; `exitProcess(1)` as `stop`) and `packages/claude-envoy/src/legion-claim.ts` (transcript waited for, the pane's Claude Code ended as `stop`, every task value handed to the Claude bridge's inbox as it is handed, and the bridge's ready line written as `afterReadyRead`, behind the read's own line, so the bridge's ready gate holds every card until then) |
-| Task take | `src/task-take.ts`, `src/task-take.test.ts`, `src/task-values.ts`, `test/task-stand-in.ts` | `createTaskTake`: an Oh My Pi claim's take of its task (dispatch://INFRA-2811 R2). It holds the claim's newest value `(number, epoch, revision)` from the registration, a `claims/task` read and each relayed task frame; reports each pair seen once, busy or not; asks `claims/take` once per pair, after the ready and only while no run of the session is going (a compaction between runs leaves the host idle); runs an accepted text through the host (`run`), holding a text accepted while a run went on until that run's end, which `runEnded` names no task for (the daemon then gives the take its turn back), since nothing is sent into a busy worker and Oh My Pi folds a follow-up into the running run; runs nothing more for an `accepted` answer to a take of the same number, before its turn or during it, since the daemon answers a repeat of the accepted number with the same text until the task finishes; and keeps the task-turn mark from the moment it holds a value it will ask about until the task's turn starts or the take is refused or dropped, and while its host awaits a read that can bring a value it does not hold yet (`awaitRead`, whose returned function the host calls once that read has answered): the read after the claim's ready, which pi-legion's claim session awaits from the registration on and its daemon-launched controller from right before its ready, so no card, the session's own direct message included, starts a turn ahead of a task the ready decision wrote. `runEnded` answers the number of the task whose turn ended, which the turn-outcome report names, and is told whether that report carries a provider error (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`): without one the daemon finishes the task on that report, so the take holds the number finished from the run's end, and a newer revision of it the daemon writes before the report lands (it writes the value again from its record where the bucket lost it or holds another write) is reported seen but neither taken nor run again; with one the daemon takes the task back, and the take takes the number again. The report's answer settles that run-end mark: a 2xx leaves it, since the daemon finished the number and deleted its value, and a 4xx refusal clears it (`reportRefused`, which pi-legion's `agent_end` calls with the reporter's answer), since the record still owes the number, so a newer revision of it is taken and runs once; the mark is kept apart from a reading's `finished`, so clearing it never lowers what a reading said. A seen report and a take are sent through `sendUntilAnswered` (`src/daemon-client.ts`), the same request until answered or replaced by a newer value; a coded refusal is an answer. `close` ends a take its host replaced, as the daemon-launched controller replaces its take at each claim (`takeFor` in `packages/pi-legion/src/controller-session.ts`): every request the take is sending stops, an answer that still arrives for one changes nothing, its task-turn mark is cleared, and every call after it does nothing, so a late answer for a replaced registration can neither run a text nor take down the mark of the take that replaced it. `takeClaimTask` is the take as an Oh My Pi host runs it, the one way pi-legion's claim session and its daemon-launched controller build it: the take, its task-turn mark (`taskTurnMark`), its `claims/task` read, and the one taker of the task signals (`takeTaskSignals`). `src/task-values.ts` carries the values between the two plugins through the interface, and `taskTurnMark` is a take's `setPending` for its session. `test/task-stand-in.ts` is the daemon's task routes for the real-binary tests, with `publishTaskFrame` relaying a later task as the listener would, on the connection `taskRelayConnection` opens at the first one |
-| Phase ops | `src/legion-phase-ops.ts`, `src/legion-phase-ops.test.ts` | `read_record`, `handoff_complete` and `request_backward_move`, the operations every harness's `legion` tool serves: `PhaseOpArguments`, the one strict schema each call is refused against before any daemon request, every problem named and joined by `; `, each field the operation does not take named and then, once, the fields it takes (`unknownFieldsRefusal`, the wording pi-legion's own operations refuse a field in too); `phaseOpParameters(zod)`, its fields as a host declares them in its tool's one object schema, keyed by name so a host lays them out in its own order, built with the host's Zod (Oh My Pi's `pi.zod`, whose converter reads only schemas its own Zod built); `legionToolDescription`, the one description template, the host naming its Envoy publish tool and the sentences it sets before and after `handoff_complete`'s contract (`PHASE_OP_SENTENCES`, on `read_record`, `read_release_records` and `request_backward_move`, of which each host states the ones its own test pins); `executePhaseOp`, the one executor, whose refusals come in a fixed order: a field the operation does not take, then a root architect's `handoff_complete` (unavailable, before its own fields are read), then each problem with the operation's own fields, then a refused handoff report, all before the grant is minted; and `mintClaimGrant`, a claim's per-write grant. `packages/pi-legion/src/tools.test.ts` pins the description and the serialized parameter schema Oh My Pi agents read, byte for byte |
-| Handoff report | `src/handoff-record.ts`, `src/handoff-record.test.ts` | `findHandoffReport`: what a `handoff_complete` reports beside its summary — the newest Dispatch handoff record of a file-backed phase its role works or, once the issue has moved on, the one it left (`completedPhase`, the daemon's `phase.Of`; read through `paneLatestHandoff`, the pane's Dispatch as its `dispatch` command reaches it) and the head that record's body names under `head`, which it reports as the completion's commit, or `@-` for every other completion and for a left phase with no record and for an implementer's left record that names no head, either sent with no record; for the implementer while the issue stands in implementing, the record must name a head, `legion/<issue>@origin` in the pane's own jj must carry `@-`, and that head must be `@-`, so a round that forgot its push is refused naming the push and then, while its record names the older commit, the rewrite; a phase the role left runs no workspace check, and where it holds a record of that phase never reads as its own the `@-` of the workspace every role of the issue shares, which is then often a sibling's commit (the rules are in the module's doc comment, and one test holds every role in every phase); both `legion` tools call it before they post |
-| Stale git lock note | `src/git-lock.ts`, `src/git-lock.test.ts` | `staleGitLockNote`: the note `handoff-record`'s jj runner adds for each git lock a failure names that is still on disk — the launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and looks again every minute, so the note tells the role to run its command again in about 16 minutes rather than remove the file — worded as the daemon words it (`StaleGitLockNote`, `packages/daemon/internal/workspace/jjgit.go`), whose wording both sides read from one data file (`packages/daemon/internal/workspace/stale-git-lock-note.txt`, which `git-lock.test.ts` reads to hold the two notes to one wording) |
-| jj session attribution | `src/jj-attribution.ts`, `src/jj-attribution.test.ts` | `exportJjSessionAttribution`: the generated `JJ_CONFIG` overlay that sets `templates.commit_trailers`, `templates.revert_description` and `templates.duplicate_description`, so every jj commit a pane makes, a revert and a duplicate included, carries `Omp-Session: <session id>`, then `Legion-Role: <role>` where `LEGION_ROLE` names a Legion role or the controller, and, for an issue whose repository the deployment names, `Dispatch: <KEY>` — the role line written only for such a name and the issue line only when the whole value is a key, since each is interpolated into a template inside a TOML literal, and the issue line scoped to the pane's own workspace by a `[[--scope]]` table (`--when.workspaces`), so a commit the pane's shell makes in any other jj repository carries the session and role lines alone; the session id is contained the same way, since it reaches both that literal and the overlay's file name; the scoped table repeats the session and role lines, since a scoped value replaces the key rather than adding to it, and it sets no other template, so a revert or a duplicate there carries no issue line, and jj matches the scope as a path prefix against the workspace root it resolved, so the path written is the real one (`resolvedWorkspace`) and a path that does not resolve, or one a TOML basic string cannot carry, leaves the session and role lines alone rather than a scope jj refuses; the overlay is chained after the inherited chain or `jj config path --user` (`userConfigChain`, bounded by `JJ_CONFIG_PATH_TIMEOUT_MS`), stale `omp-attribution-*.toml` layers are stripped from that chain, the write is atomic, and any failure degrades to *no* trailer rather than a wrong one; `sessionIdFromTranscript` reads the Oh My Pi session id off a transcript path, and `paneAttributionOptions` turns a pane's `LEGION_ISSUE_TRAILER` (never `LEGION_ISSUE`), `LEGION_WORKSPACE` and `LEGION_ROLE` into the writer's three options for both harnesses — pi-legion's claim session through `attributionInputs` (`packages/pi-legion/src/claim-session.ts`) and claude-envoy's `open-asks` hook through `openAsks` (`packages/claude-envoy/hooks/session-hook.ts`) |
-| Shell command scan | `src/shell-command.ts`, `src/shell-command.test.ts` | `dispatchCommandHead`: the first line of one `dispatch` command, without a comment that ends it (a `#` that starts a word outside quotes, as bash reads one: the comment AskGate keeps an override flag in), optionally fed one here-document opened with a quoted delimiter, ending where bash ends it (a tab before the delimiter counts only under `<<-`), or undefined for any other command. pi-envoy's run-end check reads it; the test compares the scan with a real non-interactive bash fed over a pipe, here-documents and comments both |
-| Skills guard rules | `test/skills-guard.ts` | What `packages/pi-envoy/src/skills-guard.test.ts` and `packages/pi-legion/src/skills-guard.test.ts` run over each plugin's staged partition: `stageSkills(<package name>)` stages it through `scripts/pi-plugin-prepack.sh --stage-skills`, exactly as the prepack does; `oversizedFiles` (a file at or over Oh My Pi's 51,200-byte spill threshold), `longSkillBodies` (a `SKILL.md` of 500 lines or more), `misnamedSkills` (a frontmatter `name` that is not the directory's), `brokenSkillLinks` (a `skill://<name>/<path>[#anchor]` link naming a missing file or heading, resolved against the repository's `skills/`, where both partitions live), `brokenRelativeLinks` (a `](../…)` or `](./…)` link outside a code fence that leaves the staged partition or names no file: a cross-partition link is written `skill://<name>/<path>`), and, for the Envoy guard, `unresolvedAgentDispatches` (a `task(agent="<name>")` read whole, fences included, as the daemon's gate reads a prompt, naming an agent in neither `shippedAgents(<package root>)`, the `*.md` under its `agents/`, nor `bundledAgents(<omp>)`, what the pinned binary's `omp agents unpack` writes under a fresh HOME) |
-| Skills partition | `test/skills-partition.test.ts` | Stages both partitions and holds them to the repository's `skills/`: together they are every skill directory, none is in both, each staged skill is a copy of the repository's, and a package the prepack does not know (`@sjawhar/pi-shared`) has none |
-| No cross import | `test/cross-imports.ts` | `shippedSources(<package root>)` is every `.ts` under its `extensions/` and `src/` that is not a `*.test.ts`; `crossImports(<package root>, <sibling root>)` reports each relative import of those files that resolves into the sibling's directory. `packages/pi-envoy/src/no-cross-import.test.ts` and `packages/pi-legion/src/no-cross-import.test.ts` each run it against the other plugin |
-| Real-binary harness | `test/omp-harness.ts`, `test/omp-natives.ts`, `test/omp-natives.test.ts`, `test/host-registry.ts` | Above |
-
-## Checks
-
-`bunx tsc --noEmit`, `bun test`, `bunx biome check src/ test/`, each from this directory.
+- `test/skills-guard.ts` holds the checks each plugin runs over its staged skills.
