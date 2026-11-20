@@ -162,7 +162,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Error(third.lensWriteFailure(before, "before", "409 NODE_GONE"))
 		t.Logf("the lens write before the object pass answers %s", before)
 	}
-	roll.requireAnsweredAsGone(t, third, http.StatusNotFound, nil)
+	roll.requireAnsweredAsGone(t, third, http.StatusOK, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, third)
@@ -510,7 +510,8 @@ func (l staleLensesRead) listed() []string {
 // answer of gone nodes. GET /api/v1/references?to= and GET /api/v1/lenses?on= of each answer 404
 // NOT_FOUND, byte for byte as an address nobody wrote answers once the id is substituted, to the
 // person, and for LP to the second person too; GET /api/v1/lenses?on= B's address answers want,
-// 200 where B's node is live and 404 where it is gone, and an answer of 200 lists none of them in
+// 200 in each case, its on naming the node at B's address with that node's state (gone in the
+// third case, where B's row stands behind A's gone node), and an answer of 200 lists none of them in
 // its lenses or its chains, and where lb is not nil answers it alone in its lenses; and the person
 // page of each author lists none of them.
 func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, want int, lb *staleLensNode) {
