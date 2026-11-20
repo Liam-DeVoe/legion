@@ -3962,7 +3962,7 @@ check "names docker compose up" "$(refused_in "docker compose up" "docker compos
 check "passes the run of the image a wrapped pull left" "$(is "$(contains "$out" "in step \"Run the pulled tool\"")" false)"
 check "passes a run with --pull=never" "$(is "$(contains "$out" "in step \"Run one that pulls nothing\"")" false)"
 
-echo "case: rule 22, bun ci, a bare yarn and npm's install aliases, unwrapped and wrapped"
+echo "case: rule 22, bun ci, a bare yarn and npm's install aliases, unwrapped, and bun's and npm's wrapped"
 root=$(fixture network-aliases)
 lint_steps "$root" \
   "bun ci" "bun ci" \
@@ -3981,12 +3981,45 @@ root=$(fixture network-aliases-wrapped)
 lint_steps "$root" \
   "bun ci" ".github/scripts/network-install.sh bun -- bun ci" \
   "npm clean-install" ".github/scripts/network-install.sh npm -- npm clean-install" \
-  "npm cit" ".github/scripts/network-install.sh npm -- npm cit" \
-  "a bare yarn" ".github/scripts/network-install.sh yarn -- yarn" \
-  "yarn frozen" ".github/scripts/network-install.sh yarn -- yarn install --frozen-lockfile" \
-  "yarn add" ".github/scripts/network-install.sh yarn -- yarn add left-pad"
+  "npm cit" ".github/scripts/network-install.sh npm -- npm cit"
 run_check "$root"
 check "passes them wrapped" "$(is "$status" 0)"
+
+# No required job installs with Yarn, so no run measures a bound for it: rule 22 refuses every Yarn
+# install by that name, wrapped or not, and none passes under npm's bound, which was measured on
+# npm's installs alone. The job that adds a Yarn install measures it and adds the kind.
+echo "case: rule 22 refuses each Yarn install by name, since no bound is measured for yarn"
+root=$(fixture network-yarn)
+lint_steps "$root" \
+  "yarn install" "yarn install --frozen-lockfile" \
+  "yarn upgrade" "yarn upgrade left-pad" \
+  "yarn up" "yarn up left-pad" \
+  "yarn upgrade-interactive" "yarn upgrade-interactive" \
+  "yarn global add" "yarn global add left-pad" \
+  "yarn create" "yarn create vite" \
+  "yarn set version" "yarn set version stable" \
+  "yarn workspaces focus" "yarn workspaces focus widget" \
+  "yarn dlx" "yarn dlx cowsay" \
+  "wrapped as yarn" ".github/scripts/network-install.sh yarn -- yarn install --frozen-lockfile" \
+  "wrapped under npm's bound" ".github/scripts/network-install.sh npm -- yarn add left-pad" \
+  "npm under its own bound" ".github/scripts/network-install.sh npm -- npm ci" \
+  "yarn's version" "yarn --version" \
+  "a yarn script" "yarn run build"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for pair in "yarn install|yarn install" "yarn upgrade|yarn upgrade" "yarn up|yarn up" \
+  "yarn upgrade-interactive|yarn upgrade-interactive" "yarn global add|yarn global add" "yarn create|yarn create" \
+  "yarn set version|yarn set version" "yarn workspaces focus|yarn workspaces focus" "yarn dlx|yarn dlx"; do
+  check "names ${pair%%|*}, with no bound measured for yarn" \
+    "$(contains "$out" "runs \`${pair#*|}\` in step \"${pair%%|*}\": an install that waits on the network with no bound of its own, and no bound measured for yarn: no required job installs with Yarn")"
+done
+check "names the wrapped yarn, with no bound measured for yarn" \
+  "$(contains "$out" "runs \`.github/scripts/network-install.sh yarn -- yarn install --frozen-lockfile\` in step \"wrapped as yarn\": .github/scripts/network-install.sh bounds no kind 'yarn' (its kinds: [^)]*), and refuses it when it runs: no bound measured for yarn")"
+check "names a yarn install under npm's bound, with no bound measured for yarn" \
+  "$(contains "$out" "runs \`yarn add\` through .github/scripts/network-install.sh's kind 'npm' in step \"wrapped under npm's bound\": that bound was measured on npm's installs, and \`yarn add\` is of kind 'yarn'; no bound measured for yarn")"
+check "passes npm under its own bound" "$(is "$(contains "$out" "in step \"npm under its own bound\"")" false)"
+check "passes yarn's version and a yarn script, which fetch nothing" \
+  "$(is "$(contains "$out" "in step \"yarn's version\"\|in step \"a yarn script\"")" false)"
 
 echo "case: rule 22 reads rustup's sh -s, five more wrappers and an action another action uses"
 root=$(fixture network-behaviours)

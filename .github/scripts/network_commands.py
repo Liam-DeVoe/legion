@@ -34,7 +34,10 @@ APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 # dir ci`, `bun --cwd dir install`); a `+toolchain` word (`cargo +nightly install`) is an option.
 # npm's verbs hold its aliases (`clean-install`, `ic`, `cit`, …), and `bun ci` is Bun's frozen
 # install (Bun 1.4.4's `bun ci --help` prints `Usage: bun install`). A yarn with no verb at all
-# installs too (yarn's own documentation: "Running `yarn` with no command will run `yarn install`").
+# installs too (yarn's own documentation: "Running `yarn` with no command will run `yarn install`"),
+# and so do its upgrades (`yarn upgrade`, Berry's `yarn up` and `yarn upgrade-interactive`) and
+# `yarn create`, which installs create-<name> before it runs it; YARN_FETCHES_TWO holds the ones of
+# two words.
 PIP_VALUE_OPTIONS = {"--proxy", "--cert", "--client-cert", "--log", "--timeout", "--retries", "--python",
                      "--cache-dir", "--exists-action", "--trusted-host"}
 INSTALLERS = {
@@ -45,7 +48,8 @@ INSTALLERS = {
              "install-test", "install-ci-test"},
             {"--prefix", "-C", "--workspace", "-w", "--registry", "--cache", "--userconfig", "--loglevel"}),
     "pnpm": ({"install", "i", "add"}, {"-C", "--dir", "--filter", "-F", "--reporter", "--loglevel"}),
-    "yarn": ({"install", "add"}, {"--cwd", "--cache-folder", "--modules-folder", "--registry"}),
+    "yarn": ({"install", "add", "upgrade", "up", "upgrade-interactive", "create"},
+             {"--cwd", "--cache-folder", "--modules-folder", "--registry"}),
     "bun": ({"install", "i", "add", "ci"}, {"--cwd", "-c", "--config", "--env-file", "-r", "--preload"}),
     "gem": ({"install"}, {"--config-file"}),
     "cargo": ({"install"}, {"-C", "--config", "-Z", "--color"}),
@@ -54,6 +58,9 @@ INSTALLERS = {
     "apk": ({"add", "update", "upgrade", "fetch"}, {"-X", "--repository", "-p", "--root", "--cache-dir",
                                                      "--keys-dir", "--arch", "--repositories-file"}),
 }
+# Yarn's fetches of two words: a global install or upgrade, Berry's download of a Yarn release
+# (`yarn set version`) and its install of some workspaces alone (`yarn workspaces focus`).
+YARN_FETCHES_TWO = {("global", "add"), ("global", "upgrade"), ("set", "version"), ("workspaces", "focus")}
 # The kind network-install.sh bounds each installer's install under, where it is not the program's
 # own name.
 KIND_OF = {"pip3": "pip", "pipx": "pip"}
@@ -356,6 +363,8 @@ def network_install(words: list, local: frozenset = frozenset(), held: frozenset
         verb = (command or [""])[0]
         if name == "yarn" and not command and not {"--version", "-v", "--help", "-h"} & set(rest):
             return ("yarn install", "yarn")
+        if name == "yarn" and tuple(command[:2]) in YARN_FETCHES_TWO:
+            return (f"yarn {command[0]} {command[1]}", "yarn")
         return (f"{name} {verb}", KIND_OF.get(name, name)) if verb in verbs else None
     return None
 

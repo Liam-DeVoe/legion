@@ -72,7 +72,7 @@
 # package`, elan `no such release`, Playwright `Invalid installation targets`, docker `not found`.
 # apt-get update exits 0 on a mirror it could not read unless it is given `--error-on=any`, so each
 # wrapped update is.
-NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefused|econnreset|etimedout|eai_again|could not connect|connection failed|failed to connect|connection timed out|operation timed out|i/o timeout|tls handshake timeout|timeout awaiting response headers|client\.timeout exceeded|request canceled while waiting for connection|unexpected eof|stream error: stream id [0-9]+|server sent goaway|too ?many ?requests|temporary failure (in name )?resolv|could not resolve host|no such host|network is unreachable|tunnel failed|failure when receiving data from the peer|server returned code (429|5[0-9][0-9])|get [^ ]+ - (429|5[0-9][0-9])|returned a (429|5[0-9][0-9])|trouble with the npm registry|5[0-9][0-9] +(service unavailable|bad gateway|gateway time-?out|internal server error)'
+NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefused|econnreset|etimedout|eai_again|could not connect|connection failed|failed to connect|connection timed out|operation timed out|i/o timeout|tls handshake timeout|timeout awaiting response headers|client\.timeout exceeded|request canceled while waiting for connection|unexpected eof|stream error: stream id [0-9]+|server sent goaway|too ?many ?requests|temporary failure (in name )?resolv|could not resolve host|no such host|network is unreachable|tunnel failed|failure when receiving data from the peer|server returned code (429|5[0-9][0-9])|get [^ ]+ - (429|5[0-9][0-9])|5[0-9][0-9] +(service unavailable|bad gateway|gateway time-?out|internal server error)'
 #
 # THE KINDS. A kind's bound is what the installs it guards took at worst, with room: the slowest
 # green run of those installs, times two, rounded up to the next minute. Two, because an install
@@ -134,14 +134,6 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #   npm         npm ci of a project's lockfile. The worker image's toolchain RUN, which holds its
 #               one npm ci beside seven downloads: 43.2 s at its slowest of 40 green builds, job
 #               136004778019. 2 × 43.2 s is 86.4 s, so 120 s an attempt.
-#   yarn        yarn install (bare `yarn` too) and yarn add from the npm registry. No required job
-#               installs with Yarn today, so no green run measures it; it reads the same registry as
-#               npm ci, so it takes npm's 120 s an attempt until a job that installs with it gives a
-#               measurement. Yarn 1.22.22's words for the network's faults, measured on 2026-11-20
-#               against a closed port and a registry that answered 503 or 429: `connect
-#               ECONNREFUSED`, `There appears to be trouble with the npm registry` then `Request
-#               failed "503 Service Unavailable"`, and `returned a 429`; its own fault, a lockfile
-#               that disagrees under --frozen-lockfile, says `Your lockfile needs to be updated`.
 #   uv          uv making a virtual environment of a managed Python and installing into it. The
 #               worker image's azure-cli RUN, which holds both: 33.5 s at its slowest of 40 green
 #               builds, job 136046630907. 2 × 33.5 s is 67 s, so 120 s an attempt.
@@ -151,6 +143,9 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #               2 × 30.2 s is 60.4 s, so 120 s an attempt.
 #   mise needs no kind: its own 30 s bound on each request covers the body too, so a stalled
 #   `mise install` ends by itself (rule 22's docstring gives the measurement).
+#   yarn has no kind: no required job installs with Yarn, so no run measures a bound for it, and
+#   npm's would be borrowed. Rule 22 refuses a Yarn install by name ("no bound measured for
+#   yarn"); a job that adds one measures that install's runs and adds the kind here.
 #
 # TEST SEAM. NETWORK_INSTALL_BOUND_SECONDS, NETWORK_INSTALL_KILL_AFTER_SECONDS and
 # NETWORK_INSTALL_PAUSE_SECONDS replace the kind's bound, the 15 s before SIGKILL and the pause,
@@ -164,7 +159,7 @@ set -eu
 ATTEMPTS=3
 DEFAULT_PAUSE=10
 DEFAULT_KILL_AFTER=15
-KINDS="apt bun bun-image docker playwright go elan apk npm yarn uv gcloud"
+KINDS="apt bun bun-image docker playwright go elan apk npm uv gcloud"
 
 # bound_of <kind>: the kind's bound per attempt in seconds, from THE KINDS above, or nothing.
 bound_of() {
@@ -178,7 +173,6 @@ bound_of() {
     elan) echo 60 ;;
     apk) echo 60 ;;
     npm) echo 120 ;;
-    yarn) echo 120 ;;
     uv) echo 120 ;;
     gcloud) echo 120 ;;
   esac

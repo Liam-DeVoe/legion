@@ -48,6 +48,11 @@ NETWORK_INSTALL_SEAMS = ("NETWORK_INSTALL_BOUND_SECONDS", "NETWORK_INSTALL_KILL_
                          "NETWORK_INSTALL_PAUSE_SECONDS")
 # GitHub's limit for a job or a step that sets no timeout-minutes.
 DEFAULT_MINUTES = 360
+# The installers no required job runs, so no run measures a bound for them: network-install.sh has
+# no kind for them, and another installer's bound was measured on that installer's installs alone.
+# Rule 22 refuses each of their installs by name, wrapped or not; the job that adds one measures its
+# runs and adds its kind.
+UNMEASURED = {"yarn": "no required job installs with Yarn, so no run measures a bound for it"}
 # What a pull the runner or a builder makes costs a job's limit: the runner pulls each `services:`
 # and `container:` image with `docker pull` and no timeout of its own (actions/runner retries it
 # only after a non-zero exit), and a builder pulls each FROM no earlier step left on the runner, and
@@ -69,6 +74,12 @@ PINNED_RECIPES = {
     ".github/docker/browser.Dockerfile": "b44a4dabdf97d209de663fe05d4b5e21234511703fe4f4827da9c5960ddf8b99",
 }
 
+
+def _unmeasured(kind: str) -> str:
+    """Why an install of an UNMEASURED kind has no bound, and what the job that adds one does."""
+    return (f"no bound measured for {kind}: {UNMEASURED[kind]}, and npm's bound or any other kind's was measured "
+            f"on that kind's installs alone. The job that adds a {kind} install measures that install's own runs "
+            f"and adds a '{kind}' kind to {NETWORK_INSTALL}'s table")
 
 
 @cache
@@ -387,10 +398,10 @@ class NetworkInstalls:
                     found.append(install)
                 if name in ("curl", "wget") and name not in site.fakes and \
                         any(later == [shell_name] for later in pipeline[index + 1:] for shell_name in STDIN_SHELLS):
-                    found.append(f"{name} piped into a shell")
+                    found.append((f"{name} piped into a shell", name))
                 fed = _fetch_fed_to_shell(words)
                 if fed:
-                    found.append(fed)
+                    found.append((fed, fed.split()[0]))
                 script = repository_script(words[0], here)
                 if script and script not in seen:
                     seen.add(script)
@@ -404,11 +415,12 @@ class NetworkInstalls:
                                   {**known, **shell.prefixes.get(tuple(words), {})})
                 elif script is None and unfound_script(words[0], here):
                     unfound.append(words[0])
-        for install in dict.fromkeys(found):
+        for install, kind in dict.fromkeys(found):
+            unmeasured = f", and {_unmeasured(kind)}" if kind in UNMEASURED else ""
             self.refuse(site, f"runs `{install}` in step \"{site.label}\": an install that waits on the network "
-                              f"with no bound of its own, so a mirror or a registry that stops answering holds the "
-                              f"job until its limit and fails it for a cause outside the change under test. Run "
-                              f"it as `{NETWORK_INSTALL} <kind> -- <command>` (from a composite action, "
+                              f"with no bound of its own{unmeasured}, so a mirror or a registry that stops answering "
+                              f"holds the job until its limit and fails it for a cause outside the change under "
+                              f"test. Run it as `{NETWORK_INSTALL} <kind> -- <command>` (from a composite action, "
                               f"\"$GITHUB_ACTION_PATH/../../scripts/network-install.sh\"), which bounds each "
                               f"attempt by that kind's measured bound, tries it three times and fails by name; a "
                               f"kind it lacks is a line of its table, with a bound measured from that install's "
@@ -420,16 +432,17 @@ class NetworkInstalls:
                               f"directory, from $GITHUB_WORKSPACE or $GITHUB_ACTION_PATH, or from a variable the "
                               f"script sets to its own directory (`here=$(cd \"$(dirname \"$0\")\" && pwd)`)")
 
-    def install_of(self, words: list, site: Site, wrapped: list, local: frozenset = frozenset()) -> str | None:
-        """The install a command makes, as network_install names it, with what the job did before it
-        read in: a container of an image an earlier wrapped `docker pull` of the job pulled, and a
-        Lean command after a wrapped install of its toolchain, pull nothing; a docker build reads
-        its Dockerfile."""
+    def install_of(self, words: list, site: Site, wrapped: list, local: frozenset = frozenset()) -> tuple | None:
+        """The install a command makes, as network_install names it (its words and its kind), with
+        what the job did before it read in: a container of an image an earlier wrapped `docker pull`
+        of the job pulled, and a Lean command after a wrapped install of its toolchain, pull
+        nothing; a docker build reads its Dockerfile."""
         name = words[0].rsplit("/", 1)[-1]
         if name in site.fakes:  # the fake a test put first on the PATH it runs this script under
             return None
         if name in LEAN_COMMANDS:
-            return None if self.elan else f"{name} (elan's download of the Lean toolchain lean-toolchain names)"
+            return None if self.elan else (f"{name} (elan's download of the Lean toolchain lean-toolchain names)",
+                                           "elan")
         if name in ("docker", "docker-compose"):
             docker = docker_command(name, words[1:])
             if docker and docker.verb == "docker build":
@@ -444,8 +457,7 @@ class NetworkInstalls:
             if docker and docker.verb in ("docker run", "docker create") and docker.pull != "always" and \
                     docker.image in self.pulled:
                 return None  # its image is one an earlier step left on the runner
-        install = network_install(words, local, held_packages())
-        return install[0] if install else None
+        return network_install(words, local, held_packages())
 
     def read_wrapped(self, site: Site, words: list, wrapped: list, loops: tuple, known: dict) -> None:
         """A call of a script named network-install.sh: the repository's own, as `<kind> --
@@ -468,17 +480,20 @@ class NetworkInstalls:
                               f"call waits under: {bounds}")
             return
         if kind not in bounds:
+            unmeasured = f": {_unmeasured(kind)}" if kind in UNMEASURED else \
+                ". A new kind is a line of its table, with a bound measured from that install's own runs"
             self.refuse(site, f"runs `{call}` in step \"{site.label}\": {NETWORK_INSTALL} bounds no kind "
-                              f"'{kind}' (its kinds: {', '.join(sorted(bounds))}), and refuses it when it runs. A "
-                              f"new kind is a line of its table, with a bound measured from that install's own runs")
+                              f"'{kind}' (its kinds: {', '.join(sorted(bounds))}), and refuses it when it runs"
+                              f"{unmeasured}")
             return
         for pipeline in command_of(list(words[3:]), WRAPPERS):
             for command in pipeline:
                 install = network_install(command)
                 if install and install[1] != kind and not kind.startswith(install[1] + "-"):
+                    unmeasured = f"; {_unmeasured(install[1])}" if install[1] in UNMEASURED else ""
                     self.refuse(site, f"runs `{install[0]}` through {NETWORK_INSTALL}'s kind '{kind}' in step "
                                       f"\"{site.label}\": that bound was measured on {kind}'s installs, and "
-                                      f"`{install[0]}` is of kind '{install[1]}'")
+                                      f"`{install[0]}` is of kind '{install[1]}'{unmeasured}")
                 name = command[0].rsplit("/", 1)[-1]
                 verb = (from_verb(command[1:], APT_VALUE_OPTIONS) or [""])[0] if name in APT else ""
                 if verb in APT_DPKG_VERBS and not APT_DOWNLOAD_ONLY & set(command[1:]):
@@ -743,8 +758,11 @@ def check_network_installs(documents: dict, problems: list) -> None:
     updating or fetching; pip, pip3, pipx and `python -m pip` installing; uv installing, syncing,
     making a virtual environment or running a tool (`uv pip install`, `uv sync`, `uv venv`, `uv
     run`, `uvx`, …) without its --offline; npm (with its aliases `ci`, `clean-install`, `cit`, …),
-    pnpm, yarn (a bare `yarn` too) and bun (`bun ci` too) installing or adding; npx, bunx or pnpx
-    fetching a package the project does not hold (`--yes`, `--package`); gem, cargo, snap and brew
+    pnpm and bun (`bun ci` too) installing or adding; yarn installing, adding or upgrading (a bare
+    `yarn`, `yarn up`, `yarn global add`, `yarn create`, `yarn dlx`, …), wrapped or not, by name,
+    since no bound is measured for it (UNMEASURED); npx, bunx, pnpx, `bun x` and `npm exec` running
+    a package no lockfile of the repository holds, a version spec or under `--yes`/`--package`, and
+    `pnpm dlx` and `pipx run`, which fetch whatever they run; gem, cargo, snap and brew
     installing; a docker pull (`docker pull`, `docker image pull`, `docker compose pull`), and a
     container of an image no earlier step left on the runner (`docker run`, `docker create`,
     `docker compose up`; an image is left there by a wrapped pull, by a build that loads it, and by

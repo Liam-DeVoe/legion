@@ -215,8 +215,6 @@ a GOAWAY|http2: server sent GOAWAY and closed the connection; LastStreamID=1, Er
 go's 429|go: example.com/m@v1.0.0: reading https://proxy.golang.org/example.com/m/@v/v1.0.0.zip: 429 Too Many Requests
 containerd's rate limit|failed to copy: httpReadSeeker: failed open: unexpected status code: toomanyrequests: too many requests
 Bun's 429|error: GET http://127.0.0.1:4873/left-pad - 429
-Yarn's 429|error Error: http://127.0.0.1:45695/left-pad: Request "http://127.0.0.1:45695/left-pad" returned a 429
-Yarn's registry trouble|info There appears to be trouble with the npm registry (returned undefined). Retrying...
 FAULTS
 
 echo "case: an install whose own error names no network fault is not tried again"
@@ -224,12 +222,13 @@ run_install "stale lockfile" bun -- "$standin" "$work/stale.count" stale
 check "exits 1" "$(is "$status" 1)"
 check "ran once" "$(is "$(count "$work/stale.count")" 1)"
 check "says it is the command's own" "$(contains "$out" "Exit 1 is the command's own")"
-# Yarn 1.22.22's own fault, a lockfile that disagrees under --frozen-lockfile, names no network fault.
-: > "$work/yarn-stale.count"
-run_install "Yarn's stale lockfile" yarn -- "$standin" "$work/yarn-stale.count" says \
-  'error Your lockfile needs to be updated, but yarn was run with `--frozen-lockfile`.'
-check "Yarn's stale lockfile: ran once" "$(is "$(count "$work/yarn-stale.count")" 1)"
-check "Yarn's stale lockfile: says it is the command's own" "$(contains "$out" "Exit 1 is the command's own")"
+# docker 29.9.2's own fault, an image the registry does not have, names no network fault: the same
+# stand-in as the rows above, so a fault word that matched every docker error would fail here.
+: > "$work/docker-own.count"
+run_install "docker's missing manifest" docker -- "$standin" "$work/docker-own.count" says \
+  'Error response from daemon: manifest for ghcr.io/cybermonklabs/legion/ci:missing not found: manifest unknown'
+check "docker's missing manifest: ran once" "$(is "$(count "$work/docker-own.count")" 1)"
+check "docker's missing manifest: says it is the command's own" "$(contains "$out" "Exit 1 is the command's own")"
 
 echo "case: a command's own exit 124 or 137, before the bound, is neither a timeout nor a kill"
 run_install "exits 124 itself" apt -- "$standin" "$work/own124.count" own124
