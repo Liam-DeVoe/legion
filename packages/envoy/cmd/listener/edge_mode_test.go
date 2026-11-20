@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
@@ -174,8 +176,17 @@ type edgeRig struct {
 
 func newEdgeRig(t *testing.T) *edgeRig {
 	t.Helper()
-	projects := edgeTestProjects(t)
+	return newEdgeRigServing(t, edgeTestProjects(t))
+}
+
+// newEdgeRigServing is the rig of a listener serving projects, whatever the test's environment
+// says: none is a listener in no edge mode, which the rows that hold every listener use.
+func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
+	t.Helper()
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	// The publish route forwards a role message to its holder through the delivery config main
+	// wires and records each confirmation, so the rows that publish to a held role need both.
+	withPublishRoute(t, rig.deps)
 	met := metrics.New()
 	stand := newRepositoryStandIn(t, []string{"PRIV"}, edgeRepositoryFixture())
 	clock := &edgeClock{}
@@ -286,19 +297,32 @@ func (r *edgeRig) withheld(t *testing.T, reason string) int64 {
 	return counterValue(t, recorder.Body.String(), `envoy_edge_github_withheld_total{reason="`+reason+`"}`)
 }
 
-// edgeAnswer is what a row reads of an edge refusal.
+// edgeAnswer is what a row reads of an edge refusal (listenerwire.EdgeRefusal).
 type edgeAnswer struct {
-	Code  string `json:"code"`
-	Error string `json:"error"`
+	Reason  string   `json:"reason"`
+	Error   string   `json:"error"`
+	Refused []string `json:"refused"`
 }
 
-// requireEdgeRefusal fails the test unless recorder is status with code, naming what was asked.
-func requireEdgeRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, asked string) {
+// requireEdgeRefusal fails the test unless recorder is status with reason, naming what was asked,
+// and returns the refusal.
+func requireEdgeRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, reason, asked string) edgeAnswer {
 	t.Helper()
 	var answer edgeAnswer
 	_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
-	if recorder.Code != status || answer.Code != code {
-		t.Errorf("%s: status %d code %q (%s), want %d %s", asked, recorder.Code, answer.Code, strings.TrimSpace(recorder.Body.String()), status, code)
+	if recorder.Code != status || answer.Reason != reason {
+		t.Errorf("%s: status %d reason %q (%s), want %d %s", asked, recorder.Code, answer.Reason, strings.TrimSpace(recorder.Body.String()), status, reason)
+	}
+	return answer
+}
+
+// requireTopicRefusal is requireEdgeRefusal of a registration, whose refusal names exactly the
+// refused topics.
+func requireTopicRefusal(t *testing.T, recorder *httptest.ResponseRecorder, reason string, refused ...string) {
+	t.Helper()
+	answer := requireEdgeRefusal(t, recorder, http.StatusForbidden, reason, fmt.Sprintf("a registration refused for %v", refused))
+	if recorder.Code == http.StatusForbidden && !slices.Equal(answer.Refused, refused) {
+		t.Errorf("the refusal names refused %v (%s), want exactly %v", answer.Refused, strings.TrimSpace(recorder.Body.String()), refused)
 	}
 }
 
@@ -429,7 +453,7 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 	token := rig.personToken(sessionID, "PRIV")
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	for _, topic := range []string{"notifications.github.acme.priv.>", "notifications.github.acme.>", "notifications.github.>"} {
-		requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, topic), http.StatusForbidden, "repository_not_in_project", "an interest in "+topic)
+		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "repository_not_in_project", topic)
 	}
 	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "an interest in acme/pub")
 	rig.storeEvent(t, "notifications.github.acme.priv.pr.3")
@@ -456,7 +480,7 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 		"notifications.legion.wake",
 		"notifications.envoy.kept.role.x",
 	} {
-		requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, topic), http.StatusForbidden, "topic_not_in_project", "an interest in "+topic)
+		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "topic_not_in_project", topic)
 	}
 }
 
@@ -555,8 +579,9 @@ func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
 }
 
 // E2's publish rule: an edge session publishes only a role subject of its project in the form
-// that names the project, and only a role that project's own (a Legion role of it), whose claim
-// is keyed by its bare name; anything else is 403 topic_not_published.
+// that names the project, for a role that works for that project (contracts.ClaimProject): a
+// Legion role of the project, or a free-form role under it. Anything else is 403
+// topic_not_published, a Legion role of another project named under this one among it.
 func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_publisher"
@@ -566,17 +591,20 @@ func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 		"notifications.team.priv",
 		"notifications.role.legion-priv-priv-1-tester",
 		"notifications.role.INFRA.legion-infra-infra-1-tester",
-		"notifications.role.PRIV.lead-reviewer",
+		"notifications.role.PRIV.legion-infra-infra-1-tester",
+		"notifications.role._.lead-reviewer",
+		"notifications.role.INFRA.lead-reviewer",
 		"notifications.github.acme.pub.pr.1",
 	} {
 		body := fmt.Sprintf(`{"topic":%q,"message":"from the edge","source":"agent","source_session":%q}`, topic, sessionID)
 		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "topic_not_published", "a publish to "+topic)
 	}
-	role := contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")
-	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, role, sessionID)
-	recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
-	if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-		t.Fatalf("a publish to %s: status %d (%s), want it taken", role, recorder.Code, recorder.Body.String())
+	for _, role := range []string{contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester"), contracts.RoleSubject("PRIV", "lead-reviewer")} {
+		body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, role, sessionID)
+		recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
+		if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+			t.Fatalf("a publish to %s: status %d (%s), want it taken", role, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
@@ -818,5 +846,161 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	}
 	if out := listener.Output.String(); listener.Cmd.ProcessState.Success() || !strings.Contains(out, "ENVOY_API_TOKEN") || !strings.Contains(out, "ENVOY_EDGE_PROJECTS") {
 		t.Fatalf("the listener with ENVOY_EDGE_PROJECTS beside ENVOY_API_TOKEN exited %v, want a refusal naming both:\n%s", listener.Cmd.ProcessState, out)
+	}
+}
+
+// Q1's row: a registration the edge refuses names exactly the topics it refuses, as the
+// registration carried them, so the client drops those and registers the rest again; the allowed
+// topic beside them is named nowhere, and nothing of the registration is stored.
+func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_mixed"
+	token := rig.personToken(sessionID, "PRIV")
+	const refused, allowed = "notifications.github.acme.priv.>", "notifications.github.acme.pub.>"
+	requireTopicRefusal(t, rig.subscribe(t, token, sessionID, refused, allowed), "repository_not_in_project", refused)
+	if _, err := rig.deps.registry.Get(t.Context(), sessionID); err == nil {
+		t.Fatalf("a refused registration stored %s's interest record", sessionID)
+	}
+	// A refusal of both kinds names every topic it refuses, in the request's order, under the
+	// reason of the kind that is not GitHub's.
+	requireTopicRefusal(t, rig.subscribe(t, token, sessionID, "notifications.slack.>", allowed, refused), "topic_not_in_project",
+		"notifications.slack.>", refused)
+	requireStatus(t, rig.subscribe(t, token, sessionID, allowed), http.StatusOK, "the registration of the allowed topic alone")
+}
+
+// Q2's row on a listener in no edge mode: a free-form role claimed under a project is that
+// project's own claim, keyed by contracts.RoleClaimKey (PRIV.lead-reviewer), beside the claim of
+// the same name under no project (lead-reviewer), which keeps its bare key. Each is read, and
+// reached by a publish and by the role lane, under its own project.
+func TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject(t *testing.T) {
+	rig := newEdgeRigServing(t, nil)
+	requireFreeFormRoleUnderItsProject(t, rig, "ses_ff_bare", "ses_ff_priv", "ses_ff_sender")
+}
+
+// Q2's row at the edge: an edge session claims, reads and is reached through a free-form role of
+// its token's project, and a role of the same name under no project, claimed elsewhere, keeps its
+// own holder. The edge refuses the bare name, which works for no project, to claim and to publish.
+func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
+	rig := newEdgeRig(t)
+	const bare = "ses_edge_ff_bare"
+	rig.placeElsewhere(t, bare, "INFRA")
+	if _, err := rig.deps.registry.SetRole(bare, "shared-listener", "lead-reviewer", false); err != nil {
+		t.Fatalf("claim lead-reviewer for %s: %v", bare, err)
+	}
+	const holder, sender = "ses_edge_ff_holder", "ses_edge_ff_sender"
+	token := rig.personToken(holder, "PRIV")
+	senderToken := rig.namedToken(sender, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, token, holder), http.StatusOK, "the holder's registration")
+	requireStatus(t, rig.subscribe(t, senderToken, sender), http.StatusOK, "the sender's registration")
+	requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":"lead-reviewer","soft":true}`, holder)),
+		http.StatusForbidden, "role_not_in_project", "a claim of lead-reviewer")
+	body := fmt.Sprintf(`{"topic":"notifications.role.lead-reviewer","message":"for no project's reviewer","source":"agent","source_session":%q}`, sender)
+	requireEdgeRefusal(t, rig.call(t, http.MethodPost, senderToken, "/v1/messages/publish", body), http.StatusForbidden, "topic_not_published", "a publish to lead-reviewer")
+
+	role := "PRIV.lead-reviewer"
+	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, role)), http.StatusOK, "a claim of "+role)
+	requireRoleHolder(t, rig, senderToken, role, holder)
+	requireRoleKeys(t, rig, map[string]string{"PRIV.lead-reviewer": holder, "lead-reviewer": bare})
+	published := publishToHeldRole(t, rig, senderToken, sender, contracts.RoleTopicPrefix+role)
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), published)
+}
+
+// requireFreeFormRoleUnderItsProject is Q2's row on rig: bare claims lead-reviewer, priv claims
+// PRIV.lead-reviewer, both soft, and neither takes the other's role; a read, a publish through
+// the route and a message on the role lane each reach the holder of their own name's claim.
+func requireFreeFormRoleUnderItsProject(t *testing.T, rig *edgeRig, bare, priv, sender string) {
+	t.Helper()
+	tokens := map[string]string{}
+	standIns := map[string]*sessionStandIn{}
+	for _, sessionID := range []string{bare, priv, sender} {
+		tokens[sessionID] = rig.personToken(sessionID, "PRIV")
+		standIns[sessionID] = startSessionStandIn(t, rig.url, sessionID, answerDone)
+		requireStatus(t, rig.subscribe(t, tokens[sessionID], sessionID), http.StatusOK, "the registration of "+sessionID)
+	}
+	for sessionID, role := range map[string]string{bare: "lead-reviewer", priv: "PRIV.lead-reviewer"} {
+		recorder := rig.call(t, http.MethodPost, tokens[sessionID], "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, sessionID, role))
+		requireStatus(t, recorder, http.StatusOK, sessionID+"'s soft claim of "+role)
+	}
+	requireRoleKeys(t, rig, map[string]string{"PRIV.lead-reviewer": priv, "lead-reviewer": bare})
+	requireRoleHolder(t, rig, tokens[sender], "PRIV.lead-reviewer", priv)
+	requireRoleHolder(t, rig, tokens[sender], "lead-reviewer", bare)
+
+	toPriv := publishToHeldRole(t, rig, tokens[sender], sender, contracts.RoleSubject("PRIV", "lead-reviewer"))
+	requireFrames(t, standIns[priv].collect(t, 1, 10*time.Second), toPriv)
+	toBare := publishToHeldRole(t, rig, tokens[sender], sender, contracts.RoleTopicPrefix+"lead-reviewer")
+	requireFrames(t, standIns[bare].collect(t, 1, 10*time.Second), toBare)
+
+	// The role lane, which takes every role message published on the bus itself (Dispatch's
+	// among them), resolves the claim the same way.
+	cfg := wireTestRoleForwarder(t, rig.harness.config)
+	item := listenerTestEnvelope(contracts.RoleSubject("PRIV", "lead-reviewer"), "free-form-lane-"+priv)
+	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+	frames := standIns[priv].collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID != item.EventID {
+		t.Fatalf("the role lane's message reached %s as %s, want %s", priv, frames[0].item.EventID, item.EventID)
+	}
+	standIns[bare].none(t, time.Second)
+}
+
+// requireRoleKeys fails the test unless each claim key of want is held by its session.
+func requireRoleKeys(t *testing.T, rig *edgeRig, want map[string]string) {
+	t.Helper()
+	for key, holder := range want {
+		claim, err := rig.deps.registry.RoleClaim(t.Context(), key)
+		if err != nil || claim.HolderSessionID != holder {
+			t.Errorf("the claim keyed %s names %q (%v), want %s", key, claim.HolderSessionID, err, holder)
+		}
+	}
+}
+
+// requireRoleHolder fails the test unless GET /v1/roles/<role> answers holder.
+func requireRoleHolder(t *testing.T, rig *edgeRig, token, role, holder string) {
+	t.Helper()
+	recorder := rig.call(t, http.MethodGet, token, "/v1/roles/"+role, "")
+	requireStatus(t, recorder, http.StatusOK, "GET /v1/roles/"+role)
+	var answer listenerwire.RoleHolder
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Holder != holder {
+		t.Fatalf("GET /v1/roles/%s answers %s (%v), want holder %s", role, recorder.Body.String(), err, holder)
+	}
+}
+
+// publishToHeldRole publishes one message to topic, a role's lane, as sender and requires the
+// route to answer that the holder took it; it returns the envelope the answer names.
+func publishToHeldRole(t *testing.T, rig *edgeRig, token, sender, topic string) contracts.Envelope {
+	t.Helper()
+	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, topic, sender)
+	recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
+	requireStatus(t, recorder, http.StatusOK, "a publish to "+topic)
+	var answer listenerwire.PublishResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the publish answer %s: %v", recorder.Body.String(), err)
+	}
+	return answer.Envelope
+}
+
+// The listener links no package of Dispatch's store and no PostgreSQL driver: the bus's rule for
+// a broker token's projects, which the edge reads, is internal/projectscope's, a package that
+// imports neither. A listing that names no package, the listener among them, has read nothing and
+// fails as UNKNOWN.
+func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
+	const self = "github.com/sjawhar/envoy/cmd/listener"
+	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v", err)
+	}
+	listed, found := 0, false
+	for line := range strings.Lines(string(out)) {
+		path := strings.TrimSpace(line)
+		listed++
+		switch {
+		case path == self:
+			found = true
+		case path == "github.com/sjawhar/envoy/internal/dispatch/store", strings.HasPrefix(path, "github.com/jackc/pgx"):
+			t.Errorf("the listener links %s", path)
+		}
+	}
+	if listed == 0 || !found {
+		t.Fatalf("UNKNOWN: go list -deps listed %d packages and %s among them: %t", listed, self, found)
 	}
 }

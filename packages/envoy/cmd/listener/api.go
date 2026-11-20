@@ -1082,7 +1082,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// E4), decided before any other rule of this route so that what it may not publish is
 		// refused with the edge's reason whatever else is wrong with it.
 		if refusal := edgePublishRefusal(r, request.Topic); refusal != nil {
-			record.refuseWith(w, refusal.status, outcomeNotInProject, refusal.answer())
+			record.refuseWith(w, refusal.status, outcomeNotInProject, refusal.body)
 			return
 		}
 		if !strings.HasPrefix(request.Topic, bus.NotificationTopicPrefix) {
@@ -1171,10 +1171,10 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		defer charge.settle()
 		if lane, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			// The lane names its role in either form while every reader takes both: its project
-			// and then the role, or the role alone. A claim is keyed by the bare role name
-			// whichever form claimed it (store.Registry.ClaimedRole), so the role this send
-			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand.
-			_, role, _ := contracts.CanonicalRole(lane)
+			// and then the role, or the role alone. The claim this send resolves is the one that
+			// name is keyed by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
+			// free-form role under a project, never the lane's tokens as they stand.
+			role := store.RoleClaimKeyOf(lane)
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
@@ -1899,15 +1899,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			return
 		}
 		// The role is read in either form, its project first (INFRA.legion-infra-infra-12-architect,
-		// _.lead-reviewer) or its name alone, and everything below works on the name, which is what
-		// its claim record is keyed by. The old form is counted and named back in the answer's
-		// warnings with its new form (store.Registry.ClaimedRole); nothing is refused for it. In this
-		// slice a claim keys on the bare name, which is the claim of the project the name itself gives
-		// (contracts.RoleProject), so a new form under any other project is refused, as the merge base
-		// refused every dotted role: a Legion role under another project's key, and a free-form role
-		// under a project, whose claim would land on the `_` claim of its name and take that from its
-		// holder while the caller believed it held the project's. t-c-8 lifts this for a free-form
-		// role once a claim keys on its project (contracts.RoleClaimKey).
+		// PRIV.lead-reviewer, _.lead-reviewer) or its name alone, and everything below works on the
+		// key its claim record is keyed by (store.Registry.ClaimedRole, store.RoleClaimKeyOf): the
+		// bare name for the old form, for a free-form role under no project and for a Legion role,
+		// and <project>.<role> for a free-form role under a project, which is that project's own
+		// claim beside the claim of the same name under no project. The old form is counted and
+		// named back in the answer's warnings with its new form; nothing is refused for it. A new
+		// form under a project its role cannot work for is refused (contracts.ClaimProject): a
+		// Legion role works for the project its own name gives, and a claim of it under another
+		// project's key would believe it holds a claim it does not.
 		project, name, legacy := contracts.CanonicalRole(body.Role)
 		if !roles.Valid(name) {
 			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString+", after its project and a dot when it names one", "role")
@@ -1920,9 +1920,11 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			refusal.write(w)
 			return
 		}
-		if own := contracts.RoleProject(name); !legacy && project != own {
-			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("role %s is claimed under project %s, the project its name gives, and a claim of it cannot ask for project %s", name, own, project), "role")
-			return
+		if !legacy {
+			if _, err := contracts.ClaimProject(name, project); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error(), "role")
+				return
+			}
 		}
 		var roleWarning string
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
@@ -2251,10 +2253,9 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "role is required", "role")
 			return
 		}
-		// The path names the role in either form, its project first or its name alone, and a
-		// claim is keyed by the bare name either way (store.Registry.ClaimedRole), so the holder
-		// is read under that name.
-		_, role, _ := contracts.CanonicalRole(name)
+		// The path names the role in either form, its project first or its name alone, and the
+		// holder is read under the key a claim of that name is keyed by (store.RoleClaimKeyOf).
+		role := store.RoleClaimKeyOf(name)
 		if refusal := edgeRoleRefusal(r, name); refusal != nil {
 			refusal.write(w)
 			return
@@ -2889,7 +2890,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// route's budget (E2), before anything is planned or stored.
 		if refusal := edgeFollowRefusal(ctx, r, d.repositories, body.SessionID, body.Topics); refusal != nil {
 			logger.Warn("edge listener refused a registration", slog.String("session_id", body.SessionID),
-				slog.String("code", refusal.code), slog.String("reason", refusal.message))
+				slog.String("reason", refusal.body.Reason), slog.Any("refused", refusal.body.Refused))
 			refusal.write(w)
 			return
 		}

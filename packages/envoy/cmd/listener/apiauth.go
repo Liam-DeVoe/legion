@@ -308,7 +308,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 						slog.String("session", caller.Session),
 						slog.String("reason", err.Error()),
 						slog.String("path", r.URL.Path))
-					writeJSON(w, http.StatusForbidden, listenerwire.APIError{Code: edgeTokenNotAdmitted, Error: err.Error()})
+					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
 					return
 				}
 				ctx = withHeldProjects(ctx, caller.Projects)

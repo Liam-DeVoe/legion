@@ -49,8 +49,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/projectscope"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -84,7 +84,7 @@ func EdgeAdmits(edgeProjects []string, caller brokertoken.Caller) error {
 	return nil
 }
 
-// The codes an edge refusal carries (listenerwire.APIError.Code).
+// The reasons an edge refusal carries (listenerwire.EdgeRefusal.Reason).
 const (
 	edgeTokenNotAdmitted         = "token_not_admitted"
 	edgeTopicNotInProject        = "topic_not_in_project"
@@ -98,17 +98,17 @@ const (
 
 // edgeRefusal is one answer an edge rule gives a request it refuses.
 type edgeRefusal struct {
-	status   int
-	code     string
-	message  string
-	expected []string
+	status int
+	body   listenerwire.EdgeRefusal
 }
 
-func (e *edgeRefusal) answer() listenerwire.APIError {
-	return listenerwire.APIError{Code: e.code, Error: e.message, Expected: e.expected}
+// refuseEdge is the refusal of reason under status, its sentence message, about the request
+// fields expected.
+func refuseEdge(status int, reason, message string, expected ...string) *edgeRefusal {
+	return &edgeRefusal{status: status, body: listenerwire.EdgeRefusal{Error: message, Reason: reason, Expected: expected}}
 }
 
-func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.answer()) }
+func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.body) }
 
 // heldProjectsKey is the context key an edge admission carries its token's projects under.
 type heldProjectsKey struct{}
@@ -126,11 +126,11 @@ func heldProjects(r *http.Request) ([]string, bool) {
 	return projects, held
 }
 
-// projectHeld reports whether project is one of projects, by the bus's rule for a broker token,
-// read as for a private project: a list holds what it names and nothing else, NoProject and a
-// wildcard among the rest.
+// projectHeld reports whether project is one of projects, by the bus's rule for a broker token
+// (projectscope.BrokerTokenAdmits), read as for a private project: a list holds what it names and
+// nothing else, NoProject and a wildcard among the rest.
 func projectHeld(projects []string, project string) bool {
-	return access.BrokerTokenAdmits(projects, project, true)
+	return projectscope.BrokerTokenAdmits(projects, project, true)
 }
 
 // sessionOfProjects reports whether a session whose entry is entry is one of projects': the token
@@ -178,61 +178,79 @@ func unknownSession(sessionID string) listenerwire.NoLiveSessionRefusal {
 // the session's own agent subject in either form, a topic contracts.SubjectProject gives one of
 // the token's projects, or a GitHub topic of one repository that the broker's answer for the
 // token's projects names, read fresh for this registration within ctx. A GitHub topic naming no
-// single repository, or one not in the answer, is 403 repository_not_in_project; a registration
-// whose read gave no whole answer is 503 repositories_unknown; every other topic, another
-// session's agent subject, the listener's own notifications.envoy. lanes and every subject of no
-// project among them, is 403 topic_not_in_project. Nothing is stored for a refused registration.
+// single repository, or one not in the answer, is refused repository_not_in_project; every other
+// topic, another session's agent subject, the listener's own notifications.envoy. lanes and every
+// subject of no project among them, is refused topic_not_in_project. The 403 names every refused
+// topic (listenerwire.EdgeRefusal.Refused), so the client drops exactly those and registers the
+// rest again. A registration whose read gave no whole answer is 503 repositories_unknown, which
+// names no topic: the edge cannot say which of its GitHub topics to refuse. Nothing is stored for
+// a refused registration.
 func edgeFollowRefusal(ctx context.Context, r *http.Request, repositories *edgeRepositories, sessionID string, topics []string) *edgeRefusal {
 	projects, held := heldProjects(r)
 	if !held {
 		return nil
 	}
 	type githubTopic struct{ topic, owner, name string }
+	// Each topic is judged once and named once, in the request's order; a GitHub topic that
+	// names one repository waits for the answer that judges it.
+	verdicts := make(map[string]string, len(topics))
 	var github []githubTopic
 	for _, topic := range topics {
+		if _, judged := verdicts[topic]; judged {
+			continue
+		}
+		verdicts[topic] = ""
 		switch {
 		case ownAgentSubject(sessionID, projects, topic):
-		case strings.HasPrefix(topic, contracts.AgentTopicPrefix):
-			return &edgeRefusal{status: http.StatusForbidden, code: edgeTopicNotInProject, expected: []string{"topics"},
-				message: fmt.Sprintf("%s is not followed here: a session at the edge follows its own agent subject and no other session's", topic)}
 		case strings.HasPrefix(topic, contracts.GithubTopicPrefix):
-			owner, name, single := githubSubjectRepository(topic)
-			if !single {
-				return &edgeRefusal{status: http.StatusForbidden, code: edgeRepositoryNotInProject, expected: []string{"topics"},
-					message: fmt.Sprintf("%s is not followed here: a GitHub topic at the edge names one repository, its owner and its name", topic)}
+			if owner, name, single := githubSubjectRepository(topic); single {
+				github = append(github, githubTopic{topic: topic, owner: owner, name: name})
+			} else {
+				verdicts[topic] = edgeRepositoryNotInProject
 			}
-			github = append(github, githubTopic{topic: topic, owner: owner, name: name})
-		case strings.HasPrefix(topic, listenerLanePrefix):
-			return &edgeRefusal{status: http.StatusForbidden, code: edgeTopicNotInProject, expected: []string{"topics"},
-				message: fmt.Sprintf("%s is not followed here: it is a lane of the listener's own", topic)}
+		case strings.HasPrefix(topic, contracts.AgentTopicPrefix), strings.HasPrefix(topic, listenerLanePrefix):
+			verdicts[topic] = edgeTopicNotInProject
 		default:
 			if project, _, ok := contracts.SubjectProject(topic); !ok || !projectHeld(projects, project) {
-				return &edgeRefusal{status: http.StatusForbidden, code: edgeTopicNotInProject, expected: []string{"topics"},
-					message: fmt.Sprintf("%s is not followed here: its project is none of %s", topic, strings.Join(projects, ", "))}
+				verdicts[topic] = edgeTopicNotInProject
 			}
 		}
 	}
-	if len(github) == 0 {
-		return nil
-	}
-	unknown := func(err error) *edgeRefusal {
-		return &edgeRefusal{status: http.StatusServiceUnavailable, code: edgeRepositoriesUnknown,
-			message: fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now: %v", strings.Join(projects, ", "), err)}
-	}
-	if repositories == nil {
-		return unknown(errors.New("this listener reads no repository answer"))
-	}
-	answered, err := repositories.readFresh(ctx, projects)
-	if err != nil {
-		return unknown(err)
-	}
-	for _, topic := range github {
-		if !repositoryAmong(answered, topic.owner, topic.name) {
-			return &edgeRefusal{status: http.StatusForbidden, code: edgeRepositoryNotInProject, expected: []string{"topics"},
-				message: fmt.Sprintf("%s is not followed here: no issue of %s resolves to %s/%s", topic.topic, strings.Join(projects, ", "), topic.owner, topic.name)}
+	if len(github) > 0 {
+		unknown := func(err error) *edgeRefusal {
+			return refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
+				fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now: %v", strings.Join(projects, ", "), err))
+		}
+		if repositories == nil {
+			return unknown(errors.New("this listener reads no repository answer"))
+		}
+		answered, err := repositories.readFresh(ctx, projects)
+		if err != nil {
+			return unknown(err)
+		}
+		for _, topic := range github {
+			if !repositoryAmong(answered, topic.owner, topic.name) {
+				verdicts[topic.topic] = edgeRepositoryNotInProject
+			}
 		}
 	}
-	return nil
+	refusal := refuseEdge(http.StatusForbidden, edgeRepositoryNotInProject, "", "topics")
+	for _, topic := range topics {
+		reason := verdicts[topic]
+		if reason == "" || slices.Contains(refusal.body.Refused, topic) {
+			continue
+		}
+		refusal.body.Refused = append(refusal.body.Refused, topic)
+		if reason == edgeTopicNotInProject {
+			refusal.body.Reason = edgeTopicNotInProject
+		}
+	}
+	if len(refusal.body.Refused) == 0 {
+		return nil
+	}
+	refusal.body.Error = fmt.Sprintf("%s not followed here: a session at the edge follows its own agent subject, the topics of %s, and the GitHub topics of one repository each that an issue of %s resolves to",
+		strings.Join(refusal.body.Refused, ", "), strings.Join(projects, ", "), strings.Join(projects, ", "))
+	return refusal
 }
 
 // listenerLanePrefix begins every lane of the listener's own (the kept, resume and exception
@@ -256,13 +274,13 @@ func ownAgentSubject(sessionID string, projects []string, topic string) bool {
 
 // edgePublishRefusal is E2's publish rule and E4's role publish, or nil: a session at the edge
 // publishes only a role subject in the form that names the project
-// (notifications.role.<KEY>.<role>), of one of its token's projects, and of a role that works for
-// that project by its own name. A claim is keyed by the bare role name in this slice
-// (store.Registry.ClaimedRole), which is the claim key contracts.RoleClaimKey gives only such a
-// role; a free-form role under the project would resolve to the claim of no project. A message to
-// a session goes through the send route (E4), and nothing else is published here: a Dispatch
-// event of the project, a GitHub, Slack or team subject, and a lane of the listener's own are
-// 403 topic_not_published.
+// (notifications.role.<KEY>.<role>), of one of its token's projects, for a role that works for
+// that project (contracts.ClaimProject): a Legion role of the project, or a free-form role under
+// it, whose claim is keyed on the project (store.RoleClaimKeyOf). A Legion role of another project
+// named under this one is refused, since its claim is its own project's. A message to a session
+// goes through the send route (E4), and nothing else is published here: a Dispatch event of the
+// project, a GitHub, Slack or team subject, and a lane of the listener's own are 403
+// topic_not_published.
 func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 	projects, held := heldProjects(r)
 	if !held {
@@ -270,20 +288,19 @@ func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole {
 		project, role, legacy := contracts.CanonicalRole(lane)
-		if !legacy && projectHeld(projects, project) && contracts.RoleClaimKey(project, role) == role {
+		if claimed, err := contracts.ClaimProject(role, project); !legacy && err == nil && claimed == project && projectHeld(projects, project) {
 			return nil
 		}
 	}
-	return &edgeRefusal{status: http.StatusForbidden, code: edgeTopicNotPublished, expected: []string{"topic"},
-		message: fmt.Sprintf("%s is not published here: a session at the edge publishes only a role subject of %s, notifications.role.<project>.<role> for a role of that project, and sends to a session through /v1/messages/send",
-			topic, strings.Join(projects, ", "))}
+	return refuseEdge(http.StatusForbidden, edgeTopicNotPublished,
+		fmt.Sprintf("%s is not published here: a session at the edge publishes only a role subject of %s, notifications.role.<project>.<role> for a role of that project, and sends to a session through /v1/messages/send",
+			topic, strings.Join(projects, ", ")), "topic")
 }
 
 // edgeRoleRefusal is E3 for a claim or a read of role, in either form, or nil: the project the
 // claim works for (contracts.ClaimProject, given the project the new form names) is one of the
-// token's. What passes is claimed under contracts.RoleClaimKey of that project, which in this
-// slice is the bare name the claim route stores (a free-form role under a project is refused by
-// the route itself until a claim keys on its project).
+// token's. What passes is claimed and read under the key of that project (store.RoleClaimKeyOf):
+// the bare name for a Legion role, and <project>.<role> for a free-form role under the project.
 func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	projects, held := heldProjects(r)
 	if !held {
@@ -297,8 +314,8 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	if err == nil && projectHeld(projects, project) {
 		return nil
 	}
-	return &edgeRefusal{status: http.StatusForbidden, code: edgeRoleNotInProject, expected: []string{"role"},
-		message: fmt.Sprintf("role %s is not claimed or read here: it works for no project of %s", role, strings.Join(projects, ", "))}
+	return refuseEdge(http.StatusForbidden, edgeRoleNotInProject,
+		fmt.Sprintf("role %s is not claimed or read here: it works for no project of %s", role, strings.Join(projects, ", ")), "role")
 }
 
 // edgeInterestReadRefusal is E5 for GET /v1/interests/ and GET /v1/interests/<session_id>, or nil:
@@ -310,8 +327,7 @@ func edgeInterestReadRefusal(r *http.Request, sessionID string) *edgeRefusal {
 	if caller, ok := brokerCaller(r); ok && sessionID != "" && caller.Session == sessionID {
 		return nil
 	}
-	return &edgeRefusal{status: http.StatusForbidden, code: edgeSessionNotInProject,
-		message: "a session at the edge reads its own interests and no other session's"}
+	return refuseEdge(http.StatusForbidden, edgeSessionNotInProject, "a session at the edge reads its own interests and no other session's")
 }
 
 // edgeLegionWriteRefusal is E5 for a write of the Legion agent registry, or nil: the edge records
@@ -320,8 +336,7 @@ func edgeLegionWriteRefusal(r *http.Request) *edgeRefusal {
 	if _, held := heldProjects(r); !held {
 		return nil
 	}
-	return &edgeRefusal{status: http.StatusForbidden, code: edgeLegionRegistryNotWritten,
-		message: "the Legion agent registry is not written at the edge"}
+	return refuseEdge(http.StatusForbidden, edgeLegionRegistryNotWritten, "the Legion agent registry is not written at the edge")
 }
 
 // registeringProjects is the projects the registration r makes records on its session's entry
