@@ -32,10 +32,14 @@ env:
 jobs:
   envoy-go-race:
     runs-on: ubuntu-24.04-arm
-    # R6 sizes both numbers from one measurement pair alone, runs 44657322918 and 44657415021 at
-    # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole
-    # minute at which its slowest package, on the slower run of the pair, takes at most half of
-    # it: cmd/listener, 686.0 s (run 44657415021, job 136039518500), 686.0 / 30 = 22.87, so 23m.
+    # R6 sizes both numbers from the final measurement pair, runs 44657322918 and 44657415021 at
+    # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head,
+    # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+    # open-items.md). Run 44687712471 at 56f4dabc (job 136126011379) read cmd/listener at 679.7 s
+    # and the job at 920 s, under the pair's, so it raised neither. The step's -timeout is the
+    # smallest whole minute at which its slowest package, on the slower run of the pair, takes at
+    # most half of it: cmd/listener, 686.0 s (run 44657415021, job 136039518500), 686.0 / 30 =
+    # 22.87, so 23m.
     # The job's bound is its larger time in the pair, 939 s (run 44657415021, job 136039518500),
     # 15.65 minutes, plus that -timeout plus 6: 15.65 + 23 + 6 = 44.65, so 45. The limit must
     # fire before the runner cancels the job, so a hung test prints the dump that names it. The

@@ -56,15 +56,18 @@ jobs:
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
     #
-    # R6 sizes the job's bound and each go test call's -timeout from one measurement pair alone,
+    # R6 sizes the job's bound and each go test call's -timeout from the final measurement pair,
     # runs 44657322918 and 44657415021 at 8cfd2682, by the rule envoy-go's comment gives
-    # (dispatch://INFRA-1075, check 6224bb0e). The job's bound is its larger time in the pair,
-    # 853 s (run 44657415021, job 136039517954), 14.22 minutes, plus the largest -timeout of its
-    # go test calls, the alone step's 2m, plus 6: 14.22 + 2 + 6 = 22.22, so 23. Its other go
+    # (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head, which may
+    # raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+    # open-items.md). The job's bound is its slowest time, 988 s in run 44687712471 at 56f4dabc
+    # (job 136126010901), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
+    # and run 44657415021, job 136039517954), 16.47 minutes, plus the largest -timeout of its go
+    # test calls, the alone step's 2m, plus 6: 16.47 + 2 + 6 = 24.47, so 25. Its other go
     # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
     # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
     # and its comment gives its reading.
-    timeout-minutes: 23
+    timeout-minutes: 25
     # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
     # same settings on the server's own command line and the same health check. envoy-go's own
     # service says what each setting buys and why this container can do without durability

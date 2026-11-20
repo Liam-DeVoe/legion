@@ -179,7 +179,7 @@ check "envoy-go's count runs the broker's packages less the race lane's, and its
     "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 9m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
-    "packages/envoy go test -json -count=1 -race -timeout 38m ./internal/dispatch/api/")"
+    "packages/envoy go test -json -count=1 -race -timeout 39m ./internal/dispatch/api/")"
 check "the race step with one more argument, which the entry does not list, is refused" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
 

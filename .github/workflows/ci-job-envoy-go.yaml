@@ -33,12 +33,17 @@ jobs:
   envoy-go:
     runs-on: ubuntu-24.04-arm
     # Every go test call of this job, of envoy-go-checks and of the race lane, and each of those
-    # jobs' own timeout-minutes, is sized by R6 from one measurement pair alone: two
+    # jobs' own timeout-minutes, is sized by R6 from the final measurement pair, two
     # workflow_dispatch runs of ci.yaml at one head, runs 44657322918 and 44657415021 at 8cfd2682
-    # (dispatch://INFRA-1075, check 6224bb0e). No limit is sized from any other run. The pair ran
-    # envoy-go-checks on x64 (ubuntu-24.04) and the other five jobs on arm64 (ubuntu-24.04-arm),
-    # where main's #4308 moved them, as the pairs at 31649808 and ae055610 did; every pair before
-    # those ran on x64.
+    # (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head,
+    # which is swept the same way and may raise a limit but never lower one (the architect's rule
+    # of 2026-11-20, the issue's open-items.md). Run 44687712471 at 56f4dabc raised five:
+    # envoy-go-race-api's --timeout and timeout-minutes, envoy-go-docs-finalizers' -timeout and
+    # timeout-minutes, and envoy-go-checks' timeout-minutes, and the comment on each gives that
+    # run's reading. Every other limit is the pair's, and the table below and the comment on each
+    # give the pair's reading. The pair ran envoy-go-checks on x64 (ubuntu-24.04) and the other
+    # five jobs on arm64 (ubuntu-24.04-arm), where main's #4308 moved them, as the pairs at
+    # 31649808 and ae055610 did; every pair before those ran on x64.
     #
     # A call's -timeout is the smallest whole minute at which its slowest package, on the slower
     # run of the pair, takes at most half of it: that package's time divided by 30, rounded up.

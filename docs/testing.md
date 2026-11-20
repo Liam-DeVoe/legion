@@ -381,7 +381,7 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, through `packages/envoy/scripts/database-skips.sh`,
-which gives it 38 minutes (`--timeout 38m`) and counts its skips
+which gives it 39 minutes (`--timeout 39m`) and counts its skips
 (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
 runs its seventeen source-guard tests by name, and `envoy-go-claim-model` its two claim model tests.
 `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 54 (`-timeout 54m`).
@@ -431,7 +431,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 26m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 27m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
