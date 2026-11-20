@@ -225,8 +225,9 @@ type sessionRelays struct {
 	// relay waits it out before it restarts a session's consumer at its ack floor, so the acks
 	// the stopping pod is still writing have moved that floor as far as it will go before the
 	// restart reads it. A restart sends again every frame left above the floor (the README's
-	// "When a session can see a message twice"). Nil for a listener without a lease, and in a
-	// rig that takes nothing over, which wait for nothing.
+	// "When a session can see a message twice"). main reads it from the pod's lease, which answers
+	// zero while the pod has none and follows a lease it joins later; nil in a rig that takes
+	// nothing over, which waits for nothing.
 	formerSettle func() time.Duration
 
 	ctx    context.Context

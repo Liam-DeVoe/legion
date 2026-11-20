@@ -17,12 +17,14 @@ export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
  * delivery on a team topic, which carries the undelivered payload and the session it was for as
  * the agent lane does, the kept lane (the role messages the listener could not deliver and the
  * drain cursors over them, `notifications.envoy.kept.`, which is `KeptTopicPrefix` in
- * packages/envoy/internal/bus/stream.go), and the resume lane (where a deleted session consumer
+ * packages/envoy/internal/bus/stream.go), the resume lane (where a deleted session consumer
  * stopped, `notifications.envoy.resume.`, which is `SessionResumeSubjectPrefix` in
- * packages/envoy/internal/bus/session_resume.go). The listener alone reads the last two, so no
- * session registers a topic under them, its own included. `@legion/contracts` exports neither
- * prefix, so both are written here as the Go constants spell them. This is the listener's own
- * list, `privateStreamSubjects` in packages/envoy/internal/bus/stream.go.
+ * packages/envoy/internal/bus/session_resume.go), and the takeover lane (where the listener records
+ * that a session took a role from another, `notifications.envoy.takeover.`, which is
+ * `TakeoverSubjectPrefix` in packages/envoy/internal/bus/takeover.go). The listener alone reads the
+ * last three, so no session registers a topic under them, its own included. `@legion/contracts`
+ * exports none of those prefixes, so each is written here as the Go constants spell it. This is the
+ * listener's own list, `privateStreamSubjects` in packages/envoy/internal/bus/stream.go.
  */
 const PRIVATE_STREAM_SUBJECTS = [
   `${AGENT_TOPIC_PREFIX}>`,
@@ -31,6 +33,7 @@ const PRIVATE_STREAM_SUBJECTS = [
   `${EXCEPTION_TOPIC_PREFIX}notifications.team.>`,
   "notifications.envoy.kept.>",
   "notifications.envoy.resume.>",
+  "notifications.envoy.takeover.>",
 ];
 
 /** What a controller notice lane ends with; every other subject of that family names an issue. */

@@ -303,8 +303,9 @@ type SessionRegistry struct {
 	seenLocal map[string]int64
 
 	// seen is the listener state bucket LastSeen reads a lapsed session's `seen.` record from, the
-	// one answer every pod shares (WithLastSeenBucket); its KeyValue is nil when the registry has
-	// none.
+	// one answer every pod shares (WithLastSeenBucket, SetLastSeenBucket); its KeyValue is nil when
+	// the registry has none. It is guarded by mu, since a listener that joins its machine's lease
+	// sets it while the registry serves.
 	seen bus.KeyValue
 
 	// expiries holds the deadline of each cached row and of each last-seen record, earliest first;

@@ -159,7 +159,7 @@ func TestATermEndedBetweenPrepareAndBeginStartsNoRelayRun(t *testing.T) {
 	pod := newReceiverRig(t, relayRig.url, leaseTestMachine, "pod-a", handle, testReceiveTiming(), testLeaseTiming())
 	clock := newFakeLeaseClock()
 	held := newLease(pod.lease.kv, leaseTestMachine, "pod-a", productionLeaseConfig(), clock.now, logging.NewWithWriter(leaseTestMachine, pod.logs))
-	pod.receiver.lease = held
+	pod.receiver.lease.Store(held)
 	pod.receiver.relays = relayRig.relays
 	held.step()
 	status := held.Status()

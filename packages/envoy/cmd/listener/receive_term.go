@@ -34,8 +34,10 @@ type receiveTerm struct {
 	// hold, when it is above zero, is the longest the handler holds what the term receives before
 	// it delivers it in stream order (settle): a term that must settle. leaseTerm is the lease
 	// term the hold's end reports settled, and whose clean-hand-back mark, when the term was
-	// taken from a candidate for one, can end the hold sooner (readHandBackMark).
-	// markReadFailed is that read's log-once state, the settle hold's own.
+	// taken from a candidate for one, can end the hold sooner (readHandBackMark); zero for a term
+	// received without a lease, until a lease that joined takes the term over, which sets it under
+	// durableReceiver.mu (joinTerm). markReadFailed is that read's log-once state, the settle
+	// hold's own.
 	hold           time.Duration
 	leaseTerm      uint64
 	markReadFailed bool
@@ -351,8 +353,8 @@ read:
 		}
 	}
 	held := t.gather(true)
-	if r.lease != nil {
-		r.lease.Settled(t.leaseTerm)
+	if l := r.lease.Load(); l != nil {
+		l.Settled(t.leaseTerm)
 	}
 	r.logger.Info("settle hold ended; delivering the held messages in stream order",
 		slog.String("consumer", r.consumer),
@@ -372,10 +374,11 @@ read:
 // stop's own linger, so the stale binding the term recorded is cleared with it. A read that
 // fails is logged once, as a failed durable read is, and holds on.
 func (t *receiveTerm) readHandBackMark(ctx context.Context, r *durableReceiver) bool {
-	if r.lease == nil {
+	l := r.lease.Load()
+	if l == nil {
 		return false
 	}
-	seen, err := r.lease.HandBackMarked(ctx, t.leaseTerm)
+	seen, err := l.HandBackMarked(ctx, t.leaseTerm)
 	if err != nil {
 		if ctx.Err() == nil && !t.markReadFailed {
 			t.markReadFailed = true
@@ -387,7 +390,7 @@ func (t *receiveTerm) readHandBackMark(ctx context.Context, r *durableReceiver) 
 	if !seen {
 		return false
 	}
-	r.lease.SetStaleBinding(t.leaseTerm, false)
+	l.SetStaleBinding(t.leaseTerm, false)
 	return true
 }
 

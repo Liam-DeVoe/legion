@@ -37,7 +37,7 @@ Every pod of a machine id, active or standby:
 Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
 the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`, `keptSweepConfig`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
 The one exception is a listener without a lease, whose NATS user lacks the grant for `envoy_listener` (`openDeliveryLease`, `main.go`):
-it does all three with no lease, and receives while no other subscriber holds the durable.
+it does all three with no lease, and receives while no other subscriber holds the durable, until a grant lets it open that bucket and it joins the lease ("Without the grant: no-lease mode" below).
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
 
 ### The delivery lease
@@ -260,7 +260,7 @@ This section is the one statement of that rule; the code and the other guides po
 
 Meanwhile the pod is live (`/livez` 204) and not ready (`/healthz` `503 starting`), `/v1` stays closed, and a SIGTERM or SIGINT ends it at once, since the start installs no handler for either until `/v1` serves.
 
-The listener state bucket's grant refusal ends nothing either: the pod delivers without a lease ("Without the grant: no-lease mode" below).
+The listener state bucket's grant refusal ends nothing either: the pod delivers without a lease, tries the bucket again by this rule, and joins the lease with no restart once a grant lets it open the bucket ("Without the grant: no-lease mode" below).
 
 ## Readiness: `/healthz`
 
@@ -461,12 +461,27 @@ that is a subject's reach, and what every listener user of the fleet can still d
 It reads each of its other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
-A listener whose grant refuses the bucket does not exit: it logs one ERROR, `listener lease
-unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a
-lease`, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
+A listener whose grant refuses the bucket does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, with the `retry_in` of its next try, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
 `/healthz` says so in `lease`: `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`.
 The shared state above falls back to the pod's own: the ledger is in process, last-seen is in process, and the role-claim grace counts from the pod's own start.
 Run one pod per machine id in this mode: it has no fencing against a second deliverer after a reconnect in place.
+
+The pod tries the bucket again on the lease's own connection by the start rule ("Start" above), logging `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`joinDeliveryLease`).
+A grant applied after the pod started is so taken within one wait, with no restart, and the pod joins the lease:
+
+- The shared state follows: the keeper keeps the bucket, last-seen is recorded in the bucket, the role-claim grace counts from the lease's `service_since`, and the ledger is the machine's shared one.
+  A pair the pod delivered or attempted before the join is still answered from its own ledger for as long as that record stops a delivery, since the shared ledger holds nothing of it (`dedupe.Joining`).
+  Another pod that meets a repeat of such a message forwards it again with no pair in the shared ledger, and the stream stores that forward once: every forward to a session carries one `Nats-Msg-Id` however often it is sent (`bus.ForwardMsgID`), which the stream keeps for its 72 h duplicate window, so the session is handed the message once.
+
+- The pod tries to take the record before it gives anything up (`lease.Contend`).
+  A record that is absent or released it takes, and its subscription, its queue and the message in hand become the holder's: nothing is unsubscribed, so no message waits for the switch and no second pod delivers (`durableReceiver.joinTerm`, `durableReceiver.adopt`).
+  `/healthz` drops `lease` and names the pod `active`, and the holder's loops start under the lease.
+
+- A record another pod holds it cannot take: that pod took the lease while this one delivered without it, and waits out this pod's push binding as a pre-lease build's ("Two builds of the listener" above).
+  The pod stops delivering at once: from that read on, nothing its handler takes is forwarded or acked, so each such message comes back to the holder at its ack wait and is delivered there once, and the message in hand settles as normal, its ack included.
+  Its relays stop and are given `relayFormerSettle` (1 s) to settle the frames they forwarded, acks included, so the holder's relays, which restart each session's consumer at its ack floor, send none of them again;
+  then its subscription goes, which ends the holder's wait at its next poll (1 s), and the pod stands by under the lease.
+  A record that is not released counts as held at that first read, one whose holder died included: the pod stands by, and its lease takes the record once it has stood unchanged for the TTL, as any standby's does, with the settle hold an expired record asks for.
 
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
 for a host, its NATS authorization) before running a second pod of a machine id.

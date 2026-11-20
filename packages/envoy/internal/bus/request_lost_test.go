@@ -183,3 +183,75 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 		t.Fatalf("the read again after the reconnect = %v, answered %t; want the row", err, answered)
 	}
 }
+
+// roleReadBound is the bound the role read below is held to: well above the reconnect the row cuts
+// its connection into (nats.go dials the same server again after its ReconnectWait, 1 s), which
+// the row requires to take at most a quarter of it, so a read that fails before half of it failed
+// at the reconnect and not at its bound. roles.Buckets holds its reads to 2 s (readTimeout), which
+// leaves no such margin over that second.
+const roleReadBound = 8 * time.Second
+
+// A role read waited for through BoundedOnConnection, the wait roles.Buckets holds each of its
+// reads to (within), fails with ErrRequestLostWithConnection at the reconnect when its connection
+// is cut under it once its watch is taken, rather than waiting out its bound: Dispatch's outbox
+// makes two such reads to resolve a role's holder, and a hub link that drops under one cost the
+// resolution that read's whole bound. The read is the one Buckets makes - a direct get of the
+// role's claim on a handle opened on the client's connection - held to roleReadBound; the relay
+// drops its request, and the cut comes once that request is out, by when the watch, which starts
+// beside the call, has read the connection's reconnect count. The reconnect takes at most a
+// quarter of the bound, and the read fails before half of it.
+func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
+	const role = "reviewer"
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.DIRECT.GET.KV_"+RoleClaimBucket+".$KV."+RoleClaimBucket+"."+role)
+	client, err := Connect([]string{relay.URL()})
+	if err != nil {
+		t.Fatalf("connect through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js := client.JS()
+	t.Cleanup(func() { _ = js.DeleteKeyValue(RoleClaimBucket) })
+	if _, err := EnsureKeyValue(t.Context(), client.Connection(), js, &nats.KeyValueConfig{Bucket: RoleClaimBucket, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("create the role bucket: %v", err)
+	}
+	kv, err := OpenKeyValue(t.Context(), client.Connection(), js, RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket on the client's connection: %v", err)
+	}
+	if _, err := kv.Put(role, []byte(`{"holder_session_id":"ses_role_read_lost"}`)); err != nil {
+		t.Fatalf("write the claim the row reads: %v", err)
+	}
+	read := func() (nats.KeyValueEntry, bool, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), roleReadBound)
+		defer cancel()
+		return BoundedOnConnection(ctx, client, func() (nats.KeyValueEntry, error) { return kv.Get(role) })
+	}
+
+	relay.Arm(1)
+	began := time.Now()
+	answers := make(chan lostAnswer, 1)
+	go func() {
+		_, _, err := read()
+		answers <- lostAnswer{err: err, at: time.Now()}
+	}()
+	awaitRelaySent(t, relay, 1)
+	reconnected := cutAndAwaitReconnect(t, relay, client.Connection())
+	if took := reconnected.Sub(began); took > roleReadBound/4 {
+		t.Fatalf("the connection reconnected %s after the read began, past a quarter of its %s bound: the row cannot tell a read that failed at the reconnect from one that failed at its bound",
+			took.Round(time.Millisecond), roleReadBound)
+	}
+	var answer lostAnswer
+	select {
+	case answer = <-answers:
+	case <-time.After(roleReadBound + time.Second):
+		t.Fatalf("a role read whose connection was cut has not answered %s after it began", roleReadBound+time.Second)
+	}
+	if took := answer.at.Sub(began); !errors.Is(answer.err, ErrRequestLostWithConnection) || took >= roleReadBound/2 {
+		t.Fatalf("a role read whose connection was cut under it answered %v, %s after it began and %s after the reconnect; want %v before half its %s bound",
+			answer.err, took.Round(time.Millisecond), answer.at.Sub(reconnected).Round(time.Millisecond), ErrRequestLostWithConnection, roleReadBound)
+	}
+
+	// The read made again on the connection that came back is answered.
+	if entry, answered, err := read(); err != nil || !answered || entry.Revision() == 0 {
+		t.Fatalf("the role read again after the reconnect = %v, answered %t; want the claim", err, answered)
+	}
+}

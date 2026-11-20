@@ -22,9 +22,23 @@ import (
 // (lastSeenKey), the one record every listener pod answers LastSeen for a lapsed session from, a
 // pod that started after the session lapsed included. Without it the registry keeps last-seen
 // times in process (SessionRegistry.seenLocal): a listener whose NATS user lacks the grant for
-// that bucket runs so, and a restart forgets them.
+// that bucket runs so, and a restart forgets them, until it opens the bucket later
+// (SetLastSeenBucket).
 func WithLastSeenBucket(kv bus.KeyValue) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.seen = kv }
+}
+
+// SetLastSeenBucket gives a registry opened without the listener state bucket that bucket from
+// here on, as WithLastSeenBucket gives it at the open: the listener calls it once a pod that
+// started without the grant for the bucket opens it and joins its machine's delivery lease
+// (cmd/listener's joinDeliveryLease). From then on every registration write records the session's
+// last-seen time in the bucket, and LastSeen answers a lapsed session from the bucket's record
+// alone, as every other pod of the fleet does: the times this process kept before (seenLocal)
+// answer nothing more, and each goes at its own deadline.
+func (r *SessionRegistry) SetLastSeenBucket(kv bus.KeyValue) {
+	r.mu.Lock()
+	r.seen = kv
+	r.mu.Unlock()
 }
 
 // LastSeen is sessionID's last registration write, in Unix milliseconds, or 0 when there is none to
@@ -59,7 +73,7 @@ func (r *SessionRegistry) LastSeen(ctx context.Context, sessionID string) int64 
 	r.mu.RLock()
 	cs, cached := r.cache.Get(sessionID)
 	at := r.seenLocal[sessionID]
-	ttl, retention := r.ttl, r.retention()
+	ttl, retention, seen := r.ttl, r.retention(), r.seen
 	r.mu.RUnlock()
 	if cached && !cs.expired(now) {
 		return cs.entry.UpdatedAt
@@ -67,8 +81,8 @@ func (r *SessionRegistry) LastSeen(ctx context.Context, sessionID string) int64 
 	if ttl <= 0 {
 		return 0
 	}
-	if r.seen.Opened() {
-		stored, err := r.readSeen(ctx, sessionID)
+	if seen.Opened() {
+		stored, err := readSeen(ctx, seen, sessionID)
 		if err != nil {
 			r.logger().Warn("session last-seen unavailable: its record in the listener state bucket could not be read",
 				slog.String("session_id", sessionID), slog.String("key", lastSeenKey(sessionID)), slog.String("error", err.Error()))
@@ -123,7 +137,10 @@ func lastSeenKey(sessionID string) string {
 // A read that finds another revision, or no record, means a newer write replaced this one, and
 // that write records its own.
 func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessionID string, written uint64) {
-	if !r.seen.Opened() {
+	r.mu.RLock()
+	seen := r.seen
+	r.mu.RUnlock()
+	if !seen.Opened() {
 		return
 	}
 	stored, _, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
@@ -137,7 +154,7 @@ func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessi
 	}
 	value, err := json.Marshal(seenRecord{At: stored.Created().UnixMilli()})
 	if err == nil {
-		_, _, err = bus.BoundedOn(ctx, r.seen, func() (uint64, error) { return r.seen.Put(lastSeenKey(sessionID), value) })
+		_, _, err = bus.BoundedOn(ctx, seen, func() (uint64, error) { return seen.Put(lastSeenKey(sessionID), value) })
 	}
 	if err != nil {
 		r.logger().Warn("session last-seen not recorded in the listener state bucket",
@@ -145,13 +162,13 @@ func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessi
 	}
 }
 
-// readSeen reads sessionID's last-seen time, in Unix milliseconds, from its record in the listener
-// state bucket: 0 when there is none. The read waits no longer than ctx (bus.BoundedOn), so a route
-// that answers a caller is held no longer than its own budget by a bucket that does not answer;
-// a read ctx ended is an error naming the key, which the caller reports as no time.
-func (r *SessionRegistry) readSeen(ctx context.Context, sessionID string) (int64, error) {
+// readSeen reads sessionID's last-seen time, in Unix milliseconds, from its record in seen, the
+// listener state bucket: 0 when there is none. The read waits no longer than ctx (bus.BoundedOn),
+// so a route that answers a caller is held no longer than its own budget by a bucket that does not
+// answer; a read ctx ended is an error naming the key, which the caller reports as no time.
+func readSeen(ctx context.Context, seen bus.KeyValue, sessionID string) (int64, error) {
 	key := lastSeenKey(sessionID)
-	entry, answered, err := bus.BoundedOn(ctx, r.seen, func() (nats.KeyValueEntry, error) { return r.seen.Get(key) })
+	entry, answered, err := bus.BoundedOn(ctx, seen, func() (nats.KeyValueEntry, error) { return seen.Get(key) })
 	if !answered {
 		return 0, fmt.Errorf("read %s from the listener state bucket: %w", key, err)
 	}

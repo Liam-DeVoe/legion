@@ -275,6 +275,25 @@ func (l *lease) Start(ctx context.Context) {
 	}()
 }
 
+// Contend runs the lease's rounds (step) on the caller's goroutine, before Start, until this
+// process holds the record or has read a record another process holds, or ctx ends, and returns
+// the lease then: the try of a pod that joins its machine's lease late, once its NATS grant lets
+// it open the listener state bucket (joinDeliveryLease), which takes the lease before it gives up
+// anything it delivers without one. A record that is absent or released is taken at once (poll);
+// one that is not released is another process's, read and left, and Start's loop takes it only
+// once it has stood unchanged for a full ttl, as any standby's does. A round whose read failed, or
+// whose take another write beat, runs again after the wait it returned. The rounds' state is the
+// loop's own (step), so Contend runs before Start and never beside it.
+func (l *lease) Contend(ctx context.Context) leaseStatus {
+	for {
+		wait := l.step()
+		status := l.Status()
+		if status.Holding || status.ActiveInstance != "" || waitUnlessDone(ctx, wait) != nil {
+			return status
+		}
+	}
+}
+
 // Changes signals that the lease was acquired or lost. It holds at most one signal, so changes
 // that come faster than the reader collapse into one: the reader reads Status after each signal
 // and acts on the state there (a Term that differs from the one it acted on is a new

@@ -270,5 +270,10 @@
     "sessionID": "ses_a",
     "topic": "notifications.envoy.resume.>",
     "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.takeover.reviewer.ses_b.attempt1",
+    "want": true
   }
 ]

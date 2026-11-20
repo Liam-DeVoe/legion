@@ -4,7 +4,8 @@
 // reported is not reported twice. Every pod of one machine shares one ledger (KV, over the listener
 // state bucket), so a pod that takes the delivery lease over does not forward to a session again
 // what the pod before it delivered. A listener that cannot open that bucket keeps its ledger in
-// process (Memory), as one listener process alone always did.
+// process (Memory), as one listener process alone always did, and one that opens it later, once its
+// grant lets it, moves to the shared ledger then (Joining).
 package dedupe
 
 import "time"
@@ -97,7 +98,8 @@ type Attempt struct {
 }
 
 // Ledger is the delivery ledger the listener's delivery paths ask before they forward a role-lane
-// message to a session or record a copy it read itself. KV and Memory are its two implementations.
+// message to a session or record a copy it read itself. KV and Memory are its two implementations,
+// and Joining moves from the one to the other.
 type Ledger interface {
 	// Attempt claims (dedupeKey, sessionID) for a delivery by this process, or says why not.
 	// An error means the ledger could not be read or written.
@@ -118,4 +120,5 @@ type Ledger interface {
 var (
 	_ Ledger = (*KV)(nil)
 	_ Ledger = (*Memory)(nil)
+	_ Ledger = (*Joining)(nil)
 )

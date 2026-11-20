@@ -759,12 +759,16 @@ type mpNATSSession struct {
 	failing    map[string]bool
 	failed     map[string]int
 	unexpected []string
-	stopping   chan struct{}
+	// withheld holds, per session, the next frame, which is answered `received` at once and never
+	// `done`, nor recorded taken (withhold): a plugin that took the frame and never wrote it. The
+	// channel closes as the frame arrives. Unlike a gate it holds up no other frame.
+	withheld map[string]chan struct{}
+	stopping chan struct{}
 }
 
 func mpStartNATSSessions(t *testing.T, uri string) *mpNATSSession {
 	t.Helper()
-	serving := &mpNATSSession{journal: mpJournalOf(t), holds: map[string]chan struct{}{}, gates: map[string]mpFrameGate{}, receipts: map[string]mpFrameGate{}, failing: map[string]bool{}, failed: map[string]int{}, stopping: make(chan struct{})}
+	serving := &mpNATSSession{journal: mpJournalOf(t), holds: map[string]chan struct{}{}, gates: map[string]mpFrameGate{}, receipts: map[string]mpFrameGate{}, failing: map[string]bool{}, failed: map[string]int{}, withheld: map[string]chan struct{}{}, stopping: make(chan struct{})}
 	conn, err := natsgo.Connect(uri, natsgo.Name("mp-sessions"))
 	if err != nil {
 		t.Fatalf("connect the row's sessions to NATS: %v", err)
@@ -810,11 +814,19 @@ func (s *mpNATSSession) receive(msg *natsgo.Msg) {
 	delete(s.gates, sessionID)
 	receipt, received := s.receipts[sessionID]
 	delete(s.receipts, sessionID)
+	withheld, withholding := s.withheld[sessionID]
+	delete(s.withheld, sessionID)
 	failing := s.failing[sessionID]
 	if failing && !hold {
 		s.failed[sessionID]++
 	}
 	s.mu.Unlock()
+	if withholding {
+		s.reply(msg, relayReplyReceived)
+		s.journal.receipt(mpReceipt{session: sessionID, event: event, at: time.Now(), answer: mpFrameHeld})
+		close(withheld)
+		return
+	}
 	if received {
 		s.reply(msg, relayReplyReceived)
 		close(receipt.arrived)
@@ -852,6 +864,17 @@ func (s *mpNATSSession) receive(msg *natsgo.Msg) {
 	taken := time.Now()
 	s.took(sessionID, event, taken)
 	s.journal.receipt(mpReceipt{session: sessionID, event: event, at: taken, answer: mpFrameTaken})
+}
+
+// withhold has the next frame to sessionID answered `received` and never `done`, and not recorded
+// taken: the relay that sent it keeps it unacknowledged on the session's consumer, at its floor,
+// with no pause, since the frame was answered. The returned channel closes when it arrives.
+func (s *mpNATSSession) withhold(sessionID string) <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	arrived := make(chan struct{})
+	s.withheld[sessionID] = arrived
+	return arrived
 }
 
 // reply answers a frame with one word, as a session's plugin does.

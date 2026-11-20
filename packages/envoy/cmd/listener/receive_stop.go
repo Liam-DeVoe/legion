@@ -29,12 +29,13 @@ func (r *durableReceiver) end(ctx context.Context) {
 	r.subscribed.Store(nil)
 	r.mu.Unlock()
 	r.relays.setOwned(nil)
+	l := r.lease.Load()
 	switch {
 	case ctx.Err() == nil:
 		r.endLost(ctx, t)
-	case r.lease == nil:
+	case l == nil:
 		r.endWithoutLease(t)
-	case r.lease.Holding() && r.lease.Status().Term == t.leaseTerm:
+	case l.Holding() && l.Status().Term == t.leaseTerm:
 		r.handBack(t)
 	default:
 		r.endLost(ctx, t)
@@ -130,13 +131,13 @@ func (r *durableReceiver) handBack(t *receiveTerm) {
 	handled := r.settleInHand(t)
 	deadline := time.Now().Add(r.timing.lingerMax)
 	t.handBack(r.timing.handBackDelay)
-	r.lease.Unsettle(t.leaseTerm)
+	r.lease.Load().Unsettle(t.leaseTerm)
 	r.mu.Lock()
 	conn := t.conn
 	r.mu.Unlock()
 	_ = conn.FlushTimeout(time.Second)
 	releaseCtx, cancel := context.WithTimeout(context.Background(), handBackReleaseWait)
-	err := r.lease.Release(releaseCtx)
+	err := r.lease.Load().Release(releaseCtx)
 	cancel()
 	if err != nil {
 		r.logger.Warn("listener lease not released; a standby takes it once it expires", slog.String("error", err.Error()))
@@ -185,7 +186,7 @@ func (r *durableReceiver) markHandBack(end lingerEnd, drained, handled bool) (bo
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), listenerStateRequestWait)
 	defer cancel()
-	marked, err := r.lease.MarkHandBack(ctx)
+	marked, err := r.lease.Load().MarkHandBack(ctx)
 	switch {
 	case err != nil:
 		r.logger.Warn("clean hand-back not marked; the next holder settles for an ack wait",
@@ -242,7 +243,7 @@ func (r *durableReceiver) linger(deadline time.Time) (time.Duration, lingerEnd) 
 	defer poll.Stop()
 	untaken := true
 	for {
-		taken, receiving, err := r.lease.Successor()
+		taken, receiving, err := r.lease.Load().Successor()
 		switch {
 		case err != nil:
 			untaken = false

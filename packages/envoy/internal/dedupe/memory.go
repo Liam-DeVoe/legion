@@ -41,15 +41,32 @@ func (m *Memory) Attempt(dedupeKey, sessionID string) (Attempt, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	if record, ok := m.records[pair]; ok && m.live(record, now) {
-		if record.delivered {
-			return Attempt{Verdict: Delivered, pair: pair}, nil
-		}
-		return Attempt{Verdict: InFlight, pair: pair}, nil
+	if attempt, held := m.heldLocked(pair, now); held {
+		return attempt, nil
 	}
 	m.sweepLocked(now)
 	m.records[pair] = memoryRecord{at: now}
 	return Attempt{Verdict: Proceed, pair: pair}, nil
+}
+
+// held answers the pair from the record Memory holds of it, without writing one: Delivered or
+// InFlight as Attempt would answer, and false when no record of the pair still stops a delivery
+// (live). Joining asks it before the KV ledger once it has joined.
+func (m *Memory) held(pair Key) (Attempt, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.heldLocked(pair, m.now())
+}
+
+func (m *Memory) heldLocked(pair Key, now time.Time) (Attempt, bool) {
+	record, ok := m.records[pair]
+	if !ok || !m.live(record, now) {
+		return Attempt{}, false
+	}
+	if record.delivered {
+		return Attempt{Verdict: Delivered, pair: pair}, true
+	}
+	return Attempt{Verdict: InFlight, pair: pair}, true
 }
 
 // Record marks the attempt's pair delivered.

@@ -120,18 +120,34 @@ type Granted struct {
 // with no credential.
 func StartGranted(t testing.TB, users ...GrantedUser) *Granted {
 	t.Helper()
-	entries := []string{fmt.Sprintf("{ user: %q, password: %q }", grantedAdmin, grantedAdmin)}
-	for _, user := range users {
-		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
-			user.Public, grantRulesConfig(user.Grant.Publish), grantRulesConfig(user.Grant.Subscribe)))
-	}
-	server, uri := StartConfig(t, nkeyConfig(strings.Join(entries, ", ")), []string{"-js"}, false)
+	server, uri := StartConfig(t, grantedConfig(users), []string{"-js"}, false)
 	admin, err := url.Parse(uri)
 	if err != nil {
 		t.Fatalf("parse the server's URL %s: %v", uri, err)
 	}
 	admin.User = url.UserPassword(grantedAdmin, grantedAdmin)
 	return &Granted{Server: server, AdminURL: admin.String()}
+}
+
+// Regrant makes users the server's users, each holding exactly its grant, beside the admin, and
+// has the server reload its configuration, as an operator who changes a user's grant does: the
+// server keeps its connections and applies each new grant to them (Server.Reload). It fails the
+// test, with the server's reason, when the server refused the configuration.
+func (g *Granted) Regrant(t testing.TB, users ...GrantedUser) {
+	t.Helper()
+	if err := g.Reload(t, grantedConfig(users)); err != nil {
+		t.Fatalf("NATS refused the new grants: %v", err)
+	}
+}
+
+// grantedConfig is the configuration of a StartGranted server whose users are users and the admin.
+func grantedConfig(users []GrantedUser) string {
+	entries := []string{fmt.Sprintf("{ user: %q, password: %q }", grantedAdmin, grantedAdmin)}
+	for _, user := range users {
+		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+			user.Public, grantRulesConfig(user.Grant.Publish), grantRulesConfig(user.Grant.Subscribe)))
+	}
+	return nkeyConfig(strings.Join(entries, ", "))
 }
 
 // grantRulesConfig is rules as a nats-server configuration's permissions of one direction.

@@ -488,3 +488,48 @@ func TestKV_ABucketThatDoesNotAnswerIsAnError(t *testing.T) {
 		t.Fatalf("Clear on a bucket that times out: %v, want nats.ErrTimeout", err)
 	}
 }
+
+// A listener that joins the machine's lease after it started without the bucket keeps every pair
+// it forwarded, attempted or kept in process before the join out of a second delivery for as long
+// as that record stops one (Joining): a pair its Memory delivered, or has an attempt of in flight,
+// answers from the Memory once it has joined, and the KV ledger is not written for it; an attempt
+// the Memory made before the join settles in the Memory after it, and a pair the Memory holds
+// nothing of is the KV ledger's, which every other boot of the machine reads. Without the Memory's
+// answer the delivered pair would Proceed on the KV ledger, which holds no record of it.
+func TestJoining_APairDeliveredBeforeTheJoinIsNotDeliveredAgainAfterIt(t *testing.T) {
+	kv := openTestBucket(t)
+	clock := newTestClock()
+	ledger := NewJoining(testTakeoverAfter)
+	ledger.memory.now = clock.Now
+
+	if err := ledger.Record(mustAttempt(t, ledger, "publish.delivered", "ses_target", Proceed)); err != nil {
+		t.Fatalf("Record before the join: %v", err)
+	}
+	inFlight := mustAttempt(t, ledger, "publish.in_flight", "ses_target", Proceed)
+
+	joined := newTestKV(kv, "boot-a", clock)
+	ledger.Join(joined)
+	mustAttempt(t, ledger, "publish.delivered", "ses_target", Delivered)
+	mustAttempt(t, ledger, "publish.in_flight", "ses_target", InFlight)
+	for _, key := range []string{"publish.delivered", "publish.in_flight"} {
+		if _, err := kv.Get(joined.Key(key, "ses_target")); !errors.Is(err, nats.ErrKeyNotFound) {
+			t.Fatalf("the KV ledger holds a record of %s after the join: %v, want none", key, err)
+		}
+	}
+	if err := ledger.Record(inFlight); err != nil {
+		t.Fatalf("Record of the attempt made before the join: %v", err)
+	}
+	mustAttempt(t, ledger, "publish.in_flight", "ses_target", Delivered)
+
+	fresh := mustAttempt(t, ledger, "publish.fresh", "ses_target", Proceed)
+	if record := readRecord(t, kv, joined.Key("publish.fresh", "ses_target")); record.State != stateAttempted || record.Boot != "boot-a" {
+		t.Fatalf("record of a pair first attempted after the join = %+v, want attempted by boot-a", record)
+	}
+	if err := ledger.Record(fresh); err != nil {
+		t.Fatalf("Record after the join: %v", err)
+	}
+	mustAttempt(t, newTestKV(kv, "boot-b", clock), "publish.fresh", "ses_target", Delivered)
+
+	clock.Advance(DeliveredAge + time.Second)
+	mustAttempt(t, ledger, "publish.delivered", "ses_target", Proceed)
+}

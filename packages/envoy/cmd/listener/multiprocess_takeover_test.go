@@ -2,7 +2,8 @@
 
 // The take-over rows of the two-pod suite (multiprocess_harness_test.go): which of a machine's two
 // processes delivers across a reconnect, a short drop, a start together, a SIGKILL, a node loss, a
-// graceful stop and a NATS restart, and what each answers meanwhile.
+// graceful stop, a NATS restart and a grant that carries the listener state bucket only after a
+// pod started, and what each answers meanwhile.
 
 package main
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -942,4 +944,475 @@ func TestTwoPodsReceiveConnectionLostWhileItsReconnectHooksHangHandsOverWithin15
 	serving.requireOrder(t, messages)
 	t.Logf("%s took the lease %s after the second cut, with %s's rewatch hanging; %d messages after it", b.instance,
 		taken.Round(time.Millisecond), a.instance, len(messages))
+}
+
+// mpLateGrant is a row's NATS server where a pod of mpMachine connects as one of two nkey users:
+// the late user, whose grant is the listener's (testnats.ListenerGrant) without the listener state
+// bucket, as a hub's auth.conf from before that bucket grants it, and the granted user, holding the
+// whole grant. grant gives the late user the whole grant by a reload that keeps every connection,
+// as an operator applying the auth.conf that carries the bucket does. mpStartPod connects a pod as
+// the late user, and one started with grantedEnv as the granted one.
+type mpLateGrant struct {
+	server      *testnats.Granted
+	uri         string
+	whole       testnats.Grant
+	late        string
+	granted     string
+	grantedSeed string
+}
+
+func mpStartLateGrant(t *testing.T) *mpLateGrant {
+	t.Helper()
+	whole := testnats.ListenerGrant(t, mpMachine)
+	lateSeed, late := testnats.User(t)
+	grantedSeed, granted := testnats.User(t)
+	server := testnats.StartGranted(t,
+		testnats.GrantedUser{Public: late, Grant: mpWithoutListenerState(whole)},
+		testnats.GrantedUser{Public: granted, Grant: whole})
+	mpSeeds.Store(server.AdminURL, lateSeed)
+	t.Cleanup(func() { mpSeeds.Delete(server.AdminURL) })
+	return &mpLateGrant{server: server, uri: server.AdminURL, whole: whole, late: late, granted: granted, grantedSeed: grantedSeed}
+}
+
+// grant gives the late user the whole grant and returns the instant just before the reload began.
+func (g *mpLateGrant) grant(t *testing.T) time.Time {
+	t.Helper()
+	at := time.Now()
+	g.server.Regrant(t,
+		testnats.GrantedUser{Public: g.late, Grant: g.whole},
+		testnats.GrantedUser{Public: g.granted, Grant: g.whole})
+	return at
+}
+
+// grantedEnv connects a pod as the granted user: mpStartPodAt appends it after the late user's seed,
+// and the last of two entries for one variable is the one a process gets.
+func (g *mpLateGrant) grantedEnv() string { return "NATS_NKEY_SEED=" + g.grantedSeed }
+
+// mpWithoutListenerState is grant without a subject of the listener state bucket.
+func mpWithoutListenerState(grant testnats.Grant) testnats.Grant {
+	grant.Publish.Allow = slices.DeleteFunc(slices.Clone(grant.Publish.Allow), func(subject string) bool {
+		return strings.Contains(subject, "KV_"+bus.ListenerStateBucket) || strings.Contains(subject, "$KV."+bus.ListenerStateBucket+".")
+	})
+	return grant
+}
+
+// mpRecords is every record of a pod's output whose msg is msg, decoded.
+func mpRecords(output, msg string) []map[string]any {
+	var records []map[string]any
+	for line := range strings.SplitSeq(output, "\n") {
+		if !strings.Contains(line, msg) {
+			continue
+		}
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == msg {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+// mpRecordTime is when a pod logged record.
+func mpRecordTime(t *testing.T, record map[string]any) time.Time {
+	t.Helper()
+	text, _ := record["time"].(string)
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		t.Fatalf("read the time of %v: %v", record, err)
+	}
+	return at
+}
+
+// mpJoinTry bounds a try of the listener state bucket the grant refused that was in flight when the
+// grant came: the open waits listenerStateOpenSends of listenerStateRequestWait at most, and a
+// second for the rest of it.
+const mpJoinTry = listenerStateOpenSends*listenerStateRequestWait + time.Second
+
+// mpJoined waits for pod to log line, one of the lines a pod that delivered without a lease logs as
+// it joins the lease (leaseJoinedHolderLine, leaseJoinedStandbyLine), once the grant applied at
+// granted lets it open the listener state bucket. It returns when the pod logged it, and the
+// retry_in of the last refusal of the bucket the pod logged before it: the wait between the pod's
+// tries that the try which opened the bucket came at the end of. The join must come within that
+// wait and one try of the grant.
+func mpJoined(t *testing.T, pod *mpPod, line string, granted time.Time) time.Time {
+	t.Helper()
+	var joined time.Time
+	mpEventually(t, durableRefusedRetryCap+mpJoinTry, pod.instance+" to join the lease once its grant carried the listener state bucket", func() bool {
+		records := mpRecords(pod.Output.String(), line)
+		if len(records) == 0 {
+			return false
+		}
+		joined = mpRecordTime(t, records[0])
+		return true
+	})
+	backoff := durableBindPoll
+	for _, record := range mpRecords(pod.Output.String(), listenerStateRefusedLine) {
+		if mpRecordTime(t, record).After(joined) {
+			break
+		}
+		wait, _ := record["retry_in"].(string)
+		parsed, err := time.ParseDuration(wait)
+		if err != nil {
+			t.Fatalf("read the retry_in of %v: %v", record, err)
+		}
+		backoff = parsed
+	}
+	if took := joined.Sub(granted); took > backoff+mpJoinTry {
+		t.Fatalf("%s joined the lease %s after its grant carried the bucket, past the %s wait it was in and a try's %s", pod.instance,
+			took.Round(time.Millisecond), backoff, mpJoinTry)
+	}
+	t.Logf("%s joined the lease %s after the grant, out of a %s wait", pod.instance, joined.Sub(granted).Round(time.Millisecond), backoff)
+	return joined
+}
+
+// mpLateGrantRow is a row whose first pod, pod-a, started while its grant lacked the listener state
+// bucket (mpLateGrant): it delivers without a lease, /healthz says so, four sessions are registered
+// through it on consumer delivery, and a message is published every 100 ms to their inboxes, in
+// turn, until stop.
+type mpLateGrantRow struct {
+	grant     *mpLateGrant
+	binary    string
+	a         *mpPod
+	serving   *mpNATSSession
+	sessions  []string
+	publisher *mpPublisher
+	stop      func()
+}
+
+// mpStartLateGrantRow starts a row's pod-a without the grant through start (mpStartPod, or
+// mpStartPodBehindLanes for a row that fails one of its connections), and waits until it has tried
+// the bucket again at least once, so the wait between its tries is in its log.
+func mpStartLateGrantRow(t *testing.T, name string, start func(t *testing.T, binary, natsURL, instance string, env ...string) *mpPod) *mpLateGrantRow {
+	t.Helper()
+	grant := mpStartLateGrant(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	a := start(t, binary, grant.uri, "pod-a")
+	mpWaitActive(t, a, 30*time.Second)
+	if _, body := a.health(); body["lease"] != listenerLeaseUnavailable {
+		t.Fatalf("pod-a's /healthz without the grant names lease %v, want %q", body["lease"], listenerLeaseUnavailable)
+	}
+	serving := mpStartNATSSessions(t, grant.uri)
+	sessions := []string{"ses_mp_" + name + "_one", "ses_mp_" + name + "_two", "ses_mp_" + name + "_three", "ses_mp_" + name + "_four"}
+	for _, sessionID := range sessions {
+		a.registerNATS(t, serving, sessionID)
+	}
+	publisher := mpConnectPublisher(t, grant.uri)
+	stop := publisher.every(100*time.Millisecond, sessions...)
+	mpEventually(t, 10*time.Second, "the first 20 messages to reach their sessions", func() bool {
+		sent := publisher.all()
+		return len(sent) >= 20 && serving.tookAll(sent[:20])
+	})
+	mpEventually(t, durableRefusedRetryCap+mpJoinTry, "pod-a to try the listener state bucket again", func() bool {
+		return len(mpRecords(a.Output.String(), listenerStateRefusedLine)) > 0
+	})
+	return &mpLateGrantRow{grant: grant, binary: binary, a: a, serving: serving, sessions: sessions, publisher: publisher, stop: stop}
+}
+
+// mpRelayed fails the row, naming why, when pod logged its session relays changing to relaying
+// want: the relays log each change of whether they follow a receive term.
+func mpRelayed(t *testing.T, pod *mpPod, want bool, why string) {
+	t.Helper()
+	for _, record := range mpRecords(pod.Output.String(), "session relays follow the receive term") {
+		if record["relaying"] == want {
+			t.Fatalf("%s %s: %v", pod.instance, why, record)
+		}
+	}
+}
+
+// mpRelayTermRestartLine is the line a relay logs when the term its pull was held to ended and its
+// pod serves a term again, so it restarts its session's consumer at the ack floor
+// (sessionRelays.relayNATS).
+const mpRelayTermRestartLine = "session relay starts again at the ack floor with a new pull: the term its pull was held to ended, and this task serves a term again"
+
+// A pod started before the hub's grant carried the listener state bucket delivers without a lease,
+// tries the bucket again, and once an operator applies the grant joins the lease without a
+// restart: within the wait it was in between two tries, and one try, of the grant, it takes the
+// absent record and keeps the subscription it received on, its queue and its relays as the
+// holder's. /healthz drops its lease field and names it active, it subscribes to the durable once
+// in all, its relays never stop nor restart a session's consumer, and every message published
+// before, during and after the join
+// reaches its session exactly once and within 3 s of its publish. Before, the pod opened the
+// bucket once, at its start, and ran without a lease until it was restarted; a pod that let its
+// subscription go before it took the lease would leave each session its relays' stop and restart
+// as a gap.
+func TestTwoPodsLeaseTakenOnALateGrantKeepsTheSubscription(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_take", mpStartPod)
+	granted := row.grant.grant(t)
+	mpJoined(t, row.a, leaseJoinedHolderLine, granted)
+	mpEventually(t, 5*time.Second, "pod-a's /healthz to drop its lease field and name it active", func() bool {
+		status, body := row.a.health()
+		_, named := body["lease"]
+		return status == http.StatusOK && body["status"] == "healthy" && body["role"] == "active" && !named
+	})
+	time.Sleep(5 * time.Second) // publish on past the join
+	row.stop()
+	if subscribes := len(mpRecords(row.a.Output.String(), "durable receiving")); subscribes != 1 {
+		t.Fatalf("pod-a subscribed to the durable %d times across the join, want once: it let its subscription go", subscribes)
+	}
+	mpRelayed(t, row.a, false, "stopped its session relays across the join")
+	if restarts := len(mpRecords(row.a.Output.String(), mpRelayTermRestartLine)); restarts != 0 {
+		t.Fatalf("pod-a's session relays restarted %d consumers at their ack floor across the join, want none: their term ended under them", restarts)
+	}
+
+	messages := row.publisher.all()
+	row.serving.awaitAll(t, messages, 30*time.Second)
+	time.Sleep(mpQuiet)
+	row.serving.requireOnce(t, messages)
+	row.serving.requireWithin(t, messages, 3*time.Second, time.Time{})
+}
+
+// Once a pod that started without the grant has joined the lease and holds it, a pod started after
+// that stands by: /healthz names it a standby throughout, it never subscribes to the durable nor
+// relays a session, and the first pod goes on delivering every message exactly once.
+func TestTwoPodsLeaseTakenOnALateGrantLeavesALaterPodStandingBy(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_standby", mpStartPod)
+	granted := row.grant.grant(t)
+	mpJoined(t, row.a, leaseJoinedHolderLine, granted)
+	b := mpStartPod(t, row.binary, row.grant.uri, "pod-b")
+	mpWaitStandby(t, b, 30*time.Second)
+	for watched := time.Now(); time.Since(watched) < 5*time.Second; time.Sleep(mpPoll) {
+		if !b.standby() || !row.a.active() {
+			status, body := b.health()
+			t.Fatalf("with pod-a holding the lease it joined, pod-b's /healthz is %d %v and pod-a active is %v, want pod-b a standby and pod-a active", status, body, row.a.active())
+		}
+	}
+	row.stop()
+	messages := row.publisher.all()
+	row.serving.awaitAll(t, messages, 30*time.Second)
+	time.Sleep(mpQuiet)
+	row.serving.requireOnce(t, messages)
+	if subscribes := len(mpRecords(b.Output.String(), "durable receiving")); subscribes != 0 {
+		t.Fatalf("pod-b subscribed to the durable %d times beside pod-a's lease", subscribes)
+	}
+	mpRelayed(t, b, true, "relayed its machine's sessions beside pod-a's lease")
+}
+
+// A pod started before its grant carried the listener state bucket delivers without a lease, and a
+// pod started after, under a grant that carries it, takes the absent lease and waits out the first
+// pod's push binding as a pre-lease build's. Once the first pod's grant carries the bucket too, it
+// reads that holder's record: it stops delivering at once, its relays stop and settle, its
+// subscription goes and it stands by, and the holder's wait for the binding ends at its next poll,
+// so delivery passes to the holder within relayFormerSettle and a poll of the join, the join itself
+// coming within the first pod's wait and one try of the grant. Every message reaches its session
+// exactly once. Before, the first pod ran without a lease for good and the holder never received.
+func TestTwoPodsLeaseHeldElsewhereOnALateGrantHandsDeliveryToItsHolder(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_yield", mpStartPod)
+	b := mpStartLateGrantHolder(t, row)
+	granted := row.grant.grant(t)
+	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
+	handOver := relayFormerSettle + durableBindPoll + time.Second
+	receiving := mpReceiving(t, b, handOver+5*time.Second)
+	if handed := receiving.Sub(joined); handed > handOver {
+		t.Fatalf("pod-b received the durable %s after pod-a joined the lease, past relayFormerSettle and a poll (%s)", handed.Round(time.Millisecond), handOver)
+	}
+	mpWaitActive(t, b, 10*time.Second)
+	mpWaitStandby(t, row.a, 10*time.Second)
+	time.Sleep(5 * time.Second) // publish on past the hand-over
+	row.stop()
+
+	messages := row.publisher.all()
+	row.serving.awaitAll(t, messages, 30*time.Second)
+	time.Sleep(mpQuiet)
+	row.serving.requireOnce(t, messages)
+	t.Logf("delivery passed to pod-b %s after pod-a joined the lease; %d messages, each taken once", receiving.Sub(joined).Round(time.Millisecond), len(messages))
+}
+
+// mpStartLateGrantHolder starts the row's pod-b under the whole grant (grantedEnv) and waits until
+// it has taken the absent lease and waits out pod-a's push binding as a pre-lease build's.
+func mpStartLateGrantHolder(t *testing.T, row *mpLateGrantRow) *mpPod {
+	t.Helper()
+	return mpStartLateGrantHolderWith(t, row, mpStartPod)
+}
+
+// mpStartLateGrantHolderWith is mpStartLateGrantHolder through start.
+func mpStartLateGrantHolderWith(t *testing.T, row *mpLateGrantRow, start func(t *testing.T, binary, natsURL, instance string, env ...string) *mpPod) *mpPod {
+	t.Helper()
+	b := start(t, row.binary, row.grant.uri, "pod-b", row.grant.grantedEnv())
+	mpEventually(t, 60*time.Second, "pod-b to take the lease and wait out pod-a's push binding", func() bool {
+		return len(mpRecords(b.Output.String(), "durable is push-bound by a subscriber without the lease; waiting for its binding to end")) > 0
+	})
+	return b
+}
+
+// mpReceiving waits, within, for pod to subscribe to the durable, and returns when it logged that.
+func mpReceiving(t *testing.T, pod *mpPod, within time.Duration) time.Time {
+	t.Helper()
+	var receiving time.Time
+	mpEventually(t, within, pod.instance+" to receive the durable", func() bool {
+		records := mpRecords(pod.Output.String(), "durable receiving")
+		if len(records) == 0 {
+			return false
+		}
+		receiving = mpRecordTime(t, records[0])
+		return true
+	})
+	return receiving
+}
+
+// mpDecisionGrace is how long after a pod's join decision a message may still have been taken by
+// its relays: the relay loop stops them on its own goroutine a moment after the decision
+// (sessionRelays.setOwned), so a message published in that moment can be one of theirs.
+const mpDecisionGrace = 250 * time.Millisecond
+
+// The rule a pod that delivered without a lease stops forwarding by once its join reads another
+// pod's record (durableReceiver.joinTerm): from that decision on, nothing it takes is forwarded or
+// acked. One frame to each session is in the first pod's hands across the decision - the session
+// answers it received and never done (mpNATSSession.withhold), so it stays unacknowledged
+// at its consumer's floor - and the holder therefore restarts each consumer at that floor
+// (bus.SessionConsumers.KeepListed keeps none with a message unacknowledged), sending again every
+// frame above it. A frame the session answered above a held one before the decision may so come
+// twice: the repeat the README's "When a session can see a message twice" states
+// (sessionRelays.settleStoppedFrames). One the first pod forwarded after its decision would come
+// twice as well, so every message published from mpDecisionGrace after the decision on reaches its
+// session exactly once, and none more than twice.
+func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_fence", mpStartPod)
+	b := mpStartLateGrantHolder(t, row)
+	var held []<-chan struct{}
+	for _, sessionID := range row.sessions {
+		held = append(held, row.serving.withhold(sessionID))
+	}
+	for index, arrived := range held {
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no frame to %s arrived to hold within 10 s", row.sessions[index])
+		}
+	}
+	granted := row.grant.grant(t)
+	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
+	mpReceiving(t, b, 30*time.Second)
+	mpWaitActive(t, b, 10*time.Second)
+	time.Sleep(5 * time.Second) // publish on past the hand-over
+	row.stop()
+
+	messages := row.publisher.all()
+	row.serving.awaitAll(t, messages, 30*time.Second)
+	time.Sleep(mpQuiet)
+	counts := row.serving.counts()
+	for _, m := range messages {
+		if counts[m.event] > 2 {
+			t.Fatalf("%s to %s reached it %d times, want at most twice", m.event, m.session, counts[m.event])
+		}
+	}
+	after := row.publisher.since(joined.Add(mpDecisionGrace))
+	row.serving.requireOnce(t, after)
+	t.Logf("%d messages published past pod-a's decision, each taken once", len(after))
+}
+
+// mpRoleLaneConnection is the client name of a pod's role lane connection (bus.ConnectRoleLane),
+// which an mpLaneRelay drops by.
+const mpRoleLaneConnection = "envoy-role-lane"
+
+// A role message the first pod forwarded while it delivered without a lease is recorded in its own
+// ledger alone, which the machine's shared one does not see after the join (dedupe.Joining), so a
+// sender that sends it again once the holder of the lease is the only role-lane member left has
+// the holder forward it again with no pair in the shared ledger. The stream stores that forward
+// once all the same: each forward to the role's holder carries one Nats-Msg-Id however often it is
+// sent (roleForward.msgID, bus.ForwardMsgID), within the stream's duplicate window
+// (streamDuplicateWindow, 72 h), so the holder's session takes the message once. Role messages are
+// not stored (the stream's subjects capture no notifications.role.>), so a sender's repeat is the
+// repeat a role message meets; the row puts each send on one pod's role lane by dropping the
+// other's (mpLaneRelay.drop).
+func TestTwoPodsLeaseHeldElsewhereOnALateGrantStoresARepeatedRoleForwardOnce(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_role", mpStartPodBehindLanes)
+	holder, role := row.sessions[0], "reviewer"
+	row.a.setRole(t, holder, role)
+	b := mpStartLateGrantHolderWith(t, row, mpStartPodBehindLanes)
+	event := "evt-mp-role-repeat"
+	item := contracts.Envelope{
+		EventID:        event,
+		Source:         "agent",
+		SourceEventID:  event,
+		Topic:          contracts.RoleTopicPrefix + role,
+		DedupeKey:      "multiprocess." + event,
+		IssuedAt:       contracts.NowMillis(),
+		PayloadSummary: "multiprocess role message mp-event=" + event,
+		TraceID:        "trace-" + event,
+	}
+	forwarded := func(pod *mpPod) bool {
+		for _, record := range mpRecords(pod.Output.String(), "listener role forwarded") {
+			if record["event_id"] == event {
+				return true
+			}
+		}
+		return false
+	}
+
+	healB := b.lanes.drop(mpRoleLaneConnection)
+	time.Sleep(time.Second) // the server drops pod-b's role-lane member with its connection
+	if err := row.publisher.client.Publish(item); err != nil {
+		t.Fatalf("send the role message: %v", err)
+	}
+	mpEventually(t, 10*time.Second, "pod-a's role lane to forward the role message and its holder to take it", func() bool {
+		return forwarded(row.a) && row.serving.counts()[event] == 1
+	})
+	healB()
+
+	granted := row.grant.grant(t)
+	mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
+	mpReceiving(t, b, 30*time.Second)
+	mpWaitActive(t, b, 30*time.Second)
+	healA := row.a.lanes.drop(mpRoleLaneConnection)
+	defer healA()
+	time.Sleep(time.Second) // the server drops pod-a's role-lane member with its connection
+	if err := row.publisher.client.Publish(item); err != nil {
+		t.Fatalf("send the role message again: %v", err)
+	}
+	mpEventually(t, 10*time.Second, "pod-b's role lane to forward the role message sent again", func() bool { return forwarded(b) })
+	row.stop()
+	time.Sleep(mpQuiet)
+	if took := row.serving.counts()[event]; took != 1 {
+		t.Fatalf("%s took the role message %s %d times, want once: pod-b's forward of it was stored again", holder, event, took)
+	}
+}
+
+// A pod that delivered without a lease, whose join reads the record of a holder that has since
+// died (killed while it waited out this pod's binding), counts that record held: it stands by,
+// and its lease takes the record once the record has stood unchanged for a full ttl, as any
+// standby's does, settling as a term over an expired record must. So it holds the lease within
+// the wait it was in and one try of the grant (the join), leaseTTL, a standby poll and a second;
+// it receives the durable as it takes the term, and its settle hold ends within settleCap (an ack
+// wait and settleMargin, 7 s) and a second of that. Every message reaches its session exactly once.
+func TestTwoPodsLeaseHeldByADeadPodOnALateGrantIsTakenWhenItExpires(t *testing.T) {
+	row := mpStartLateGrantRow(t, "late_expired", mpStartPod)
+	b := mpStartLateGrantHolder(t, row)
+	b.kill(t)
+	granted := row.grant.grant(t)
+	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
+	settleCap := productionReceiveConfig().settleCap
+	takeBound := leaseTTL + leaseStandbyPoll + time.Second
+	var taken time.Time
+	mpEventually(t, takeBound+5*time.Second, "pod-a to take the dead holder's expired record", func() bool {
+		for _, record := range mpRecords(row.a.Output.String(), "listener lease acquired") {
+			if record["from"] == leaseTakenExpired.String() {
+				taken = mpRecordTime(t, record)
+				return true
+			}
+		}
+		return false
+	})
+	if took := taken.Sub(joined); took > takeBound {
+		t.Fatalf("pod-a took the expired record %s after its join, past leaseTTL, a standby poll and a second (%s)", took.Round(time.Millisecond), takeBound)
+	}
+	var settled time.Time
+	mpEventually(t, settleCap+5*time.Second, "pod-a's settle hold to end", func() bool {
+		records := mpRecords(row.a.Output.String(), "settle hold ended; delivering the held messages in stream order")
+		if len(records) == 0 {
+			return false
+		}
+		settled = mpRecordTime(t, records[0])
+		return true
+	})
+	if held := settled.Sub(taken); held > settleCap+time.Second {
+		t.Fatalf("pod-a's settle hold ended %s after it took the record, past settleCap and a second (%s)", held.Round(time.Millisecond), settleCap+time.Second)
+	}
+	t.Logf("pod-a took the expired record %s after the grant and delivered %s after that",
+		taken.Sub(granted).Round(time.Millisecond), settled.Sub(taken).Round(time.Millisecond))
+	mpWaitActive(t, row.a, 10*time.Second)
+	time.Sleep(5 * time.Second) // publish on past the take
+	row.stop()
+	messages := row.publisher.all()
+	row.serving.awaitAll(t, messages, 30*time.Second)
+	time.Sleep(mpQuiet)
+	row.serving.requireOnce(t, messages)
 }

@@ -80,6 +80,18 @@ import (
 // over a connection that is down. This pod takes no lease back while the connection stays down,
 // and stands by as any other pod once it is up.
 //
+// A listener whose NATS user lacked the grant for the listener state bucket at its start receives
+// without a lease, the machine's one deliverer, and tries the bucket again until a grant lets it
+// open it (joinDeliveryLease). Its lease's first rounds then take the record or read another pod's
+// (lease.Contend), and the receive loop hands the term it receives on to that lease
+// (durableReceiver.joinTerm). A lease that holds takes the term as it stands - its subscription,
+// its queue and the message in hand - so no message waits for the switch (durableReceiver.adopt).
+// A lease another pod holds, one that took it while this pod delivered without it and waits out
+// this pod's binding as a pre-lease build's (awaitUnbound), ends the term: from that instant
+// nothing it takes is forwarded or acked, its relays stop and get relayFormerSettle to settle the
+// frames they forwarded, and then its subscription goes, which ends that holder's wait at its next
+// poll. Either way the pod goes on under the lease, as the holder or a standby.
+//
 // The holder sends InProgress every inProgressEvery for every message it has received and not
 // settled, queued or in hand, so none waits out the ack wait while this pod is alive. On a
 // shutdown the message in hand gets inflightGrace to finish before its handling context is
@@ -187,7 +199,10 @@ const (
 
 // listenerLeaseUnavailable is what /healthz says about a listener whose NATS user may not use the
 // listener state bucket. It then delivers without a lease, as the machine's one deliverer,
-// receiving only while no other subscriber holds the durable.
+// receiving only while no other subscriber holds the durable, and tries the bucket again with the
+// start rule's wait for a refusal until a grant lets it open it (joinDeliveryLease): from then on
+// it is in the lease protocol, as the holder or a standby (durableReceiver.joinTerm), and /healthz
+// says this no more.
 const listenerLeaseUnavailable = "unavailable: missing NATS grant for KV bucket " + bus.ListenerStateBucket
 
 // receiveConfig carries the receive loop's timing, so a test of this package shortens it;
@@ -290,7 +305,8 @@ type receiveReport struct {
 type durableReceiverOptions struct {
 	client   *bus.Client
 	consumer string
-	// lease is this pod's delivery lease; nil runs without one (listenerLeaseUnavailable).
+	// lease is this pod's delivery lease when its start opened the listener state bucket; nil runs
+	// without one (listenerLeaseUnavailable) until a lease joins (durableReceiver.join).
 	lease *lease
 	// handle delivers one message and settles it.
 	handle durableHandler
@@ -315,10 +331,27 @@ type durableReceiverOptions struct {
 // through the bus client's JetStream subscription slot), hands the messages one at a time to the
 // delivery handler, keeps every unsettled one alive with InProgress, and unsubscribes when the
 // lease is lost or released. Without a lease it receives whenever no other subscriber holds the
-// durable.
+// durable, until a lease joins (join).
 type durableReceiver struct {
 	durableReceiverOptions
 
+	// lease is this pod's delivery lease, nil while it runs without one (listenerLeaseUnavailable):
+	// the option's at the start, and set once more, by the receive loop alone, when a lease joins a
+	// pod that started without one (joinTerm, run), from which instant holding is the lease's. It
+	// is an atomic because the handler, /healthz, the self-health monitor and the shutdown read it
+	// on goroutines of their own.
+	lease atomic.Pointer[lease]
+	// joined is the lease a pod that started without one was handed once its grant let it open the
+	// listener state bucket (join), and joinCtx ends when it is handed: the term this pod serves
+	// without a lease stops preparing then (serve), or, once it receives, is handed to that lease
+	// (receive, joinTerm).
+	joined     atomic.Pointer[lease]
+	joinCtx    context.Context
+	joinCancel context.CancelFunc
+	// adopted is the term of the joined lease that took over the subscription this pod received on
+	// without a lease (joinTerm), the zero status while none did. Only the receive loop reads or
+	// writes it.
+	adopted leaseStatus
 	// reconnects signals that the client's connection came back or was replaced (reconnected).
 	reconnects chan struct{}
 	// clientConn is the main client's connection as the receive loop last heard of it: the one
@@ -367,8 +400,21 @@ func newDurableReceiver(options durableReceiverOptions) *durableReceiver {
 		durableReceiverOptions: options,
 		reconnects:             make(chan struct{}, 1),
 	}
+	r.lease.Store(options.lease)
+	// The receiver's own field is the lease from here on; the option's copy would only go stale.
+	r.durableReceiverOptions.lease = nil
+	r.joinCtx, r.joinCancel = context.WithCancel(context.Background())
 	r.clientConn.Store(options.client.Conn)
 	return r
+}
+
+// join hands this pod, which started without a lease, the lease it joined once its NATS grant let
+// it open the listener state bucket (joinDeliveryLease, main.go): the lease's first rounds have
+// taken the record or read another pod's (lease.Contend) and its loop runs. The receive loop
+// takes it from there (run, joinTerm). It is called once.
+func (r *durableReceiver) join(l *lease) {
+	r.joined.Store(l)
+	r.joinCancel()
 }
 
 // Start runs the receive loop until Stop. Start is called once; the lease, when there is one, is
@@ -394,7 +440,8 @@ func (r *durableReceiver) Start() {
 // read before ctx (awaitDone), which a hand-back that ran to its bounds can have ended first, so
 // a stop that did everything it owed does not report itself unfinished. The release here is the
 // one that writes the record when the hand-back's own release outlasted its bound, and it writes
-// the ack-wait debt that release recorded (lease.Release).
+// the ack-wait debt that release recorded (lease.Release). A lease that joined as the receive loop
+// stopped, which it never took up (join), is released all the same.
 func (r *durableReceiver) Stop(ctx context.Context) {
 	r.mu.Lock()
 	stop, done := r.stop, r.done
@@ -405,10 +452,14 @@ func (r *durableReceiver) Stop(ctx context.Context) {
 			r.logger.Warn("durable receive loop still settling at shutdown")
 		}
 	}
-	if r.lease == nil {
+	l := r.lease.Load()
+	if l == nil {
+		l = r.joined.Load()
+	}
+	if l == nil {
 		return
 	}
-	if err := r.lease.Release(ctx); err != nil {
+	if err := l.Release(ctx); err != nil {
 		r.logger.Warn("listener lease not released; a standby takes it once it expires", slog.String("error", err.Error()))
 	}
 }
@@ -427,9 +478,12 @@ func (r *durableReceiver) reconnected(_ context.Context, conn *nats.Conn) error 
 	return nil
 }
 
-// holding reports whether this pod may deliver now: it holds the lease, or runs without one.
+// holding reports whether this pod may deliver now: it holds the lease, or runs without one. A
+// lease that joined and found another pod holding the record makes it false from the instant the
+// receive loop stores it (joinTerm), so nothing the handler takes from then on is delivered.
 func (r *durableReceiver) holding() bool {
-	return r.lease == nil || r.lease.Holding()
+	l := r.lease.Load()
+	return l == nil || l.Holding()
 }
 
 // termSubscription is the term being served as the lease's signal reads it: conn is the
@@ -488,10 +542,23 @@ func (r *durableReceiver) setState(state receiveState) {
 	r.mu.Unlock()
 }
 
+// standbyUnlessReceiving sets the loop's state back to standby when a serve returns, unless a term
+// still receives: one a lease that joined took over as it stood (joinTerm), which its lease's term
+// goes on serving (adopt). Every other serve returns with no term, having never begun one or
+// having ended it (end).
+func (r *durableReceiver) standbyUnlessReceiving() {
+	r.mu.Lock()
+	if r.term == nil {
+		r.state = receiveStandby
+	}
+	r.mu.Unlock()
+}
+
 // report reads the receive loop now.
 func (r *durableReceiver) report() receiveReport {
+	l := r.lease.Load()
 	r.mu.Lock()
-	report := receiveReport{State: r.state, NoLease: r.lease == nil}
+	report := receiveReport{State: r.state, NoLease: l == nil}
 	if t := r.term; t != nil {
 		report.Subject = t.subject
 		report.SubscriptionValid = t.sub != nil && t.sub.IsValid() && t.conn == r.clientConn.Load()
@@ -505,29 +572,44 @@ func (r *durableReceiver) report() receiveReport {
 	r.mu.Unlock()
 	// One snapshot answers both questions the report asks of the lease, so the hold and the
 	// record it names are the lease at one instant rather than two reads a change falls between.
-	if r.lease == nil {
+	if l == nil {
 		report.Deliverer = true
 		return report
 	}
-	status := r.lease.Status()
+	status := l.Status()
 	report.Lease = status
 	report.Deliverer = status.Holding ||
-		status.ActiveInstance == "" || status.ActiveInstance == r.lease.instance
+		status.ActiveInstance == "" || status.ActiveInstance == l.instance
 	return report
 }
 
-// run is the receive loop: without a lease it serves until ctx ends; with one it serves each term
-// of the lease this pod acquires, from the acquisition until the term ends.
+// run is the receive loop. With a lease it serves each term of the lease this pod acquires, from
+// the acquisition until the term ends. Without one it serves until ctx ends or a lease joins
+// (join), and then goes on as a pod that started with that lease: the term it received on becomes
+// the lease's term when the lease holds the record, with its subscription and its queue kept
+// (adopt), and ends when another pod holds it (joinTerm).
 func (r *durableReceiver) run(ctx context.Context) {
-	if r.lease == nil {
-		r.serve(ctx, ctx, leaseStatus{How: leaseTakenAbsent})
-		return
-	}
 	var served uint64
+	if r.lease.Load() == nil {
+		refused := r.serve(ctx, ctx, leaseStatus{How: leaseTakenAbsent})
+		if refused || ctx.Err() != nil {
+			return
+		}
+		// A lease joined. A term that ended before it received anything, still preparing or
+		// waiting out a binding, had nothing to hand over, and the lease is stored here.
+		r.lease.CompareAndSwap(nil, r.joined.Load())
+		if r.adopted.Holding {
+			served = r.adopted.Term
+			if r.serveTerm(ctx, r.adopted, true) {
+				return
+			}
+		}
+	}
+	l := r.lease.Load()
 	for {
-		if status := r.lease.Status(); status.Holding && status.Term != served {
+		if status := l.Status(); status.Holding && status.Term != served {
 			served = status.Term
-			if r.serveTerm(ctx, status) {
+			if r.serveTerm(ctx, status, false) {
 				return
 			}
 			continue
@@ -535,15 +617,18 @@ func (r *durableReceiver) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.lease.Changes():
+		case <-l.Changes():
 		case <-r.reconnects:
 		}
 	}
 }
 
 // serveTerm serves one term of the lease, under a context that ends when the term does (the lease
-// is lost, or taken again as a new term) or ctx does. It reports whether the durable was refused.
-func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus) bool {
+// is lost, or taken again as a new term) or ctx does: the term of a subscription it starts
+// (serve), or, with adopt, of the subscription this pod already receives on, which a lease that
+// joined took over (adopt). It reports whether the durable was refused.
+func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus, adopt bool) bool {
+	l := r.lease.Load()
 	termCtx, cancel := context.WithCancel(ctx)
 	watched := make(chan struct{})
 	go func() {
@@ -552,8 +637,8 @@ func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus) boo
 			select {
 			case <-termCtx.Done():
 				return
-			case <-r.lease.Changes():
-				if now := r.lease.Status(); !now.Holding || now.Term != status.Term {
+			case <-l.Changes():
+				if now := l.Status(); !now.Holding || now.Term != status.Term {
 					cancel()
 					return
 				}
@@ -564,6 +649,9 @@ func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus) boo
 		cancel()
 		<-watched
 	}()
+	if adopt {
+		return r.adopt(ctx, termCtx, status)
+	}
 	return r.serve(ctx, termCtx, status)
 }
 
@@ -602,8 +690,21 @@ func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus) boo
 // holds the durable binds it again after a reconnect with nats.Bind, which refuses a durable whose
 // filter is not its own ("subject does not match consumer").
 func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus) bool {
-	defer r.setState(receiveStandby)
+	defer r.standbyUnlessReceiving()
 	defer r.succeeded()
+	// The lease is read once: a lease that joins a pod serving without one is stored by this
+	// goroutine alone, once this term has ended or handed itself over (joinTerm, run).
+	l := r.lease.Load()
+	// A term served without a lease stops preparing once a lease joins (join): its reads and
+	// waits run under prepCtx, which ends with that. Its subscription and its relays, once it has
+	// them, follow termCtx alone, so they go on until the join decides them (receive, joinTerm).
+	prepCtx := termCtx
+	if l == nil {
+		var cancel context.CancelFunc
+		prepCtx, cancel = context.WithCancel(termCtx)
+		defer cancel()
+		defer context.AfterFunc(r.joinCtx, cancel)()
+	}
 	start := time.Now()
 	if !status.Resumed {
 		r.awaitedBinding = false
@@ -613,7 +714,7 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 	// again rather than settling beside it.
 	settle := status.Settle && !r.awaitedBinding
 	r.setState(receivePreparing)
-	info, err := r.prepare(termCtx, false)
+	info, err := r.prepare(prepCtx, false)
 	if err != nil {
 		return r.abandon(err, status)
 	}
@@ -626,10 +727,10 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 			slog.Bool("hand_back", status.HandBack))
 	} else {
 		if status.Settle {
-			r.lease.Settled(status.Term)
+			l.Settled(status.Term)
 		}
 		if info.PushBound {
-			if err = r.awaitUnbound(termCtx); err != nil {
+			if err = r.awaitUnbound(prepCtx); err != nil {
 				return r.abandon(err, status)
 			}
 		}
@@ -638,15 +739,15 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 	beside := false
 	for {
 		attempt := time.Now()
-		if info, err = r.prepare(termCtx, true); err != nil {
+		if info, err = r.prepare(prepCtx, true); err != nil {
 			return r.abandon(err, status)
 		}
 		switch {
-		case r.lease == nil:
+		case l == nil:
 		case !info.PushBound:
-			r.lease.SetStaleBinding(status.Term, false)
+			l.SetStaleBinding(status.Term, false)
 		case settle:
-			r.lease.SetStaleBinding(status.Term, true)
+			l.SetStaleBinding(status.Term, true)
 			if !beside {
 				beside = true
 				r.logger.Info("durable still push-bound by an earlier lease holder; receiving beside it", slog.String("consumer", r.consumer))
@@ -662,12 +763,12 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 		if r.failed(attempt, fmt.Errorf("subscribe to the durable's deliver subject: %w", err)) {
 			return r.abandon(errDurableStuck, status)
 		}
-		if waitUnlessDone(termCtx, r.timing.bindPoll) != nil {
+		if waitUnlessDone(prepCtx, r.timing.bindPoll) != nil {
 			return false
 		}
 	}
 	taken := "unavailable"
-	if r.lease != nil {
+	if l != nil {
 		taken = status.How.String()
 	}
 	r.logger.Info("durable receiving",
@@ -677,10 +778,25 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 		slog.Int64("waited_ms", time.Since(start).Milliseconds()),
 		slog.Bool("settle", settle),
 	)
+	return r.receive(ctx, termCtx)
+}
+
+// receive is the rest of a term once it receives: it runs the holder-only loops under the term,
+// moves its subscription onto the client's connection after a reconnect (repair), and once termCtx
+// ends stops the loops and ends the term (end), waiting holderLoopsStopWait at most for a pass in
+// flight. A term this pod serves without a lease is handed instead to a lease that joins (join),
+// the loops stopped the same way (joinTerm). It reports false: a refusal of the durable comes
+// before it.
+func (r *durableReceiver) receive(ctx, termCtx context.Context) bool {
 	loopsCtx, stopLoops := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
 	if r.loops != nil {
 		loops = r.loops(loopsCtx)
+	}
+	// joined stays nil, and so never ready, for a term of the lease.
+	var joined <-chan struct{}
+	if r.lease.Load() == nil {
+		joined = r.joinCtx.Done()
 	}
 	for {
 		select {
@@ -690,10 +806,87 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 			r.end(ctx)
 			waitLoops(r.logger, loops, stopped.Add(holderLoopsStopWait))
 			return false
+		case <-joined:
+			stopped := time.Now()
+			stopLoops()
+			r.joinTerm(ctx)
+			waitLoops(r.logger, loops, stopped.Add(holderLoopsStopWait))
+			return false
 		case <-r.reconnects:
 			r.repair(termCtx)
 		}
 	}
+}
+
+// joinTerm hands the term this pod received on without a lease to the lease that joined (join),
+// whose first rounds took the record or read another pod's (lease.Contend). It reads the lease
+// once, and that read decides; the lease is stored as this pod's at once, and from that instant
+// the handler delivers only while the lease holds (holding).
+//
+// A lease that holds the record takes the term over as it stands: the term's subscription, its
+// queue and the message in hand stay, so nothing waits for the switch, and the term is the
+// lease's from here (receiveTerm.leaseTerm), which the receive loop serves (run, adopt). The
+// holder-only loops the term ran without a lease have been told to stop, and start again under
+// the lease's term.
+//
+// A lease another pod holds - the pod that took the lease while this one delivered without it and
+// waits for this pod's binding to end (awaitUnbound) - ends the term, as a lost lease's end does:
+// from the store on, nothing the handler takes is forwarded or acked, so each such message comes
+// back to the holder at its ack wait and is delivered there once, while the message in hand
+// settles as normal, its ack included (endLost). The relays stop first and are given
+// relayFormerSettle, the settle a former holder's successor waits out (lease.FormerSettleWait),
+// before the durable's subscription goes: that subscription's end is what lets the holder start,
+// and its relays restart each session's consumer at its ack floor (sessionRelays.restart), so the
+// frames this pod's relays forwarded settle, their acks included, before that floor is read and
+// none comes back as a repeat. This pod then stands by under the lease, as any pod that never
+// held it.
+func (r *durableReceiver) joinTerm(ctx context.Context) {
+	l := r.joined.Load()
+	status := l.Status()
+	r.mu.Lock()
+	if status.Holding {
+		r.term.leaseTerm = status.Term
+	}
+	r.lease.Store(l)
+	r.mu.Unlock()
+	if status.Holding {
+		r.adopted = status
+		r.logger.Info(leaseJoinedHolderLine,
+			slog.String("consumer", r.consumer), slog.String("lease", status.How.String()), slog.Uint64("term", status.Term))
+		return
+	}
+	r.logger.Info(leaseJoinedStandbyLine, slog.String("consumer", r.consumer), slog.String("active_instance", status.ActiveInstance))
+	r.relays.setOwned(nil)
+	_ = waitUnlessDone(ctx, relayFormerSettle)
+	r.end(ctx)
+}
+
+// The lines a pod that received without a lease logs as the lease it joined decides its term
+// (joinTerm): it took the lease and keeps its subscription, or another pod holds the lease and it
+// stands by.
+const (
+	leaseJoinedHolderLine  = "listener lease joined: this pod took it and goes on receiving the durable on its subscription"
+	leaseJoinedStandbyLine = "listener lease joined: another pod holds it, so this pod stops delivering and stands by"
+)
+
+// adopt serves status's term on the subscription this pod received on without a lease, which the
+// lease that joined took over (joinTerm): it subscribes nothing and drops nothing. It records in
+// the lease what begin records for a term it subscribes, the deliver subject and the term
+// receiving, and hands the relays this term, bounded by the lease's loss deadline
+// (lease.UntilLoss), in place of the one without a lease they followed, so each relay goes on
+// pulling with no restart. The holder-only loops start under the term (receive), as they do for
+// any term. The term settles nothing: what the durable has outstanding was pushed to this very
+// subscription, and a record that said its term must settle (unsettled, stale_binding) keeps
+// saying so, so the pod after this one settles in its turn.
+func (r *durableReceiver) adopt(ctx, termCtx context.Context, status leaseStatus) bool {
+	l := r.lease.Load()
+	r.mu.Lock()
+	subject := r.term.subject
+	r.mu.Unlock()
+	l.SetDeliverSubject(subject)
+	l.SetReceiving(status.Term)
+	r.relays.setOwned(&relayTerm{ctx: termCtx, untilLoss: func() time.Duration { return l.UntilLoss(status.Term) }})
+	return r.receive(ctx, termCtx)
 }
 
 // prepare reads the durable, creating it when it is missing and, when correct is set, correcting
@@ -723,8 +916,8 @@ func (r *durableReceiver) prepare(ctx context.Context, correct bool) (*nats.Cons
 			if failing {
 				r.logger.Info("durable consumer read recovered", slog.String("consumer", r.consumer))
 			}
-			if r.lease != nil {
-				r.lease.SetDeliverSubject(info.Config.DeliverSubject)
+			if l := r.lease.Load(); l != nil {
+				l.SetDeliverSubject(info.Config.DeliverSubject)
 			}
 			return info, nil
 		}
@@ -855,12 +1048,13 @@ func (r *durableReceiver) begin(termCtx context.Context, subject string, hold ti
 	// connection is down, leaves it to nats.go to send again on the reconnect, and the term is
 	// recorded receiving once a resubscribe on the new connection has flushed.
 	flushed := conn.FlushTimeout(time.Second) == nil
-	if flushed && r.lease != nil {
-		r.lease.SetReceiving(term)
+	l := r.lease.Load()
+	if flushed && l != nil {
+		l.SetReceiving(term)
 	}
 	relaying := &relayTerm{ctx: termCtx}
-	if r.lease != nil {
-		relaying.untilLoss = func() time.Duration { return r.lease.UntilLoss(term) }
+	if l != nil {
+		relaying.untilLoss = func() time.Duration { return l.UntilLoss(term) }
 	}
 	r.relays.setOwned(relaying)
 	go t.handle(r)
@@ -917,12 +1111,15 @@ func (r *durableReceiver) resubscribe(ctx context.Context) error {
 	}
 	t.sub, t.conn, t.subject = sub, conn, subject
 	r.subscribed.Store(&termSubscription{conn: conn})
+	// The lease and the term it serves are read together, under the lock a lease that joins this
+	// term's receiving takes to set both (joinTerm).
+	l, term := r.lease.Load(), t.leaseTerm
 	r.mu.Unlock()
-	if r.lease != nil {
-		r.lease.SetDeliverSubject(subject)
+	if l != nil {
+		l.SetDeliverSubject(subject)
 	}
-	if conn.FlushTimeout(time.Second) == nil && r.lease != nil {
-		r.lease.SetReceiving(t.leaseTerm)
+	if conn.FlushTimeout(time.Second) == nil && l != nil {
+		l.SetReceiving(term)
 	}
 	r.logger.Info("durable resubscribed", slog.String("consumer", r.consumer), slog.String("deliver_subject", subject))
 	return nil

@@ -23,7 +23,7 @@ func (r *durableReceiver) abandon(err error, status leaseStatus) bool {
 		return r.refuse(err)
 	}
 	r.logger.Warn("giving the listener lease up: this pod cannot deliver from the durable", slog.String("consumer", r.consumer))
-	r.lease.GiveUp(status.Term)
+	r.lease.Load().GiveUp(status.Term)
 	return false
 }
 
@@ -89,7 +89,7 @@ func (r *durableReceiver) failed(attempt time.Time, err error) bool {
 	if alarm {
 		r.alarm(err.Error(), failing)
 	}
-	return r.lease != nil && !refused && failing >= r.timing.alarmAfter
+	return r.lease.Load() != nil && !refused && failing >= r.timing.alarmAfter
 }
 
 // succeeded ends the failures failed times.
