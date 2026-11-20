@@ -282,6 +282,32 @@ func searchProjectVisible(project string, seen int) string {
 	return `(` + project + ` is null or ` + access.ProjectClause(project, searchParam(seen)) + `)`
 }
 
+// searchReaderPartitions is the partitions of embeddings a meaning arm reads: those of the
+// projects the reader sees, and the one of no project, which holds the rows of agent
+// conversations and the rows the labelling has not reached (embeddings_reader_partitions,
+// migration 20261120105330). embeddings is partitioned by its row's project, each partition one
+// HNSW graph, so an arm that reads only these walks graphs holding no vector of a project the
+// reader does not see. Walking one graph of every project, the walk could not reach the
+// reader's own rows once rows they may not see sat nearer the query than all of theirs, whatever
+// the scan's budgets (TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors).
+//
+// It decides no row's visibility: the project rule (searchProjectVisible) and the registry's
+// predicate (refs.VisibleKind) stand beside it in every arm, unchanged, and decide what remains
+// in the partitions it reads - a project the reader sees, read by a reader who may not see one
+// of its documents, say. A reader who sees every project, the server and an open viewer of a
+// deployment that holds no private project, reads every partition, and the predicate is then
+// true of every row.
+//
+// The partitions are pruned when the statement is planned, which is why the list is a function
+// of the bound viewer alone: planned with the viewer's value (searchMeaningScan's
+// plan_cache_mode), the function is folded to a constant array and the planner drops every other
+// partition from the plan. A plan made without the value would read every partition, each walk
+// filtered to nothing, and pay that walk for each project the reader does not see.
+func searchReaderPartitions(seen int) string {
+	partitions := `embeddings_reader_partitions(` + searchParam(seen) + `::jsonb)`
+	return `(` + partitions + ` is null or e.project_key is null or e.project_key = any(` + partitions + `))`
+}
+
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
 // normalisation, rendered for the parameter a statement binds the acting credential at.
 var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
@@ -611,12 +637,19 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     would see is an inference from it rather than a measurement of it. Relaxed rather than
 //     strict: every arm re-ranks its rows by r (distinct on, then ranked), so nothing downstream
 //     reads the index's order.
+//   - plan_cache_mode: force_custom_plan, so each meaning statement is planned with the values
+//     it is run with. Every arm reads only the partitions of embeddings its reader may read
+//     (searchReaderPartitions), and the planner prunes the others from the plan only where it
+//     knows the reader: a generic plan, which pgx's cached statement settles on from its sixth
+//     run, keeps every partition and walks each graph the reader may not read, filtering every
+//     row it reaches. The price is a plan per search.
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
 	searchMeaningStatementBound,
 	`set local hnsw.ef_search = 400`,
 	`set local hnsw.iterative_scan = relaxed_order`,
+	`set local plan_cache_mode = force_custom_plan`,
 }
 
 // searchMeaningStatementBound is the first of those settings. It is named because two readers
@@ -815,7 +848,10 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // binds over every arm, and the project rule over its own row's project (searchProjectVisible):
 // a candidate CTE cuts to its own limit by distance before anything downstream filters it, so a
 // node the acting person may not see would otherwise take a place in that cut and hide a node
-// they may.
+// they may. Each also reads only the partitions of embeddings its reader may read
+// (searchReaderPartitions), for the same reason one level down: an HNSW walk that meets the
+// vectors of a project the reader does not see spends its reach on them, and never reaches the
+// rows those vectors stand nearer the query than.
 func searchQueryMeaningBody(keywordLegs func(seen int) string, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
@@ -823,6 +859,7 @@ func searchQueryMeaningBody(keywordLegs func(seen int) string, fused, exclude st
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
@@ -846,6 +883,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("p.key", seen) + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
@@ -872,6 +910,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "k.author", "k.created_at") + `
@@ -894,6 +933,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "m.author", "m.created_at") + `
@@ -1022,6 +1062,7 @@ func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		scope.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("e.project_key", seen) + `
      and ` + refs.VisibleKind("comment", windowItemUUID+`::text`, searchParam(seen)) + `
    order by e.embedding <=> $9::vector
@@ -1104,6 +1145,7 @@ func searchMeaningCommentArmJoined(seen int) string {
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible(searchMeaningCommentProject, seen) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "c.author", "c.created_at") + `
