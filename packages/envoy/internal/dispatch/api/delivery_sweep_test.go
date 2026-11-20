@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -185,9 +186,11 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				answered <- response.StatusCode
 			}()
 			var key string
+			waited, cancelWait := testdeadline.Answered(t, context.Background())
+			defer cancelWait()
 			select {
 			case key = <-listener.started:
-			case <-time.After(10 * time.Second):
+			case <-waited.Done():
 				t.Fatal("the write never sent its attempt")
 			}
 			owner, _, _ := strings.Cut(key, ":")
@@ -319,7 +322,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			<-sending
 			abort()
 			letProceed()
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(testdeadline.StartupBound(t))
 			var state string
 			for time.Now().Before(deadline) {
 				if err := database.Pool.QueryRow(context.Background(),
@@ -414,7 +417,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 		defer close(done)
 		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(keysOf(sends)) == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -853,12 +856,14 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case got := <-settled:
 		if got.err != nil || !got.settled {
 			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the settle never answered once the owner lock was released")
 	}
 	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {

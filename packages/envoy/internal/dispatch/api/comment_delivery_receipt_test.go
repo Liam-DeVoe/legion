@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
@@ -523,12 +524,13 @@ func commentDeliveryReceipts(t *testing.T, database *store.Store, commentID, tar
 	return receipts
 }
 
-// awaitCommentDeliveryReceipts waits, at most 10 s, until the attempt carries a comment.delivery
-// receipt - the mention sender appends it in its settle transaction, after the comment's create
-// has answered - and returns the receipts as commentDeliveryReceipts renders them.
+// awaitCommentDeliveryReceipts waits, as long as the test's deadline leaves, until the attempt
+// carries a comment.delivery receipt - the mention sender appends it in its settle transaction,
+// after the comment's create has answered - and returns the receipts as commentDeliveryReceipts
+// renders them.
 func awaitCommentDeliveryReceipts(t *testing.T, database *store.Store, commentID, target string, attempt int) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if receipts := commentDeliveryReceipts(t, database, commentID, target, attempt); receipts != "" {
 			return receipts

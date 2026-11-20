@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // readOnlyProbePath is routeProbePath with every wildcard it leaves filled too - a test hook's
@@ -489,8 +490,8 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
-		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
+	if !testwait.Holds(testdeadline.StartupBound(t), 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
+		t.Fatalf("the read stored %d of the prose's %d trees before the test's deadline, want every one", storedTrees(), len(sums))
 	}
 
 	statements := marked.take()

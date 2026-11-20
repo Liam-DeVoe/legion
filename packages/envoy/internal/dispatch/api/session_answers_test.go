@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The session whose list each test reads, and another session beside it.
@@ -218,7 +219,7 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `

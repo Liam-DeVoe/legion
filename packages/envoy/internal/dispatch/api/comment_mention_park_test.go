@@ -155,10 +155,11 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	rig := newParkRig(t, 2)
 	first := rig.enqueue("parked-first", "session:parked")
 	second := rig.enqueue("parked-second", "session:parked")
-	waitUntil(t, 5*time.Second, "the parked lane with no goroutine on it", func() bool {
+	waitUntil(t, "the parked lane with no goroutine on it", func() bool {
 		serving, parked, onLane, _ := rig.state()
 		return parked && serving == 0 && onLane == 2
 	})
+
 	if stacks := serveStacks(); stacks != 0 {
 		t.Fatalf("%d goroutines are in the sender's lane loop while its one lane is parked, want none", stacks)
 	}
@@ -183,7 +184,7 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	// A send is in the rig's list before its goroutine lets it go (claimedDuring) and leaves its
 	// lane (next), so the ten are done only once the sender holds the two parked sends alone and
 	// no goroutine serves a lane.
-	waitUntil(t, 10*time.Second, "the other recipients' sends", func() bool {
+	waitUntil(t, "the other recipients' sends", func() bool {
 		rig.mu.Lock()
 		sent := len(rig.sent)
 		rig.mu.Unlock()
@@ -241,11 +242,12 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	}
 
 	rig.open.Store(true)
-	waitUntil(t, 5*time.Second, "the parked lane's two sends", func() bool {
+	waitUntil(t, "the parked lane's two sends", func() bool {
 		rig.mu.Lock()
 		defer rig.mu.Unlock()
 		return len(rig.sent) == 12
 	})
+
 	rig.mu.Lock()
 	order := append([]string(nil), rig.sent[10:]...)
 	rig.mu.Unlock()

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // An approval request remains one conversation across document versions. A version move keeps its
@@ -443,7 +444,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 	handBackHandler, handBackPID := oneConnectionHandler(t, deps)
 	handedBack := make(chan *httptest.ResponseRecorder, 1)
 	go func() { handedBack <- approvalRequest(handBackHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, handBackPID, handedBack, testdeadline.StartupBound(t)); early {
 		t.Fatalf("the hand-back answered %d before it queued behind the ask row: %s", response.Code, response.Body.String())
 	}
 	commentHandler, commentPID := oneConnectionHandler(t, deps)
@@ -452,7 +453,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 		commented <- dispatchRequest(t, commentHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
 			map[string]any{"ask_id": askID, "body": "And the backoff?"}, "alice")
 	}()
-	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, hold, commentPID, commented, testdeadline.StartupBound(t)); early {
 		t.Fatalf("the comment answered %d before it queued behind the owner row: %s", response.Code, response.Body.String())
 	}
 	if err := hold.Rollback(ctx); err != nil {
@@ -678,7 +679,8 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				t.Fatalf("revise document: %v", err)
 			}
 			waitForArtifactVersion(t, doc.handler, doc.artifactID, 2)
-			deadline := time.After(5 * time.Second)
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			for {
 				select {
 				case event, ok := <-published:
@@ -688,7 +690,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 					if payload, isAsk := event.Payload.(model.AskEditEventPayload); isAsk && event.Type == "ask.edited" && payload.ID == doc.askID {
 						return
 					}
-				case <-deadline:
+				case <-answered.Done():
 					t.Fatalf("settlement published no ask.edited for %s", doc.askID)
 				}
 			}
@@ -964,7 +966,7 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 		<-stopped
 	}()
 	const about = `from events where type = $1 and payload->>'id' = $2`
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished, total int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) filter (where published_at is null), count(*) `+about,

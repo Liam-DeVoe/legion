@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // sweepRunnerSchedule is the pace a sweep's runners keep here: a short gap, so a pass that is
@@ -71,8 +72,9 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 	return events.NewHorizon(pool)
 }
 
-// runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// runSweep runs run on a goroutine until the test ends, and fails the test if it has not returned
+// by the test's deadline once its context ends: a pass the cancel cut short may still be in a
+// Postgres call, which a loaded machine slows but does not stop.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,19 +85,23 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, stop := testdeadline.Answered(t, context.Background())
+		defer stop()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the suggestion outcome sweep did not return within 10s of its context ending")
+		case <-answered.Done():
+			t.Error("the suggestion outcome sweep did not return before the test's deadline once its context ended")
 		}
 	})
 }
 
-// waitUntil polls condition until it holds, failing the test after within.
-func waitUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
+// waitUntil polls condition until it holds, failing the test at its deadline: what a caller waits
+// for is written or sent once a Postgres call answers, which a loaded machine slows but does not
+// stop.
+func waitUntil(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, condition) {
-		t.Fatalf("timed out after %v waiting for %s", within, what)
+	if !testwait.Holds(testdeadline.StartupBound(t), 10*time.Millisecond, condition) {
+		t.Fatalf("timed out at the test's deadline waiting for %s", what)
 	}
 }
 
@@ -133,16 +139,17 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2, testdeadline.StartupBound(t)); waiting < 2 {
 		t.Fatalf("%d of the two runners' passes reached the cursor lock, want both: the cursor row, not a lease, is what serialises them", waiting)
 	}
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	waitUntil(t, 30*time.Second, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	waitUntil(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
+
 	var cursor *int64
 	if err := database.Pool.QueryRow(ctx, `select event_id from suggestion_outcome_cursor`).Scan(&cursor); err != nil {
 		t.Fatalf("read the cursor: %v", err)
@@ -177,7 +184,7 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
-		waitUntil(t, 10*time.Second, "the pass the last wake earned", func() bool { return passes() == woken+1 })
+		waitUntil(t, "the pass the last wake earned", func() bool { return passes() == woken+1 })
 		if woken < wakes {
 			wake <- struct{}{}
 		}

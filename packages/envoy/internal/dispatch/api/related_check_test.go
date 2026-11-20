@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -580,7 +581,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
@@ -596,10 +597,12 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	}
 	endRequest()
 	var suggestions *model.Suggestions
+	checked, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case suggestions = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check did not answer within 10s of its request ending")
+	case <-checked.Done():
+		t.Fatal("the check did not answer before the test's deadline after its request ended")
 	}
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
@@ -721,10 +724,10 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// only once it had failed, so an insert started more than half that before is the first.
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(testdeadline.StartupBound(t))
 		for !done() {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 5s", what)
+				t.Fatalf("%s: not before the test's deadline", what)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -809,13 +812,15 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
+	returned, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case recovered := <-waited:
 		if recovered != nil {
 			t.Fatalf("the shutdown wait panicked: %v", recovered)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown wait did not return within 10s of the lock's release")
+	case <-returned.Done():
+		t.Fatal("the shutdown wait did not return before the test's deadline after the lock's release")
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "timeout" {

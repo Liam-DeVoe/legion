@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A mention attempt a Retry from the card overtook stands until that Retry has delivered the
@@ -51,12 +52,12 @@ func copiesOfTheComment(
 	return copies
 }
 
-// awaitUnclaimedPendingAttempt waits, for at most 10 s, until the comment's first attempt for
-// target is pending with no claim on it: the shape a lane leaves an attempt it stood down from
-// because a later attempt was still in flight (claimCommentDeliveryAttempt).
+// awaitUnclaimedPendingAttempt waits, as long as the test's deadline leaves, until the comment's
+// first attempt for target is pending with no claim on it: the shape a lane leaves an attempt it
+// stood down from because a later attempt was still in flight (claimCommentDeliveryAttempt).
 func awaitUnclaimedPendingAttempt(t *testing.T, database *store.Store, commentID, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !unclaimedPending(t, database, commentID, target) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the attempt of %s for %s is not pending and unclaimed: the lane that reached it "+

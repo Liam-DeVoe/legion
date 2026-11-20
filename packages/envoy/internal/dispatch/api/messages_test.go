@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func createIssueMessage(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Message {
@@ -1546,9 +1547,11 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder
 	}()
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case <-held:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the send never reached the listener")
 	}
 	select {
@@ -1599,7 +1602,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	var late *httptest.ResponseRecorder
 	select {
 	case late = <-answered:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the stalled sender never answered")
 	}
 	if late.Code != http.StatusCreated {

@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -392,21 +393,26 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits up to 2 s for want backends to queue behind a lock that holder's
-// transaction owns (storetest.WaitForLockWaiters), and fails the test when they never do.
+// waitForDatabaseLocks waits, as long as the test's deadline leaves, for want backends to queue
+// behind a lock that holder's transaction owns (storetest.WaitForLockWaiters), and fails the test
+// when they never do: each reaches the lock only once its earlier statements have answered.
 func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
 	t.Helper()
-	if queued := storetest.WaitForLockWaiters(t, holder, want, 2*time.Second); queued < want {
+	if queued := storetest.WaitForLockWaiters(t, holder, want, testdeadline.StartupBound(t)); queued < want {
 		t.Fatalf("waiting database locks: wanted at least %d operations queued behind the held lock, saw %d", want, queued)
 	}
 }
 
+// awaitResponse takes the next answer of a request a goroutine sends, waiting as long as the
+// test's deadline leaves: the handler answers once its statements in Postgres have.
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case response := <-responses:
 		return response
-	case <-time.After(2 * time.Second):
+	case <-answered.Done():
 		t.Fatal("concurrent request did not complete")
 		return nil
 	}
@@ -530,9 +536,11 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 		srv.detached.wait()
 		close(idle)
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-idle:
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the server's detached work did not end")
 	}
 }

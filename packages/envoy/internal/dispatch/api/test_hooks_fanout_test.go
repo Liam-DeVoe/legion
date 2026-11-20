@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // holdTestHookLock is a process that is alive but never acknowledges a test hook: a connection of
@@ -125,7 +125,7 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
-	listening, stop := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
+	listening, stop := testdeadline.Answered(t, t.Context())
 	defer stop()
 	if _, err := served.testHooks.awaitOwnLock(listening); err != nil {
 		t.Fatalf("the second process's test-hook listener did not take its lock: %v", err)

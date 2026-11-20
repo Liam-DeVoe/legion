@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The near_copy_checks record: one row for each answer the near-copy gate gives a create, read
@@ -252,10 +253,10 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	// The refusal's write waits for the table until its bound ends it, and only then does the
 	// create's transaction begin; the table is let go once that transaction's write waits, so the
 	// refusal's write cannot have landed and the create's write is the one that lands.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !createWaitsForNearCopyChecks(t, database) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the create's transaction did not wait for near_copy_checks in 30 s")
+			t.Fatalf("the create's transaction did not wait for near_copy_checks before the test's deadline")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -517,10 +518,10 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	}
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(testdeadline.StartupBound(t))
 		for !done() {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 10s", what)
+				t.Fatalf("%s: not before the test's deadline", what)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // fakeAnswerer is the model of these tests: it answers with the frames the test named, and, when
@@ -131,7 +132,7 @@ func (rig goingRoutesRig) streamUnder(t *testing.T, id, token string) *httptest.
 // rendered "<sequence> <name> <data>" as going_test.go renders them.
 func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
 		if err != nil {
@@ -149,7 +150,7 @@ func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 			return rendered
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the run stored no ending within 10s; it holds %d frames", len(stored))
+			t.Fatalf("the run stored no ending before the test's deadline; it holds %d frames", len(stored))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -428,10 +429,12 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		defer close(served)
 		rig.handler.ServeHTTP(sink, request)
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-sink.flushed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the stream wrote no headers within 30s")
+	case <-answered.Done():
+		t.Fatal("the stream wrote no headers before the test's deadline")
 	}
 
 	ending, err := rig.database.Pool.Begin(ctx)
@@ -448,7 +451,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	`, run.ID, contracts.GoingEventEnd); err != nil {
 		t.Fatalf("store the ending: %v", err)
 	}
-	waitUntil(t, 30*time.Second, "the stream's state read waiting on going_requests", func() bool {
+	waitUntil(t, "the stream's state read waiting on going_requests", func() bool {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
@@ -457,14 +460,15 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		}
 		return waiting > 0
 	})
+
 	if err := ending.Commit(ctx); err != nil {
 		t.Fatalf("commit the ending: %v", err)
 	}
 
 	select {
 	case <-served:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the stream did not end within 60s of its run's ending")
+	case <-answered.Done():
+		t.Fatal("the stream did not end before the test's deadline after its run's ending")
 	}
 	want := "id: 3\nevent: " + contracts.GoingEventEnd + "\ndata: {\"items\":0,\"words\":2}\n\n"
 	if got := sink.text(); got != want {

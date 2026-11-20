@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The results write takes the owner locks of the recording issue and of the check's issue
@@ -26,37 +27,47 @@ import (
 // other statement either request runs.
 const slowCheckRead = 2 * time.Second
 
-// checkReadWait bounds every wait this file makes: the handshakes with the held request, and
-// the answer to the request itself. Each is a step the route takes on another goroutine, so a
-// route that stops taking it - a comparison dropped, a read moved back under the locks - would
-// park the test until the package's own timeout and say nothing about what it was waiting for.
-// Waiting through this bound names the step that never came instead. It is far longer than any
-// step here takes, slowCheckRead included.
-const checkReadWait = 30 * time.Second
+// checkReadEnds is the end of the waits the held read itself makes on the request's goroutine,
+// which cannot fail the test (awaitCheckGate, offerCheckRead): what the test's deadline leaves
+// (testdeadline.Answered). Each is for a step of the test's own goroutine, which comes once that
+// goroutine's own Postgres calls have answered, so a loaded machine slows it but does not end the
+// read; a test that stops taking it ends the read with an error at its deadline rather than
+// hanging. The test's own waits for the route's steps (awaitCheckRead, letCheckRead) take the
+// same deadline, and one that never comes still fails naming the step.
+func checkReadEnds(t *testing.T) context.Context {
+	t.Helper()
+	ends, cancel := testdeadline.Answered(t, context.Background())
+	t.Cleanup(cancel)
+	return ends
+}
 
-// awaitCheckRead takes the next value the held request sends, or fails the test saying which
-// step of it never came. Every receive the test's own goroutine makes goes through it; the held
-// read's own receives go through awaitCheckGate.
+// awaitCheckRead takes the next value the held request sends, or fails the test at its deadline
+// saying which step of it never came. Every receive the test's own goroutine makes goes through
+// it; the held read's own receives go through awaitCheckGate.
 func awaitCheckRead[T any](t *testing.T, from <-chan T, what string) T {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case value := <-from:
 		return value
-	case <-time.After(checkReadWait):
-		t.Fatalf("%s within %s", what, checkReadWait)
+	case <-answered.Done():
+		t.Fatalf("%s before the test's deadline", what)
 		return *new(T)
 	}
 }
 
-// letCheckRead releases a held read, or fails the test saying which read never asked to be
-// released. Every send the test's own goroutine makes goes through it; the held read's own sends
-// go through offerCheckRead.
+// letCheckRead releases a held read, or fails the test at its deadline saying which read never
+// asked to be released. Every send the test's own goroutine makes goes through it; the held
+// read's own sends go through offerCheckRead.
 func letCheckRead[T any](t *testing.T, to chan<- T, value T, what string) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case to <- value:
-	case <-time.After(checkReadWait):
-		t.Fatalf("%s within %s", what, checkReadWait)
+	case <-answered.Done():
+		t.Fatalf("%s before the test's deadline", what)
 	}
 }
 
@@ -73,6 +84,8 @@ type slowCheckReadKey struct{}
 // takes slowCheckRead, so the test can time a writer of the same issue against it.
 type slowCheckReads struct {
 	docs.API
+	// ends bounds the held read's own waits (checkReadEnds).
+	ends context.Context
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
 	// resolved is closed when the route's resolve reaches the document; release lets it go on.
@@ -92,7 +105,7 @@ func (d *slowCheckReads) Text(ctx context.Context, artifactID string) (string, e
 	d.resolveOnce.Do(func() { resolve = true })
 	if resolve {
 		close(d.resolved)
-		if err := awaitCheckGate(d.release); err != nil {
+		if err := awaitCheckGate(d.ends, d.release); err != nil {
 			return "", err
 		}
 		return d.API.Text(ctx, artifactID)
@@ -113,6 +126,7 @@ func (d *slowCheckReads) Text(ctx context.Context, artifactID string) (string, e
 // read.
 func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing.T) {
 	reads := &slowCheckReads{
+		ends:     checkReadEnds(t),
 		resolved: make(chan struct{}),
 		release:  make(chan struct{}),
 		reading:  make(chan struct{}),
@@ -191,6 +205,8 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 // read counter is touched by the marked request alone, whose reads run one after another.
 type contendedCheckReads struct {
 	docs.API
+	// ends bounds the held read's own waits (checkReadEnds).
+	ends context.Context
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
 	// held carries the ordinal of each held read, and let releases it.
@@ -205,10 +221,10 @@ func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (stri
 	}
 	d.reads++
 	if d.reads <= resolutionAttempts {
-		if err := offerCheckRead(d.held, d.reads); err != nil {
+		if err := offerCheckRead(d.ends, d.held, d.reads); err != nil {
 			return "", err
 		}
-		if err := awaitCheckGate(d.let); err != nil {
+		if err := awaitCheckGate(d.ends, d.let); err != nil {
 			return "", err
 		}
 	}
@@ -221,7 +237,7 @@ func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (stri
 // retry a second later asks, and no budget of its own that a longer wait would refill
 // (checkContendedRetryAfter).
 func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
-	reads := &contendedCheckReads{held: make(chan int), let: make(chan struct{})}
+	reads := &contendedCheckReads{ends: checkReadEnds(t), held: make(chan int), let: make(chan struct{})}
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
@@ -278,6 +294,8 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 // those versions.
 type restoredCheckReads struct {
 	docs.API
+	// ends bounds the held read's own waits (checkReadEnds).
+	ends context.Context
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
 	// resolving is closed when the route's resolve reaches the document; moved releases it once
@@ -301,37 +319,38 @@ func (d *restoredCheckReads) Text(ctx context.Context, artifactID string) (strin
 		return d.API.Text(ctx, artifactID)
 	}
 	close(d.resolving)
-	if err := awaitCheckGate(d.moved); err != nil {
+	if err := awaitCheckGate(d.ends, d.moved); err != nil {
 		return "", err
 	}
 	markdown, err := d.API.Text(ctx, artifactID)
 	close(d.read)
-	if gate := awaitCheckGate(d.restored); gate != nil {
+	if gate := awaitCheckGate(d.ends, d.restored); gate != nil {
 		return "", gate
 	}
 	return markdown, err
 }
 
 // awaitCheckGate bounds a wait the held read itself makes: it runs on the request's goroutine,
-// which cannot fail the test, so the bound ends the read with an error rather than hanging.
-func awaitCheckGate(gate <-chan struct{}) error {
+// which cannot fail the test, so the test's deadline (ends) ends the read with an error rather
+// than hanging.
+func awaitCheckGate(ends context.Context, gate <-chan struct{}) error {
 	select {
 	case <-gate:
 		return nil
-	case <-time.After(checkReadWait):
-		return fmt.Errorf("the test did not release the held read of the check's words within %s", checkReadWait)
+	case <-ends.Done():
+		return errors.New("the test did not release the held read of the check's words before the test's deadline")
 	}
 }
 
 // offerCheckRead bounds a handshake the held read itself makes, as awaitCheckGate bounds the
 // waits: it runs on the request's goroutine, so a value the test never takes ends the read with
-// an error rather than hanging.
-func offerCheckRead[T any](to chan<- T, value T) error {
+// an error at the test's deadline rather than hanging.
+func offerCheckRead[T any](ends context.Context, to chan<- T, value T) error {
 	select {
 	case to <- value:
 		return nil
-	case <-time.After(checkReadWait):
-		return fmt.Errorf("the test did not take the handshake of the held read of the check's words within %s", checkReadWait)
+	case <-ends.Done():
+		return errors.New("the test did not take the handshake of the held read of the check's words before the test's deadline")
 	}
 }
 
@@ -347,6 +366,7 @@ func offerCheckRead[T any](to chan<- T, value T) error {
 // see.
 func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *testing.T) {
 	reads := &restoredCheckReads{
+		ends:      checkReadEnds(t),
 		resolving: make(chan struct{}),
 		moved:     make(chan struct{}),
 		read:      make(chan struct{}),

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // blocked_by is an issue-to-issue dependency: create and PATCH replace its complete target
@@ -585,13 +586,16 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	go func() {
 		reparents <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case response := <-reparents:
 		if response.Code != http.StatusOK {
 			t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", response.Code, response.Body.String())
 		}
-	case <-time.After(2 * time.Second):
-		// The reparent is waiting for the move. Open the gate and report how the two writes end.
+	case <-answered.Done():
+		// The reparent is waiting for the move, which the gate holds until it opens. Open the
+		// gate and report how the two writes end.
 		if err := gate.Commit(context.Background()); err != nil {
 			t.Fatal(err)
 		}

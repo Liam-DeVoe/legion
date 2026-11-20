@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // fileIssue creates the project and issue a file upload lands on and returns the issue key.
@@ -314,12 +315,6 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
-// uploadLockProbeWindow bounds how long the probe below retries the issue's owner lock. It is far
-// longer than any write this test's own setup makes - the issue create and the settlement of the
-// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
-// cannot name is reported as a failure rather than a hang.
-const uploadLockProbeWindow = 20 * time.Second
-
 // issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner): a
 // two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
 // key as its objid, both read as the unsigned 32-bit values that view carries. The two keys are
@@ -411,15 +406,18 @@ func (p uploadLockProbe) uploadHoldsTheLock() string {
 
 // probeIssueOwnerLock tries issue's owner lock without waiting, over and over, until it takes it,
 // the holder it first met is an upload's own transaction - where retrying could only spend the
-// window - or within runs out. A lock it takes is released with the statement that took it, since
-// it runs on the pool outside a transaction (store.TryLockOwners).
+// window - or the test's deadline comes: the other holders it waits out, the issue create and the
+// settlement of the spec document it wrote, are Postgres transactions that a loaded machine slows
+// but does not stop, and a holder the probe cannot name is still reported as a failure rather
+// than a hang. A lock it takes is released with the statement that took it, since it runs on the
+// pool outside a transaction (store.TryLockOwners).
 //
 // It is a function rather than a loop inside the test below so that the fast arm it answers is
 // shown to fire against a holder a test makes itself
 // (TestTheUploadLockProbeNamesAnUploadsOwnTransaction): an arm no run can reach guards nothing.
-func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, within time.Duration) uploadLockProbe {
+func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uploadLockProbe {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	var probe uploadLockProbe
 	for {
 		taken, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
@@ -471,7 +469,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 		t.Fatalf("hold the issue's owner lock as an upload's transaction holds it: %v", err)
 	}
 
-	probe := probeIssueOwnerLock(t, database, issue, uploadLockProbeWindow)
+	probe := probeIssueOwnerLock(t, database, issue)
 	if probe.took {
 		t.Fatal("the probe took the issue's owner lock while this test's transaction held it")
 	}
@@ -558,12 +556,12 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	probe := probeIssueOwnerLock(t, database, issue, uploadLockProbeWindow)
+	probe := probeIssueOwnerLock(t, database, issue)
 	if holding := probe.uploadHoldsTheLock(); holding != "" {
 		t.Fatal(holding)
 	}
 	if !probe.took {
-		t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over %s of attempts; the first refusal read %s", uploadLockProbeWindow, probe.heldBy())
+		t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over attempts until the test's deadline; the first refusal read %s", probe.heldBy())
 	}
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {

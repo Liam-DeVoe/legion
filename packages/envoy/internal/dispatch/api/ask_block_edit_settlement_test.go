@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // blockAskHandlerWithDocuments is blockAskHandler plus the document service a browser peer
@@ -134,7 +135,8 @@ func documentVersions(t *testing.T, handler http.Handler, artifactID string) []m
 // stored version, the signal that settlement has finished.
 func awaitSettledVersion(t *testing.T, published <-chan model.Event, artifactID string, number int) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for {
 		select {
 		case event, ok := <-published:
@@ -152,7 +154,7 @@ func awaitSettledVersion(t *testing.T, published <-chan model.Event, artifactID 
 			if payload["artifact_id"] == artifactID && version.Number == number {
 				return
 			}
-		case <-deadline:
+		case <-answered.Done():
 			t.Fatalf("settlement published no version %d of %s", number, artifactID)
 		}
 	}
@@ -334,7 +336,8 @@ func TestAnEditedBlockAskPublishesItsDocumentEventsBeforeItsOwn(t *testing.T) {
 	}
 
 	var order []model.Event
-	deadline := time.After(10 * time.Second)
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	for {
 		select {
 		case event := <-published:
@@ -353,7 +356,7 @@ func TestAnEditedBlockAskPublishesItsDocumentEventsBeforeItsOwn(t *testing.T) {
 				t.Fatalf("published the anchor refresh as event %d and ask.edited as %d, want the refresh appended first", refreshed.ID, event.ID)
 			}
 			return
-		case <-deadline:
+		case <-waited.Done():
 			t.Fatalf("the edit published %d events and no ask.edited", len(order))
 		}
 	}
@@ -735,7 +738,7 @@ func TestDocumentEditOfAnAskBlockStillUpdatesTheRow(t *testing.T) {
 
 // Editing takes the document's locks after the ask row while settlement takes them the other way
 // round. They are ordered by the owner row both hold first; if that ever stops being true this
-// deadlocks rather than fails, so it runs under its own deadline.
+// deadlocks rather than fails, so it waits only until the test's deadline, and fails there.
 func TestConcurrentBlockAskEditsAndSettlementsDoNotDeadlock(t *testing.T) {
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Block ask concurrency", "decision", transportAsk, "Which transport?")
@@ -770,10 +773,12 @@ func TestConcurrentBlockAskEditsAndSettlementsDoNotDeadlock(t *testing.T) {
 			wg.Wait()
 		}
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("concurrent block-ask edits and document settlements did not finish in 60s")
+	case <-answered.Done():
+		t.Fatal("concurrent block-ask edits and document settlements did not finish before the test's deadline")
 	}
 
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-concurrency")

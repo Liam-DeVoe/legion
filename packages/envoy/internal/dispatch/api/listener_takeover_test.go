@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // takeOverRoute is a listener route a take-over listener's script names: the registry read, the
@@ -368,7 +369,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				answered <- response
 			}()
 			// Two tries the sender made while holding the attempt.
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(testdeadline.StartupBound(t))
 			for {
 				claimsMu.Lock()
 				seen := len(claims)
@@ -377,7 +378,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("the sender made %d tries holding its attempt within 10s of the take-over, want 2", seen)
+					t.Fatalf("the sender made %d tries holding its attempt before the test's deadline after the take-over, want 2", seen)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
@@ -403,9 +404,11 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 
 			listener.refuse(false)
 			var response *httptest.ResponseRecorder
+			answeredBy, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case response = <-answered:
-			case <-time.After(15 * time.Second):
+			case <-answeredBy.Done():
 				t.Fatal("the request never answered after the take-over ended")
 			}
 			if response.Code != http.StatusCreated {

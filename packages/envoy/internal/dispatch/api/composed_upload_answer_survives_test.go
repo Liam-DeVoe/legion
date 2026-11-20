@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // answerSurvivesQuestion is the question a person answers, and answerSurvivesRemovedQuestion the
@@ -201,7 +202,7 @@ func (f answerSurvivesFixture) upload(t *testing.T, content string) {
 // reaches it fails the case with everything the wait read.
 func (f answerSurvivesFixture) await(t *testing.T, what string, holds func(answerSurvivesState) bool) answerSurvivesState {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(20 * time.Millisecond) {
 		state := f.measure(t)
 		if holds(state) {
 			return state

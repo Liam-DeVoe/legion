@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // secondProcessHandler mounts a second API stack on the database the first one is on, as the
@@ -151,12 +152,14 @@ func receiveRelayedThrough(t *testing.T, database *store.Store, subscription <-c
 // quietRelayReads drains every page read the relay has made and waits until it has made none for
 // 300 ms: a generation's start, its LISTEN catch-up and the re-reads a gap above the horizon
 // schedules all read on their own, so a count of the reads one commit costs is taken after them.
+// Each read is Postgres's to answer, so it waits for the quiet as long as the test's deadline
+// leaves.
 func quietRelayReads(t *testing.T, reads <-chan int64) {
 	t.Helper()
-	deadline := time.Now().Add(eventFeedWait)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for quiet := time.Now(); time.Since(quiet) < 300*time.Millisecond; {
 		if time.Now().After(deadline) {
-			t.Fatalf("the relay was still reading the event log after %s", eventFeedWait)
+			t.Fatal("the relay was still reading the event log at the test's deadline")
 		}
 		select {
 		case <-reads:
@@ -459,7 +462,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	if err := database.Pool.QueryRow(context.Background(), `select pg_terminate_backend($1)`, int32(listening)).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate the relay's LISTEN backend, pid %d: terminated %t (%v), want true", listening, terminated, err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(dials.dialed()) <= len(dialed) {
 		if time.Now().After(deadline) {
 			t.Fatal("the relay did not redial after its connection was terminated")
@@ -503,6 +506,8 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 
 	// The subscription open across the reset ends without a frame of the new log, whose ids
 	// stand for other events than the ones its reader was sent.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for open := true; open; {
 		select {
 		case event, more := <-subscription:
@@ -511,7 +516,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 			} else {
 				t.Fatalf("the relay published event %d into a subscription whose log was reset under it", event.Event.ID)
 			}
-		case <-time.After(5 * time.Second):
+		case <-answered.Done():
 			t.Fatal("the subscription open across the reset was never ended: its reader waits on a stream whose next frame can only lie")
 		}
 	}
@@ -579,7 +584,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	// The subscription open across the reset ends without an event of the new log, whose ids it has
 	// already seen stand for other events.
 	for ended := false; !ended; {
-		switch frame := across.next(t, eventFeedWait, "the end of the subscription open across the reset").(type) {
+		switch frame := across.next(t, testdeadline.StartupBound(t), "the end of the subscription open across the reset").(type) {
 		case LiveEventFrame:
 			if id := mustEventFrameID(t, frame); id <= head {
 				t.Fatalf("the subscription open across the reset was sent event %d of the new log", id)

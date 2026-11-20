@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestInboxCarriesDocumentForDocumentAsks(t *testing.T) {
@@ -325,7 +325,7 @@ func TestAskThreadReadsTerminateOnACyclicReplyChain(t *testing.T) {
 		{"ask card", "/api/v1/asks/" + askID},
 		{"inbox", "/api/v1/inbox"},
 	} {
-		bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+		bounded, cancel := testdeadline.Answered(t, ctx)
 		request := httptest.NewRequestWithContext(bounded, http.MethodGet, read.path, nil)
 		request.Header.Set("X-Dispatch-User", "alice")
 		response := httptest.NewRecorder()

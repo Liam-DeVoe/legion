@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // createOutcomeIssue files an issue in project as alice and returns its key.
@@ -129,10 +130,12 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
+	case <-answered.Done():
+		t.Fatal("the hub did not connect before the test's deadline")
 	}
 	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
 	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
@@ -140,7 +143,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(idleSweepGap + 300*time.Millisecond)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, testdeadline.StartupBound(t))
 	return idleSweep{handler: handler, database: database, server: srv, counter: counter, target: target, source: source}
 }
 

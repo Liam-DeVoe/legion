@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // detailReach reads one issue's detail and answers its reach as reachText writes it.
@@ -92,10 +93,11 @@ func heldRosterListener(t *testing.T) (url string, calls *atomic.Int32, release 
 	return listener.URL, calls, release
 }
 
-// awaitCalls waits until the listener has seen want calls, failing after a few seconds.
+// awaitCalls waits until the listener has seen want calls, failing at the test's deadline: a call
+// reaches the listener only after its read of the stored answer in Postgres has answered.
 func awaitCalls(t *testing.T, calls *atomic.Int32, want int32) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for calls.Load() < want {
 		if time.Now().After(deadline) {
 			t.Fatalf("the listener saw %d calls, want %d", calls.Load(), want)
@@ -311,15 +313,17 @@ func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 
 // A shutdown ends a fetch in flight: it runs on the server's lifetime, so a read waiting on a
 // listener that hangs returns unknown once the lifetime ends, not when the fetch's bound (a minute
-// here) runs out.
+// here) runs out. The shutdown comes once the fetch has reached the listener, so the read of the
+// stored answer in Postgres is behind it, and the 5 s the read is given after it bounds no
+// database call: the fetch and its store run on the ended lifetime and return at once.
 func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	lifetime, shutdown := context.WithCancel(t.Context())
 	defer shutdown()
-	served, _ := timedRosterServer(t, 0, true, lifetime)
+	served, calls := timedRosterServer(t, 0, true, lifetime)
 	served.rosters.timeout = time.Minute
 	answer := make(chan routeRoster, 1)
 	go func() { answer <- readRoster(t, served, context.Background()) }()
-	time.Sleep(200 * time.Millisecond)
+	awaitCalls(t, calls, 1)
 	shutdown()
 	select {
 	case roster := <-answer:
@@ -406,12 +410,14 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	}
 
 	release()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case roster := <-patient:
 		if got := sreReach(roster); got != "live ses-sre" {
 			t.Fatalf("the read that waited read %s, want live ses-sre", got)
 		}
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the read that waited never returned")
 	}
 	if got := sreReach(readRoster(t, served, context.Background())); got != "live ses-sre" {

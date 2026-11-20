@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestAnswerBlockAskWritesItsServerStateIntoTheDocument(t *testing.T) {
@@ -70,7 +71,7 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
@@ -128,7 +129,7 @@ func TestAskBlockWithoutOptionsSettles(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write no-option ask: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
@@ -252,7 +253,7 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 
 	var askID, question string
 	var optionsJSON []byte
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		err := database.Pool.QueryRow(context.Background(), `
 			select id::text, question, options from asks
@@ -340,7 +341,7 @@ func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
 // indexed, failing the test when settlement never reaches it.
 func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockID, question string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
@@ -451,7 +452,7 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+copied+"/text", nil, "alice").Body.String()
 		if strings.Contains(text, `#rec-answered urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\"`) &&
@@ -497,10 +498,10 @@ func documentTexts(t *testing.T, handler http.Handler, document string) (string,
 }
 
 // awaitDocumentText polls document until its live text and its latest version both hold, failing
-// the test after ten seconds, or at once when either shows refused (nil refuses nothing).
+// the test at its deadline, or at once when either shows refused (nil refuses nothing).
 func awaitDocumentText(t *testing.T, handler http.Handler, document, what string, holds, refused func(string) bool) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(20 * time.Millisecond) {
 		live, version := documentTexts(t, handler, document)
 		if refused != nil && (refused(live) || refused(version)) {
 			t.Fatalf("the document showed what it must not while waiting for %s; live:\n%s\nlatest version:\n%s", what, live, version)
@@ -751,7 +752,7 @@ type askBlockEventPayload struct {
 // blockID, failing the test when settlement never emits it.
 func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType, blockID string) askBlockEventPayload {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/events?limit=50", nil, "alice")
 		if events.Code != http.StatusOK {

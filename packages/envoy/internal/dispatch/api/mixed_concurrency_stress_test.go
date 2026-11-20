@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // pooledDocumentHandler serves a Dispatch API whose pool is maxConns wide and whose documents
@@ -43,7 +44,7 @@ func pooledDocumentHandlerWith(
 		t.Cleanup(pool.Close)
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := testdeadline.Answered(t, context.Background())
 			defer cancel()
 			if err := service.Shutdown(ctx); err != nil {
 				t.Errorf("shutdown document service: %v", err)

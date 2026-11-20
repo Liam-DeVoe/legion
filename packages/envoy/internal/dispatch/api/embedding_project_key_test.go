@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -229,9 +230,11 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 			<-release
 		})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the other process never took the embeddings-project-key-fill lease")
 	}
 
@@ -277,7 +280,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 
 	select {
 	case <-returned:
-	case <-time.After(60 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the process that skipped never took the lease the dead holder left, so the rows it did not label wait for the next boot")
 	}
 	if left := countRows(t, database,
@@ -347,9 +350,11 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 		defer close(returned)
 		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-returned:
-	case <-time.After(20 * retry):
+	case <-answered.Done():
 		t.Fatalf("the fill kept trying after %q, so it takes the lease every interval for the life of the process", gone)
 	}
 

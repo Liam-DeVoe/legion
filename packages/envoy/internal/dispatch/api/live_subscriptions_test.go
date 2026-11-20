@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // fakeLiveKind stands in for the events and agent views, which a live socket starts as it starts
@@ -233,7 +234,7 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 	// An events subscription in a delivery view's place leaves the hub.
 	client.send(t, liveSubscribe("x", eventsView(), ""))
 	second := events.next(t, 5*time.Second, "x's second events subscription")
-	client.event(t, 5*time.Second, "x")
+	client.event(t, "x")
 	if held := hubSubs(rig.served.deliveryHub); held != 0 {
 		t.Fatalf("the hub holds %d subscriptions once an events subscription took x's place, want none", held)
 	}
@@ -297,7 +298,7 @@ func TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames(t *testi
 		if refusal, ok := first.(LiveError); !ok || refusal.Sub != sub || refusal.Code != "DELIVERY_NOT_CONFIGURED" {
 			t.Fatalf("round %d: the first frame for %s = %+v, want DELIVERY_NOT_CONFIGURED", round, sub, first)
 		}
-		client.event(t, 5*time.Second, sub)
+		client.event(t, sub)
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: sub})
 		running.ended(t, 5*time.Second)
 	}
@@ -412,7 +413,7 @@ func TestAResumeOfTheWrongShapeIsAnInvalidFrame(t *testing.T) {
 	client.sendText(t, []byte(`{"type":"subscribe","sub":"h","view":{"kind":"agent","session_id":"`+session+`"},"resume":null}`))
 	agent.next(t, 5*time.Second, "an agent view with a null resume")
 	client.send(t, liveSubscribe("i", pipeline, deliveryResume))
-	client.refusal(t, 10*time.Second, "i", "DELIVERY_NOT_CONFIGURED")
+	client.refusal(t, testdeadline.StartupBound(t), "i", "DELIVERY_NOT_CONFIGURED")
 }
 
 func TestASubscriptionKnowsWhichScopesItsCallerHolds(t *testing.T) {
@@ -457,7 +458,7 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 
 	client.read()
 	for n := 1; n <= frames; n++ {
-		if event := client.event(t, 10*time.Second, "slow"); event.ID != strconv.Itoa(n) {
+		if event := client.event(t, "slow"); event.ID != strconv.Itoa(n) {
 			t.Fatalf("event %s arrived where %d was due", event.ID, n)
 		}
 	}

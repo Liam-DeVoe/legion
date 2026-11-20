@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // keyedPost posts body to the rig's route on server as alice under key, giving up after timeout as
@@ -62,22 +63,23 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	if status, body, _, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 15*time.Second); err == nil {
 		t.Fatalf("the first attempt answered %d %s; want the client to give up at 15 s", status, body)
 	}
-	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
+	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", testdeadline.StartupBound(t))
 	if err != nil || status != http.StatusConflict || !strings.Contains(body, contracts.IdempotencyKeyInFlight) ||
 		header.Get("Retry-After") != "1" {
 		t.Fatalf("the repeat after the client gave up: %d %s (%v), want 409 %s: the first run is still going",
 			status, body, err, contracts.IdempotencyKeyInFlight)
 	}
+	finished := time.Now().Add(testdeadline.StartupBound(t))
 	for {
-		status, body, header, err = keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
+		status, body, header, err = keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", testdeadline.StartupBound(t))
 		if err != nil {
 			t.Fatalf("a later repeat: %v", err)
 		}
 		if status != http.StatusConflict {
 			break
 		}
-		if time.Since(started) > time.Minute {
-			t.Fatalf("the first run never finished: still %d %s after a minute", status, body)
+		if time.Now().After(finished) {
+			t.Fatalf("the first run never finished: still %d %s at the test's deadline", status, body)
 		}
 		time.Sleep(time.Second)
 	}
@@ -209,9 +211,11 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 	}
 	releaseOnce()
 	awaitResponse(t, answered)
+	ended, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-waited:
-	case <-time.After(10 * time.Second):
+	case <-ended.Done():
 		t.Fatal("the background wait never returned once the handler answered")
 	}
 }
@@ -413,9 +417,11 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatalf("release the hold: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-served:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the request never finished once the hold on its key was released")
 	}
 	if response.Code != http.StatusCreated || rig.runs.Load() != 1 {
@@ -565,11 +571,13 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	go func() {
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice", "close-swept")
 	}()
+	committed, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-hold.committed:
-	case <-time.After(15 * time.Second):
+	case <-committed.Done():
 		close(hold.release)
-		t.Fatal("the close did not commit within 15 s")
+		t.Fatal("the close did not commit before the test's deadline")
 	}
 	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
