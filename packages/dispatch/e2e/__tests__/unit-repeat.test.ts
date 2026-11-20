@@ -4,8 +4,11 @@
  *  with `process.execPath`, an explicit `--seed`, `--rerun-each` and Bun's junit reporter. Then
  *  it hands what Bun left behind to the tool's pure functions. The directory is outside
  *  packages/dispatch, so the package's bunfig.toml does not reach that run. HOME is the same
- *  directory, so no global bunfig of the host reaches it either. One row runs the tool itself
- *  there instead, on an `--out` the tool must refuse before it starts Bun.
+ *  directory, so no global bunfig of the host reaches it either. Two rows run the tool itself
+ *  there instead: on an `--out` the tool must refuse before it starts Bun, and on a copy of the
+ *  package whose one row never ends, which the tool is stopped on. One row reads no Bun at all:
+ *  it holds the budgets of .github/workflows/dispatch-unit-repeat.yaml to the measurements beside
+ *  them.
  *
  *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
  *  there starts again at 0. A module the file imports keeps its state between reruns (measured
@@ -17,6 +20,7 @@
  */
 
 import { expect, test } from "bun:test";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +34,8 @@ import {
   parseArguments,
   type Report,
   type RowlessKind,
+  runningFiles,
+  type Stop,
   summarise,
 } from "../tools/unit-repeat";
 import { rowLimit, runBounded } from "./bounded-subprocess";
@@ -118,6 +124,7 @@ async function laneRun(
     environment,
     // Bun runs here without runLane, which is what reads /proc/meminfo, so there is no reading.
     memory: [],
+    stop: null,
   };
 }
 
@@ -489,4 +496,388 @@ test(
     expect(await Bun.file(file).text()).toBe(text);
   },
   rowLimit("short")
+);
+
+/** One line of a progress file, as e2e/tools/unit-repeat-progress.ts writes it. */
+function progressLine(fields: Readonly<Record<string, string | number>>): string {
+  return JSON.stringify(fields);
+}
+
+test(
+  "a stop names each file a worker was in, with its run and the row it was in, and passes over a finished file",
+  () => {
+    // The lie: a leg stopped at its deadline reads as one nameless timeout, or names a file every
+    // run of which had ended, or names the row in hand by the wrong place in the seed's order.
+    const lines = [
+      // Worker 1 ran a.test.ts's first run to its end, then began the second run's rows: row 2 of
+      // run 2 is in hand.
+      progressLine({ event: "load", load: "a", at: 1_000, file: "a.test.ts", pid: 1 }),
+      progressLine({ event: "run", load: "a", at: 1_001 }),
+      progressLine({ event: "start", load: "a", at: 1_002 }),
+      progressLine({ event: "end", load: "a", at: 1_003 }),
+      progressLine({ event: "done", load: "a", at: 1_004 }),
+      progressLine({ event: "run", load: "a", at: 1_005 }),
+      progressLine({ event: "start", load: "a", at: 1_006 }),
+      progressLine({ event: "end", load: "a", at: 1_007 }),
+      progressLine({ event: "start", load: "a", at: 4_000 }),
+      // Worker 2 finished b.test.ts's two runs and loaded c.test.ts, whose first row ended: a
+      // hook or the code between rows holds it.
+      progressLine({ event: "load", load: "b", at: 1_000, file: "b.test.ts", pid: 2 }),
+      progressLine({ event: "run", load: "b", at: 1_001 }),
+      progressLine({ event: "done", load: "b", at: 1_002 }),
+      progressLine({ event: "run", load: "b", at: 1_003 }),
+      progressLine({ event: "done", load: "b", at: 1_004 }),
+      progressLine({ event: "load", load: "c", at: 2_000, file: "c.test.ts", pid: 2 }),
+      progressLine({ event: "run", load: "c", at: 2_001 }),
+      progressLine({ event: "start", load: "c", at: 2_002 }),
+      progressLine({ event: "end", load: "c", at: 7_000 }),
+      // Worker 3 finished d.test.ts alone: no file of its is running.
+      progressLine({ event: "load", load: "d", at: 1_000, file: "d.test.ts", pid: 3 }),
+      progressLine({ event: "run", load: "d", at: 1_001 }),
+      progressLine({ event: "done", load: "d", at: 1_002 }),
+      progressLine({ event: "run", load: "d", at: 1_003 }),
+      progressLine({ event: "done", load: "d", at: 1_004 }),
+      // Worker 4 is in e.test.ts's own code: no run of it has begun.
+      progressLine({ event: "load", load: "e", at: 9_000, file: "e.test.ts", pid: 4 }),
+      // Worker 5 died in f.test.ts's first row before the stop, a crash of its own: Bun reports
+      // that file, and the stop names no file of a worker that was not alive at it.
+      progressLine({ event: "load", load: "f", at: 1_000, file: "f.test.ts", pid: 5 }),
+      progressLine({ event: "run", load: "f", at: 1_001 }),
+      progressLine({ event: "start", load: "f", at: 1_002 }),
+      // The last line of a file read while a worker wrote it can be cut short.
+      '{"event":"sta',
+    ];
+    const stop: Stop = {
+      signal: "SIGTERM",
+      at: 10_000,
+      afterMs: 9_500,
+      progress: { text: lines.join("\n") },
+      alive: [1, 2, 3, 4],
+      names: {
+        "a.test.ts": { names: ["a one", "outer > a two", "a three"] },
+        "c.test.ts": { unreadable: "the run that reads its rows' names exited 1" },
+      },
+    };
+    const lane = { reruns: 2, seed: SEED, script: "test:harness" };
+    expect(runningFiles(stop, lane)).toEqual([
+      {
+        file: "a.test.ts",
+        run: 2,
+        place: "row",
+        rowsBegun: 2,
+        rowsRunning: 1,
+        rowName: "outer > a two",
+        nameUnread: null,
+        quietSeconds: 6,
+        reproduce: `bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
+      },
+      {
+        file: "c.test.ts",
+        run: 1,
+        place: "between-rows",
+        rowsBegun: 1,
+        rowsRunning: 0,
+        rowName: null,
+        nameUnread: "the run that reads its rows' names exited 1",
+        quietSeconds: 3,
+        reproduce: `bun run test:harness c.test.ts --seed=${SEED}`,
+      },
+      {
+        file: "e.test.ts",
+        run: 1,
+        place: "loading",
+        rowsBegun: 0,
+        rowsRunning: 0,
+        rowName: null,
+        nameUnread: null,
+        quietSeconds: 1,
+        reproduce: `bun run test:harness e.test.ts --seed=${SEED}`,
+      },
+    ]);
+
+    // The report of that stop: Bun wrote no junit file and exited 143, which the stop explains,
+    // so the one failure outside any test is the stop, and each running file has an error of its
+    // own, the row's name in it.
+    const report = summarise({
+      lane: "harness",
+      target: "e2e/__tests__",
+      seed: SEED,
+      reruns: 2,
+      wallMs: 9_600,
+      exitCode: 143,
+      signal: null,
+      junit: { unreadable: "Bun wrote no junit file: junit.xml is missing." },
+      log: "",
+      environment: {},
+      memory: [],
+      stop,
+    });
+    expect(kinds(report)).toEqual(["stopped"]);
+    expect(report.exitCode).toBe(1);
+    const errors = annotations(report).filter((line) => line.startsWith("::error "));
+    expect(errors).toEqual([
+      expect.stringContaining("The leg was stopped by SIGTERM after 9.5 s, before Bun ended"),
+      "::error file=packages/dispatch/a.test.ts,title=Running when the leg was stopped::a.test.ts: " +
+        'in row 2, "outer > a two", of run 2 of 2, 6.0 s since it began, when SIGTERM stopped ' +
+        `the leg after 9.5 s (seed ${SEED}). Run it again from packages/dispatch: ` +
+        `bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
+      expect.stringContaining(
+        "c.test.ts: in run 1 of 2, after row 1, whose name was not read (the run that reads its " +
+          "rows' names exited 1), ended"
+      ),
+      expect.stringContaining("e.test.ts: in run 1 of 2, before it began"),
+    ]);
+    expect(markdown(report)).toContain("### The leg was stopped while 3 test files were running");
+
+    // Bun's junit file after a stop: a `(worker crashed)` testcase says Bun had not taken in that
+    // file's results when the stop came. It is named as such, and no failing row is made of it.
+    const crashed = (file: string) =>
+      `  <testsuite name="${file}" file="${file}" tests="1" assertions="0" failures="1" skipped="0" time="1" hostname="runner">\n` +
+      `    <testcase name="(worker crashed)" classname="" time="0" file="${file}" assertions="0">\n` +
+      `      <failure type="Error" message="worker process crashed before reporting results" />\n` +
+      "    </testcase>\n  </testsuite>\n";
+    const withJunit = summarise({
+      lane: "harness",
+      target: "e2e/__tests__",
+      seed: SEED,
+      reruns: 2,
+      wallMs: 9_600,
+      exitCode: 143,
+      signal: null,
+      junit: {
+        text:
+          '<?xml version="1.0" encoding="UTF-8"?>\n' +
+          '<testsuites name="bun test" tests="2" assertions="0" failures="2" skipped="0" time="1">\n' +
+          `${crashed("a.test.ts")}${crashed("f.test.ts")}</testsuites>\n`,
+      },
+      log: "",
+      environment: {},
+      memory: [],
+      stop,
+    });
+    expect(withJunit.failingRows).toEqual([]);
+    expect(withJunit.stop?.unreported).toEqual(["a.test.ts", "f.test.ts"]);
+    expect(kinds(withJunit)).toEqual(["stopped"]);
+    expect(withJunit.rowlessFailures[0].text).toEndWith(
+      " Bun had not reported the results of 2 files when the stop came: a.test.ts, f.test.ts."
+    );
+  },
+  rowLimit()
+);
+
+test(
+  "a leg stopped while a row never ends names that row and exits 1",
+  async () => {
+    // The lie: the leg that reaches its deadline is ended from outside and names nothing, as
+    // three web-cold legs did at their two-minute budget. Here the tool itself, on a copy of the
+    // package whose one row spins without yielding, gets the SIGTERM `timeout` sends at the
+    // deadline, once that row has begun.
+    const directory = scratch();
+    const tools = join(directory, "e2e", "tools");
+    const rows = join(directory, "e2e", "__tests__");
+    mkdirSync(tools, { recursive: true });
+    mkdirSync(rows, { recursive: true });
+    for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
+      copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
+    }
+    await Bun.write(
+      join(directory, "package.json"),
+      `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel --timeout 60000" } })}\n`
+    );
+    const mark = join(directory, "began");
+    await Bun.write(join(rows, "steady.test.ts"), passes);
+    await Bun.write(
+      join(rows, "spins.test.ts"),
+      `import { test } from "bun:test";\nimport { writeFileSync } from "node:fs";\n\n` +
+        `test("before the spin", () => {});\n` +
+        `test("spins for ever", () => {\n  writeFileSync(${JSON.stringify(mark)}, "");\n  for (;;) {}\n});\n` +
+        `test("after the spin", () => {});\n`
+    );
+    const out = join(directory, "out");
+    // The driver starts the tool, waits for the planted row to write its mark (or for the tool
+    // to end first), and then sends the tool alone the SIGTERM the step's `timeout` sends.
+    const driver =
+      '"$@" & tool=$!; until [ -e "$MARK" ] || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
+      'kill -TERM "$tool" 2>/dev/null; wait "$tool"';
+    const { code, stdout } = await runBounded({
+      argv: [
+        "bash",
+        "-c",
+        driver,
+        "driver",
+        process.execPath,
+        join(tools, "unit-repeat.ts"),
+        "--lane",
+        "harness",
+        "--reruns",
+        "2",
+        "--seed",
+        String(SEED),
+        "--out",
+        out,
+      ],
+      bound: "short",
+      cwd: directory,
+      env: {
+        HOME: directory,
+        PATH: process.env.PATH ?? "",
+        TMPDIR: tmpdir(),
+        GITHUB_ACTIONS: "true",
+        MARK: mark,
+      },
+      from: import.meta.url,
+    });
+    expect(code).toBe(1);
+    const report: Report = JSON.parse(readFileSync(join(out, "report.json"), "utf8"));
+    expect(report.stop?.signal).toBe("SIGTERM");
+    expect(report.stop?.running).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/spins.test.ts",
+        run: 1,
+        place: "row",
+        rowName: "spins for ever",
+      }),
+    ]);
+    // Bun's own `(worker crashed)` testcase for the file the stop ended says the stop came before
+    // its results: the report names the file so, and makes no failing row of it.
+    expect(report.failingRows).toEqual([]);
+    expect(report.stop?.unreported).toContain("e2e/__tests__/spins.test.ts");
+    expect(kinds(report)).toEqual(["stopped"]);
+    expect(stdout).toMatch(
+      /^::error file=packages\/dispatch\/e2e\/__tests__\/spins\.test\.ts,title=Running when the leg was stopped::e2e\/__tests__\/spins\.test\.ts: in row [1-3], "spins for ever", of run 1 of 2, /m
+    );
+    // The record of where each file was stays beside the report.
+    expect(readFileSync(join(out, "progress.jsonl"), "utf8")).toContain('"event":"start"');
+  },
+  rowLimit("short")
+);
+
+/** What the budget check reads of one leg of the matrix. */
+interface MeasuredLeg {
+  readonly lane: string;
+  readonly slowest: number;
+  readonly otherSteps: number;
+  readonly deadline: number;
+  readonly stepMinutes: number;
+  readonly jobMinutes: number;
+}
+
+/** The margin of every budget over what it was measured at: twice the slowest run. */
+const MARGIN = 2;
+/** The seconds the step's `timeout --kill-after` gives the tool to report after the deadline. */
+const KILL_AFTER = 60;
+
+function mapping(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : undefined;
+}
+
+/** Every way the budgets of the workflow text `text` fall short of the measurements beside them,
+ *  and the legs it read. A list of no problem over no leg is a check that read nothing, which
+ *  the caller refuses. */
+function budgetProblems(text: string): { problems: string[]; legs: MeasuredLeg[] } {
+  const problems: string[] = [];
+  const legs: MeasuredLeg[] = [];
+  const job = mapping(mapping(mapping(Bun.YAML.parse(text))?.jobs)?.repeat);
+  if (job === undefined) return { problems: ["the workflow has no job named repeat"], legs };
+  if (job["timeout-minutes"] !== `\${{ matrix.job_minutes }}`) {
+    problems.push("the job's timeout-minutes is not the matrix's job_minutes");
+  }
+  const steps = Array.isArray(job.steps) ? job.steps.map(mapping) : [];
+  const step = steps.find(
+    (each) => typeof each?.name === "string" && each.name.startsWith("Run the lane")
+  );
+  if (step?.["timeout-minutes"] !== `\${{ matrix.step_minutes }}`) {
+    problems.push("the test step's timeout-minutes is not the matrix's step_minutes");
+  }
+  const run = typeof step?.run === "string" ? step.run : "";
+  if (
+    !run.includes(
+      `timeout --foreground --signal=TERM --kill-after=${KILL_AFTER} \${{ matrix.deadline_seconds }} bun run test:repeat `
+    )
+  ) {
+    problems.push(
+      `the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=${KILL_AFTER}`
+    );
+  }
+  const include = mapping(mapping(job.strategy)?.matrix)?.include;
+  for (const entry of Array.isArray(include) ? include.map(mapping) : []) {
+    const number = (key: string) => (typeof entry?.[key] === "number" ? entry[key] : Number.NaN);
+    const leg = {
+      lane: String(entry?.lane),
+      slowest: number("slowest_seconds"),
+      otherSteps: number("other_steps_seconds"),
+      deadline: number("deadline_seconds"),
+      stepMinutes: number("step_minutes"),
+      jobMinutes: number("job_minutes"),
+    };
+    legs.push(leg);
+    if (Object.values(leg).some((value) => Number.isNaN(value))) {
+      problems.push(`${leg.lane}: a measurement or a budget is missing or is not a number`);
+      continue;
+    }
+    if (leg.deadline < MARGIN * leg.slowest) {
+      problems.push(
+        `${leg.lane}: deadline_seconds ${leg.deadline} is under ${MARGIN} x the slowest ${leg.slowest} s`
+      );
+    }
+    if (leg.stepMinutes * 60 < leg.deadline + KILL_AFTER + 60) {
+      problems.push(
+        `${leg.lane}: step_minutes ${leg.stepMinutes} is under the deadline, the ${KILL_AFTER} s kill-after and 60 s`
+      );
+    }
+    if (leg.jobMinutes * 60 < leg.stepMinutes * 60 + MARGIN * leg.otherSteps) {
+      problems.push(
+        `${leg.lane}: job_minutes ${leg.jobMinutes} is under step_minutes and ${MARGIN} x the other steps' ${leg.otherSteps} s`
+      );
+    }
+  }
+  return { problems, legs };
+}
+
+test(
+  "each budget of the repeat workflow is at least its measured slowest time times the margin",
+  () => {
+    // The lie: a budget set below what the leg takes on main's suite ends a leg that was passing,
+    // as the 16-minute web and the two-minute web-cold budgets did. The workflow writes each
+    // lane's measurement beside its budgets, and .github/ci-notes/dispatch-unit-repeat.md says
+    // where each was read.
+    const text = readFileSync(
+      fileURLToPath(
+        new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
+      ),
+      "utf8"
+    );
+    const { problems, legs } = budgetProblems(text);
+    expect(legs.map((leg) => leg.lane)).toEqual(["web", "web-cold", "harness"]);
+    expect(problems).toEqual([]);
+
+    // The controls: each budget moved below its rule, each in a copy of the text, fails by name.
+    const planted = (from: string, to: string) => {
+      expect(text).toContain(from);
+      return budgetProblems(text.replace(from, to)).problems;
+    };
+    expect(planted("deadline_seconds: 2280", "deadline_seconds: 2200")).toEqual([
+      "web: deadline_seconds 2200 is under 2 x the slowest 1133 s",
+    ]);
+    expect(planted("slowest_seconds: 1439", "slowest_seconds: 1500")).toEqual([
+      "harness: deadline_seconds 2880 is under 2 x the slowest 1500 s",
+    ]);
+    expect(planted("step_minutes: 7 ", "step_minutes: 6 ")).toEqual([
+      "web-cold: step_minutes 6 is under the deadline, the 60 s kill-after and 60 s",
+    ]);
+    expect(planted("job_minutes: 58 ", "job_minutes: 57 ")).toEqual([
+      "harness: job_minutes 57 is under step_minutes and 2 x the other steps' 229 s",
+    ]);
+    expect(
+      planted(`--kill-after=60 \${{ matrix.deadline_seconds }}`, "--kill-after=60 600")
+    ).toEqual([
+      "the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=60",
+    ]);
+    expect(planted(`timeout-minutes: \${{ matrix.job_minutes }}`, "timeout-minutes: 60")).toEqual([
+      "the job's timeout-minutes is not the matrix's job_minutes",
+    ]);
+  },
+  rowLimit()
 );

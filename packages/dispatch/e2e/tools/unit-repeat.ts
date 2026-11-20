@@ -48,12 +48,26 @@
  *  A file that fails to load leaves no suite in the junit file. Bun counts it on a ` N error`
  *  line of its summary, and the report names that count as a failure that belongs to no row.
  *
+ *  A leg's deadline. A SIGTERM or a SIGINT the tool receives while Bun runs is a stop: the
+ *  workflow runs the tool under `timeout --foreground --signal=TERM` inside its step's budget,
+ *  and GitHub's runner signals the step when that budget ends. The tool adds
+ *  e2e/tools/unit-repeat-progress.ts to the lane's preloads, which writes to
+ *  `<out>/progress.jsonl` where each test file is: which run of it, which row of that run. On a
+ *  stop the tool reads that file first, then passes the signal on to Bun, kills Bun 10 s later if
+ *  it is still running, and writes the report as for any run. The report names each test file a
+ *  worker was in: the file, its run, the row of that run by its place in the seed's order, how
+ *  long since that file's last event, and the command that runs the file again in that order. A
+ *  leg that reaches its deadline is never a failure with no name. The progress file stays in
+ *  `<out>` after a stop; after a run that ended by itself the junit file holds all it holds, and
+ *  it is removed.
+ *
  *  A run that read nothing is refused, not reported as clean. The exit status is 1 when a row
- *  failed, when Bun exited non-zero, when no testcase was read, or when a failure belongs to no
- *  row. It is 2 for a bad command line, and 0 otherwise. An `--out` that cannot be the output
- *  directory - a file, a path under a file, a place the tool may not write - is a bad command
- *  line too, refused before Bun starts. e2e/__tests__/unit-repeat.test.ts runs real Bun and
- *  checks the reader and the report on the files Bun writes.
+ *  failed, when Bun exited non-zero, when no testcase was read, when a failure belongs to no
+ *  row, or when the run was stopped. It is 2 for a bad command line, and 0 otherwise. An `--out`
+ *  that cannot be the output directory - a file, a path under a file, a place the tool may not
+ *  write - is a bad command line too, refused before Bun starts. e2e/__tests__/unit-repeat.test.ts
+ *  runs real Bun and checks the reader and the report on the files Bun writes, and a stop of a
+ *  leg whose row never ends.
  */
 import {
   appendFileSync,
@@ -94,6 +108,9 @@ function isLane(text: string): text is Lane {
 /** This package's directory. Every lane runs from it. */
 const packageDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
+/** The preload that writes where each test file is, which a stop reads. */
+const progressPreload = fileURLToPath(new URL("./unit-repeat-progress.ts", import.meta.url));
+
 /** The largest seed Bun 1.4.4 accepts. Its `--seed` takes a decimal number from 0 to 2^32 - 1. */
 const MAX_SEED = 2 ** 32 - 1;
 const DEFAULT_RERUNS = 20;
@@ -106,6 +123,20 @@ const LOG_TAIL_LINES = 40;
 const ERROR_LIMIT = 10;
 /** How often the tool reads /proc/meminfo while Bun runs. */
 const MEMORY_SAMPLE_MS = 5_000;
+/** How long Bun gets to end after a stop passed on to it, before the tool kills it. Bun 1.4.4
+ *  ended 0.08 s after a SIGTERM with a worker spinning in a row that never yields (measured on
+ *  2026-11-20): it prints the files still running, ends its workers and exits 143. */
+const STOP_GRACE_MS = 10_000;
+/** How long Bun's pipes get to close after Bun ended on a stop, before the tool stops reading
+ *  them: a process Bun left behind can hold a pipe open, and the report must not wait on it. */
+const PIPE_GRACE_MS = 2_000;
+/** How long the run that reads a running file's rows' names gets before it is killed. It imports
+ *  the file and runs its hooks, but no row's body, so it ends in seconds; the bound keeps the
+ *  report inside the minute `timeout --kill-after` leaves the tool after a stop. */
+const NAMES_BOUND_MS = 20_000;
+/** The name of the testcase Bun 1.4.4's junit file gives a file whose `--parallel` worker ended
+ *  before it reported, with the message "worker process crashed before reporting results". */
+const WORKER_CRASHED = "(worker crashed)";
 
 /** The value `--lane` takes, as the usage writes it: `<web|web-cold|harness>`. */
 const laneChoice = `<${laneNames.join("|")}>`;
@@ -430,7 +461,30 @@ export interface LaneRun {
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** The readings of /proc/meminfo taken while Bun ran. It is empty where none could be read. */
   readonly memory: readonly MemorySample[];
+  /** The stop the tool received while Bun ran, or null where Bun ended by itself. */
+  readonly stop: Stop | null;
 }
+
+/** A SIGTERM or SIGINT the tool received while Bun ran, the progress file as it read at that
+ *  moment, before it passed the signal on to Bun, and the names of the rows of each file that was
+ *  running, which it read once Bun had ended. */
+export interface Stop {
+  readonly signal: string;
+  /** When it came, in milliseconds since the epoch, the clock the progress file writes. */
+  readonly at: number;
+  /** How long Bun had run when it came, in milliseconds. */
+  readonly afterMs: number;
+  /** The text of `<out>/progress.jsonl`, or why it could not be read. */
+  readonly progress: { readonly text: string } | { readonly unreadable: string };
+  /** The pids of the workers the progress file names that were alive at the stop. */
+  readonly alive: readonly number[];
+  /** For each running file that had begun a row, its rows' names in the order Bun runs them under
+   *  the leg's seed, or why they could not be read. */
+  readonly names: Readonly<Record<string, RowNames>>;
+}
+
+/** A file's rows by name, in the order Bun runs them, or why they could not be read. */
+export type RowNames = { readonly names: readonly string[] } | { readonly unreadable: string };
 
 /** One reading of /proc/meminfo, in KiB, which the file writes as `kB`. */
 export interface MemorySample {
@@ -477,7 +531,48 @@ export type RowlessKind =
   | "bun-errors"
   | "junit-unreadable"
   | "no-testcase"
-  | "uneven-file";
+  | "uneven-file"
+  | "stopped";
+
+/** A test file a worker of Bun was in when the leg was stopped, as the progress file says. */
+export interface RunningFile {
+  readonly file: string;
+  /** The run of the file it was in, counted from 1. */
+  readonly run: number;
+  /** `row`: a row of that run had begun and not ended. `between-rows`: every row that had begun
+   *  had ended, so a hook ran, or the code between two `describe`s. `loading`: the run had not
+   *  begun, so the file's own code ran, which Bun runs again for each run of it. */
+  readonly place: "row" | "between-rows" | "loading";
+  /** How many rows of that run had begun: the row in hand is this one in the seed's order. */
+  readonly rowsBegun: number;
+  /** How many of them had not ended: more than one only for rows a file runs concurrently. */
+  readonly rowsRunning: number;
+  /** The name of row `rowsBegun`, its `describe`s first as Bun prints them: the row in hand, or
+   *  the last row that ended, where the file was between rows. Null where no row had begun, or
+   *  where the names could not be read. */
+  readonly rowName: string | null;
+  /** Why `rowName` is null although a row had begun, or null. */
+  readonly nameUnread: string | null;
+  /** Seconds from the file's last event in the progress file to the stop. */
+  readonly quietSeconds: number;
+  /** The command, run from packages/dispatch, that runs the file again in the same order up to
+   *  that run. */
+  readonly reproduce: string;
+}
+
+/** What the report says of a stop. */
+export interface StopReport {
+  readonly signal: string;
+  readonly afterSeconds: number;
+  readonly running: readonly RunningFile[];
+  /** Why the progress file could not be read, or null where it was read. */
+  readonly progressUnreadable: string | null;
+  /** The pids of the workers the progress file names that were alive at the stop. */
+  readonly alive: readonly number[];
+  /** The files Bun gave a `(worker crashed)` testcase: it had not taken in their results when
+   *  the stop came. */
+  readonly unreported: readonly string[];
+}
 
 /** A failure that belongs to no row. */
 export interface RowlessFailure {
@@ -517,6 +612,8 @@ export interface Report {
   readonly bunLogTail: readonly string[];
   /** The whole machine's memory while Bun ran. It is null where no reading could be taken. */
   readonly machineMemory: MachineMemory | null;
+  /** The stop that ended the run, or null where Bun ended by itself. */
+  readonly stop: StopReport | null;
   readonly exitCode: 0 | 1;
 }
 
@@ -578,9 +675,178 @@ function machineMemory(samples: readonly MemorySample[]): MachineMemory | null {
   };
 }
 
+/** One line of the progress file, as e2e/tools/unit-repeat-progress.ts writes it. */
+type ProgressLine =
+  | {
+      readonly event: "load";
+      readonly load: string;
+      readonly at: number;
+      readonly file: string;
+      readonly pid: number;
+    }
+  | {
+      readonly event: "run" | "start" | "end" | "done";
+      readonly load: string;
+      readonly at: number;
+    };
+
+/** The line `text` holds, or undefined for one that is not a line the preload writes: the last
+ *  line of a file read while a worker wrote to it can be cut short. */
+function progressLine(text: string): ProgressLine | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  if (!("event" in value && "load" in value && "at" in value)) return undefined;
+  const { event, load, at } = value;
+  if (typeof load !== "string" || typeof at !== "number") return undefined;
+  if (event === "run" || event === "start" || event === "end" || event === "done") {
+    return { event, load, at };
+  }
+  if (event !== "load" || !("file" in value && "pid" in value)) return undefined;
+  const { file, pid } = value;
+  return typeof file === "string" && typeof pid === "number"
+    ? { event, load, at, file, pid }
+    : undefined;
+}
+
+/** Where one load of a test file had got to, as its lines in the progress file say. */
+interface LoadState {
+  readonly file: string;
+  runs: number;
+  done: number;
+  /** The rows begun and ended in its latest run. */
+  begun: number;
+  ended: number;
+  lastAt: number;
+}
+
+/** Each worker's latest load, from the progress file's `text`, by the worker's pid. */
+function latestLoads(text: string): Map<number, LoadState> {
+  const loads = new Map<string, LoadState>();
+  const latest = new Map<number, LoadState>();
+  for (const line of text.split("\n")) {
+    const read = progressLine(line);
+    if (read === undefined) continue;
+    if (read.event === "load") {
+      const state = { file: read.file, runs: 0, done: 0, begun: 0, ended: 0, lastAt: read.at };
+      loads.set(read.load, state);
+      latest.set(read.pid, state);
+      continue;
+    }
+    const state = loads.get(read.load);
+    if (state === undefined) continue;
+    state.lastAt = read.at;
+    if (read.event === "run") {
+      state.runs += 1;
+      state.begun = 0;
+      state.ended = 0;
+    } else if (read.event === "start") state.begun += 1;
+    else if (read.event === "end") state.ended += 1;
+    else state.done += 1;
+  }
+  return latest;
+}
+
+/** The pids of the workers the progress file's `text` names that are alive now, which the stop
+ *  reads before it passes the signal on to Bun. A worker that died before the stop, a crash of
+ *  its own, is not among them. */
+function liveWorkers(text: string): number[] {
+  const alive: number[] = [];
+  for (const pid of latestLoads(text).keys()) {
+    try {
+      process.kill(pid, 0);
+      alive.push(pid);
+    } catch {
+      // Gone: ESRCH. A worker of this run is this user's, so EPERM does not arise.
+    }
+  }
+  return alive;
+}
+
+/** The test file each worker alive at the stop was in, from the progress file the stop read:
+ *  that worker's latest load, unless every run of that file had ended. Each row it names takes
+ *  its name from the stop's `names`. The file quiet the longest comes first, since it is the one
+ *  most likely to hang. */
+export function runningFiles(
+  stop: Stop,
+  lane: { readonly reruns: number; readonly seed: number; readonly script: string }
+): RunningFile[] {
+  if ("unreadable" in stop.progress) return [];
+  const latest = latestLoads(stop.progress.text);
+  const running: RunningFile[] = [];
+  for (const [pid, state] of latest) {
+    if (!stop.alive.includes(pid) || state.done >= lane.reruns) continue;
+    const inRun = state.runs > state.done;
+    const number = inRun ? state.runs : state.done + 1;
+    const rowsBegun = inRun ? state.begun : 0;
+    const names = stop.names[state.file];
+    let rowName: string | null = null;
+    let nameUnread: string | null = null;
+    if (rowsBegun > 0) {
+      if (names === undefined) nameUnread = "no run read the names of its rows";
+      else if ("unreadable" in names) nameUnread = names.unreadable;
+      else if (rowsBegun > names.names.length) {
+        nameUnread = `the run that read its rows' names read ${counted(names.names.length, "row")}`;
+      } else rowName = names.names[rowsBegun - 1];
+    }
+    running.push({
+      file: state.file,
+      run: number,
+      place: !inRun ? "loading" : state.begun > state.ended ? "row" : "between-rows",
+      rowsBegun,
+      rowsRunning: inRun ? state.begun - state.ended : 0,
+      rowName,
+      nameUnread,
+      quietSeconds: Math.round((stop.at - state.lastAt) / 100) / 10,
+      // As a failing row's command: the file alone with the seed and `--rerun-each=n` runs as it
+      // did up to run n.
+      reproduce: `bun run ${lane.script} ${state.file} --seed=${lane.seed}${number > 1 ? ` --rerun-each=${number}` : ""}`,
+    });
+  }
+  return running.sort((one, other) => other.quietSeconds - one.quietSeconds);
+}
+
+/** The failures that follow from a stop alone: Bun was stopped before it wrote its junit file
+ *  and before every run of every file ended, and it exits non-zero on the signal. */
+const followsFromStop: ReadonlySet<RowlessKind> = new Set([
+  "bun-exit",
+  "junit-unreadable",
+  "no-testcase",
+  "uneven-file",
+]);
+
+/** Where a running file was, in words:
+ *  `row 3, "a > b", of run 2 of 20, 61.2 s since it began`. */
+function placeText(file: RunningFile, reruns: number): string {
+  const run = `run ${file.run} of ${reruns}`;
+  const quiet = `${file.quietSeconds.toFixed(1)} s`;
+  const row = `row ${file.rowsBegun}, ${
+    file.rowName === null
+      ? `whose name was not read (${file.nameUnread})`
+      : JSON.stringify(file.rowName)
+  },`;
+  if (file.place === "row") {
+    const together =
+      file.rowsRunning > 1 ? ` (with ${file.rowsRunning - 1} more begun beside it)` : "";
+    return `${row} of ${run}${together}, ${quiet} since it began`;
+  }
+  if (file.place === "between-rows") {
+    return file.rowsBegun === 0
+      ? `${run}, before its first row (a beforeAll hook), ${quiet} since the run began`
+      : `${run}, after ${row} ended (a hook, or the code around its rows), ${quiet} since`;
+  }
+  return `${run}, before it began: the file's own code, which Bun runs for each run, ${quiet} since its last event`;
+}
+
 /** The report of one run of a lane. */
 export function summarise(run: LaneRun): Report {
   const { script } = lanes[run.lane];
+  const running =
+    run.stop === null ? [] : runningFiles(run.stop, { reruns: run.reruns, seed: run.seed, script });
   const rowless: RowlessFailure[] = [];
   let junit: Junit = { files: [], testcases: [] };
   if ("unreadable" in run.junit) {
@@ -601,7 +867,24 @@ export function summarise(run: LaneRun): Report {
       });
     }
   }
-
+  const lost: string[] = [];
+  if (run.stop !== null) {
+    // Bun 1.4.4 writes its junit file on a stop too, with a `(worker crashed)` testcase for each
+    // file whose results it had not taken in when the stop came: the file in hand, and also a
+    // file whose worker had ended it, or had ended its rows and exited, a moment before (both
+    // measured on 2026-11-20). That testcase says the stop came first, not that a row failed,
+    // and it cannot tell a worker that crashed before the stop from one the stop ended. So after
+    // a stop each such file is named as a file whose results Bun did not report, and no failing
+    // row is made of it.
+    junit = {
+      files: junit.files,
+      testcases: junit.testcases.filter((each) => {
+        const crashed = each.name === WORKER_CRASHED && each.describe.length === 0;
+        if (crashed) lost.push(each.file);
+        return !crashed;
+      }),
+    };
+  }
   const rows = new Map<string, Testcase[]>();
   const perFile = new Map<string, number>(junit.files.map((file) => [file, 0]));
   for (const testcase of junit.testcases) {
@@ -664,6 +947,38 @@ export function summarise(run: LaneRun): Report {
     });
   }
 
+  let stop: StopReport | null = null;
+  let failures = rowless;
+  if (run.stop !== null) {
+    const { progress } = run.stop;
+    stop = {
+      signal: run.stop.signal,
+      afterSeconds: Math.round(run.stop.afterMs / 100) / 10,
+      running,
+      progressUnreadable: "unreadable" in progress ? progress.unreadable : null,
+      alive: run.stop.alive,
+      unreported: lost,
+    };
+    const named =
+      stop.progressUnreadable !== null
+        ? `the progress file could not be read (${stop.progressUnreadable}), so no test file is named`
+        : stop.running.length === 0
+          ? "the progress file names no test file a worker was in, so every worker was between files"
+          : `${counted(stop.running.length, "test file was", "test files were")} running, which the ` +
+            "report names below with the run and the row each was in";
+    const unreported =
+      lost.length === 0
+        ? ""
+        : ` Bun had not reported the results of ${counted(lost.length, "file")} when the stop came: ${lost.join(", ")}.`;
+    failures = [
+      {
+        kind: "stopped",
+        text: `The leg was stopped by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, before Bun ended: ${named}.${unreported}`,
+      },
+      ...rowless.filter((failure) => !followsFromStop.has(failure.kind)),
+    ];
+  }
+
   return {
     github: githubRun(run.environment),
     lane: run.lane,
@@ -679,12 +994,14 @@ export function summarise(run: LaneRun): Report {
     },
     testcases,
     failingRows,
-    rowlessFailures: rowless,
-    bunLogTail: rowless.length === 0 ? [] : lastLines(run.log, LOG_TAIL_LINES),
+    rowlessFailures: failures,
+    bunLogTail: failures.length === 0 ? [] : lastLines(run.log, LOG_TAIL_LINES),
     machineMemory: machineMemory(run.memory),
-    // A non-zero exit of Bun leaves a failing row or a `bun-exit` failure, and a run with no
-    // testcase leaves a `junit-unreadable` or a `no-testcase` one, so these two hold every failure.
-    exitCode: failingRows.length > 0 || rowless.length > 0 ? 1 : 0,
+    stop,
+    // A non-zero exit of Bun leaves a failing row or a `bun-exit` failure, a run with no
+    // testcase leaves a `junit-unreadable` or a `no-testcase` one, and a stop leaves a `stopped`
+    // one, so these two hold every failure.
+    exitCode: failingRows.length > 0 || failures.length > 0 ? 1 : 0,
   };
 }
 
@@ -754,6 +1071,11 @@ export function markdown(report: Report): string {
     `- Reruns: ${report.reruns}`,
     `- Bun's exit status: ${report.bunExit}`,
     `- Wall time: ${report.wallSeconds.toFixed(1)} s`,
+    ...(report.stop === null
+      ? []
+      : [
+          `- Stopped: by ${report.stop.signal} after ${report.stop.afterSeconds.toFixed(1)} s, before Bun ended`,
+        ]),
     `- One run: ${oneRunText(report)}`,
     `- All runs: ${testcasesText(report)}`,
     `- Machine memory, which counts every process on the machine and not Bun's alone: ` +
@@ -761,9 +1083,38 @@ export function markdown(report: Report): string {
     ""
   );
 
+  const { stop } = report;
+  if (stop !== null) {
+    lines.push(
+      stop.running.length === 0
+        ? "### The leg was stopped, and no test file is named"
+        : `### The leg was stopped while ${counted(stop.running.length, "test file was", "test files were")} running`,
+      ""
+    );
+    for (const file of stop.running) {
+      lines.push(
+        `#### ${code(file.file)}`,
+        "",
+        `In ${placeText(file, report.reruns)}. The row is counted in the order Bun ran the`,
+        "file's rows under the seed. To run the file again in that order up to that run, run this",
+        "from `packages/dispatch`:",
+        "",
+        ...fenced(file.reproduce, "sh"),
+        ""
+      );
+    }
+  }
+
   const failing = report.failingRows;
+  const read = report.testcases.passed + report.testcases.failed + report.testcases.skipped;
   lines.push(
-    failing.length === 0 ? "### No row failed" : `### ${counted(failing.length, "row")} failed`,
+    failing.length > 0
+      ? `### ${counted(failing.length, "row")} failed`
+      : stop === null
+        ? "### No row failed"
+        : read === 0
+          ? "### No row's result was read from the junit file"
+          : "### No row that ended before the stop failed",
     ""
   );
   for (const row of failing) {
@@ -822,9 +1173,10 @@ function workflowCommand(
 }
 
 /** The GitHub Actions annotations of the report: one `::error` per failure that belongs to no
- *  row, then one per failing row, and one `::notice` with the totals. GitHub keeps ERROR_LIMIT
- *  errors a step. So where there are more, the last of the ERROR_LIMIT errors takes the place of
- *  the rest and says how many more failures report.md lists. */
+ *  row, then one per test file that was running when the leg was stopped, then one per failing
+ *  row, and one `::notice` with the totals. GitHub keeps ERROR_LIMIT errors a step. So where
+ *  there are more, the last of the ERROR_LIMIT errors takes the place of the rest and says how
+ *  many more failures report.md lists. */
 export function annotations(report: Report): string[] {
   const rowless = report.rowlessFailures.map((failure) =>
     workflowCommand(
@@ -833,6 +1185,19 @@ export function annotations(report: Report): string[] {
       `${failure.text} (seed ${report.seed})`
     )
   );
+  const { stop } = report;
+  const running =
+    stop === null
+      ? []
+      : stop.running.map((file) =>
+          workflowCommand(
+            "error",
+            { file: `packages/dispatch/${file.file}`, title: "Running when the leg was stopped" },
+            `${file.file}: in ${placeText(file, report.reruns)}, when ${stop.signal} stopped the ` +
+              `leg after ${stop.afterSeconds.toFixed(1)} s (seed ${report.seed}). Run it again ` +
+              `from packages/dispatch: ${file.reproduce}`
+          )
+        );
   const rows = report.failingRows.map((row) =>
     workflowCommand(
       "error",
@@ -843,18 +1208,29 @@ export function annotations(report: Report): string[] {
       `${row.name} failed ${row.fails}/${row.runs} runs (seed ${report.seed}): ${row.message}`
     )
   );
-  const lines = [...rowless, ...rows];
+  const groups = [
+    {
+      lines: rowless,
+      more: (left: number) =>
+        `${counted(left, "more failure that belongs", "more failures that belong")} to no row`,
+    },
+    {
+      lines: running,
+      more: (left: number) =>
+        `${counted(left, "more test file", "more test files")} running when the leg was stopped`,
+    },
+    { lines: rows, more: (left: number) => counted(left, "more failing row") },
+  ];
+  const lines = groups.flatMap((group) => group.lines);
   if (lines.length > ERROR_LIMIT) {
     const shown = ERROR_LIMIT - 1;
-    const rowlessLeft = Math.max(0, rowless.length - shown);
-    const rowsLeft = lines.length - shown - rowlessLeft;
     const left: string[] = [];
-    if (rowlessLeft > 0) {
-      left.push(
-        `${counted(rowlessLeft, "more failure that belongs", "more failures that belong")} to no row`
-      );
+    let before = 0;
+    for (const group of groups) {
+      const kept = Math.min(group.lines.length, Math.max(0, shown - before));
+      if (kept < group.lines.length) left.push(group.more(group.lines.length - kept));
+      before += group.lines.length;
     }
-    if (rowsLeft > 0) left.push(counted(rowsLeft, "more failing row"));
     lines.length = shown;
     lines.push(
       workflowCommand(
@@ -882,9 +1258,9 @@ export function annotations(report: Report): string[] {
 const summaryLine =
   /^(?: --seed=\d+| \d+ (?:pass|fail|skip|todo|errors?)|Ran \d+ tests? across \d+ files?\. \[[^\]]*\])$/;
 
-/** Copies one of Bun's streams into bun.log as it arrives, and prints Bun's summary lines. */
-async function relay(stream: ReadableStream<Uint8Array>, log: number): Promise<void> {
-  const reader = stream.getReader();
+/** Copies one of Bun's streams into bun.log as it arrives, and prints Bun's summary lines. It
+ *  ends at the stream's end, or when the caller cancels `reader`. */
+async function relay(reader: ReadableStreamDefaultReader<Uint8Array>, log: number): Promise<void> {
   const decoder = new TextDecoder();
   let pending = "";
   for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
@@ -896,6 +1272,72 @@ async function relay(stream: ReadableStream<Uint8Array>, log: number): Promise<v
   }
   pending += decoder.decode();
   if (summaryLine.test(pending)) console.log(pending);
+}
+
+/** A heading of Bun's output, the file whose results follow: `<file>:`, or `::group::<file>:`
+ *  under GitHub Actions. */
+const fileHeading = /^(?:::group::)?(\S.*\.(?:test|spec)\.[cm]?[jt]sx?):$/;
+/** A failed row of Bun's output: `(fail) <name> [<time>]`, its `describe`s first. */
+const failedRow = /^\(fail\) (.*?)(?: \[\d+(?:\.\d+)?m?s\])?$/;
+
+/** The names of `file`'s rows, in the order Bun runs them under `seed`: one run of the file alone
+ *  through the lane's script, in which the progress preload fails every row in its first
+ *  `beforeEach`, before the row's body, so a row that hung runs no code of its own here. Bun runs
+ *  a file's rows in an order that depends only on the seed and the file, the same on every rerun,
+ *  so the names of this one run are the names of every run of the leg's. Bun prints each failed
+ *  row on stderr, under its file's heading, as it ends. The run is killed at NAMES_BOUND_MS, since
+ *  it still runs the file's own code and hooks. */
+async function rowNamesOf(script: string, file: string, seed: number): Promise<RowNames> {
+  const environment = Object.fromEntries(
+    // Under GitHub Actions Bun would print each of this run's failures as an annotation too, and
+    // they are none of the lane's.
+    Object.entries(process.env).filter(
+      ([name]) => name !== "DISPATCH_UNIT_REPEAT_PROGRESS" && name !== "GITHUB_ACTIONS"
+    )
+  );
+  const child = Bun.spawn(
+    [process.execPath, "run", script, file, `--seed=${seed}`, "--preload", progressPreload],
+    {
+      cwd: packageDirectory,
+      env: { ...environment, DISPATCH_UNIT_REPEAT_NAMES_ONLY: "1" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    }
+  );
+  const reader = child.stderr.getReader();
+  let killed = false;
+  let cancel: Timer | undefined;
+  const bound = setTimeout(() => {
+    killed = true;
+    child.kill("SIGKILL");
+    cancel = setTimeout(() => reader.cancel().catch(() => {}), PIPE_GRACE_MS);
+  }, NAMES_BOUND_MS);
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    await child.exited;
+  } finally {
+    clearTimeout(bound);
+    clearTimeout(cancel);
+  }
+  const names: string[] = [];
+  let heading: string | null = null;
+  for (const line of text.split("\n")) {
+    const headed = fileHeading.exec(line);
+    if (headed !== null) heading = headed[1];
+    const row = failedRow.exec(line);
+    if (row !== null && heading === file) names.push(row[1]);
+  }
+  if (names.length > 0) return { names };
+  const ended = killed
+    ? `was killed at its ${NAMES_BOUND_MS / 1000} s bound`
+    : `exited ${child.exitCode ?? child.signalCode}`;
+  return { unreadable: `the run that reads its rows' names ${ended} and printed no row of it` };
 }
 
 /** MemTotal and MemAvailable from /proc/meminfo. It answers undefined where the file or either
@@ -911,6 +1353,17 @@ function readMeminfo(): MemorySample | undefined {
   const available = /^MemAvailable:\s+(\d+) kB$/m.exec(text);
   if (total === null || available === null) return undefined;
   return { memTotalKiB: Number(total[1]), memAvailableKiB: Number(available[1]) };
+}
+
+/** The progress file's text, as a stop reads it. A file that is not there yet is empty: no
+ *  worker has loaded a test file. */
+function progressAt(path: string): Stop["progress"] {
+  try {
+    return { text: readFileSync(path, "utf8") };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { text: "" };
+    return { unreadable: errorText(error) };
+  }
 }
 
 /** Prints `problem` and the usage on stderr, and answers the exit status of a bad command line. */
@@ -933,13 +1386,15 @@ export async function runLane(
   const out = resolve(options.out);
   const junitPath = join(out, "junit.xml");
   const logPath = join(out, "bun.log");
+  const progressPath = join(out, "progress.jsonl");
   // The tool's first writes to `out`, before it prints or starts anything: where one fails, `out`
   // cannot be the output directory, and the command line that named it is refused.
   let log: number;
   try {
     mkdirSync(out, { recursive: true });
-    // A junit file an earlier run left here would be read as this run's.
+    // A junit or progress file an earlier run left here would be read as this run's.
     rmSync(junitPath, { force: true });
+    rmSync(progressPath, { force: true });
     log = openSync(logPath, "w");
   } catch (error) {
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
@@ -958,9 +1413,40 @@ export async function runLane(
       `--rerun-each=${reruns}`,
       "--reporter=junit",
       `--reporter-outfile=${junitPath}`,
+      "--preload",
+      progressPreload,
     ],
-    { cwd: packageDirectory, stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+    {
+      cwd: packageDirectory,
+      env: { ...process.env, DISPATCH_UNIT_REPEAT_PROGRESS: progressPath },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    }
   );
+  // A holder, not a `let`: the stop is set in a signal listener, which the compiler's narrowing of
+  // a local to its first value does not see.
+  const held: { stop: Stop | null } = { stop: null };
+  const stopped = Promise.withResolvers<void>();
+  let killer: Timer | undefined;
+  const onStop = (signal: NodeJS.Signals) => {
+    if (held.stop !== null) return;
+    const afterMs = performance.now() - started;
+    // Read first, before Bun hears of the stop: a row its worker's end cuts off must still read
+    // as begun and not ended.
+    const progress = progressAt(progressPath);
+    const alive = "text" in progress ? liveWorkers(progress.text) : [];
+    held.stop = { signal, at: Date.now(), afterMs, progress, alive, names: {} };
+    console.log(
+      `unit-repeat: ${signal} after ${(afterMs / 1000).toFixed(1)} s: Bun is stopped, and the ` +
+        "report names what was running"
+    );
+    child.kill(signal);
+    killer = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
+    stopped.resolve();
+  };
+  process.on("SIGTERM", onStop);
+  process.on("SIGINT", onStop);
   const memory: MemorySample[] = [];
   const sample = () => {
     const reading = readMeminfo();
@@ -968,14 +1454,45 @@ export async function runLane(
   };
   sample();
   const sampler = setInterval(sample, MEMORY_SAMPLE_MS);
+  const readers = [child.stdout.getReader(), child.stderr.getReader()];
+  const relays = Promise.all(readers.map((reader) => relay(reader, log)));
   try {
-    await Promise.all([relay(child.stdout, log), relay(child.stderr, log)]);
+    await Promise.race([relays, stopped.promise]);
+    if (held.stop !== null) {
+      // The kill above ends Bun at the latest STOP_GRACE_MS after the stop. A process Bun left
+      // behind can still hold a pipe, so the pipes get PIPE_GRACE_MS after that, and are then
+      // read no further: the report is what a stop is for.
+      await child.exited;
+      const late = setTimeout(() => {
+        for (const reader of readers) reader.cancel().catch(() => {});
+      }, PIPE_GRACE_MS);
+      await relays;
+      clearTimeout(late);
+    }
     await child.exited;
   } finally {
+    process.off("SIGTERM", onStop);
+    process.off("SIGINT", onStop);
+    clearTimeout(killer);
     clearInterval(sampler);
     closeSync(log);
   }
   const wallMs = performance.now() - started;
+  let stop = held.stop;
+  if (stop !== null) {
+    // Bun has ended, so a run of each running file alone, the run that reads its rows' names,
+    // races nothing of the leg's.
+    const begun = runningFiles(stop, { reruns, seed, script }).filter((file) => file.rowsBegun > 0);
+    if (begun.length > 0) {
+      console.log(
+        `unit-repeat: reading the rows' names of ${counted(begun.length, "running file")}`
+      );
+    }
+    const names = await Promise.all(
+      begun.map(async (file) => [file.file, await rowNamesOf(script, file.file, seed)] as const)
+    );
+    stop = { ...stop, names: Object.fromEntries(names) };
+  }
 
   const report = summarise({
     lane,
@@ -989,7 +1506,11 @@ export async function runLane(
     log: readFileSync(logPath, "utf8"),
     environment: process.env,
     memory,
+    stop,
   });
+  // Where Bun ended by itself the junit file holds every row's result, so the progress file says
+  // nothing more; after a stop it is the record of where each file was.
+  if (stop === null) rmSync(progressPath, { force: true });
   const text = markdown(report);
   writeFileSync(join(out, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(out, "report.md"), text);

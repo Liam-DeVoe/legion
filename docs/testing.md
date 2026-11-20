@@ -254,8 +254,10 @@ and each command runs there.
 - `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
   one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
   a report of every row that failed, with how many of its runs failed, its seed and the command
-  that runs it again, and of every failure that belongs to no row.
-  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+  that runs it again, and of every failure that belongs to no row. A SIGTERM or a SIGINT stops it:
+  it stops Bun and reports each test file a worker was in, with the run and the row it was in, by
+  the row's place and name. `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane
+  under three seeds, under a deadline that sends it that SIGTERM.
 
 - `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
   its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows
