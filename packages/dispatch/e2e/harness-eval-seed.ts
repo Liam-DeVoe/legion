@@ -33,7 +33,9 @@ interface SeedSession {
   readonly role: string;
   readonly title: string;
   readonly state: "live" | "unresponsive" | "gone";
-  readonly last_seen: string;
+  /** When it was last seen. A gone session has none, since Envoy keeps no record of it; every
+   *  other session has one, which eval.LoadSeed refuses a seed without. */
+  readonly last_seen?: string;
 }
 
 /** Seeds the database `environment.DATABASE_URL` names with the eval's seed, and puts the seed's
@@ -98,7 +100,7 @@ async function handEnvoy(origin: string, sessions: readonly SeedSession[]): Prom
     const path = `/__fixture/sessions/${encodeURIComponent(session.id)}`;
     if (session.state === "unresponsive") {
       await fixtureCall(origin, "PATCH", path, {
-        last_seen: Date.parse(session.last_seen),
+        last_seen: Date.parse(session.last_seen ?? ""),
         state: "unresponsive",
       });
     } else if (session.state === "gone") {

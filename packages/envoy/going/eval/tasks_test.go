@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -193,6 +194,21 @@ func TestTheEvalSetHasItsShape(t *testing.T) {
 		}
 		if err := load(func(l *Labels) { l.Answers[differ].Discussion = "" }); err == nil || !strings.Contains(err.Error(), "no discussion") {
 			t.Errorf("an answer whose two labels differ loads with no discussion, or its refusal does not say so: %v", err)
+		}
+	})
+
+	t.Run("a gone session holds no last_seen, since no read of Dispatch gives one", func(t *testing.T) {
+		raw, err := Files.ReadFile("seed.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gone := []byte(`"state": "gone"`)
+		if !bytes.Contains(raw, gone) {
+			t.Fatal("the committed seed holds no gone session")
+		}
+		seen := bytes.Replace(raw, gone, []byte(`"state": "gone", "last_seen": "2026-11-16T17:20:00Z"`), 1)
+		if _, err := LoadSeed(fstest.MapFS{"seed.json": {Data: seen}}); err == nil || !strings.Contains(err.Error(), "is gone and has a last_seen") {
+			t.Errorf("a seed whose gone session has a last_seen loads, or its refusal does not say so: %v", err)
 		}
 	})
 }

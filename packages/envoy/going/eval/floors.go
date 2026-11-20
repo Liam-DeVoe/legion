@@ -422,13 +422,15 @@ type Project struct {
 
 // Session is an agent session of the fake Envoy the eval runs: its state and when it was last
 // seen, as Envoy's roster answers them, and StatusReply, what the session answers when Dispatch
-// reads its status. A session that is not live answers nothing.
+// reads its status. A session that is not live answers nothing. A gone session has no LastSeen:
+// Envoy keeps no record of it, so no read of Dispatch can give one (the roster lists no gone
+// session, and a lookup of one answers not found).
 type Session struct {
 	ID          string    `json:"id"`
 	Role        string    `json:"role"`
 	Title       string    `json:"title"`
 	State       string    `json:"state"`
-	LastSeen    time.Time `json:"last_seen"`
+	LastSeen    time.Time `json:"last_seen,omitzero"`
 	StatusReply string    `json:"status_reply,omitempty"`
 }
 
@@ -671,7 +673,13 @@ func (s *Seed) check() error {
 		if (session.State == envoy.StateLive) != (session.StatusReply != "") {
 			fail("session %s is %s, and a session answers its status exactly when it is live", session.ID, session.State)
 		}
-		notAfterNow("the last_seen of session "+session.ID, session.LastSeen)
+		if session.State == envoy.StateGone {
+			if !session.LastSeen.IsZero() {
+				fail("session %s is gone and has a last_seen, which no read of Dispatch can give", session.ID)
+			}
+		} else {
+			notAfterNow("the last_seen of session "+session.ID, session.LastSeen)
+		}
 	}
 	for _, issue := range s.Issues {
 		project, _, _ := strings.Cut(issue.Key, "-")

@@ -792,8 +792,7 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "session-impl-04 still holds the claim of DEMO-26, and it is gone, last seen on 2026-11-16 at 17:20Z.",
-        "Its last message says it stopped with the rename hook half done."
+        "session-impl-04 still holds the claim of DEMO-26, and it is gone; its last message, at 17:15Z on 2026-11-16, says it stopped with the rename hook half done."
       ],
       "links": ["DEMO-26"]
     },
