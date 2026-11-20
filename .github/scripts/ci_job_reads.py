@@ -495,6 +495,16 @@ MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 wal
                              "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
+# The issue event envelopes Dispatch's outbox builds, the daemon's intake decodes and
+# packages/contracts parses, in packages/daemon/internal/intake/testdata/dispatch/: each file of
+# envoy's sharedIssueEnvelopes (internal/dispatch/outbox/shared_issue_envelopes_test.go) and of
+# contracts' EXAMPLES (src/dispatch-issue-events.test.ts:29).
+SHARED_ISSUE_ENVELOPES = (
+    "issue-updated-every-field.json", "issue-claimed-every-field.json", "issue-claimed-forced.json",
+    "issue-updated-no-field-moved.json", "issue-released-closed.json", "issue-updated-null-fields.json",
+    "issue-claimed-first.json", "issue-released-null-claim.json",
+)
+
 
 def legion_build(why):
     return run(DAEMON, [LEGION_BUILD], why, mode="build")
@@ -858,11 +868,9 @@ RULES = {
     # file.
     f"{ENVOY}/internal/dispatch/outbox/shared_issue_envelopes_test.go": reads(*[
         (f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-         "internal/dispatch/outbox/shared_issue_envelopes_test.go:226 and :396 os.ReadFile "
+         "internal/dispatch/outbox/shared_issue_envelopes_test.go:271 and :441 os.ReadFile "
          "(sharedEnvelopes + each example's file, :27)")
-        for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
-                     "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
-                     "issue-released-null-claim.json")]),
+        for name in SHARED_ISSUE_ENVELOPES]),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
@@ -2753,12 +2761,10 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:407 (the URL at :403-406)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:411 (the URL at :407-410)"),
         *[(f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-           "packages/contracts/src/dispatch-issue-events.test.ts:266 (the URL at :265, each file of EXAMPLES, :28)")
-          for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
-                       "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
-                       "issue-released-null-claim.json")],
+           "packages/contracts/src/dispatch-issue-events.test.ts:311 (the URL at :310, each file of EXAMPLES, :29)")
+          for name in SHARED_ISSUE_ENVELOPES],
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),

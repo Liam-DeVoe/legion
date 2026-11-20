@@ -2,6 +2,8 @@ package intake
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"maps"
 	"os"
@@ -46,6 +48,11 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 			want: DispatchClaim{Key: "CAPTURE-7", Seq: 10, ClaimedBy: "session:ses_implementer8"},
 		},
 		{
+			// A forced takeover's holder is the session its body names, proven or not.
+			file: "testdata/dispatch/issue-claimed-forced.json", reads: claimed,
+			want: DispatchClaim{Key: "CAPTURE-7", Seq: 11, ClaimedBy: "session:ses_reviewer4"},
+		},
+		{
 			// A closed issue's claim is nobody's: the close released it.
 			file: "testdata/dispatch/issue-updated-no-field-moved.json", reads: issue, setter: "session",
 			want: DispatchIssue{Key: "CAPTURE-3", Seq: 12, Type: "issue.updated", Status: "done", Title: "Name the outbox's components",
@@ -53,11 +60,20 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 				Blockers: []string{}, ClaimKnown: true},
 		},
 		{
+			// A close's release leaves the claim nobody's.
+			file: "testdata/dispatch/issue-released-closed.json", reads: claimed,
+			want: DispatchClaim{Key: "CAPTURE-3", Seq: 11},
+		},
+		{
 			// A null resolved_repo is a root no repository resolves for, not one an older Dispatch
 			// left out, and a null claim is nobody's, not unknown.
 			file: "testdata/dispatch/issue-updated-null-fields.json", reads: issue,
 			want: DispatchIssue{Key: "CAPTURE-9", Seq: 4, Type: "issue.updated", Status: "todo", Title: "Reopen a root nobody holds",
 				Rank: "UUUm", Blockers: []string{}, ClaimKnown: true},
+		},
+		{
+			file: "testdata/dispatch/issue-claimed-first.json", reads: claimed,
+			want: DispatchClaim{Key: "CAPTURE-9", Seq: 5, ClaimedBy: "session:ses_architect3"},
 		},
 		{
 			file: "testdata/dispatch/issue-released-null-claim.json", reads: claimed,
@@ -127,58 +143,128 @@ var rawReads = map[string]reflect.Type{
 	"dispatchClaimPayload.claim":         reflect.TypeFor[dispatchClaim](),
 }
 
-type mapReadForTest struct {
-	Components map[string]json.RawMessage `json:"components"`
+// The read types TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes plants, one of each kind
+// whose JSON the walk cannot see into: each would read a "lane" key no example carries.
+type (
+	mapReadForTest       map[string]json.RawMessage
+	ownStructReadForTest struct{ lane string }
+	ownListReadForTest   []string
+	ownTextReadForTest   string
+	fromReadForTest      struct{ lane string }
+)
+
+func (r *ownStructReadForTest) UnmarshalJSON([]byte) error { r.lane = "read"; return nil }
+func (r *ownListReadForTest) UnmarshalJSON([]byte) error   { *r = append(*r, "read"); return nil }
+func (r *ownTextReadForTest) UnmarshalJSON([]byte) error   { *r = "read"; return nil }
+func (r *fromReadForTest) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
+	r.lane = "read"
+	return decoder.SkipValue()
 }
 
-type ownJSONReadForTest struct{}
-
-func (ownJSONReadForTest) UnmarshalJSON([]byte) error { return nil }
-
-type ownJSONReadHolderForTest struct {
-	Lane ownJSONReadForTest `json:"lane"`
+// recordedErrors is a testing.TB that keeps each error a walk reports, so a test can require the
+// walk's own refusals of it.
+type recordedErrors struct {
+	testing.TB
+	errors []string
 }
 
+func (r *recordedErrors) Helper() {}
+
+func (r *recordedErrors) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+// The walk refuses, by name, each read type whose JSON it cannot see into, whatever the type's
+// kind: requireReadFields itself runs over a holder of each, as it runs over the daemon's own
+// types, so a walk that stopped asking uninspectedReadType fails here. A plain struct and time.Time,
+// whose decoder reads a string and no key, are walked as they are.
 func TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes(t *testing.T) {
+	object := map[string]json.RawMessage{"lanes": json.RawMessage(`{"lane":"fast"}`)}
 	for _, tc := range []struct {
-		name string
-		typ  reflect.Type
-		want string
+		name   string
+		holder reflect.Type
+		lanes  string
+		want   string
 	}{
-		{"map", reflect.TypeFor[mapReadForTest]().Field(0).Type, "map"},
-		{"own unmarshal", reflect.TypeFor[ownJSONReadHolderForTest]().Field(0).Type, "ownJSONReadForTest"},
+		{"map", reflect.TypeFor[struct {
+			Lanes mapReadForTest `json:"lanes"`
+		}](), `{"lane":"fast"}`, "intake.mapReadForTest"},
+		{"interface", reflect.TypeFor[struct {
+			Lanes any `json:"lanes"`
+		}](), `{"lane":"fast"}`, "interface"},
+		{"struct with UnmarshalJSON", reflect.TypeFor[struct {
+			Lanes ownStructReadForTest `json:"lanes"`
+		}](), `{"lane":"fast"}`, "intake.ownStructReadForTest"},
+		{"list with UnmarshalJSON", reflect.TypeFor[struct {
+			Lanes ownListReadForTest `json:"lanes"`
+		}](), `[{"lane":"fast"}]`, "intake.ownListReadForTest"},
+		{"string with UnmarshalJSON", reflect.TypeFor[struct {
+			Lanes ownTextReadForTest `json:"lanes"`
+		}](), `{"lane":"fast"}`, "intake.ownTextReadForTest"},
+		{"struct with UnmarshalJSONFrom", reflect.TypeFor[struct {
+			Lanes fromReadForTest `json:"lanes"`
+		}](), `{"lane":"fast"}`, "intake.fromReadForTest"},
+		{"list of maps", reflect.TypeFor[struct {
+			Lanes []mapReadForTest `json:"lanes"`
+		}](), `[{"lane":"fast"}]`, "intake.mapReadForTest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := uninspectedReadType(tc.typ); !strings.Contains(got, tc.want) {
-				t.Fatalf("uninspectedReadType(%s) = %q, want it to name %q", tc.typ, got, tc.want)
+			recorded := &recordedErrors{TB: t}
+			object["lanes"] = json.RawMessage(tc.lanes)
+			requireReadFields(recorded, "holder", object, tc.holder, nil)
+			if len(recorded.errors) != 1 || !strings.Contains(recorded.errors[0], "does not inspect") ||
+				!strings.Contains(recorded.errors[0], tc.want) {
+				t.Fatalf("the walk of a holder of %s reported %q, want one refusal naming %q", tc.name, recorded.errors, tc.want)
 			}
 		})
 	}
-	if got := uninspectedReadType(reflect.TypeFor[time.Time]()); got != "" {
-		t.Fatalf("uninspectedReadType(time.Time) = %q, want time's own decoder allowed", got)
+	for _, holder := range []reflect.Type{
+		reflect.TypeFor[struct {
+			Lanes struct {
+				Lane string `json:"lane"`
+			} `json:"lanes"`
+		}](),
+		reflect.TypeFor[struct {
+			Lanes time.Time `json:"lanes"`
+		}](),
+	} {
+		recorded := &recordedErrors{TB: t}
+		object["lanes"] = json.RawMessage(`{"lane":"fast"}`)
+		if holder.Field(0).Type == reflect.TypeFor[time.Time]() {
+			object["lanes"] = json.RawMessage(`"2026-11-19T05:15:00Z"`)
+		}
+		requireReadFields(recorded, "holder", object, holder, nil)
+		if len(recorded.errors) != 0 {
+			t.Fatalf("the walk of %s reported %q, want it walked", holder.Field(0).Type, recorded.errors)
+		}
 	}
 }
 
-// uninspectedReadType names a map or a custom JSON decoder that requireReadFields cannot walk.
-// time.Time is the one decoder every current daemon reading type uses and has no JSON fields this
-// test needs to name.
+// uninspectedReadType names a read type whose JSON requireReadFields cannot see into: a map or an
+// interface, which encoding/json fills with whatever keys the value holds, and a type of any kind
+// with a decoder of its own - UnmarshalJSON (json.Unmarshaler) or UnmarshalJSONFrom
+// (encoding/json/v2's UnmarshalerFrom, which encoding/json calls under the JSONv2 go1.27 builds
+// with by default) on the type or its pointer - and a list of any of those. time.Time is the one
+// such decoder the daemon's reading types use, and it reads a string, no key.
 func uninspectedReadType(typ reflect.Type) string {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
+	if typ == reflect.TypeFor[time.Time]() {
+		return ""
+	}
+	for _, decoder := range []reflect.Type{reflect.TypeFor[json.Unmarshaler](), reflect.TypeFor[jsonv2.UnmarshalerFrom]()} {
+		if typ.Implements(decoder) || reflect.PointerTo(typ).Implements(decoder) {
+			return fmt.Sprintf("%s, which implements %s", typ, decoder)
+		}
+	}
 	switch typ.Kind() {
 	case reflect.Map:
 		return fmt.Sprintf("map %s", typ)
+	case reflect.Interface:
+		return fmt.Sprintf("interface %s", typ)
 	case reflect.Slice, reflect.Array:
 		return uninspectedReadType(typ.Elem())
-	case reflect.Struct:
-		if typ == reflect.TypeFor[time.Time]() {
-			return ""
-		}
-		unmarshaler := reflect.TypeFor[json.Unmarshaler]()
-		if typ.Implements(unmarshaler) || reflect.PointerTo(typ).Implements(unmarshaler) {
-			return fmt.Sprintf("%s implements json.Unmarshaler", typ)
-		}
 	}
 	return ""
 }
@@ -186,9 +272,10 @@ func uninspectedReadType(typ reflect.Type) string {
 // requireReadFields fails t for each field of reads, a type the daemon decodes object into, whose
 // JSON name object does not hold, and so for each field of a nested value the daemon reads that is
 // not null: a struct of reads, each object of a list of structs, or what into says a raw field or a
-// field holding the text of a JSON value is read into. A map or custom decoder has no declared
-// field walk, so it is refused by name rather than silently skipped.
-func requireReadFields(t *testing.T, what string, object map[string]json.RawMessage, reads reflect.Type, into map[string]reflect.Type) {
+// field holding the text of a JSON value is read into. A map, an interface or a custom decoder has
+// no declared field to walk, so it is refused by name rather than silently skipped
+// (uninspectedReadType).
+func requireReadFields(t testing.TB, what string, object map[string]json.RawMessage, reads reflect.Type, into map[string]reflect.Type) {
 	t.Helper()
 	for field := range reads.Fields() {
 		if !field.IsExported() {

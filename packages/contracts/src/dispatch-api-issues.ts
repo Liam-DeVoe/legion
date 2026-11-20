@@ -274,7 +274,14 @@ export const issueClaimEventPayloadFields = {
   reason: z.enum(["claimed", "takeover", "forced", "released", "closed"]),
 };
 
-export const IssueClaimEventPayloadSchema = z.strictObject(issueClaimEventPayloadFields).readonly();
+/**
+ * `issue.claimed` always says who holds the issue now: a claim writes its holder (Dispatch's
+ * `claimIssue`), so the event's `claim` is never null, and the Legion daemon reads a null one as a
+ * field it does not know.
+ */
+export const IssueClaimEventPayloadSchema = z
+  .strictObject({ ...issueClaimEventPayloadFields, claim: IssueClaimSchema })
+  .readonly();
 
 export type IssueClaimEventPayload = z.output<typeof IssueClaimEventPayloadSchema>;
 

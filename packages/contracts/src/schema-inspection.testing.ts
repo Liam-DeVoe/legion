@@ -3,8 +3,9 @@ import { z } from "zod";
 /**
  * How the Dispatch contract tests read a zod schema: the one reading of zod's definitions that
  * `dispatch-api-spellings.test.ts` (which field names, which absences and which value types a
- * schema declares) and `dispatch-issue-events.test.ts` (which keys each object of a shared example
- * must hold) share. It is used by tests alone, and nothing of the package exports it.
+ * schema declares) and `example-walk.testing.ts` (which keys, values and forms each object of a
+ * shared example must hold) share. It is used by tests alone, and nothing of the package exports
+ * it.
  *
  * A schema is read as one node of these kinds, each with the schemas it holds:
  *
@@ -19,7 +20,7 @@ import { z } from "zod";
  * - `leaf`: a value of no inner schema, with the JSON kinds it takes (`json`: `string`,
  *   `number`, `boolean`, `null`, or `any` for a schema that takes every value; none for `never`,
  *   `undefined` and `void`), `closed` when it takes a closed set of values (an `enum` or a
- *   `literal`, whose kinds are their values').
+ *   `literal`, whose kinds are their values'), and that set's `values` (none for an open one).
  *
  * Any other kind (`tuple`, `map`, `set`, a bare `transform`, ...) is an error naming it and where
  * it is: a schema these tests cannot read is reported, never taken as read.
@@ -31,7 +32,12 @@ export type SchemaNode =
   | { readonly kind: "union"; readonly options: readonly z.core.$ZodType[] }
   | { readonly kind: "intersection"; readonly parts: readonly z.core.$ZodType[] }
   | { readonly kind: "wrapper"; readonly inner: z.core.$ZodType }
-  | { readonly kind: "leaf"; readonly closed: boolean; readonly json: readonly JsonKind[] };
+  | {
+      readonly kind: "leaf";
+      readonly closed: boolean;
+      readonly json: readonly JsonKind[];
+      readonly values: readonly unknown[];
+    };
 
 /** A kind of JSON value, or `any` for a schema that takes every value. */
 export type JsonKind = "string" | "number" | "boolean" | "null" | "object" | "array" | "any";
@@ -117,14 +123,14 @@ export function schemaNode(schema: unknown, where: string): SchemaNode {
   }
   if (def.type === "enum" && schema instanceof z.core.$ZodEnum) {
     const values = Object.values(schema._zod.def.entries);
-    return { kind: "leaf", closed: true, json: [...new Set(values.map(jsonKindOf))] };
+    return { kind: "leaf", closed: true, json: [...new Set(values.map(jsonKindOf))], values };
   }
   if (def.type === "literal" && schema instanceof z.core.$ZodLiteral) {
     const values: readonly unknown[] = schema._zod.def.values;
-    return { kind: "leaf", closed: true, json: [...new Set(values.map(jsonKindOf))] };
+    return { kind: "leaf", closed: true, json: [...new Set(values.map(jsonKindOf))], values };
   }
   const json = LEAVES[def.type];
-  if (json !== undefined) return { kind: "leaf", closed: false, json };
+  if (json !== undefined) return { kind: "leaf", closed: false, json, values: [] };
   throw new Error(`${where} is a zod ${def.type} schema, which the contract tests do not read`);
 }
 

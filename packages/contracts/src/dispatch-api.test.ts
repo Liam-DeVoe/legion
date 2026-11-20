@@ -247,9 +247,12 @@ test("preserves labels on an issue update event payload", () => {
   });
 });
 
+// Each of the four priorities: the shared issue event examples hold two of them, and
+// dispatch-issue-events.test.ts's UNHELD names this test for the others.
 test("preserves a coarse priority on an issue update event payload", () => {
-  expect(IssueEventPayloadSchema.parse({ priority: 0 })).toEqual({ priority: 0 });
-  expect(IssueEventPayloadSchema.parse({ priority: null })).toEqual({ priority: null });
+  for (const priority of [0, 1, 2, 3, null] as const) {
+    expect(IssueEventPayloadSchema.parse({ priority })).toEqual({ priority });
+  }
 });
 
 test("reads the proven mark of an actor and of its act's session, only as true", () => {

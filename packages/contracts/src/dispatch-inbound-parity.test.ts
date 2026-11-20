@@ -23,7 +23,7 @@ import {
   SubscriptionRemovedEventPayloadSchema,
 } from "./dispatch-api";
 import { DispatchTargetedMessageDeliverySchema } from "./dispatch-api-targeted";
-import { objectShape } from "./schema-inspection.testing";
+import { ExampleWalk } from "./example-walk.testing";
 
 /**
  * What the inbound parsers accepted, refused and kept on the day the payload types were still
@@ -1329,7 +1329,8 @@ describe("the inbound parsers read every recorded frame as they did", () => {
 });
 
 /** Each key a reading schema of the targeted-delivery fixture declares that the fixture leaves
- *  out, by its path, with the reason. Every other declared key must be in the fixture, so a reader
+ *  out, by its path, with the reason. Every other declared key, at every depth, must be in the
+ *  fixture (`example-walk.testing.ts`, the walk the issue event examples are held by), so a reader
  *  that starts reading a key the fixture does not carry, or renames one, fails here by name. */
 const TARGETED_ABSENT: Record<string, string> = {
   "event.payload.reply_body": "model.MessageEventPayload omits it on a root message",
@@ -1340,31 +1341,28 @@ const TARGETED_ABSENT: Record<string, string> = {
 };
 
 test("the targeted-delivery fixture carries every key its reading schemas declare", () => {
-  const problems: string[] = [];
-  const excused = new Set<string>();
-  const require = (schema: unknown, schemaName: string, frame: unknown, path: string) => {
-    const shape = objectShape(schema, schemaName);
-    if (shape === undefined) throw new Error(`${schemaName} is no object schema`);
-    const held = frame as Frame;
-    for (const key of Object.keys(shape)) {
-      const at = `${path}.${key}`;
-      if (key in held) continue;
-      if (TARGETED_ABSENT[at] === undefined) {
-        problems.push(`the fixture holds no ${at}, which ${schemaName} declares`);
-      } else {
-        excused.add(at);
-      }
-    }
-  };
+  const walk = new ExampleWalk({ never: {}, labels: new Map(), absentTable: "TARGETED_ABSENT" });
+  const fixture = { name: "the targeted-delivery fixture", absent: TARGETED_ABSENT };
+  // Each schema is a reader's, which keeps the keys it declares and passes the others over.
+  const reader = { tolerant: true, forms: false };
   const { event, delivery } = targetedDeliveryFixture;
-  require(DispatchEventSchema, "DispatchEventSchema", event, "event");
-  require(DispatchEventSchema.shape.actor, "DispatchEventSchema.actor", event.actor, "event.actor");
-  require(DispatchTargetedMessagePayloadSchema, "DispatchTargetedMessagePayloadSchema", event.payload, "event.payload");
-  require(DispatchTargetedMessageDeliverySchema, "DispatchTargetedMessageDeliverySchema", delivery, "delivery");
-  for (const at of Object.keys(TARGETED_ABSENT)) {
-    if (!excused.has(at)) {
-      problems.push(`TARGETED_ABSENT names ${at}, which the fixture holds or no schema declares`);
-    }
-  }
-  expect(problems).toEqual([]);
+  walk.walk(DispatchEventSchema, event, fixture, "event", "DispatchEventSchema", reader);
+  walk.walk(
+    DispatchTargetedMessagePayloadSchema,
+    event.payload,
+    fixture,
+    "event.payload",
+    "DispatchTargetedMessagePayloadSchema",
+    reader
+  );
+  walk.walk(
+    DispatchTargetedMessageDeliverySchema,
+    delivery,
+    fixture,
+    "delivery",
+    "DispatchTargetedMessageDeliverySchema",
+    reader
+  );
+  walk.staleExceptions([fixture]);
+  expect(walk.problems).toEqual([]);
 });

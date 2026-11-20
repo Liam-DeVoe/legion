@@ -47,23 +47,33 @@ type sharedIssueEnvelope struct {
 //     moves its status, its assignee and a blocker, so it names the blocker and the two assignees.
 //   - issue-claimed-every-field.json: a takeover of that child, so it carries the claim it
 //     replaced and the child's own repository.
+//   - issue-claimed-forced.json: a forced takeover of that child by a session a person's personal
+//     token names in its request body, so its actor carries the token's person and no `proven`.
 //   - issue-updated-no-field-moved.json: a closed child, whose own components say why it has none,
 //     given the links it already has again: a closed issue takes that write, which moves no field
 //     `changed` names, so `changed` is [].
+//   - issue-released-closed.json: the release that child's close made, which the closing person
+//     wrote.
 //   - issue-updated-null-fields.json: the reopen of a root nobody holds, assigns or routes, with
 //     no priority and no repository, so each of those is null; its thread_logins are what the
 //     reopen's own insert reads, [] for an issue with no open ask.
+//   - issue-claimed-first.json: the first claim of that root, so it replaces no claim.
 //   - issue-released-null-claim.json: its holder's release of that root, so the claim is null.
+//
+// So the claim events hold each reason Dispatch writes (api.claimIssue, releaseIssueClaim and
+// patchIssue's close): claimed, takeover, forced, released and closed.
 //
 // Each issue.updated's `changed` is what model.IssueChangedFields, the list the API's patch
 // writes, gives for the issue before and after the write, so an example states only a write
 // Dispatch can make.
 //
-// The session actors are the three a broker-issued token records (api.brokerTokenActor): a token
-// names a person or a service, never both and never neither, and names a project only beside a
-// person (brokertoken.sessionCaller). The root's reopen is a person's write named in its body:
-// its user actor has no `proven` mark and the event notifies. The issues' creator is a person at
-// a browser.
+// The proven session actors are the three a broker-issued token records (api.brokerTokenActor): a
+// token names a person or a service, never both and never neither, and names a project only beside
+// a person (brokertoken.sessionCaller). The unproven one is the session a personal token's body
+// names (api.bearerSessionActor): the token proves its person, recorded as the actor's owner, and
+// no session, so the actor carries no `proven` mark. The person who reopens the root and closes the
+// child, and the issues' creator, is a person at a browser, whom the cookie proves; a person's
+// write notifies.
 func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	at := func(value string) time.Time {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -78,10 +88,14 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	implementer7 := model.Actor{Kind: "session", ID: "ses_implementer7", Origin: origin("%3"), Service: new("legion-fleet"), Proven: true}
 	implementer8 := model.Actor{Kind: "session", ID: "ses_implementer8", Origin: origin("%4"), Owner: new("alice@example.com"), Project: new("CAPTURE"), Proven: true}
 	architect3 := model.Actor{Kind: "session", ID: "ses_architect3", Owner: new("bob@example.com"), Proven: true}
-	personNamedInBody := model.Actor{Kind: "user", ID: "alice@example.com"}
-	creator := &model.Actor{Kind: "user", ID: "alice@example.com", Proven: true}
+	reviewer4 := model.Actor{Kind: "session", ID: "ses_reviewer4", Owner: new("bob@example.com"),
+		Origin: &model.ActorOrigin{Host: "worker-9", Machine: "worker-9", Cwd: "/work/widgets"}}
+	person := model.Actor{Kind: "user", ID: "alice@example.com", Proven: true}
+	creator := &person
 	held := &model.IssueClaim{Actor: implementer7, At: at("2026-11-19T06:00:00.25Z")}
 	taken := &model.IssueClaim{Actor: implementer8, At: at("2026-11-19T06:31:00.654321Z")}
+	forced := &model.IssueClaim{Actor: reviewer4, At: at("2026-11-19T06:45:00.5Z")}
+	rootClaim := &model.IssueClaim{Actor: architect3, At: at("2026-11-19T05:15:00Z")}
 	// updated is an issue.updated's payload for a write that took before to after:
 	// IssueEventPayload as api.newIssueEventPayload builds it, with the changed list the patch
 	// writes.
@@ -187,22 +201,49 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 				}},
 		},
 		{
+			// A person's credential takes a live session's claim with force (api.claimIssue); the
+			// actor is the session its body names.
+			file: "issue-claimed-forced.json", number: 7, lastSeq: 10,
+			event: model.Event{ID: 4823, IssueKey: new("CAPTURE-7"), Type: "issue.claimed", Actor: reviewer4,
+				CreatedAt: forced.At, Payload: model.IssueClaimEventPayload{
+					Key: "CAPTURE-7", Status: "in_progress", Repo: child.Repo, ResolvedRepo: child.ResolvedRepo,
+					Claim: forced, Previous: taken, Reason: "forced",
+				}},
+		},
+		{
 			file: "issue-updated-no-field-moved.json", number: 3, lastSeq: 11,
 			event: model.Event{ID: 4815, IssueKey: new("CAPTURE-3"), Type: "issue.updated", Actor: implementer8,
 				CreatedAt: at("2026-11-19T06:20:00.5Z"), Payload: linksAgain},
 		},
 		{
+			// The close appended its issue.updated as seq 10 and this release, of the claim the
+			// child held, as seq 11, both with the closing person as their actor (api.patchIssue).
+			file: "issue-released-closed.json", number: 3, lastSeq: 10,
+			event: model.Event{ID: 4790, IssueKey: new("CAPTURE-3"), Type: "issue.released", Actor: person,
+				CreatedAt: *closed.ClosedAt, Payload: model.IssueClaimEventPayload{
+					Key: "CAPTURE-3", Status: "done", ResolvedRepo: closed.ResolvedRepo,
+					Previous: &model.IssueClaim{Actor: implementer8, At: at("2026-11-18T09:00:00Z")}, Reason: "closed",
+				}},
+		},
+		{
 			// A reopen's thread_logins are read by its own insert, after the asks the reopen
 			// restored (api.patchIssue, events.IssueLoginsOf).
 			file: "issue-updated-null-fields.json", number: 9, lastSeq: 3, logins: events.IssueLoginsOf("CAPTURE-9"),
-			event: model.Event{ID: 4801, IssueKey: new("CAPTURE-9"), Type: "issue.updated", Actor: personNamedInBody, Notify: true,
+			event: model.Event{ID: 4801, IssueKey: new("CAPTURE-9"), Type: "issue.updated", Actor: person,
 				CreatedAt: at("2026-11-19T05:10:00.5Z"), Payload: reopened},
+		},
+		{
+			file: "issue-claimed-first.json", number: 9, lastSeq: 4,
+			event: model.Event{ID: 4802, IssueKey: new("CAPTURE-9"), Type: "issue.claimed", Actor: architect3,
+				CreatedAt: rootClaim.At, Payload: model.IssueClaimEventPayload{
+					Key: "CAPTURE-9", Status: "todo", Claim: rootClaim, Reason: "claimed",
+				}},
 		},
 		{
 			file: "issue-released-null-claim.json", number: 9, lastSeq: 5,
 			event: model.Event{ID: 4803, IssueKey: new("CAPTURE-9"), Type: "issue.released", Actor: architect3,
 				CreatedAt: at("2026-11-19T05:20:00.75Z"), Payload: model.IssueClaimEventPayload{
-					Key: "CAPTURE-9", Status: "todo", Previous: &model.IssueClaim{Actor: architect3, At: at("2026-11-19T05:15:00Z")}, Reason: "released",
+					Key: "CAPTURE-9", Status: "todo", Previous: rootClaim, Reason: "released",
 				}},
 		},
 	}

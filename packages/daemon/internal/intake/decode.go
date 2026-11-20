@@ -242,8 +242,8 @@ type dispatchIssuePayload struct {
 
 // dispatchClaimPayload is what the daemon reads of an issue.claimed or issue.released payload
 // (Dispatch's model.IssueClaimEventPayload): the claim alone, which issueEventClaim reads into
-// dispatchClaim. The shared envelopes testdata/dispatch/issue-claimed-every-field.json and
-// issue-released-null-claim.json carry it, as Dispatch's outbox builds them.
+// dispatchClaim. The shared claim and release envelopes of testdata/dispatch/ (issue-claimed-*.json,
+// issue-released-*.json) carry it, as Dispatch's outbox builds them.
 type dispatchClaimPayload struct {
 	Claim json.RawMessage `json:"claim"`
 }
