@@ -188,13 +188,10 @@ export function IssuesTable({
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
-  const columns = useIssueTableColumns(
-    userState.data,
-    responsive.compact,
-    columnsLayout,
+  const columns = useIssueTableColumns(userState.data, responsive.compact, columnsLayout, {
     priorityTitles,
-    ownLayout?.wrapTitles === true
-  );
+    wrapTitles: ownLayout?.wrapTitles,
+  });
 
   const model = useDataTable<Item>({
     rows: items,

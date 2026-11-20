@@ -143,12 +143,14 @@ function OrderCell({ item }: { item: PriorityItem }) {
 const EXCERPT_MAX = 400;
 
 /** The three counts a phone names under the title, by their columns' ids, with the field of the
- *  row each reads. */
-const PHONE_COUNTS = [
-  ["in-flight", "inFlight"],
-  ["waiting", "waiting"],
-  ["parked", "parked"],
-] as const;
+ *  row each reads and its header's words, looked up once. */
+const PHONE_COUNTS = (
+  [
+    ["in-flight", "inFlight"],
+    ["waiting", "waiting"],
+    ["parked", "parked"],
+  ] as const
+).map(([column, field]) => ({ column, field, header: PRIORITY_COLUMNS_BY_ID.get(column)?.header }));
 
 function TitleCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
@@ -163,7 +165,11 @@ function TitleCell({ item }: { item: PriorityItem }) {
   // run together, its markdown read rather than shown, and a `dispatch://` reference written as
   // its short form - which the projection every plain-text place takes of a stored text gives
   // (`useMarkdownHeadline`). It is drawn once the projection has answered.
-  const excerpt = useMarkdownHeadline(undefined, EXCERPT_MAX, whole ? undefined : description);
+  const excerpt = useMarkdownHeadline(
+    undefined,
+    EXCERPT_MAX,
+    whole || description === "" ? undefined : description
+  );
   return (
     <div className="min-w-0 space-y-1">
       {/* The title is read here and renamed on the priority's own page, which it opens: a
@@ -204,12 +210,9 @@ function PhoneLine({ item }: { item: PriorityItem }) {
   const owner = item.priority.owner.trim();
   const parts = [
     ...(owner === "" ? [] : [<span key="owner">{owner}</span>]),
-    ...PHONE_COUNTS.map(([column, field]) => (
-      <span
-        className={`whitespace-nowrap tabular-nums ${item[field] === 0 ? textMutedOnCanvas : ""}`}
-        key={column}
-      >
-        {`${PRIORITY_COLUMNS_BY_ID.get(column)?.header} ${item[field]}`}
+    ...PHONE_COUNTS.map(({ column, field, header }) => (
+      <span className={`whitespace-nowrap ${countTone(item[field])}`} key={column}>
+        {`${header} ${item[field]}`}
       </span>
     )),
     <NewestEvent at={item.newest} key="newest" />,
@@ -241,11 +244,12 @@ function OwnerCell({ owner }: { owner: string }) {
   return <span className={`block break-words ${textSecondaryOnCanvas}`}>{owner}</span>;
 }
 
+/** A count's figures, each as wide as the next, and muted where the count is zero. */
+const countTone = (value: number): string => `tabular-nums ${value === 0 ? textMutedOnCanvas : ""}`;
+
 /** A count, at its column's right edge under its header's words (`numeric`). */
 const countCell = (value: number): ReactNode => (
-  <span className={`block text-right tabular-nums ${value === 0 ? textMutedOnCanvas : ""}`}>
-    {value}
-  </span>
+  <span className={`block text-right ${countTone(value)}`}>{value}</span>
 );
 
 /** How each column of the priorities table draws. Everything else about a column — its width,

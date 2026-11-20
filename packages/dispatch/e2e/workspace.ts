@@ -80,6 +80,19 @@ export const workspaceSessions: FakeSession[] = [
 ];
 export const workspaceSessionIds = workspaceSessions.map((session) => session.session_id);
 
+/** `id`'s session of `workspaceSessions` as a write names it, its title stamped in `origin`
+ *  beside whatever else `origin` says (`seedWorkspace`). */
+const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
+  const session = workspaceSessions.find((candidate) => candidate.session_id === id);
+  if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
+  return { id, kind: "session", origin: { ...origin, session_title: session.title } };
+};
+
+/** A write's options as `id`'s session (`actor`), through the agent bearer. */
+const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
+
+export { as as asWorkspaceSession };
+
 const workflowSpec =
   "# Local testing workflow\n\nOne command, a seeded corpus, a signed-in browser.\n\n" +
   ':::ask{urgency="high" multiple="false"}\nWhich sign-in path?\n\n' +
@@ -120,12 +133,6 @@ export async function seedWorkspace({
   readonly boundMs: number;
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
-  const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
-    const session = workspaceSessions.find((candidate) => candidate.session_id === id);
-    if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
-    return { id, kind: "session", origin: { ...origin, session_title: session.title } };
-  };
-  const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
   const alice = { login: "alice" };
 
   await setLiveSessions(workspaceSessions);

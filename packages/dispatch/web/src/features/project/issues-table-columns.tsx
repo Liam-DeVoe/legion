@@ -504,13 +504,19 @@ export function useIssueTableColumns(
   /** The table's layout (`issueTableLayout`): which listing columns it has, and the narrowest
    *  each column may be drawn at, its `widths` included. */
   layout: LayoutColumns,
-  /** Each priority's title by its id, in the order the priorities read answers them, which is
-   *  the one order: the Advances column names each priority by its place in this map (`#3`)
-   *  with its title. One this map does not hold, a priority deleted since it was read, is named
-   *  by its id. */
-  priorityTitles: ReadonlyMap<string, string> | undefined,
-  /** Whether each title is drawn whole rather than in two lines (`IssuesTable`'s `wrapTitles`). */
-  wrapTitles: boolean
+  {
+    priorityTitles,
+    wrapTitles = false,
+  }: {
+    /** Each priority's title by its id, in the order the priorities read answers them, which is
+     *  the one order: the Advances column names each priority by its place in this map (`#3`)
+     *  with its title. One this map does not hold, a priority deleted since it was read, is
+     *  named by its id. */
+    readonly priorityTitles?: ReadonlyMap<string, string>;
+    /** Whether each title is drawn whole rather than in two lines (`IssuesTable`'s
+     *  `wrapTitles`). */
+    readonly wrapTitles?: boolean;
+  }
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState, wrapTitles);

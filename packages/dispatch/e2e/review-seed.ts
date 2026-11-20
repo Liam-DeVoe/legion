@@ -10,7 +10,7 @@
  *  row for a deployment that has written no priority - the work under them and beside them,
  *  shaped as production's (`WORK`), and the issue header of a working issue: its whose-turn
  *  chip, two labels and a message route someone receives. */
-import type { Actor } from "../web/src/api/types";
+import type { IssueStatus } from "@legion/contracts/dispatch-tools";
 import {
   claimIssue,
   createIssue,
@@ -35,7 +35,7 @@ import { blockId } from "./editor";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { sessionIds } from "./session-ids";
-import { seedWorkspace, workspaceSessions } from "./workspace";
+import { asWorkspaceSession, seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
@@ -71,10 +71,11 @@ function firstMachine(): string {
   return machine;
 }
 
-/** A session of the corpus's registry (`workspaceSessions`) that holds work here: the four that
- *  stay live however long a run takes, since a claim of the Archivist's, which goes quiet, would
- *  read as free on a later run. */
-type Holder = "planner" | "tester" | "reviewer" | "observer";
+/** A session of the corpus's registry (`workspaceSessions`) that holds work here: three of the
+ *  four that stay live however long a run takes. The Observer holds none, so the Agents page
+ *  keeps one session under Idle, which a claim would move under Active; nor does the Archivist,
+ *  since its claim, as it goes quiet, would read as free on a later run. */
+type Holder = "planner" | "tester" | "reviewer";
 
 /** One issue this corpus adds to `seedWorkspace`'s: its project and title, the status it stands
  *  in, the priority whose work it is by that priority's place in `priorities` (from 0), or none,
@@ -82,15 +83,7 @@ type Holder = "planner" | "tester" | "reviewer" | "observer";
 interface Work {
   readonly project: "CORE" | "OPS";
   readonly title: string;
-  readonly status:
-    | "triage"
-    | "todo"
-    | "in_progress"
-    | "testing"
-    | "needs_review"
-    | "retro"
-    | "backlog"
-    | "icebox";
+  readonly status: Exclude<IssueStatus, "done">;
   readonly under: number | null;
   readonly holder?: Holder;
 }
@@ -148,7 +141,7 @@ const WORK = {
     under: null,
   },
   runOnPush: {
-    holder: "observer",
+    holder: "reviewer",
     project: "CORE",
     status: "in_progress",
     title:
@@ -349,15 +342,6 @@ const WORK = {
 } satisfies Record<string, Work>;
 
 type WorkName = keyof typeof WORK;
-
-/** `holder`'s session as a write names it, its title stamped in `origin` as `seedWorkspace`
- *  stamps its sessions' writes, so a claim's chip names the session before the registry
- *  answers. */
-function sessionActor(holder: Holder): Actor {
-  const session = workspaceSessions.find((one) => one.session_id === sessionIds[holder]);
-  if (session === undefined) throw new Error(`seedReviewRoutes: no workspace session ${holder}`);
-  return { id: session.session_id, kind: "session", origin: { session_title: session.title } };
-}
 
 /** The priorities this corpus writes, in the order they are written, which is the one order: a
  *  priority takes the last place of it as it is written (`POST /api/v1/priorities`). They are
@@ -768,7 +752,7 @@ Each page is read once it is drawn.
   for (const name of names) {
     const { holder }: Work = WORK[name];
     if (holder !== undefined) {
-      await claimIssue(keys[name], { actor: sessionActor(holder), as: "agent" });
+      await claimIssue(keys[name], asWorkspaceSession(sessionIds[holder]));
     }
   }
 

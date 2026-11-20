@@ -571,8 +571,8 @@ test("the priorities page opens on the order, and each fault list is a tab of it
 
     // At 1280 by 800 the table fits its box as well, every header's words whole, two lines of
     // them at most where a count's column is as narrow as its numbers; the Priority column takes
-    // what the others leave. The first line of a closed row's description reads whole under its
-    // title, wrapped as the title is.
+    // what the others leave. The start of a closed row's description, its paragraphs run
+    // together, wraps under its title and is not cut sideways.
     await page.setViewportSize(DESKTOP);
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priorities table": 0 });
     expect(await cutHeaders(prioritiesTable)).toEqual([]);

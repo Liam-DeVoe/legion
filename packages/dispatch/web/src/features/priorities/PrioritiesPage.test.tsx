@@ -619,9 +619,10 @@ test("on a phone the table draws the place and one cell, which names the owner, 
     { filter: false, name: "#▲", oneLine: true, width: "76px" },
     { filter: true, name: "Priority", oneLine: true, width: `${PHONE_BOX - 76}px` },
   ]);
-  const [place, title] = within(row).getAllByRole("cell");
+  const cells = within(row).getAllByRole("cell");
+  const [place, title] = cells;
   if (place === undefined || title === undefined) throw new Error("the row draws no two cells");
-  expect(within(row).getAllByRole("cell")).toHaveLength(2);
+  expect(cells).toHaveLength(2);
   expect(
     within(place)
       .getAllByRole("button")
@@ -630,17 +631,19 @@ test("on a phone the table draws the place and one cell, which names the owner, 
     "Move #1 Legion works reliably first: drag it, or press the up and down arrows",
     "Open #1 Legion works reliably first",
   ]);
+  // The line under the title that names the owner, the counts and the newest event: the last
+  // thing in the title's cell.
+  const phoneLine = (cell: HTMLElement | undefined) => cell?.firstElementChild?.lastElementChild;
   // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
   // third count is backlog and icebox; the newest event is a time, whose words follow the clock.
-  const named = title.firstElementChild?.lastElementChild;
-  expect(named?.textContent).toStartWith(
+  expect(phoneLine(title)?.textContent).toStartWith(
     "INFRA controller · Active 7 · Triage, Todo 12 · Backlog, icebox 0 · "
   );
   expect(within(title).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
   const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
-  expect(
-    within(second).getAllByRole("cell")[1]?.firstElementChild?.lastElementChild?.textContent
-  ).toBe("BET controller · Active 1 · Triage, Todo 0 · Backlog, icebox 3 · Never");
+  expect(phoneLine(within(second).getAllByRole("cell")[1])?.textContent).toBe(
+    "BET controller · Active 1 · Triage, Todo 0 · Backlog, icebox 3 · Never"
+  );
 });
 
 test("the start of a description shows on a closed row, its lines run together in two lines at most, and the whole of it when it opens", async () => {
