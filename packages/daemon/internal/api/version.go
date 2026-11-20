@@ -14,16 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -2422,7 +2424,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 174: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 187: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -2454,15 +2489,15 @@ package api
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
 // gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
 // never said hello within the registration deadline while its process lived, which a caller from
-// a pod whose claims record a contract below 174 is served as `never_registered` in `failure.cause`
+// a pod whose claims record a contract below 187 is served as `never_registered` in `failure.cause`
 // and `pendingCause` (withoutNeverReconnected), since its plugin reads both through a strict enum
 // and refuses the whole body for a word it does not name; and
 // `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
 // reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
-// caller from a pod whose claims record a contract below 174 is served the body without (api's
+// caller from a pod whose claims record a contract below 187 is served the body without (api's
 // stateFor, withoutUnseenTaskValues), as one below 133 is served every issue without `mergeWait`,
 // one below 111 the issues without the tree's quiet time (withoutQuietTime) and one below 98 the
-// admission block without `held`. They are the last two rows of stateNarrowings, after 146's, and
+// admission block without `held`. They are the last two rows of stateNarrowings, after 178's, and
 // the narrowings compose. Its settings carry `worker_take_timeout_seconds` and
 // `worker_turn_start_timeout_seconds`, keys of legion.yaml, which move no contract of their own.
 // (This change took 106 against the branch's base, which declared 98: by the census this
@@ -2508,12 +2543,19 @@ package api
 // request on 2026-11-19 found 161 through 167 declared by other open pull requests, so 168 was the
 // lowest number above the base's 160 that no other open pull request declared. It took 174 at the
 // forward merge of 2026-11-19 that brought main in at a16c218ee39a294f22ffd785ab0b5fd300b1e3b7,
-// which carried 168, cybermonklabs/legion#4488, the entry right above and the number the base now
-// carries: the contract check's reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
-// every open pull request on 2026-11-19 found 169 (#3831 and #4065), 170 (#2230, #4030, #4173,
-// #4180 and #4193), 171 (#4115, #4485 and #4495), 172 (#3659) and 173 (#4493) declared by open
-// pull requests, so 174 was the lowest number above 168 that none declared. Read the base's own
-// number and every open pull request again at the next merge rather than from this line, as
+// which carried 168, cybermonklabs/legion#4488, then the number the base then carried: the
+// contract check's reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
+// request on 2026-11-19 found 169 (#3831 and #4065), 170 (#2230, #4030, #4173, #4180 and #4193),
+// 171 (#4115, #4485 and #4495), 172 (#3659) and 173 (#4493) declared by open pull requests, so 174
+// was the lowest number above 168 that none declared. It took 187 at the forward merge of
+// 2026-11-20 that brought main in at c980d91b540ece46364256983f24a3f5a63b3841, which carried 178,
+// cybermonklabs/legion#4115's INFRA-3759, the entry right above and the number the base now
+// carries: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
+// on 2026-11-20 found 179 (#4540), 180 (#4049), 181 (#3831 and #4273), 182 (#4173, #4180, #4193,
+// #4392 and #4493), 183 (#2230, #3712, #4030, #4432 and #4539), 184 (#3659, #4065 and #4553), 185
+// (#4175 and #4543) and 186 (#4495 and #4573) declared by open pull requests, so 187 was the
+// lowest number above 178 that none declared. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 174
+const DaemonAPIVersion = 187

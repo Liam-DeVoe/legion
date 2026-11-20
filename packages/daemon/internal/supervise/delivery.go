@@ -856,7 +856,19 @@ func (m *Machine) retirePending(ctx context.Context) error {
 //
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
 // the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
+//
+// A project pause's stop the machine owes is written first, through its own transaction, with the
+// claim and this delivery as memory holds them now — the repair's own write (putClaimAndPending,
+// putStops) — and the retirement after it, as it would have run: the pause's records land with the
+// first claim write that lands, and the retirement keeps the store's fenced answers
+// (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
+// with nothing retired, for the next decision's repair and settle to make in that same order.
 func (m *Machine) retireTask(ctx context.Context, finished bool) error {
+	if len(m.owedStops()) > 0 {
+		if err := m.putClaimAndPending(ctx); err != nil {
+			return m.owes("PauseStopped", err)
+		}
+	}
 	p := m.claim.Pending
 	retired := m.stored()
 	if p.turnStarted() {

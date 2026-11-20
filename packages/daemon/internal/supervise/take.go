@@ -33,7 +33,7 @@ import (
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 174
+const TaskTakeContract = 187
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
@@ -127,8 +127,9 @@ const (
 	TakeOutcomeDropped TakeOutcome = "dropped"
 )
 
-// The holds a take is refused by, by name. The first eight are a state of the claim, its issue or
-// its tree that the task waits out; the rest are a take the claim's own state refuses.
+// The holds a take is refused by, by name. The first nine are a state of the claim, its issue,
+// its tree or its project that the task waits out; the rest are a take the claim's own state
+// refuses.
 const (
 	// HoldIssueInTurn is another role of the claim's issue in a turn, or holding an accepted take
 	// whose turn has not ended, while this task would adopt the working copy they share.
@@ -158,6 +159,10 @@ const (
 	HoldInTurn = "in-turn"
 	// HoldNotReady is a claim whose agent has not said it is ready.
 	HoldNotReady = "not-ready"
+	// HoldProjectPaused is the project's pause holding the claim (pauseHolds): while the project
+	// is paused no task is taken by any role but the controller (decision 8 of
+	// dispatch://INFRA-3759's plan).
+	HoldProjectPaused = "project-paused"
 )
 
 // TakeAnswer is a take's answer: its outcome, the text an accepted take runs, and the hold a
@@ -845,18 +850,25 @@ func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 }
 
 // claimHold is the hold the claim's own state puts on a take of its pending task, "" for none:
-// the claim not ready or idle, a suspension held over it, a launch the wake pacing holds over its
-// process, an update round it has answered, a plugin stale enough that its every `legion` call is
-// refused, and the wait a provider error armed for this task. It reads the claim and its memory
-// alone, so it is asked again after an adoption that ran with the lock let go (adopted).
+// the project's pause holding the claim, the claim not ready or idle, a suspension held over it, a
+// launch the wake pacing holds over its process, an update round it has answered, a plugin stale
+// enough that its every `legion` call is refused, and the wait a provider error armed for this
+// task. It reads the claim and its memory alone, so it is asked again after an adoption that ran
+// with the lock let go (adopted).
 //
-// Four of them hold the task instead of dropping it, each for a reason of its own: a worker that
-// answered its round is about to lose its process, and so is one whose launch waits its turn, and
-// a task started there would be retired as served at a turn it never finished; a stale plugin's
-// every call is refused, so a task taken there buys a model turn nothing can come of and puts the
-// claim in a turn, which postpones the relaunch it is waiting for; and the provider-error wait is
-// the task's own ladder (providererror.go).
+// Five of them hold the task instead of dropping it, each for a reason of its own: while the
+// project is paused no task is taken by any role but the controller (decision 8 of
+// dispatch://INFRA-3759's plan), so the task stays pending, decided nothing about and dropped for
+// nothing, and the resume's event writes its value again once the pause is over (resumePause,
+// offerPending); a worker that answered its round is about to lose its process, and so is one
+// whose launch waits its turn, and a task started there would be retired as served at a turn it
+// never finished; a stale plugin's every call is refused, so a task taken there buys a model turn
+// nothing can come of and puts the claim in a turn, which postpones the relaunch it is waiting
+// for; and the provider-error wait is the task's own ladder (providererror.go).
 func (m *Machine) claimHold() string {
+	if _, holds := m.pauseHolds(); holds {
+		return HoldProjectPaused
+	}
 	switch m.claim.State {
 	case StateReady, StateIdle:
 	case StateWorking:

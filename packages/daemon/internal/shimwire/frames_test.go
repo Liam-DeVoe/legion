@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// agentBusyMessage is the message Oh My Pi refuses a prompt with when the agent is busy: the
+// default of its AgentBusyError (packages/agent/src/agent.ts of cybermonklabs/oh-my-pi at the
+// pinned tag), which it throws for a prompt sent with no streamingBehavior while a turn streams,
+// and which its own test of the refusal expects the error to start with
+// (packages/coding-agent/test/rpc-prompt-busy-code.test.ts there).
+const agentBusyMessage = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
 // (worker-rpc.ts:420, 430, 452, 475, 490, 493-496; worker-shim.ts:332, 356-366;
 // worker-stream-listener.ts:14; fake-omp-rpc.ts:24-79). A frame decodes to its Go type and
@@ -28,6 +35,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"negotiate_protocol",
 			`{"type":"negotiate_protocol","id":"r1","protocolVersion":2}`,
 			NegotiateProtocol{ID: "r1", ProtocolVersion: 2},
+		},
+		{
+			// Oh My Pi's refusal of a prompt sent while a turn streams, as an old shim's backlog
+			// may still replay one: its error response carries `code` at the top level, right
+			// after `error`, and the member survives the round trip (Response.Code).
+			"busy refusal response",
+			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"` + agentBusyMessage + `","code":"session_busy"}`,
+			Response{ID: "r2", Command: "prompt", Success: false, Error: agentBusyMessage, Code: "session_busy"},
 		},
 		{
 			"get_state response",
@@ -213,7 +228,8 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 
 // The daemon sends no prompt: a task is a value the worker takes (internal/supervise, take.go).
 // So no frame of the prompt's is modelled any more. An old shim or an old Oh My Pi may still write
-// one — a `prompt` command a backlog replays, a `prompt_result` behind a turn's end — and each
+// one — a `prompt` command a backlog replays, a `prompt_result` behind a turn's end, the pinned Oh
+// My Pi's refusal of a prompt while the agent is busy with the class it names (`code`) — and each
 // decodes to Raw, which the stream drops (internal/stream), rather than to a type a reader could
 // act on. The turn frames are what the daemon reads of a turn, and they still decode as before:
 // a start an old shim replayed with the delivery it named decodes to the plain start.
@@ -223,6 +239,8 @@ func TestNoPromptFrameIsModelledAndTheTurnFramesStillDecode(t *testing.T) {
 		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"completed","sessionSettled":false}`,
 		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
 			`"error":{"message":"429 Too Many Requests","provider":"anthropic","httpStatus":429,"retryable":true},"sessionSettled":true}`,
+		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error","sessionSettled":false,` +
+			`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
 	} {
 		decoded, err := Decode([]byte(line))
 		if err != nil {

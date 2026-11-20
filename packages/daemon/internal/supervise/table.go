@@ -143,6 +143,12 @@ const (
 	// turn has not started when it passes charges the worker and is taken back under its number.
 	// Armed on the pending task's id.
 	TimerTurnStart TimerKind = "turn_start"
+	// TimerPause is the gate's own stop of a claim whose launch it held while the project is paused
+	// (pauseGate, pauseStopDue): armed at once by the decision that held the launch, so the stop is
+	// the claim's next decision, and again at the probe interval when that stop fails. A claim with
+	// no process of its own waits launching until it fires; one whose process runs waits as the
+	// gate found it.
+	TimerPause TimerKind = "pause"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -206,9 +212,9 @@ type StallBackstop struct {
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
-// about to be replaced, and the role is asked to push its work and answer ready_for_update
-// first. Round is the round's identity and kind in one string (Claim.UpdateRound), and Reasons
-// the drift the daemon read of the pod it runs in.
+// about to be replaced, and the role is asked first to do the steps of its update message
+// (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
+// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
 // so the action is idempotent: the first post of a round records the round, its reasons and its
@@ -237,13 +243,28 @@ type PodUpdateOpen struct {
 // a later round has already replaced it names the round it read, and is refused rather than
 // counted for the round it never saw (podUpdateSignalled).
 //
-// An answer only brings the round's end forward. No answer, and no turn, holds the pod past
-// endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
-// its background jobs, each commit and each file the role did not push, the pod's test database
-// and its caches. The step to answer is the one step a role can be unable to do: the op list its
-// `legion` tool holds is a closed enum compiled into its plugin, and a plugin below
-// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same,
-// because its round ends at endsAt whatever it does.
+// An answer from every role brings the round's end forward only while no role reports background
+// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
+// and no role with a process in the round's pod has an activity report that names a subagent or a
+// background job that runs, or no report since its last turn started. internal/daemon's
+// roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
+// holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
+// turn in progress, each subagent, each background job and each named service that still runs,
+// each commit and each file the role did not push, the pod's test database and its caches. A
+// named service is in no activity report, so it holds nothing and goes with the pod.
+//
+// So the text gives five steps, in this order (dispatch://INFRA-4203 R2): push, let each subagent
+// and each background job the role started finish or stop it and push what it made, put a scratch
+// file needed as evidence on Dispatch, answer, and end the turn. The push comes first, so a job
+// that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
+// work, so a role that follows the steps answers with nothing of its own running. A role whose
+// work finishes after its answer pushes what that work made and answers again with the same
+// round, which podUpdateSignalled records in place of the first answer.
+//
+// The step to answer is the one step a role can be unable to do: the op list its `legion` tool
+// holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
+// ready_for_update in it. Such a role is told to do the first three steps all the same, because
+// its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
 // goes, so the text says that work not pushed before the pod goes is lost.
@@ -263,28 +284,33 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
 
-The round is %s. The round ends at %s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
+The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
+If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
 
-This message can arrive while you are in a turn. Do these four steps now:
+This message can arrive while you are in a turn. Do these five steps, in this order:
 
 1. Push every commit that you want to keep to this issue's branch.
-2. If you need a scratch file as evidence, put it on Dispatch.
-3. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
-4. End your turn.
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
+3. If you need a scratch file as evidence, put it on Dispatch.
+4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
+5. End your turn.
 
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 2 now. Then end your turn. The round ends at %s whatever you do.
+If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
+
+A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
+
+If your `+"`legion`"+` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn. The round ends at %[2]s whatever you do.
 
 These things go with the pod when the round ends:
 
 - The turn that is in progress.
-- The background jobs of that turn.
+- Each subagent, each background job and each named service that still runs.
 - Each commit and each file that you did not push.
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, ends, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -372,17 +398,46 @@ type RequestReady struct {
 // turn's end, behind an answer that told the caller its request did nothing (api's freshSession).
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
+//
+// Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
+// dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
+// `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
+// SuspendedByReleased — any other source with a pause, or a negative id, is refused
+// (suspendRequest). A suspension that carries one ends in the pause's stop transaction rather than
+// the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
+// across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
+// decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
+// them.
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
 	By        SuspendSource
 	Deadline  time.Time
 	NeverHold bool
+	Pause     int64
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
 // suspended it.
 type RequestResume struct{ Claim claim.Token }
+
+// ResumePause is the daemon's word, posted to every machine of its project once a resume of the
+// project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
+// The daemon clears its flag (Deps.Paused) before it posts this, so the decision drops a
+// suspension the machine holds for that pause before its row runs, as every decision drops the
+// hold of a pause that has ended (dropEndedPauseHold): a role in a turn runs on and a launch held
+// until its agent is ready goes ahead. The row takes a launch the pause's gate held for that pause
+// into the wake pacing — a reservation from the limiter, then its timer — or, where a later pause
+// holds the project by then, stops the claim for that one (pauseStopDue); and it writes the value
+// of the task the claim holds again where a take of it was refused and it may now be taken
+// (offerPending), so the daemon's resume needs nothing else to hand a role its held task.
+// It touches nothing of any other pause: a hold or a held launch a later pause took over carries
+// that pause's id, so an event that arrives after the next pause began finds nothing of its own.
+// Pause is the ended pause's id (store.Pause.ID), never 0, which is refused.
+type ResumePause struct {
+	Claim claim.Token
+	Pause int64
+}
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
@@ -627,6 +682,7 @@ func (RequestExit) isEvent()          {}
 func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
+func (ResumePause) isEvent()          {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
 // by its kind, because each wait means a different thing.
@@ -655,6 +711,8 @@ const (
 	// R5's two bounds (waits.go).
 	onTakeTimer      eventKind = timerPrefix + eventKind(TimerTake)
 	onTurnStartTimer eventKind = timerPrefix + eventKind(TimerTurnStart)
+	// The gate's own stop of a launch it held while the project is paused (pauseGate).
+	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -685,6 +743,8 @@ const (
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
 	onPodUpdateSignalled eventKind = "pod_update_signalled"
+
+	onResumePause eventKind = "resume_pause"
 
 	timerPrefix eventKind = "timer:"
 )
@@ -765,6 +825,8 @@ func kindOf(ev Event) eventKind {
 		return onCompact
 	case CompactEnded:
 		return onCompactEnded
+	case ResumePause:
+		return onResumePause
 	}
 	return ""
 }
@@ -830,7 +892,10 @@ var (
 	prompted    = []ClaimState{StateReady, StateIdle}
 	processless = []ClaimState{StateQueued, StateLaunchUncertain, StateSuspended, StateFailed, StateRetired}
 	unready     = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered}
-	gone        = []ClaimState{StateSuspended, StateFailed, StateRetired}
+	// gone is where a claim's process has been let go: suspended, failed or retired. It is the one
+	// statement of the set: Claim.Gone reads it in memory, and the store's queries take it as a
+	// parameter (GoneStates).
+	gone = []ClaimState{StateSuspended, StateFailed, StateRetired}
 	// runsNothing is where a claim has no process of its own, running or coming up: queued, for which
 	// nothing was launched, or gone. A launch whose outcome is uncertain may still run, so it is not
 	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
@@ -849,6 +914,15 @@ func LiveStates() []ClaimState {
 func RunsNothingStates() []ClaimState {
 	return slices.Clone(runsNothing)
 }
+
+// GoneStates are the states of a claim whose process has been let go (gone). It is a copy, so no
+// caller changes the table's own set.
+func GoneStates() []ClaimState {
+	return slices.Clone(gone)
+}
+
+// IsGone is whether state is one of GoneStates: a claim in it has had its process let go.
+func IsGone(state ClaimState) bool { return slices.Contains(gone, state) }
 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
@@ -1044,6 +1118,16 @@ func fillTable(t *builder) {
 	t.ignore(onWakeTimer, "no wake is waiting: a paced wake of a claim with no process is written launching before it waits, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
+	// The gate's own stop of a launch it held while the project is paused (pauseGate). A claim
+	// with no process of its own waits launching for it; one whose process still runs waits in
+	// the state the gate found it, which is every other live state. The stop ends the claim
+	// suspended, or holds it for a turn's deadline of now (holdSuspension); a launch whose pause
+	// has ended by then goes to the pacing instead, and may launch here (letOutHeldLaunch).
+	t.row(onPauseTimer, "the gate held this claim's launch while the project is paused: stop the claim for the pause, or let the launch out if the pause is over", pauseStopDue,
+		[]ClaimState{StateSuspended, StateLaunching, StateFailed}, live...)
+	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
+		processless...)
+
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
@@ -1222,6 +1306,14 @@ func fillTable(t *builder) {
 	t.ignore(onCompactEnded, "the claim is not in a compaction: the process it ran on was let go first", prompted...)
 	t.ignore(onCompactEnded, "the agent is not ready, so the compaction's process is gone", unready...)
 	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
+
+	// The project's resume, which the daemon posts to every machine of the project (ResumePause),
+	// so every state takes it. A claim that holds nothing of the pause it names is changed by
+	// nothing but the write again of the value of the task it holds (offerPending); one whose held
+	// launch is let out launches, or fails, or is suspended by a tree whose cleanup is reserved,
+	// as a wake's turn is (runWake), and a working claim stays in its turn.
+	t.row(onResumePause, "the project's pause is over: drop that pause's held suspension, let out the launch its gate held, and write again the value of the task that waits", resumePause,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, slices.Concat(live, processless)...)
 }
 
 type builder struct{ rules map[key]rule }
@@ -1686,9 +1778,12 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 //
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension), unless
 // the turn was a task's that only its report settles, where it runs at that report's finish
-// instead (above). Its stop cuts off no turn, so what the let-go records reads the claim as
-// idle, the state this end gives it (suspendHeldAtEnd): the next process is told it was in no
-// turn, and the task whose turn this was is no task cut off in its turn (recordEnd).
+// instead (above). A project pause's hold is no exception either way: only the report says
+// whether the turn finished its task or a provider refused it, and a stop made first would leave
+// a refused task taken while the role is still owed it. Its stop cuts off no turn, so what the
+// let-go records reads the claim as idle, the state this end gives it (suspendHeldAtEnd): the
+// next process is told it was in no turn, and the task whose turn this was is no task cut off in
+// its turn (recordEnd).
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2380,7 +2475,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
-		return m.suspended(ctx, SuspendedByExit)
+		return m.suspended(ctx, SuspendedByExit, nil)
 	}
 	if err := m.release(ctx); err != nil {
 		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)
@@ -2426,7 +2521,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.UpdateRound == open.Round {
 		return nil
 	}
-	m.log.Info("supervise: an update round is open on this claim; the sweep asks its role to push its work and answer",
+	m.log.Info("supervise: an update round is open on this claim; the sweep asks its role to do the steps of the update message (UpdateTask) and answer",
 		"round", open.Round, "reasons", open.Reasons)
 	if err := m.dropUpdateTask(ctx); err != nil {
 		return err
@@ -2609,7 +2704,15 @@ func (m *Machine) clearUpdate() {
 // podUpdateSignalled records the worker's answer to the round's ask — its work is pushed, and the
 // process holding this claim may now be replaced — and the head it reported, which nothing
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
-// process, once every claim the round asks has answered and no turn runs, or at the round's bound.
+// process, at the round's bound, or before it once every claim the round asks has answered, no
+// turn runs and no claim with a process in the round's pod reports background work that runs or
+// has sent no report since its last turn started (internal/daemon's roundEnd.holding, the one
+// statement of that rule). So an answer brings the round's end forward only while no role reports
+// background work.
+//
+// A second answer for the same round records again, the newer head in place of the first: the
+// ask tells a role whose subagent or background job finishes after its answer to push what that
+// work made and to answer again with the same round (UpdateTask).
 //
 // The answer counts for one round only: the one whose update message the worker read, which that
 // message named and which the answer carries back (UpdateTask). An answer for any other round is

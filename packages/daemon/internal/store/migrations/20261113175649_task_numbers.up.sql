@@ -207,13 +207,16 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the fourteen columns it drops, and at this release none of the fifteen
+-- after this one builds on the fourteen columns it drops, and at this release none of the sixteen
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
 -- 20261114020537_claim_entry_handshake adds the four claims.handshake_* columns,
 -- 20261114031356_merge_queue_removal rewrites outbox_kind_check,
 -- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim,
+-- 20261115194357_project_pause adds the tables project_pauses, project_pause_stops and
+-- project_pause_pod_holds, pod_resumes.clock_at with the trigger that fills it,
+-- pod_resumes.pause_id and outbox.held_by_pause, and rewrites no kind list,
 -- 20261116144907_claim_sessions adds the table claim_sessions and fills it from each claim's
 -- session, its file and the session it last abandoned,
 -- 20261116165926_role_holders_publish rewrites outbox_kind_check again and adds the unique index
@@ -229,13 +232,17 @@
 -- claims.update_tasked_at where that claim's ask still waits in the outbox, and
 -- 20261119003157_conflict_reads_and_merge_forward rewrites outbox_kind_check a fifth time, deletes
 -- the queued phase_ended rows and adds pull_requests.conflict_read and pull_requests.merge_forward.
--- The release before this one, contract 168, carries all fifteen, so the rollback to it runs this
--- block alone and leaves the fifteen standing. Contract 160's two other migrations,
+-- The release before this one, contract 178, carries all sixteen, so the rollback to it runs this
+-- block alone and leaves the sixteen standing. Contract 160's two other migrations,
 -- 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one,
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: this block; contract 168's steps for its merge forward, which delete the queued second
+-- them: this block; contract 178's three statements for the project pause, which delete the
+-- controller's pause and resume notices and the queued pause_stop rows and take pause and wakeKind
+-- off each queued start row, after the project is resumed and each held pod has a role running
+-- (docs/kubernetes.md, "Rolling back the project pause"); contract 168's steps for its merge
+-- forward, which delete the queued second
 -- reads and merge-forward messages and clear pull_requests.conflict_read and merge_forward, and
 -- whose delete of the phase_ended rows the roll-forward runs again (docs/kubernetes.md, "Rolling
 -- back the release that merges a conflicting head forward in its phase"); contract 168's steps
@@ -251,9 +258,10 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those fifteen that are the
--- root architect's entry (all but the five kind lists, the five other migrations of contract 152
--- and contract 160's 20261116144907_claim_sessions); the merge-queue removal's outbox delete; the
+-- of its kind behind; contract 146's block, which reverses the four of those sixteen that are the
+-- root architect's entry (all but the five kind lists, the five other migrations of contract 152,
+-- contract 160's 20261116144907_claim_sessions and contract 178's 20261115194357_project_pause);
+-- the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
 -- 20261113110610_drop_claim_update_answer_marks dropped two columns
 -- contract 87's claim read names; the steps of contract 111's slot past review and of contract
@@ -267,7 +275,8 @@
 -- records' way back leaves standing, its 20261117200337_update_ask_marks_at_delivery and contract
 -- 168's 20261117023932_outbox_kinds_with_the_plan_record, whose kind the check keeps after the
 -- rollback, need no statement on the way back, and contracts 151, 144, 137 and 104 add no
--- migration. Nor does
+-- migration. Nor does contract 178's 20261115194357_project_pause, whose tables and columns no
+-- earlier release names, nor
 -- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
 -- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds
 -- and claim_sessions its 20261116144907_claim_sessions adds stand too, read by no earlier release.

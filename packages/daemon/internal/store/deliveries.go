@@ -90,15 +90,25 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
 	var queued bool
 	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
-			return err
-		}
-		return putDelivery(ctx, tx, c.Token, d)
+		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
+		return err
 	}); err != nil {
 		return err
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	return nil
+}
+
+// PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
+// the claim's write queued the publication of its issue's role sessions, for the caller's
+// CommittedClaim once its transaction has committed.
+func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
+	queued, err := s.putClaim(ctx, tx, c)
+	if err != nil {
+		return false, err
+	}
+	return queued, putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -152,7 +162,7 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 	}); err != nil {
 		return err
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	return nil
 }
 

@@ -52,8 +52,12 @@ type takeDriver struct {
 	// none — the idle rig's role process, which holds no operator token and reads nothing of the
 	// daemon between a turn's start and its end — does not wait, since the daemon reads a report
 	// that comes ahead of its turn's start as that turn's (supervise's startedUnseen).
-	started    func() (bool, error)
-	caller     claim.AgentCaller
+	started func() (bool, error)
+	caller  claim.AgentCaller
+	// boot is the launch's boot token where the driver speaks the routes' boot form, as the Claude
+	// Code bridge does, and the zero value where it speaks the agent's secret form (caller); every
+	// request carries both, one of them empty.
+	boot       claim.BootCaller
 	generation uint64
 
 	mu sync.Mutex
@@ -169,7 +173,7 @@ func postJSON(client *http.Client, url string, body, answer any) error {
 // the claim finished.
 func (w *takeDriver) task() (claim.TaskResponse, error) {
 	var answer claim.TaskResponse
-	err := w.post("/legion/v1/claims/task", claim.TaskRequest{AgentCaller: w.caller, Generation: w.generation}, &answer)
+	err := w.post("/legion/v1/claims/task", claim.TaskRequest{AgentCaller: w.caller, BootCaller: w.boot, Generation: w.generation}, &answer)
 	return answer, err
 }
 
@@ -198,7 +202,7 @@ func (w *takeDriver) poll() (claim.TaskValue, claim.TakeResponse, bool, error) {
 	ask := value != w.asked && !w.inTurn && w.accepted == 0
 	w.mu.Unlock()
 	if report {
-		if err := w.post("/legion/v1/claims/task-seen", claim.TaskSeenRequest{AgentCaller: w.caller,
+		if err := w.post("/legion/v1/claims/task-seen", claim.TaskSeenRequest{AgentCaller: w.caller, BootCaller: w.boot,
 			Generation: w.generation, Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}, nil); err != nil {
 			return claim.TaskValue{}, claim.TakeResponse{}, false, fmt.Errorf("report task %d seen: %w", value.Number, err)
 		}
@@ -210,7 +214,7 @@ func (w *takeDriver) poll() (claim.TaskValue, claim.TakeResponse, bool, error) {
 		return claim.TaskValue{}, claim.TakeResponse{}, false, nil
 	}
 	var answer claim.TakeResponse
-	if err := w.post("/legion/v1/claims/take", claim.TakeRequest{AgentCaller: w.caller, Generation: w.generation,
+	if err := w.post("/legion/v1/claims/take", claim.TakeRequest{AgentCaller: w.caller, BootCaller: w.boot, Generation: w.generation,
 		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}, &answer); err != nil {
 		return claim.TaskValue{}, claim.TakeResponse{}, false, fmt.Errorf("take task %d: %w", value.Number, err)
 	}
@@ -346,7 +350,7 @@ func (w *takeDriver) watch(t *testing.T, took func(takenTask)) {
 func (w *takeDriver) report(outcome claim.TurnOutcomeRequest) error {
 	w.mu.Lock()
 	w.sequence++
-	outcome.AgentCaller, outcome.Generation, outcome.Sequence = w.caller, w.generation, w.sequence
+	outcome.AgentCaller, outcome.BootCaller, outcome.Generation, outcome.Sequence = w.caller, w.boot, w.generation, w.sequence
 	w.mu.Unlock()
 	if err := w.post("/legion/v1/claims/turn-outcome", outcome, nil); err != nil {
 		return fmt.Errorf("report the end of the turn of task %d: %w", outcome.Task, err)
