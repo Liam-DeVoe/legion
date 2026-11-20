@@ -23,12 +23,12 @@ import (
 
 // realGHForCapture is the real gh a test that drives one without a control of its own runs
 // (bothInstalledGh, which reads only gh's help): LEGION_GH_PATH when the test runs in a Legion
-// pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with neither
-// skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is a wrapper
-// of the machine's own (a gh shim that hands each call to the next gh on PATH, which is the
-// `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
-// TestRealGhAndGitSendTheTargetOwnersToken has a control that tells a real gh from a wrapper, so
-// it tries each gh on PATH instead (realGHCandidates).
+// pane or pod, whose `gh` on PATH is the wrapper, else the first gh on PATH that is no script
+// (realGHCandidates) and answers as gh does with a home of its own (answersAsGH); a machine with
+// none skips, as the other gh-backed tests do. The first gh on PATH need not be that one: a
+// machine's own wrapper or a version manager's shim can head PATH with the real gh further down.
+// TestRealGhAndGitSendTheTargetOwnersToken has a control of its own, which tells a real gh from a
+// wrapper by the token it sends, so it tries the candidates itself.
 //
 // It also puts this test binary's own `legion gh` first on the test's PATH
 // (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
@@ -40,27 +40,41 @@ import (
 // `gh` that way.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
-	path := os.Getenv("LEGION_GH_PATH")
+	candidates, named := realGHCandidates()
+	path := ""
+	for _, candidate := range candidates {
+		if named || answersAsGH(t, candidate) {
+			path = candidate
+			break
+		}
+	}
 	if path == "" {
-		found, err := exec.LookPath("gh")
-		if err != nil {
-			t.Skip("no real gh on this machine: the capture test drives one")
-		}
-		if err := daemon.RefuseScriptGH(found); err != nil {
-			t.Skip(err)
-		}
-		path = found
+		t.Skipf("no gh on PATH but a script answers `gh --version` as gh does with a home of its own (%q were tried): the test drives the real gh; set LEGION_GH_PATH to it", candidates)
 	}
 	ghWrapperFirstOnPath(t)
 	return path
 }
 
-// realGHCandidates are the gh programs the capture test may drive, in the order its control tries
-// them: LEGION_GH_PATH alone when it is set (named), as in a Legion pane or pod, whose `gh` on PATH
-// is the wrapper; otherwise every gh on PATH, first to last, but a script, which is a wrapper of
-// the machine's own as realGHForCapture says. The first gh on PATH need not be the real one: a
-// machine's own gh wrapper can head PATH with the real gh further down it, as on a devbox whose
-// dotfiles shim comes first, then mise's shim, then mise's install of gh.
+// answersAsGH is whether gh, run with a home of its own and a PATH of the system's directories
+// alone, prints gh's own version line. The real gh does; a version manager's shim, which picks a
+// version from the caller's own home, answers an error there instead.
+func answersAsGH(t *testing.T, gh string) bool {
+	t.Helper()
+	home := t.TempDir()
+	cmd := exec.Command(gh, "--version")
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "GH_CONFIG_DIR=" + home, "GH_NO_UPDATE_NOTIFIER=1"}
+	out, err := cmd.Output()
+	return err == nil && strings.HasPrefix(string(out), "gh version ")
+}
+
+// realGHCandidates are the gh programs a test that drives the real gh may run, in the order it
+// tries them: LEGION_GH_PATH alone when it is set (named), as in a Legion pane or pod, whose `gh`
+// on PATH is the wrapper; otherwise every gh on PATH, first to last, but a script. A script is a
+// wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
+// the `legion gh` a test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// The first gh on PATH need not be the real one: a machine's own gh wrapper can head PATH with the
+// real gh further down it, as on a devbox whose dotfiles shim comes first, then mise's shim, then
+// mise's install of gh.
 func realGHCandidates() (candidates []string, named bool) {
 	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
 		return []string{path}, true
