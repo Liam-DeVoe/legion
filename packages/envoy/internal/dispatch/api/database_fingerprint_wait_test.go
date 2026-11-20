@@ -15,8 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -219,13 +223,13 @@ func TestAFingerprintWaitsOutAMentionClaimRefreshWhoseSendLeftHeld(t *testing.T)
 // takes a lock or a transaction id, and answers release, which rolls it back, and blocked, which
 // answers whether a statement of any session waits on it: the database's own account of whether a
 // writer the test holds behind it has gone on. The transaction is rolled back when the test ends.
-func holdBlocking(t *testing.T, ctx context.Context, database *store.Store, statement string) (release func(), blocked func() bool) {
+func holdBlocking(t *testing.T, ctx context.Context, database *store.Store, statement string) (func(), func() bool) {
 	t.Helper()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holding transaction: %v", err)
 	}
-	release = sync.OnceFunc(func() { _ = holder.Rollback(context.Background()) })
+	release := sync.OnceFunc(func() { _ = holder.Rollback(context.Background()) })
 	t.Cleanup(release)
 	var pid int32
 	if err := holder.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
@@ -234,7 +238,7 @@ func holdBlocking(t *testing.T, ctx context.Context, database *store.Store, stat
 	if _, err := holder.Exec(ctx, statement); err != nil {
 		t.Fatalf("hold %q: %v", statement, err)
 	}
-	blocked = func() bool {
+	blocked := func() bool {
 		var waiting bool
 		if err := database.Pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
 			t.Fatalf("read what waits on the holder: %v", err)
@@ -335,14 +339,19 @@ func TestAFingerprintWaitsOutAnEventHorizonObservationNoRequestWaitedFor(t *test
 }
 
 // The write of a horizon an observation proved runs after the observation has answered its
-// waiters (events.Horizon.run, writePersisted), so the wait must see the write through as well as
-// the observation. The test holds the write: a transaction locks event_horizon in share mode,
-// which takes no transaction id and so keeps no observation from proving a horizon, and
-// observations no request waits for run until one proves a horizon past the one persisted and its
-// write waits on the lock. On an instance other tests share, their open transactions can hold a
-// proof back for a while, and a write comes at most once a second (horizonPersistEvery), so the
-// test observes again until one does. The fingerprint's reads must not begin while the write
-// still waits on the lock, which the database answers.
+// waiters (events.Horizon.run, writePersisted), under a client deadline of its own
+// (horizonPersistTimeout, 2 s). The test holds the write in the server: a transaction locks
+// event_horizon in share mode, which takes no transaction id and so keeps no observation from
+// proving a horizon, and observations no request waits for run until one proves a horizon past the
+// one persisted and its write waits on the lock. On an instance other tests share, their open
+// transactions can hold a proof back for a while, and a write comes at most once a second
+// (horizonPersistEvery), so the test observes again until one does. While the write's client waits
+// the wait sees it through Horizon.Busy; once its deadline ends the call, pgx sends Postgres a
+// cancel on a connection of its own and returns, and until that cancel lands - late, or never, on
+// a loaded server - the statement still waits on the lock and commits once it is let go, which
+// only the database's own account of its statements sees (statementsRunning). A run at a
+// one-minute load of 371 failed so before the wait read that account. The fingerprint's reads must
+// not begin while the write still waits on the lock, which the database answers.
 func TestAFingerprintWaitsOutAnEventHorizonWriteHeldPastItsObservation(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	createInteractionIssue(t, handler, "TEST", "A horizon write held past its observation", "A spec")
@@ -378,6 +387,36 @@ func TestAFingerprintWaitsOutAnEventHorizonWriteHeldPastItsObservation(t *testin
 		ended:   func() bool { return !blocked() },
 	})
 	assertUnchanged(t, "no request (a horizon write held past its observation)", before, databaseFingerprint(t, served))
+}
+
+// A writer whose call ends before its statement does - a deadline ends the call, and the cancel
+// pgx then sends on a connection of its own lands late or never - leaves the statement running in
+// the server, where no count in the server's code still holds it. The test sends such a statement
+// itself, an insert that waits on a lock the test holds, from a goroutine nothing in the server
+// counts, and the fingerprint's reads must not begin while it still waits, which the database
+// answers (statementsRunning is the branch that sees it).
+func TestAFingerprintWaitsOutAStatementNoCountInTheServerHolds(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	createInteractionIssue(t, handler, "TEST", "A statement no count holds", "A spec")
+	awaitBackgroundWrites(t, served)
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	release, blocked := holdBlocking(t, ctx, database, `lock table people in share mode`)
+	var inserted atomic.Bool
+	go func() {
+		if _, err := database.Pool.Exec(context.Background(), `insert into people (email) values ('a-statement-no-count-holds@example.com')`); err != nil {
+			t.Errorf("the held insert: %v", err)
+			return
+		}
+		inserted.Store(true)
+	}()
+	awaitCondition(t, ctx, "the insert to wait on the held people", blocked)
+	before := takeFingerprint(t, served, &heldWriter{
+		name:    "an insert no count in the server holds",
+		release: func() { time.AfterFunc(heldWriterLag, release) },
+		ended:   inserted.Load,
+	})
+	assertUnchanged(t, "no request (a statement no count in the server holds)", before, databaseFingerprint(t, served))
 }
 
 // A document whose rows have aged past a compaction's tail - a test that ran that long after its
@@ -613,4 +652,130 @@ func TestAFingerprintPassesOverEveryWriterAgainAfterAWait(t *testing.T) {
 		ended:   func() bool { return wrote.Load() && !commentDeliveryPending(t, database, comment.ID) },
 	})
 	assertUnchanged(t, "no request (a writer another writer started)", before, databaseFingerprint(t, served))
+}
+
+// gatedHorizonDB is a Horizon's database that holds each batch writing event_horizon at a gate
+// before it sends it, so the write is held in the Go code, with no statement in the server; every
+// other batch passes. ended is set once a held batch's results are closed: its writer's call has
+// returned, whatever the statement did.
+type gatedHorizonDB struct {
+	events.HorizonDB
+	gate    chan struct{}
+	entered chan struct{}
+	enter   sync.Once
+	ended   atomic.Bool
+}
+
+func (db *gatedHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	if len(batch.QueuedQueries) == 0 || !strings.Contains(batch.QueuedQueries[0].SQL, "into event_horizon") {
+		return db.HorizonDB.SendBatch(ctx, batch)
+	}
+	db.enter.Do(func() { close(db.entered) })
+	<-db.gate
+	return &endedBatch{BatchResults: db.HorizonDB.SendBatch(ctx, batch), ended: &db.ended}
+}
+
+// endedBatch is a batch's results that set ended once closed.
+type endedBatch struct {
+	pgx.BatchResults
+	ended *atomic.Bool
+}
+
+func (results *endedBatch) Close() error {
+	err := results.BatchResults.Close()
+	results.ended.Store(true)
+	return err
+}
+
+// The write of a proven horizon to event_horizon runs on the observer's goroutine after the
+// observation has answered its waiters (events.Horizon.run, writePersisted), and Horizon.Busy
+// counts it from before it sends its statement. The test holds the write in the Go code, before
+// its statement reaches the server, where the database's own account of its statements
+// (statementsRunning) cannot see it: the server's horizon is replaced by one whose database holds
+// each write to event_horizon at a gate, and an observation that proves a horizon runs its write
+// into the gate. The fingerprint's reads must not begin before the held write's call has returned,
+// which the gate's database answers.
+func TestAFingerprintWaitsOutAnEventHorizonWriteHeldBeforeItsStatement(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	createInteractionIssue(t, handler, "TEST", "A horizon write held before its statement", "A spec")
+	awaitBackgroundWrites(t, served)
+	<-served.bootMark
+	gated := &gatedHorizonDB{HorizonDB: database.Pool, gate: make(chan struct{}), entered: make(chan struct{})}
+	open := sync.OnceFunc(func() { close(gated.gate) })
+	t.Cleanup(open)
+	horizon := events.NewHorizon(gated)
+	horizon.PersistProven()
+	served.eventHorizon = horizon
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	go func() { _, _ = horizon.Safe(context.Background()) }()
+	select {
+	case <-gated.entered:
+	case <-ctx.Done():
+		t.Fatalf("UNKNOWN: no write to event_horizon reached the gate (%v), so this run shows nothing", context.Cause(ctx))
+	}
+	before := takeFingerprint(t, served, &heldWriter{
+		name:    "the write to event_horizon held before it sent its statement",
+		release: func() { time.AfterFunc(heldWriterLag, open) },
+		ended:   gated.ended.Load,
+	})
+	assertUnchanged(t, "no request (a horizon write held before its statement)", before, databaseFingerprint(t, served))
+}
+
+// gatedIdentity is the test server's header identity whose Login, once gating is on, holds at a
+// gate and then records the person with a write of its own before it answers, as a browser
+// identity's resolution can (identity.CookieIdentity confirms a membership). wrote is set once that
+// write has returned without an error.
+type gatedIdentity struct {
+	identity.Identity
+	database *store.Store
+	gating   atomic.Bool
+	gate     chan struct{}
+	entered  chan struct{}
+	enter    sync.Once
+	wrote    atomic.Bool
+}
+
+func (g *gatedIdentity) Login(r *http.Request) (string, error) {
+	if g.gating.Load() {
+		g.enter.Do(func() { close(g.entered) })
+		<-g.gate
+		if _, err := g.database.Pool.Exec(r.Context(), `insert into people (email) values ('a-held-heartbeat@example.com') on conflict do nothing`); err != nil {
+			return "", err
+		}
+		g.wrote.Store(true)
+	}
+	return g.Identity.Login(r)
+}
+
+// A heartbeat's resolution of its socket's caller (whileCallerResolves) runs on to its end when
+// the socket closes meanwhile, and the server counts it from before it begins (server.heartbeats).
+// The test holds a resolution in the Go code, before it sends a statement, where the database's own
+// account of its statements cannot see it: the server's identity holds at a gate once the socket
+// is open, then writes. The socket closes while its heartbeat is held, and the fingerprint's reads
+// must not begin before the held resolution has written, which the identity answers.
+func TestAFingerprintWaitsOutAHeartbeatResolutionHeldBeforeItsStatement(t *testing.T) {
+	gated := &gatedIdentity{gate: make(chan struct{}), entered: make(chan struct{})}
+	rig := newLiveSocketRig(t, testServerOptions{settle: time.Hour, streamHeartbeat: 200 * time.Millisecond, identity: gated}, nil)
+	gated.Identity, gated.database = headerIdentity(rig.database), rig.database
+	open := sync.OnceFunc(func() { close(gated.gate) })
+	t.Cleanup(open)
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	client := rig.dial(t, asUser("alice"))
+	openLiveSockets(t, ctx, rig.served, 1)
+	gated.gating.Store(true)
+	select {
+	case <-gated.entered:
+	case <-ctx.Done():
+		t.Fatalf("UNKNOWN: no heartbeat reached the identity's gate (%v), so this run shows nothing", context.Cause(ctx))
+	}
+	_ = client.conn.Close()
+	openLiveSockets(t, ctx, rig.served, 0)
+	before := takeFingerprint(t, rig.served, &heldWriter{
+		name:    "a heartbeat's resolution of its caller held before its statement",
+		release: func() { time.AfterFunc(heldWriterLag, open) },
+		ended:   gated.wrote.Load,
+	})
+	assertUnchanged(t, "no request (a heartbeat resolution held before its statement)", before, databaseFingerprint(t, rig.served))
 }

@@ -231,7 +231,13 @@ func boundedError(ctx context.Context, err error) error {
 //     generation that stopped meanwhile makes on the relay's goroutine;
 //   - the document service behind srv (docs.Service.AwaitBackgroundWrites): its settlements, running or
 //     armed to run before backgroundSoon from now, its compactions, its document sockets and the
-//     rest of its background writes.
+//     rest of its background writes;
+//   - the statements the database itself still runs for the test's database (statementsRunning):
+//     a writer whose call a deadline ended (horizonPersistTimeout is one) has its statement
+//     cancelled by a cancel pgx sends on a connection of its own, which can land late, or never on
+//     a loaded server, and until it does the statement runs on and commits once a lock it waits on
+//     is let go. Every count above falls as its writer's call returns, so this is the one branch
+//     that sees such a statement.
 //
 // One writer can start another - a detached run that writes a document arms its settlement - so it
 // passes over all of them again after any wait, and returns only from a pass that waited for none.
@@ -286,6 +292,12 @@ func backgroundWrites(t testing.TB, ctx context.Context, srv *server, waiting fu
 				t.Fatalf("wait for the document service's background writes: %v", boundedError(ctx, err))
 			}
 			waited = waited || quiet.Waited
+		}
+		if srv.deps.Store != nil {
+			if running := statementsRunning(t, ctx, srv); running != "" {
+				waited = true
+				awaitCondition(t, ctx, "the statements the database still runs for this test's database ("+running+")", func() bool { return statementsRunning(t, ctx, srv) == "" })
+			}
 		}
 		if !waited {
 			return quiet
@@ -360,6 +372,23 @@ func heartbeatWrite(srv *server, credential *model.Credential) string {
 		return fmt.Sprintf("a person's sign-in under %T, whose resolution can confirm or end the person's membership (people, user_sessions)", srv.deps.Identity)
 	}
 	return ""
+}
+
+// statementsRunning names the statements the database runs for a session of the test's own
+// database (each test has one, testpg.URL) other than the session that asks, and answers "" when
+// it runs none. It reads the database's own account (pg_stat_activity), so it sees a statement
+// whose client already stopped waiting for it, which no count in the server's code still holds.
+func statementsRunning(t testing.TB, ctx context.Context, srv *server) string {
+	t.Helper()
+	var running string
+	if err := srv.deps.Store.Pool.QueryRow(ctx, `
+		select coalesce(string_agg(pid || ': ' || left(regexp_replace(query, '\s+', ' ', 'g'), 80), '; ' order by pid), '')
+		from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid()
+			and backend_type = 'client backend' and state in ('active', 'fastpath function call')`).Scan(&running); err != nil {
+		t.Fatalf("read the statements the database runs: %v", boundedError(ctx, err))
+	}
+	return running
 }
 
 // detachedRunning answers whether any of work runs now.
