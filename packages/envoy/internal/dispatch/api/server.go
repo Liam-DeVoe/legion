@@ -1079,7 +1079,7 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) (model.Ac
 			admitted, _, _ = s.optionalActor(served)
 		}
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			heartbeat := time.NewTicker(s.accessRecheckEvery())
 			defer heartbeat.Stop()
 			for {
 				select {
