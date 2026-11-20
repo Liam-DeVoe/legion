@@ -19,6 +19,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): string {
   return readFileSync(
@@ -67,6 +70,7 @@ afterEach(() => {
 /** The golden fixture each route the tool calls is answered from. */
 const FIXTURE_OF: Readonly<Record<string, string>> = {
   "/legion/v1/state": "state.json",
+  "/legion/v1/issues/LEGION-208/record": "issue-record.json",
   "/legion/v1/grants": "grant.json",
   "/legion/v1/handoff/complete": "handoff-complete.json",
   "/legion/v1/signoff": "signoff.json",
@@ -164,7 +168,10 @@ function trackedClient(url: string) {
       await nextTurn();
     }
   };
-  return { client: createLegionDaemonClient(url, fetchFn), quiet };
+  return {
+    client: createLegionDaemonClient(url, { pluginContract: CONTRACT, fetch: fetchFn }),
+    quiet,
+  };
 }
 
 /** One turn of the event loop: every promise job already queued has run when it resolves. */
@@ -216,7 +223,7 @@ function restartingClient(live: string, down: string, outage: number) {
     const url = String(input);
     return fetch(sent <= outage ? url.replace(live, down) : url, init);
   }) as typeof fetch;
-  return createLegionDaemonClient(live, fetchFn);
+  return createLegionDaemonClient(live, { pluginContract: CONTRACT, fetch: fetchFn });
 }
 
 /** A virtual clock: each wait is recorded and moves time on at once, and `pass` moves it on
@@ -309,7 +316,7 @@ test("handoff_complete waits out a daemon that refuses connections while it rest
   expect(result.details).toEqual(JSON.parse(daemonFixture("handoff-complete.json")));
   expect(completed).toEqual(["ses_208"]);
   expect(live.answered).toEqual([
-    "/legion/v1/state",
+    "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);
@@ -361,7 +368,7 @@ test("handoff_complete retries a connection the daemon closed before answering, 
   expect(result.isError).toBe(true);
   expect(result.content[0]).toEqual({
     type: "text",
-    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`,
+    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`,
   });
   expect(completed).toEqual([]);
   expect(live.answered.filter((route) => route === "/legion/v1/handoff/complete")).toHaveLength(1);
@@ -465,10 +472,10 @@ const WAITING_WRITES = [
     role: "implementer",
     tree: "LEGION-208",
     parameters: { op: "handoff_complete", summary: "Done." },
-    first: "/legion/v1/state",
+    first: "/legion/v1/issues/LEGION-208/record",
     sent: [
-      "/legion/v1/state",
-      "/legion/v1/state",
+      "/legion/v1/issues/LEGION-208/record",
+      "/legion/v1/issues/LEGION-208/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
     ],
@@ -545,7 +552,7 @@ for (const write of WAITING_WRITES) {
     const clock = virtualClock();
     const tool = toolFor(
       write.role,
-      createLegionDaemonClient(daemon.url),
+      createLegionDaemonClient(daemon.url, { pluginContract: CONTRACT }),
       { ...clock, attemptLimit: noLimit },
       [],
       write.tree
@@ -628,7 +635,7 @@ async function reviewerOverHeldDispatch(attemptLimit: DaemonRestartRetry["attemp
   };
   const tool = createLegionTool({
     pi,
-    daemon: () => createLegionDaemonClient(live.url),
+    daemon: () => createLegionDaemonClient(live.url, { pluginContract: CONTRACT }),
     session: () => ({
       kind: "phase-worker",
       role: "reviewer",
@@ -688,7 +695,7 @@ test("a handoff_complete whose report read waits on Dispatch past the attempt's 
   expect(result.isError).toBeUndefined();
   expect(updates).toEqual([]);
   expect(held.live.answered).toEqual([
-    "/legion/v1/state",
+    "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);
@@ -718,7 +725,7 @@ test("an abort while a handoff_complete's report read waits on Dispatch ends tha
   await endedByClient(await held.first);
   held.release();
   await nextTurn();
-  expect(held.live.answered).toEqual(["/legion/v1/state"]);
+  expect(held.live.answered).toEqual(["/legion/v1/issues/LEGION-208/record"]);
   expect(held.reads).toHaveLength(1);
 }, 30_000);
 
@@ -727,7 +734,7 @@ test("an abort while a handoff_complete's report read waits on Dispatch ends tha
 // attempt's five-minute limit (which never runs out here), and nothing that attempt would do next
 // is sent when the daemon answers late.
 test("an abort while an attempt waits on the daemon ends that attempt at the daemon, answers at once, and sends nothing more", async () => {
-  const daemon = holdingDaemon("/legion/v1/state");
+  const daemon = holdingDaemon("/legion/v1/issues/LEGION-208/record");
   const { client, quiet } = trackedClient(daemon.url);
   const clock = virtualClock();
   const tool = toolFor("implementer", client, { ...clock, attemptLimit: noLimit });
@@ -749,10 +756,11 @@ test("an abort while an attempt waits on the daemon ends that attempt at the dae
   expect(block?.type === "text" ? block.text : "").toBe(
     "handoff_complete: the call was aborted while an attempt waited for the daemon's answer; that attempt may have been applied, so read the record before calling again"
   );
+  // The open request is ended at the daemon while the daemon still holds it, before it answers.
+  await endedByClient(await daemon.held);
   daemon.release();
   await quiet();
-  expect(daemon.answered).toEqual(["/legion/v1/state"]);
-  await endedByClient(await daemon.held);
+  expect(daemon.answered).toEqual(["/legion/v1/issues/LEGION-208/record"]);
   expect(clock.waits).toEqual([]);
 }, 30_000);
 
@@ -884,7 +892,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
   const clock = virtualClock();
   const tool = toolFor(
     "architect",
-    createLegionDaemonClient(`http://127.0.0.1:${server.port}`),
+    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { pluginContract: CONTRACT }),
     clock
   );
 

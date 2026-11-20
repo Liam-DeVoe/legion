@@ -6,6 +6,9 @@ import { createTurnOutcomeReporter, type TurnOutcomeLog } from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
 
+/** The contract this build states on every request (`Legion-Plugin-Contract`). */
+const CONTRACT = 60;
+
 const implementer: ClaimCapability = {
   sessionID: SESSION,
   tree: "LEGION-208",
@@ -46,7 +49,10 @@ function rig(
     debug: (message) => debugged.push(message),
     warn: (message) => warned.push(message),
   };
-  const client = createLegionDaemonClient("http://daemon.test", stub);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: stub,
+  });
   const reporter = createTurnOutcomeReporter({
     daemon: () => client,
     claim: options.claim ?? ((sessionID) => (sessionID === SESSION ? implementer : undefined)),
@@ -180,7 +186,9 @@ test("a report the daemon takes and does not answer is ended at the daemon, and 
   try {
     const debugged: string[] = [];
     const warned: string[] = [];
-    const client = createLegionDaemonClient(`http://127.0.0.1:${server.port}`);
+    const client = createLegionDaemonClient(`http://127.0.0.1:${server.port}`, {
+      pluginContract: CONTRACT,
+    });
     let clock = 0;
     let attempts = 0;
     const reporter = createTurnOutcomeReporter({

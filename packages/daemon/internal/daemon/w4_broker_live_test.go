@@ -110,6 +110,9 @@ type w4PodEnrollment struct {
 
 // newW4PodEnrollment builds `agent-secrets` from the checkout under test's packages/envoy, the
 // binary a pod's worker image carries beside the shim, and writes the key directory and a token.
+// Its source is `cmd/cipher` since the broker's commands moved to their Cipher directories, and
+// `cmd/agent-secrets` before, where the control's base still keeps it, so the command built is
+// whichever of the two the checkout has.
 func newW4PodEnrollment(t *testing.T, root string) w4PodEnrollment {
 	t.Helper()
 	dir := t.TempDir()
@@ -118,10 +121,15 @@ func newW4PodEnrollment(t *testing.T, root string) w4PodEnrollment {
 		t.Fatal(err)
 	}
 	writeProofFile(t, e.tokenFile, "eyJhbGciOiJSUzI1NiJ9.e30.sig\n")
-	build := exec.Command("go", "build", "-o", e.binary, "./cmd/agent-secrets")
-	build.Dir = filepath.Join(root, "packages", "envoy")
+	envoy := filepath.Join(root, "packages", "envoy")
+	command := "./cmd/cipher"
+	if _, err := os.Stat(filepath.Join(envoy, "cmd", "cipher")); err != nil {
+		command = "./cmd/agent-secrets"
+	}
+	build := exec.Command("go", "build", "-o", e.binary, command)
+	build.Dir = envoy
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/agent-secrets in %s: %v\n%s", build.Dir, err, output)
+		t.Fatalf("go build %s in %s: %v\n%s", command, build.Dir, err, output)
 	}
 	return e
 }

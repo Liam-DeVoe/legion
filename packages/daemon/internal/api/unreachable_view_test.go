@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -34,22 +35,28 @@ func TestAClaimViewShowsTheUnreachableMarkAndKeepsItsState(t *testing.T) {
 	}
 }
 
-// A caller from a pod below the contract that added the key is served the state without it: its
-// plugin reads the claim views with a schema that knows no such key.
+// A caller below the contract that added the key is served the state without it, on every claim
+// view and on the controller's locator: its plugin reads them with a schema that knows no such key
+// (stateNarrowings' row at unreachableContract). A caller at that contract is served the mark.
 func TestTheStateServedBelowTheUnreachableContractCarriesNoMark(t *testing.T) {
 	since := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
 	state := State{Issues: map[string]Issue{"LEGION-209": {Key: "LEGION-209",
 		Architect: &ClaimView{State: "idle", Unreachable: &UnreachableView{Since: since}},
+		Workers:   map[claim.Role]PhaseView{claim.RoleImplementer: {Claim: ClaimView{State: "working", Unreachable: &UnreachableView{Since: since}}}},
 	}}, ControllerLocator: &ControllerLocator{SessionID: "ses_controller", Unreachable: &UnreachableView{Since: since}}}
-	if !carriesUnreachable(state) {
-		t.Fatal("carriesUnreachable is false for a state with a marked claim")
+	below := unreachableContract - 1
+	served := stateFor(state, below, below, &tookOff{})
+	issue := served.Issues["LEGION-209"]
+	if issue.Architect.Unreachable != nil || issue.Workers[claim.RoleImplementer].Claim.Unreachable != nil || served.ControllerLocator.Unreachable != nil {
+		t.Fatalf("the state served at %d still carries the mark: %+v", below, served)
 	}
-	served := withoutUnreachable(state)
-	if served.Issues["LEGION-209"].Architect.Unreachable != nil || served.ControllerLocator.Unreachable != nil {
-		t.Fatalf("the state served below %d still carries the mark: %+v", unreachableContract, served)
-	}
-	if state.Issues["LEGION-209"].Architect.Unreachable == nil || state.ControllerLocator.Unreachable == nil {
+	if state.Issues["LEGION-209"].Architect.Unreachable == nil || state.Issues["LEGION-209"].Workers[claim.RoleImplementer].Claim.Unreachable == nil ||
+		state.ControllerLocator.Unreachable == nil {
 		t.Fatal("the strip changed the state the source answered")
+	}
+	at := stateFor(state, unreachableContract, unreachableContract, &tookOff{})
+	if at.Issues["LEGION-209"].Architect.Unreachable == nil || at.ControllerLocator.Unreachable == nil {
+		t.Fatalf("the state served at %d lost the mark: %+v", unreachableContract, at)
 	}
 	if unreachableContract != DaemonAPIVersion {
 		t.Fatalf("unreachableContract = %d, want this change's contract %d", unreachableContract, DaemonAPIVersion)

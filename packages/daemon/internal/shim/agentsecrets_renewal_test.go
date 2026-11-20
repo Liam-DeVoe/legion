@@ -88,7 +88,8 @@ func TestARenewalTheBrokerNeverAnswersIsMadeAgain(t *testing.T) {
 }
 
 // buildAgentSecrets builds `agent-secrets` from this tree's packages/envoy, the binary a pod's
-// worker image carries beside the shim.
+// worker image carries beside the shim. Its source is `cmd/cipher`, which the worker image builds
+// into `agent-secrets` (worker.Dockerfile).
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
 	envoy, err := filepath.Abs(filepath.Join("..", "..", "..", "envoy"))
@@ -96,10 +97,10 @@ func buildAgentSecrets(t *testing.T) string {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "agent-secrets")
-	build := exec.Command("go", "build", "-o", out, "./cmd/agent-secrets")
+	build := exec.Command("go", "build", "-o", out, "./cmd/cipher")
 	build.Dir = envoy
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/agent-secrets in %s: %v\n%s", envoy, err, output)
+		t.Fatalf("go build ./cmd/cipher in %s: %v\n%s", envoy, err, output)
 	}
 	return out
 }

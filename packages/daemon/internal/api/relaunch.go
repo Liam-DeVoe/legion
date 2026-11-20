@@ -47,7 +47,7 @@ const casePerson = " This is a case for a person."
 // legion.yaml; internal/daemon's reach keeper, reachWatched).
 func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	var req RelaunchRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID}, field{"claim", req.Claim}) {
 		return
 	}
@@ -57,18 +57,18 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", "relaunch requires a controller grant")
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", "relaunch requires a controller grant")
 		return
 	}
 	if token == claim.ControllerToken(s.project) {
-		writeFailure(w, http.StatusConflict, "CLAIM_IS_CONTROLLER",
+		s.writeFailure(w, r, http.StatusConflict, "CLAIM_IS_CONTROLLER",
 			"the project's controller is relaunched by the daemon alone, once in "+timewords.Words(supervise.RelaunchAgainAfter)+
 				", and only where the daemon runs the controller itself (controller: daemon in legion.yaml); nobody else can relaunch it")
 		return
 	}
 	m, supervised := s.supervisor.Machine(token)
 	if !supervised {
-		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
+		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return
 	}
 	// A relaunch stops the claim's process and spends its 6-hour allowance, and its launch is a
@@ -77,18 +77,18 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.relaunch == nil {
-		writeFailure(w, http.StatusInternalServerError, "RELAUNCH_FAILED", "this daemon has no relaunch of an unreachable claim")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RELAUNCH_FAILED", "this daemon has no relaunch of an unreachable claim")
 		return
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "relaunch") {
+	if s.stopped(w, r, "relaunch") {
 		return
 	}
 	err := s.relaunch(ctx, m)
 	if err == nil {
 		s.log.Warn("api: the controller relaunched a claim Envoy could not reach, on its same session", "claim", token)
-		writeJSON(w, http.StatusOK, RelaunchResponse{})
+		s.writeAnswer(w, r, AnswerRelaunch, http.StatusOK, RelaunchResponse{})
 		return
 	}
 	status, code, person := relaunchRefusal(err)
@@ -99,7 +99,7 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	if status == http.StatusInternalServerError || status == http.StatusServiceUnavailable {
 		s.logFailure("api: the relaunch of an unreachable claim failed", "claim", token, "code", code, "error", err)
 	}
-	writeFailure(w, status, code, sentence)
+	s.writeFailure(w, r, status, code, sentence)
 }
 
 // relaunchRefusal is the status and code a relaunch's error is answered with, and whether it is a
