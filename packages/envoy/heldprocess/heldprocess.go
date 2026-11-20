@@ -2,7 +2,9 @@
 // tell whether that stand-in still runs: a shell script's end that records the stand-in's pid and
 // becomes `sleep <seconds>` under it (Script), and the check of a recorded pid against that
 // command line (Recorded, Running), which a pid the kernel has given to another process since does
-// not pass. A test signals the command, then reads whether the stand-in is gone.
+// not pass. A test signals the command, then reads whether the stand-in is gone. It also holds the
+// two other reads of /proc such a test makes: a process's command line (CommandLine), for a
+// stand-in of another shape, and whether a process ignores a signal (Ignores).
 //
 // It is one body for both Go modules of this repository: `packages/daemon`'s `legion` tests and
 // `packages/envoy`'s `envoy-mcp` test both hold their work with it, so a fix to how a test proves
@@ -34,11 +36,36 @@ func Script(pidFile, seconds string) string {
 // `sleep <seconds>`, read from /proc, so a pid the kernel has since given to another process does
 // not count.
 func Running(pid int, seconds string) bool {
+	return strings.Join(CommandLine(pid), " ") == "sleep "+seconds
+}
+
+// CommandLine is pid's command line, its argv, as /proc/<pid>/cmdline holds it, read now, so a
+// test tells its own stand-in from a process the kernel has given the pid to since by what it
+// runs. A pid /proc does not name has none (nil).
+func CommandLine(pid int) []string {
 	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+}
+
+// Ignores says whether pid ignores sig now, as the SigIgn mask of /proc/<pid>/status holds it: the
+// kernel's own record, which a handler for the signal (signal.Notify) clears. A test reads it to see
+// that a command left in place an ignore it was started with, as `nohup` starts it ignoring SIGHUP.
+// A pid /proc does not name ignores nothing.
+func Ignores(pid int, sig syscall.Signal) bool {
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		return false
 	}
-	return strings.Join(strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00"), " ") == "sleep "+seconds
+	for _, line := range strings.Split(string(raw), "\n") {
+		if mask, ok := strings.CutPrefix(line, "SigIgn:"); ok {
+			bits, err := strconv.ParseUint(strings.TrimSpace(mask), 16, 64)
+			return err == nil && bits&(1<<(uint(sig)-1)) != 0
+		}
+	}
+	return false
 }
 
 // Recorded is the pid a stand-in recorded in pidFile (Script), and whether that pid is still the

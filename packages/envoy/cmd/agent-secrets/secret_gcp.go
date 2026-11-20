@@ -461,8 +461,9 @@ var formWatchesSignals atomic.Int32
 // other group.
 //
 // TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary: the moment
-// gcloud has started (startGcloud), the moment the start gives runningGcloud up, and at that last
-// kill.
+// before gcloud starts, with runningGcloud held (startGcloud), which only a watch armed before the
+// start holds, so a watch armed anywhere after the fork fails it; the moment gcloud has started;
+// the moment the start gives runningGcloud up; and at that last kill.
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
@@ -482,10 +483,11 @@ func runRecorded(cmd *exec.Cmd) error {
 	return err
 }
 
-// startGcloud starts cmd and reaches the gcloudStarted step the moment the start has returned, so
-// the step comes before anything else runRecorded does once gcloud runs, wherever runRecorded
-// takes runningGcloud and arms its watch around the call.
+// startGcloud reaches the gcloudStarting step, starts cmd, and reaches the gcloudStarted step the
+// moment the start has returned, so the two steps come just before and just after the fork,
+// wherever runRecorded takes runningGcloud and arms its watch around the call.
 func startGcloud(cmd *exec.Cmd) error {
+	reachedGcloudStep(gcloudStarting)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -495,6 +497,9 @@ func startGcloud(cmd *exec.Cmd) error {
 
 // gcloudStep names a step of runRecorded at which a test can act (atGcloudStep).
 type gcloudStep string
+
+// gcloudStarting: runningGcloud is held, and gcloud is not yet started (startGcloud).
+const gcloudStarting gcloudStep = "starting"
 
 // gcloudStarted: gcloud runs, and its pid is not yet recorded (startGcloud).
 const gcloudStarted gcloudStep = "started"

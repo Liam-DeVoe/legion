@@ -55,7 +55,11 @@ func (s standIn) script() string {
 // three of them take one StopGrace rather than three. Before, the watch was armed only once every
 // server had started, so the signal met its default action: envoy-mcp died at once and the server
 // ran on, its input closed and nobody waiting for it; and the stop that followed the start stopped
-// its servers one after another, StopGrace each.
+// its servers one after another, StopGrace each. A SIGHUP and a SIGQUIT sent to envoy-mcp's pid
+// alone stop it the same way (shutdownSignals), where before the SIGHUP's default action, and the
+// SIGQUIT's goroutine dump, ended it with the server running. And envoy-mcp started with SIGHUP
+// ignored, as `nohup` starts it, still ignores it once its watch is armed, so a closing terminal
+// leaves it running, and a SIGTERM still stops it.
 func TestATerminationDuringTheBridgesStartStopsTheServersItStarted(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this test reads from it whether the stand-in servers still run", err)
@@ -67,9 +71,16 @@ func TestATerminationDuringTheBridgesStartStopsTheServersItStarted(t *testing.T)
 		// input; held is the last server's, which never answers.
 		started []string
 		held    string
+		// signal is what the row sends envoy-mcp's pid once the bridge waits on the held server;
+		// ignored, where set, is a signal envoy-mcp is started with ignored.
+		signal  syscall.Signal
+		ignored string
 	}{
-		{name: "the one server still starting", held: "289"},
-		{name: "three started servers and one still starting", started: []string{"271", "272", "273"}, held: "274"},
+		{name: "the one server still starting", held: "289", signal: syscall.SIGTERM},
+		{name: "three started servers and one still starting", started: []string{"271", "272", "273"}, held: "274", signal: syscall.SIGTERM},
+		{name: "the one server still starting, on a SIGHUP", held: "284", signal: syscall.SIGHUP},
+		{name: "the one server still starting, on a SIGQUIT", held: "285", signal: syscall.SIGQUIT},
+		{name: "the one server still starting, started ignoring SIGHUP", held: "270", signal: syscall.SIGTERM, ignored: "HUP"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -104,6 +115,11 @@ func TestATerminationDuringTheBridgesStartStopsTheServersItStarted(t *testing.T)
 			}
 			t.Cleanup(func() { printed.Close() })
 			envoyMCP := exec.Command(os.Args[0], "-test.run=^$")
+			if row.ignored != "" {
+				// `sh -c 'trap "" HUP; exec …'` is what nohup does to the command it runs: envoy-mcp
+				// starts in the process started here, with the signal ignored.
+				envoyMCP = exec.Command("/bin/sh", "-c", "trap '' "+row.ignored+`; exec "$@"`, "sh", os.Args[0], "-test.run=^$")
+			}
 			envoyMCP.Env = append(os.Environ(), runAsMain+"=1", "ENVOY_MCP_CONFIG="+configPath,
 				"ENVOY_MACHINE_ID=test-machine", "NATS_URLS="+natsURL)
 			envoyMCP.Stdout, envoyMCP.Stderr = printed, printed
@@ -133,7 +149,10 @@ func TestATerminationDuringTheBridgesStartStopsTheServersItStarted(t *testing.T)
 				}
 				return true
 			})
-			if err := envoyMCP.Process.Signal(syscall.SIGTERM); err != nil {
+			if row.ignored != "" && !heldprocess.Ignores(envoyMCP.Process.Pid, syscall.SIGHUP) {
+				t.Errorf("envoy-mcp, started with SIGHUP ignored, no longer ignores it once its watch is armed; a closing terminal would end it: %s", readPrinted(t, printed.Name()))
+			}
+			if err := envoyMCP.Process.Signal(row.signal); err != nil {
 				t.Fatal(err)
 			}
 			// The stop closes each server's input and kills each still running once StopGrace has
@@ -146,16 +165,16 @@ func TestATerminationDuringTheBridgesStartStopsTheServersItStarted(t *testing.T)
 			select {
 			case <-exited:
 			case <-time.After(bound):
-				t.Fatalf("envoy-mcp still runs %s after its SIGTERM during the bridge's start; want it stopped within the stop's bound: %s", bound, readPrinted(t, printed.Name()))
+				t.Fatalf("envoy-mcp still runs %s after its %v during the bridge's start; want it stopped within the stop's bound: %s", bound, row.signal, readPrinted(t, printed.Name()))
 			}
 			for _, s := range standIns {
 				pid, _ := heldprocess.Recorded(s.pidFile, s.seconds)
 				if !testwait.Holds(bound, testwait.Poll, func() bool { return !heldprocess.Running(pid, s.seconds) }) {
-					t.Errorf("the stand-in server `sleep %s` (pid %d) still runs %s after envoy-mcp ended on a SIGTERM during the bridge's start; want it stopped with the bridge: %s", s.seconds, pid, bound, readPrinted(t, printed.Name()))
+					t.Errorf("the stand-in server `sleep %s` (pid %d) still runs %s after envoy-mcp ended on a %v during the bridge's start; want it stopped with the bridge: %s", s.seconds, pid, bound, row.signal, readPrinted(t, printed.Name()))
 				}
 			}
 			if state := envoyMCP.ProcessState; state == nil || !state.Exited() || state.ExitCode() != 0 {
-				t.Errorf("envoy-mcp ended %v after a SIGTERM during the bridge's start; want it to stop the bridge and exit 0: %s", state, readPrinted(t, printed.Name()))
+				t.Errorf("envoy-mcp ended %v after a %v during the bridge's start; want it to stop the bridge and exit 0: %s", state, row.signal, readPrinted(t, printed.Name()))
 			}
 		})
 	}
