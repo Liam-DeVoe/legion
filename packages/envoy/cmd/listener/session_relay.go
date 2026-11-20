@@ -483,7 +483,7 @@ type relayFrame struct {
 // relay socket, whose replica may be the other one, and the edge's grant publishes no reply inbox
 // (natsgrant.Edge) but does publish and subscribe that family.
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig, edge bool) (*sessionRelays, error) {
-	inbox := nats.NewInbox()
+	inbox := delivery.consumers.NewInbox()
 	if edge {
 		inbox = bus.RelayReplyPrefix + nuid.Next()
 	}

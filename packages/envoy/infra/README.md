@@ -3941,6 +3941,30 @@ authorization, which replaces a VM hub's instance and reaches a clustered hub on
 reload. This repository's listener runs under this set against the real servers below: it answers
 a registration `consumer` and relays a send on the session's relay subject, with no refusal.
 
+`EdgePermissions(machineID)` is the grant of an edge listener's own NATS user: the listener that
+serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no session and
+no other listener shares. It is `ListenerPermissions(machineID)` with these changes and no other.
+It publishes `notifications.agent.>`, `notifications.role.>` and `notifications.envoy.>` (the relay
+subjects, the relay receipts `notifications.envoy.relayreply.`, the exception lanes and the lanes
+the stream carries for the listener, its kept lane among them) in place of `notifications.>`, so
+it publishes no Dispatch, GitHub, Slack, team or Legion event, and it holds no
+`$JS.API.STREAM.CREATE` or `UPDATE` of `ENVOY_NOTIFICATIONS`: an edge listener reads the stream
+and its start ends, naming the stream, on a server that has none. It subscribes its own inbox
+prefix `_INBOX_envoy_edge.>` in place of
+`_INBOX.>`, every session's relay subject `notifications.envoy.deliver.*` and the relay receipts
+`notifications.envoy.relayreply.>`, and no role lane: every connection of an edge listener names its
+inboxes under that prefix, and a shared listener forwards a role message held at the edge to the
+holder's agent subject. It names no `agentstream.` subject. What it keeps is the rest of the
+listener's publish list, the session consumers' calls and every bucket's key-value calls among
+it, so an edge listener can still create a consumer on any filter and read any stored message,
+and write every record of the session, interest and role buckets: its read is the whole bus
+until subjects and keys name their project. The auth service answers an `edge-listener` entry of
+`BROKER_NATS_SERVICES` with the same set, and the deployment repository's hub user for an edge
+listener copies it entry for entry from `packages/envoy/natsgrant/testdata/edge.golden.json`. The
+listener runs under it against the hub's image in `cmd/listener/edge_live_test.go`, under the
+`natslive` tag: it starts, relays a send and is reached by a role message through a shared
+listener, with no refusal, and its start ends, naming the prefix, under the set without it.
+
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
 `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` (the read `legion state` makes of each durable

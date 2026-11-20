@@ -10,6 +10,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+// EdgeListenerKind is the kind of a BROKER_NATS_SERVICES entry that names an edge listener
+// (natscallout.KindEdgeListener).
+const EdgeListenerKind = "edge-listener"
+
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
 // any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,

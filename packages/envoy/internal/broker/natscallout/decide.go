@@ -156,6 +156,8 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 		return natsgrant.Dispatch(entry.MachineID)
 	case KindListener:
 		return natsgrant.Listener(entry.MachineID)
+	case KindEdgeListener:
+		return natsgrant.Edge(entry.MachineID)
 	case KindDaemon:
 		return natsgrant.Daemon()
 	case KindMeasure:

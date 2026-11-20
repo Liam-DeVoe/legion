@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -87,6 +88,108 @@ func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
 }
 
+// edgeGolden is testdata/edge.golden.json: the edge listener's grant for the machine id it names,
+// which the deployment repository's hub user for an edge listener copies entry for entry. It is
+// written by hand and never regenerated, so a change to Edge, or to a name it is built from,
+// fails here until the golden and that copy change with it.
+type edgeGolden struct {
+	MachineID string   `json:"machine_id"`
+	Publish   []string `json:"publish"`
+	Subscribe []string `json:"subscribe"`
+}
+
+// The edge listener's grant is the golden, element for element and in order, with no deny list.
+func TestTheEdgeGrantIsTheGolden(t *testing.T) {
+	var golden edgeGolden
+	readJSON(t, "testdata/edge.golden.json", &golden)
+	require.Equal(t, "example-edge-a", golden.MachineID)
+	grant := natsgrant.Edge(golden.MachineID)
+	requireSet(t, set{Publish: golden.Publish, Subscribe: golden.Subscribe}, grant, "Edge("+strconv.Quote(golden.MachineID)+")")
+	require.Empty(t, grant.PublishDeny)
+	require.Empty(t, grant.SubscribeDeny)
+}
+
+// Edge is Listener with the edge's changes and nothing else. In publish: the agent, role and
+// Envoy families in place of every notification topic, and no create or update of the stream. In
+// subscribe: its own inbox prefix in place of every reply inbox, every session's relay subject
+// and the relay receipts, and neither role-lane queue group. So a change to Listener reaches Edge,
+// and the golden above says that it did.
+func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
+	require.Equal(t, "_INBOX_envoy_edge", natsgrant.EdgeInboxPrefix)
+	for _, id := range []string{"example-edge-a", "example-hub"} {
+		listener, edge := natsgrant.Listener(id), natsgrant.Edge(id)
+		require.Equal(t, "notifications.>", listener.Publish[0])
+		kept := slices.DeleteFunc(slices.Clone(listener.Publish[1:]), func(entry string) bool {
+			return entry == "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS" || entry == "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS"
+		})
+		require.Len(t, kept, len(listener.Publish)-3, "Listener(%q) holds every notification topic, the stream's create and its update", id)
+		require.Equal(t, append([]string{"notifications.agent.>", "notifications.role.>", "notifications.envoy.>"}, kept...), edge.Publish, "Edge(%q) publish", id)
+		require.Equal(t, []string{"_INBOX_envoy_edge.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}, edge.Subscribe, "Edge(%q) subscribe", id)
+	}
+}
+
+// matchesSubject reports whether the NATS subject pattern pattern admits subject: token by
+// token, * for any one token and > for one or more tokens at the end.
+func matchesSubject(pattern, subject string) bool {
+	patterns, tokens := strings.Split(pattern, "."), strings.Split(subject, ".")
+	for i, p := range patterns {
+		switch {
+		case p == ">":
+			return len(tokens) > i
+		case i >= len(tokens):
+			return false
+		case p != "*" && p != tokens[i]:
+			return false
+		}
+	}
+	return len(patterns) == len(tokens)
+}
+
+// The edge publishes no event of another source, no Legion wake, no reply to another client's
+// request and no agent stream subject, and subscribes no agent stream subject either; the
+// listener's own grant admits each publish, which shows the matcher can find one.
+func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
+	edge, listener := natsgrant.Edge("example-edge-a"), natsgrant.Listener("example-edge-a")
+	admits := func(entries []string, subject string) bool {
+		return slices.ContainsFunc(entries, func(pattern string) bool { return matchesSubject(pattern, subject) })
+	}
+	for _, subject := range []string{
+		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
+		"notifications.github.acme.pub.pr.1.opened",
+		"notifications.slack.example-channel",
+		"notifications.legion.wake",
+		"notifications.team.deploy-squad",
+	} {
+		require.False(t, admits(edge.Publish, subject), "Edge publishes %s", subject)
+		require.True(t, admits(listener.Publish, subject), "Listener does not publish %s, so the matcher finds nothing", subject)
+	}
+	for _, subject := range []string{"notifications.agent.ses_a", "notifications.role.PRIV.reviewer", "notifications.envoy.relayreply.n1.t1"} {
+		require.True(t, admits(edge.Publish, subject), "Edge does not publish %s", subject)
+	}
+	for _, entries := range [][]string{edge.Publish, edge.Subscribe} {
+		for _, entry := range entries {
+			require.False(t, strings.HasPrefix(entry, "agentstream."), "Edge names the agent stream subject %q", entry)
+		}
+	}
+	for _, entry := range edge.Publish {
+		require.False(t, strings.HasPrefix(entry, "_INBOX"), "Edge publishes to the reply inboxes %q", entry)
+	}
+}
+
+// The auth service's guard passes the edge's grant: it opens neither direction and names no system
+// subject. The same check on a copy with no subscribe list finds that direction open.
+func TestTheEdgeGrantOpensNoDirection(t *testing.T) {
+	grant := natsgrant.Edge("example-edge-a")
+	direction, open := natsgrant.OpenDirection(grant)
+	require.False(t, open, "Edge opens its %s direction", direction)
+	entry, named := natsgrant.NamesSystemSubject(grant)
+	require.False(t, named, "Edge names %q", entry)
+	grant.Subscribe = nil
+	direction, open = natsgrant.OpenDirection(grant)
+	require.True(t, open)
+	require.Equal(t, "subscribe", direction)
+}
+
 // A session's grant names its own subjects and no other session's, and an id that is not one
 // subject token is refused, because a dot, a wildcard or a space in it would widen the grant.
 func TestSessionGrantNamesOnlyItsOwnSession(t *testing.T) {
@@ -166,6 +269,7 @@ func TestNamesSystemSubject(t *testing.T) {
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
 		grants["Host("+id+")"] = natsgrant.Host(id)
+		grants["Edge("+id+")"] = natsgrant.Edge(id)
 	}
 	for name, grant := range grants {
 		require.NotEmpty(t, slices.Concat(grant.Publish, grant.Subscribe), name)

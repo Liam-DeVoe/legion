@@ -168,7 +168,8 @@ func startRoleForward(client *bus.Client) func(subject string, item contracts.En
 }
 
 // roleLane is the listener's role lane at shutdown: its own client (bus.ConnectRoleLane), the
-// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers.
+// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers. An edge
+// listener subscribes no role lane, so its roleLane holds the forwards alone.
 type roleLane struct {
 	client    *bus.Client
 	forwards  *roleForwarder
@@ -178,11 +179,16 @@ type roleLane struct {
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler
 // takes every role message the server already delivered and no more, then waits for the forwards it
 // handed over, the forward window after that at most, since a forward published by then has its
-// outcome within it. A forward still waiting then is logged and left to the main client's drain.
+// outcome within it. A forward still waiting then is logged and left to the main client's drain. A
+// lane with no client, an edge listener's, waits for the forwards alone.
 func (l roleLane) drain(logger *logging.Logger, timeout time.Duration) {
-	l.stopWatch()
-	if err := l.client.Drain(timeout); err != nil {
-		logger.Warn("role lane drain error", slog.String("error", err.Error()))
+	if l.stopWatch != nil {
+		l.stopWatch()
+	}
+	if l.client != nil {
+		if err := l.client.Drain(timeout); err != nil {
+			logger.Warn("role lane drain error", slog.String("error", err.Error()))
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), roleForwardTimeout)
 	defer cancel()

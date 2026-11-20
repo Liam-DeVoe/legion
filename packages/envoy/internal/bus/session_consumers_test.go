@@ -119,6 +119,30 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 	}
 }
 
+// An edge listener's relay receipt travels over core NATS as the relay frame does: no stream
+// subject captures the receipt family, so no receipt is stored.
+func TestARelayReceiptIsNotStored(t *testing.T) {
+	if RelayReplyPrefix != "notifications.envoy.relayreply." {
+		t.Fatalf("RelayReplyPrefix = %q", RelayReplyPrefix)
+	}
+	if subject := RelayReplyPrefix + "n1.t1"; StreamCaptures(subject) {
+		t.Fatalf("the stream captures %s", subject)
+	}
+}
+
+// Every lane of Envoy's own begins with EnvoyTopicPrefix, the one family an edge listener's grant
+// publishes beside the agent and role subjects (natsgrant.Edge), so that grant reaches each of them.
+func TestEveryEnvoyLaneIsUnderTheEnvoyPrefix(t *testing.T) {
+	if EnvoyTopicPrefix != "notifications.envoy." {
+		t.Fatalf("EnvoyTopicPrefix = %q", EnvoyTopicPrefix)
+	}
+	for _, lane := range append([]string{DeliverSubjectPrefix, RelayReplyPrefix, ExceptionTopicPrefix}, ListenerOwnLanes()...) {
+		if !strings.HasPrefix(lane, EnvoyTopicPrefix) || lane == EnvoyTopicPrefix {
+			t.Errorf("the lane %q is not under %q", lane, EnvoyTopicPrefix)
+		}
+	}
+}
+
 // sessionConsumersOnStream connects a client that owns the stream, on a JetStream account of the
 // test's own, and SessionConsumers beside it.
 func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {
