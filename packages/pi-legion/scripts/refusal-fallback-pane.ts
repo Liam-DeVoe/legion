@@ -49,6 +49,7 @@ import {
   serveStandin,
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
@@ -86,7 +87,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2029-2037` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2202-2209` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.
@@ -362,8 +363,8 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
       // On, a rate limit is admitted to the chain consult rather than deferred to another attempt
-      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:2913-2920` and
-      // `:3238-3246` at the pinned tag); Oh My Pi has it off. The host spends its same-model
+      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:3395-3397` and
+      // `:3747-3765` at the pinned tag); Oh My Pi has it off. The host spends its same-model
       // retries either way — `retry.maxRetries` is 10 and each one waits out the 60 s the
       // stand-in's 429 asks for — so the walk this pane measures comes about ten minutes in.
       "  rateLimitWalksChain: true",
@@ -457,6 +458,10 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   // stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(await readFile(registerFixture, "utf8"));
   let grants = 0;
+  // The pane's registration secret and boot token: random, as the daemon's are, since the pane
+  // holds each and scrubs it from every line it prints (`@legion/contracts/held-secrets`).
+  const registrationSecret = fixtureSecret("reg");
+  const bootToken = fixtureSecret("boot");
 
   const record = (at: number, model: string, what: string): void => {
     pane.served.push({ at, model, answer: what });
@@ -492,7 +497,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         issue: run.key,
         role: "architect",
         generation: 1,
-        secret: `${run.label}-secret`,
+        secret: registrationSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -537,7 +542,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         LEGION_TREE: run.key,
         LEGION_ISSUE: run.key,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: `${run.label}-boot`,
+        LEGION_BOOT_TOKEN: bootToken,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_REFUSAL_COOLDOWN_MS: String(cooldownMs),
