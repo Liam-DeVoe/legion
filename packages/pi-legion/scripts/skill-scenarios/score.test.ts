@@ -28,18 +28,15 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
-beforeAll(
-  () => {
-    for (const label of ["head", "base", "cross", "on", "off"]) {
-      mkdirSync(path.join(work, "profiles", label), { recursive: true });
-      writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
-    }
-    // A staging may queue another (the pushed-code run below queues its scenario once the
-    // repository is built), so the queue is drained until it is empty rather than in one pass.
-    for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-  },
-  60_000
-);
+beforeAll(() => {
+  for (const label of ["head", "base", "cross", "on", "off"]) {
+    mkdirSync(path.join(work, "profiles", label), { recursive: true });
+    writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
+  }
+  // A staging may queue another (the pushed-code run below queues its scenario once the
+  // repository is built), so the queue is drained until it is empty rather than in one pass.
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
+}, 60_000);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [

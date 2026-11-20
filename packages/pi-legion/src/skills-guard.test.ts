@@ -704,9 +704,13 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
 test("an issue runs the default steps unless its architect registers a plan before its first step", () => {
   expect([
     ...lacks("legion-architect/SKILL.md", [
-      /references\/plan\.md`[^.;]*register/,
-      /`register_plan`[^.;]*before `register_gate`/,
-      /no registered plan[^.;]*default steps/,
+      /references\/plan\.md`[^.;]*before `register_gate`[^.;]*before `release_children`/,
+      /issue with none runs the default steps/,
+      /stop a task[^.;]*references\/plan-changes\.md`/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /\*\*A root:\*\* before `register_gate`/,
+      /\*\*A child:\*\* before `release_children`/,
     ]),
     ...lacks("legion-worker/SKILL.md", [/default task[^.;]*tester[^.;]*reviewer[^.;]*acceptance/]),
   ]).toEqual([]);
@@ -734,12 +738,98 @@ test("the controller reads every held reason, and a stopped task's phase in its 
 });
 
 test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
-  const missing = lacks("legion-retro/SKILL.md", [
-    /Read the evidence[^.;]*the implementer's handoff/,
-    /tester's handoff[^.;]*has a tester step/,
-    /--phase review[^.;]*has a reviewer step/,
-    /no reviewer step[^.;]*unresolved bot threads/,
-    /no reviewer step[^.;]*review-thread replies and resolutions/,
-  ]);
+  const missing = [
+    ...lacks("legion-retro/SKILL.md", [
+      /Read the evidence[^.;]*the implementer's handoff/,
+      /tester's handoff[^.;]*has a tester step/,
+      /--phase review[^.;]*has a reviewer step/,
+      /no reviewer step[^.;]*unresolved bot threads/,
+      /no reviewer step[^.;]*review-thread replies and resolutions/,
+      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*tester's handoff/,
+      /no reviewer step[^.;]*bot threads in `Threads` at the head you found/,
+    ]),
+    // The body step that changes only path-derived lines leaves room for those updates, and
+    // runs its safe edit for them even where the repository derives no line from paths.
+    ...lacks("legion-retro/references/pr-body-content.md", [
+      /stop here unless the task has no reviewer step/,
+      /`<head>`, the head the task's last step passed/,
+      /no reviewer step[^.]*`Not proven \/ risk` and `Threads` lines[^.]*leave every other line byte for byte/,
+      /the `Checks` block included, except a no-result line/,
+    ]),
+    ...lacks("legion-worker/references/review-threads.md", [
+      /declined thread[^.;]*completion summary, or at retro in its Dispatch message/,
+      /stamped with the head it just pushed, or at retro with the head retro found/,
+    ]),
+  ];
   expect(missing).toEqual([]);
+});
+
+// The wake table sends the three notices an owner's plan adds to the reference that holds their
+// handling, and a conflict merged forward in `accepting` to the reference that waits for a review
+// only where the task has a reviewer step.
+test("the architect's wake table sends each owner-plan notice to where its handling is", () => {
+  expect([
+    ...lacks("legion-architect/references/wake-routing.md", [
+      /\| `retro-held`, `task-stopped`, `plan-not-taken` \|[^|]*references\/plan-changes\.md`/,
+      /\| `checks-red` \|[^|]*"A conflicting head"/,
+    ]),
+    ...lacks("legion-architect/references/plan-changes.md", [
+      /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,
+      /\*\*`retro-held`:\*\*[^*]*no `acceptance:owner` step[^*]*Run each issue it names to done/,
+      /\*\*`plan-not-taken`:\*\*[^*]*`stop_task` the task that runs now/,
+    ]),
+    ...lacks("legion-architect/references/acceptance.md", [
+      /no reviewer step has no review to await/,
+    ]),
+  ]).toEqual([]);
+});
+
+// A duty moved out of a skill body into a reference must still ship in that reference: these are
+// the duties the role skills route to their references by name.
+test("each duty a role skill routes to a reference stands in that reference", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /page or a tool a person uses[^.]*running build[^.]*before the review/,
+      /dependencies as `skill:\/\/legion-architect\/references\/decomposition\.md`/,
+    ]),
+    ...lacks("legion-architect/references/decomposition.md", [
+      /running system[^.;]*implementer proves them on and a tester step drives/,
+      /wait on a sibling or on an issue outside this tree[^.;]*replaces the whole list/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /references\/default-branch-check\.md`[^.]*trailers the pane writes for you/,
+    ]),
+    ...lacks("legion-worker/references/default-branch-check.md", [
+      /Write no trailer yourself but the `Dispatch:` line[^.;]*below/,
+      /line short on a commit you have not pushed/,
+      /pushed commit[^.;]*conflicts-and-rewrites\.md`, "A wrong pushed commit"/,
+      /`LEGION_ISSUE_TRAILER` is set[^.;]*`Dispatch: \$LEGION_ISSUE_TRAILER`/,
+      /clone under `\$LEGION_WORKSPACE`[^.;]*clone one you will push elsewhere outside it/,
+    ]),
+    ...lacks("legion-worker/references/results.md", [
+      /The implementer re-runs a red check that failed on its own once/,
+    ]),
+    ...lacks("legion-worker/references/pr-body.md", [
+      /only the deploy can show it[^.]*plan names its observation/,
+    ]),
+  ]).toEqual([]);
+});
+
+// skills/AGENTS.md bounds a skill's SKILL.md and each of its references at 150 lines and 8 KB,
+// counted here as 8,000 bytes. Every file of the Legion role skills is held to it, so a file that
+// grows past it moves its detail one level down before it ships.
+test("every file of the Legion role skills fits the skill budget", () => {
+  const budgeted = files(staged).filter((file) =>
+    /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
+  );
+  expect(budgeted.length).toBeGreaterThan(20);
+  const over = budgeted.flatMap((file) => {
+    const text = readFileSync(file, "utf8");
+    const bytes = Buffer.byteLength(text);
+    const lines = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+    return bytes > 8_000 || lines > 150
+      ? [`${path.relative(staged, file)}: ${lines} lines, ${bytes} bytes`]
+      : [];
+  });
+  expect(over).toEqual([]);
 });

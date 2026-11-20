@@ -53,7 +53,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`.
    When no point qualifies, write no comment and say so in step 5's message.
 
-4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`, when the repository derives body lines from changed paths.
+4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
+   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
 

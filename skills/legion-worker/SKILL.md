@@ -59,7 +59,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
-- No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
+- No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
@@ -68,18 +68,8 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 ## Commits and pushes
 
-- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`.
-  Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`.
-  Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
-
-- Write no trailer yourself.
-  The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names;
-  the git wrapper adds the first two to a `git commit`.
-  A merge, revert, cherry-pick or rebase that git makes gets none.
-  Cure a commit that lacks a line by describing it again in the pane's shell;
-  where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
-
-- A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
+- Before every push, and before you clone a repository under `$LEGION_WORKSPACE`, follow `skill://legion-worker/references/default-branch-check.md`:
+  it reads your branch's commits and their messages, and says which trailers the pane writes for you and the one cure you may add.
 
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
 
@@ -111,12 +101,14 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 They override this skill, except: no deferrals;
 the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows;
-the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/pr-body.md#what-a-result-is`);
+the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
 and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
 
 ## References
 
-- PR body, a check's result, the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
+
+- A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 

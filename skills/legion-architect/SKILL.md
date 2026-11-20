@@ -12,7 +12,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 ## Every turn
 
-- Act on delivered wakes by the [wake routing](#wake-routing); build no wait loop.
+- Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
 
 - Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
 
@@ -42,17 +42,13 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 5. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
    the gate's opening starts the root's own first phase, and a later child runs beside it.
 
-6. Read `skill://legion-architect/references/plan.md` before you write or register an issue plan.
-   Call `register_plan` for a root before `register_gate` and for a child before `release_children`;
-   an issue with no registered plan runs its project's default steps.
-
+6. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
+   a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
+   Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
   one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
   A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
-
-- Every child names the running system its criteria are proven on (the command, service or page the tester drives) and the repository skill that drives it;
-  building a missing path is this tree's work.
 
 - **Show the surface before you ask.**
   Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/design-gate.md`, "Show the surface before you ask").
@@ -63,9 +59,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 - A root releases no child until every gated step is open:
   `design-approved`, and under more than one step `gatedSteps` in `read_record` showing each `approved`.
 
-- Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
-  --blocked-by <b>`.
-  It replaces the whole list, so read the existing links first (`dispatch read`).
+- Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
 - Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
   Legion holds a child whose blockers are not `done`.
@@ -84,8 +78,7 @@ A child filed after its parent started runs beside it, and the parent's sign-off
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from its own evidence, never in a child;
-  read a tester's handoff only where the task has a tester step, and a reviewer's approval only where it has a reviewer step.
+- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
@@ -96,15 +89,14 @@ A child filed after its parent started runs beside it, and the parent's sign-off
 ## 5. Retro
 
 Where the task has `acceptance:owner`, your `sign_off` starts retro; without it, the last step starts retro.
-A parent without that step is held before retro while an issue beneath it remains in the workflow.
 Never message the implementer to start retro.
 A retro that reports a defect holds its completion until you say whether it moves the issue back.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
 
-Only a task whose `Steps:` line names `acceptance:owner` enters `accepting`; no worker runs there.
-The issue's own architect reads, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+In `accepting`, which only a task naming `acceptance:owner` enters, no worker runs:
+read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
 Run the `goal-red-team` read your role prompt names.
 Accept only when a pass stands for every `before_merge` check at the last step's head, every requirement has a check, and none is unmet or read narrower than written:
@@ -117,10 +109,6 @@ Finding asks, refusals and what follows: `skill://legion-architect/references/ac
 
 The merge closes the issue once every issue beneath it has left the workflow;
 nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
-
-## Wake routing
-
-Handle each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`.
 
 ## Escalation judgment
 
