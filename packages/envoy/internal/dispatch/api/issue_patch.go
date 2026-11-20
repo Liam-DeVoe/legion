@@ -29,6 +29,45 @@ func deleteIssueExternalLinks(ctx context.Context, tx pgx.Tx, key string) error 
 	return err
 }
 
+// linkedPullRequestLockSpace is the first key of the transaction locks a link write takes on each
+// pull request it links (lockLinkedPullRequests), so they share no key with another advisory lock.
+const linkedPullRequestLockSpace = "dispatch-issue-external-link"
+
+// lockLinkedPullRequests takes, in tx, one transaction lock for each pull request the links name,
+// under the one form both of its URLs read as: the /pull/ form, lowercased
+// (delivery.LinkURLAsPullRequestSQL), so /pull/N and /issues/N of one pull request in any letter
+// case take one lock. The link check of a write reads committed rows, so without the lock two
+// writes at once could each find the other's form absent and both store it on two issues. With
+// it, the second write waits for the first to commit or roll back, and its check then reads the
+// first's row and refuses with 409 EXTERNAL_LINK_TAKEN. The forms are locked one at a time in
+// byte order, so two writes that link the same pull requests take their locks in one order and
+// cannot wait on each other. A URL that names no pull request takes a lock of its own text, which
+// costs one lock and holds nothing else back. Two forms whose hashes meet only make one write
+// wait for the other.
+func lockLinkedPullRequests(ctx context.Context, tx pgx.Tx, links []model.ExternalLink) error {
+	urls := make([]string, 0, len(links))
+	for _, link := range links {
+		urls = append(urls, link.URL)
+	}
+	rows, err := tx.Query(ctx, `
+		select distinct lower(`+delivery.LinkURLAsPullRequestSQL("u.url")+`) collate "C" as form
+		from unnest($1::text[]) u(url) order by form`, urls)
+	if err != nil {
+		return fmt.Errorf("read the pull requests the links name: %w", err)
+	}
+	forms, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the pull requests the links name: %w", err)
+	}
+	for _, form := range forms {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+			linkedPullRequestLockSpace, form); err != nil {
+			return fmt.Errorf("lock the links to %s: %w", form, err)
+		}
+	}
+	return nil
+}
+
 // issueUpdatedNow is the value every write that stamps an issue's updated_at itself sets it to:
 // the statement's own moment, clock_timestamp(), and never below what the row already holds. A
 // write's transaction begins before it takes the issue's locks, and now() is that beginning, so
@@ -470,6 +509,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		heldBefore := make([]string, 0, len(before.ExternalLinks))
 		for _, link := range before.ExternalLinks {
 			heldBefore = append(heldBefore, link.URL)
+		}
+		// The check below reads committed rows, so two writes at once, one of /pull/N and one of
+		// /issues/N of one pull request on two issues, could each find nothing and both store
+		// their link. Each write takes the lock of each pull request it links first, in one order,
+		// so the second waits for the first to commit and its check then reads the first's row.
+		if err := lockLinkedPullRequests(r.Context(), tx, *input.ExternalLinks); err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		sent := make(map[string]bool, len(*input.ExternalLinks))
 		for _, link := range *input.ExternalLinks {

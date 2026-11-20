@@ -486,13 +486,36 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
-		if _, err := tx.Exec(r.Context(), `
-			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
-			if !isUniqueViolation(err) {
-				s.writeHandlerError(w, err)
-				return
+		url := externalURL(externalRepo, externalNumber)
+		// resolveIssueRef read the links before this transaction began, so a link write of the
+		// other form of this number on another issue may have committed since, or be in flight.
+		// The lock of the pull request (lockLinkedPullRequests) waits for such a write, and the
+		// read under it sees its row, so the number is answered as the issue that holds it.
+		if err := lockLinkedPullRequests(r.Context(), tx, []model.ExternalLink{{URL: url}}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		asPull := delivery.LinkURLAsPullRequestSQL("$1::text")
+		var taken bool
+		if err := tx.QueryRow(r.Context(), `
+			select exists (select 1 from issue_external_links
+				where lower(url) = any(array[lower(`+asPull+`), lower(`+delivery.PullRequestURLAsIssueSQL(asPull)+`)]))
+		`, url).Scan(&taken); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !taken {
+			if _, err := tx.Exec(r.Context(), `
+				insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
+			`, key, url); err != nil {
+				if !isUniqueViolation(err) {
+					s.writeHandlerError(w, err)
+					return
+				}
+				taken = true
 			}
+		}
+		if taken {
 			if err := tx.Rollback(r.Context()); err != nil {
 				s.writeHandlerError(w, err)
 				return
