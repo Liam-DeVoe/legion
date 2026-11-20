@@ -11,7 +11,6 @@ package airlockproxy
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -220,7 +219,11 @@ func (h *heldRig) openSide(t *testing.T, who, placeholder, value, grantID string
 	}
 
 	s.joinStand, s.streamEnd = h.stand.joins[joinPathOf(who)], h.stand.streams[streamPathOf(who)]
-	s.join, s.joinReader = h.joinAs(t, placeholder, joinPathOf(who))
+	upgraded, join, joinReader := upgradeThroughPath(t, h.rig, placeholder, http.MethodGet, joinPathOf(who))
+	if upgraded.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("%s's upgrade answered %d; want 101", who, upgraded.StatusCode)
+	}
+	s.join, s.joinReader = join, joinReader
 	frame(t, s.join, s.joinReader, who+"'s frame before any hold")
 	s.stream = h.streamAs(t, placeholder, streamPathOf(who))
 	return s
@@ -242,40 +245,6 @@ func (h *heldRig) served(t *testing.T, client *http.Client, s *side, what string
 	if auth := seenNow[len(seenNow)-1].Header.Get("Authorization"); auth != "Bearer "+s.value {
 		t.Fatalf("%s: %s reached the service with Authorization %q; want %s's own value", s.who, what, auth, s.who)
 	}
-}
-
-// joinAs upgrades through the proxy with placeholder as its proxy password, as a GET at path, and
-// answers the joined connection with the 101 read.
-func (h *heldRig) joinAs(t *testing.T, placeholder, path string) (net.Conn, *bufio.Reader) {
-	t.Helper()
-	connected, conn, _ := h.connectRaw(net.JoinHostPort(boundHost, "443"), basic(placeholder))
-	if connected.StatusCode != http.StatusOK {
-		t.Fatalf("the CONNECT answered %d; want 200", connected.StatusCode)
-	}
-	decrypted := tls.Client(conn, &tls.Config{RootCAs: h.trust, ServerName: boundHost})
-	if err := decrypted.Handshake(); err != nil {
-		t.Fatalf("the TLS handshake with the proxy: %v", err)
-	}
-	t.Cleanup(func() { decrypted.Close() })
-	request := "GET " + path + " HTTP/1.1\r\n" +
-		"Host: " + boundHost + "\r\n" +
-		"Upgrade: websocket\r\n" +
-		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Version: 13\r\n" +
-		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
-		"Authorization: Bearer " + placeholder + "\r\n\r\n"
-	if _, err := decrypted.Write([]byte(request)); err != nil {
-		t.Fatalf("write the upgrade request: %v", err)
-	}
-	reader := bufio.NewReader(decrypted)
-	upgraded, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
-	if err != nil {
-		t.Fatalf("read the answer to the upgrade: %v", err)
-	}
-	if upgraded.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("the upgrade answered %d; want 101", upgraded.StatusCode)
-	}
-	return decrypted, reader
 }
 
 // streamAs opens a streamed answer at path through the proxy with placeholder as its proxy
