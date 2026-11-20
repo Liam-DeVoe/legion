@@ -120,7 +120,7 @@ func blockersStatement(t *testing.T, ctx context.Context, database *store.Store,
 }
 
 // blockersBefore is readBlockers' read of the tuples into the node and its join to graph_nodes as
-// they stood before INFRA-1149, written with the constants the read is written with and the
+// they stood before its probe, written with the constants the read is written with and the
 // parameter sql, the statement the read sends now, binds the state at: the tuples read naming no
 // `to_kind <> 'value'`, and joined to graph_nodes plainly, put back in place of the probe of each
 // stating node and of the test of its state.

@@ -850,8 +850,10 @@ type crossProject struct {
 	// what it sends a route of an issue document.
 	message, document, documentSlug, documentBlock string
 	// step is the id of a run of a step of the issue, written as the project's Legion daemon
-	// writes one: the id the cross-project probe sends the step write.
-	step string
+	// writes one: the id the cross-project probe sends the step write and the rating write. plan
+	// is the id of the plan of a run of the issue, written the same way: the id it sends the plan
+	// write.
+	step, plan string
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
 	priority string
@@ -908,6 +910,9 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// key is the refusal of an id outside that key.
 	owned.step = uuid.NewString()
 	putStepOK(t, handler, issue.Key, owned.step, implementerStart(daemonSessionOf("TEST")))
+	// The plan of a run of the issue, written the same way (putPlanRecordOK).
+	owned.plan = uuid.NewString()
+	putPlanRecordOK(t, handler, issue.Key, owned.plan, defaultPlanBody(daemonSessionOf("TEST"), 1))
 	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
 	owned.document, owned.documentSlug = document.ID, document.Slug
 	owned.documentBlock = firstBlockOf(t, handler, document.ID)
@@ -959,7 +964,9 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     served a project document under whatever project's key it was sent answers a row;
 //   - {number} beside either: 1, the first version, which each of the two documents holds;
 //   - {id} of /issues/{key}/messages/{id}: the issue's message;
-//   - {id} of /issues/{key}/steps/{id}: the run of a step of the issue its project's daemon
+//   - {id} of /issues/{key}/steps/{id}, and of its /rating: the run of a step of the issue its
+//     project's daemon wrote;
+//   - {id} of /issues/{key}/plans/{id}: the plan of a run of the issue its project's daemon
 //     wrote.
 //
 // A route under a key whose {slug} or {id} is of a kind no line above names fails the test: an
@@ -976,6 +983,7 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/artifacts/{slug}/versions/{number}", "{number}", "1"},
 		{"/issues/{key}/messages/{id}", "{id}", owned.message},
 		{"/issues/{key}/steps/{id}", "{id}", owned.step},
+		{"/issues/{key}/plans/{id}", "{id}", owned.plan},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
@@ -1001,12 +1009,14 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 // crossProjectRequest sends one route its cross-project path (crossProjectPath) as a caller the
 // route's own checks admit, with a body that passes what the route checks before it reads the
 // object, so what refuses it is the object and not the caller or the body. Every route is sent
-// as alice, a person, with its probe body (routeProbeBody), but two:
+// as alice, a person, with its probe body (routeProbeBody), but these:
 //
-//   - the step write records a run only for the session of the Legion daemon of the key's project
-//     and refuses any other writer 403 STEP_WRITER before it reads the id (putIssueStep), so it is
+//   - the step write, its rating and the plan write each record only for the session of the
+//     Legion daemon of the key's project and refuse any other writer 403 STEP_WRITER before they
+//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon), so each is
 //     sent over the deployment's shared agent credential, which proves no session, naming the
-//     session of the other project's daemon;
+//     session of the other project's daemon, with a body each accepts: the rating carries one,
+//     and the plan write the default plan of a run (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
 //     it reads the slug (createNamedVersion), so its body carries one.
 func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
@@ -1014,6 +1024,12 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 	switch route.Method + " " + route.Pattern {
 	case "PUT /api/v1/issues/{key}/steps/{id}":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{"actor": daemonSessionOf(owned.otherKey)})
+	case "PUT /api/v1/issues/{key}/steps/{id}/rating":
+		return sessionRequest(t, handler, route.Method, target, map[string]any{
+			"actor": daemonSessionOf(owned.otherKey), "rating": 3, "rating_reason": "A rating under another project's key.",
+		})
+	case "PUT /api/v1/issues/{key}/plans/{id}":
+		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
 	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
 	}

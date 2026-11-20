@@ -196,7 +196,7 @@ func queuedBy(t *testing.T, write func(*store.WriteBatch) error) []explaintest.S
 	return explaintest.BatchedBy(t, func(tx pgx.Tx) error { return store.RunWrite(context.Background(), tx, write) })
 }
 
-// appendControl is one part of the append as queueAppend wrote it before INFRA-1149, given the
+// appendControl is one part of the append as queueAppend wrote it before its probe, given the
 // parameters the append binds its mark and its sentinel at (appendMark, appendSentinel).
 type appendControl func(mark, sentinel string) explaintest.Part
 
@@ -210,7 +210,7 @@ var (
 	appendSentinel = regexp.MustCompile(`(\$[0-9]+)::boolean and held\.source_event = `)
 )
 
-// markedBefore is the append's read of the marks as queueAppend wrote it before INFRA-1149: the
+// markedBefore is the append's read of the marks as queueAppend wrote it before its probe: the
 // batch joined to graph_nodes, written with the helpers the append is written with.
 func markedBefore(mark, _ string) explaintest.Part {
 	return explaintest.Part{Name: "the read of the marks", Opens: "marked as (", Closes: "based as (", Text: `marked as (
@@ -221,7 +221,7 @@ func markedBefore(mark, _ string) explaintest.Part {
 		`}
 }
 
-// settledBefore is the append's move as queueAppend wrote it before INFRA-1149: graph_nodes
+// settledBefore is the append's move as queueAppend wrote it before its probe: graph_nodes
 // updated from the batch joined to it, written with the helpers the append is written with.
 func settledBefore(mark, sentinel string) explaintest.Part {
 	return explaintest.Part{Name: "the move", Opens: "settled as (", Closes: "insert into graph_tuples", Text: `settled as (
@@ -235,7 +235,7 @@ func settledBefore(mark, sentinel string) explaintest.Part {
 		`}
 }
 
-// claimArmsBefore is claimArms as it stood before INFRA-1149, written with the helpers claimArms
+// claimArmsBefore is claimArms as it stood before its probes, written with the helpers claimArms
 // is written with: the claims joined to the far ends they read, and their stated rows to
 // themselves and to graph_tuples.
 func claimArmsBefore(first int, where string) string {
