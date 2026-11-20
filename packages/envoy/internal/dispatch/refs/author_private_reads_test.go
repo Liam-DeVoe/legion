@@ -83,6 +83,60 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
+// The closure reads its second hop, and every hop after it, under the same visibility as its
+// first. A public document the issue links to links on to a public document and to a document
+// reserved for its author, and that private document links on to another public document.
+// Another person is answered the first document and the public one it reaches, but neither the
+// private document nor the document reached only through it. Its author is answered all four,
+// each at its depth and through the document that links to it.
+func TestTheClosureWalksNoFurtherHopToADocumentReservedForItsAuthor(t *testing.T) {
+	tx := prefixFixture(t)
+	ctx := context.Background()
+	firstHop, firstHopKey := createReferenceArtifact(t, tx, "", "CORE", "first-hop-md")
+	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	_, secondHopKey := createReferenceArtifact(t, tx, "", "CORE", "second-hop-md")
+	_, beyondPrivateKey := createReferenceArtifact(t, tx, "", "CORE", "beyond-private-md")
+	comment := createReferenceComment(t, tx, "CORE-1")
+	insertReference(t, tx, "comment", comment, "artifact", firstHopKey)
+	insertReference(t, tx, "artifact", firstHop, "artifact", privateDocumentKey)
+	insertReference(t, tx, "artifact", firstHop, "artifact", secondHopKey)
+	insertReference(t, tx, "artifact", privateDocument, "artifact", beyondPrivateKey)
+	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+
+	closure := func(who model.Actor) []Member {
+		t.Helper()
+		members, _, err := Closure(ctx, tx, who, "CORE-1")
+		if err != nil {
+			t.Fatalf("read the closure as %s: %v", who.ID, err)
+		}
+		return members
+	}
+	sorted := func(members []Member) []Member {
+		sort.Slice(members, func(left, right int) bool {
+			if members[left].Depth != members[right].Depth {
+				return members[left].Depth < members[right].Depth
+			}
+			return members[left].RefKey < members[right].RefKey
+		})
+		return members
+	}
+	fromFirstHop := model.ReferenceVia{Kind: "artifact", ID: firstHop}
+	public := sorted([]Member{
+		{RefKey: firstHopKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}},
+		{RefKey: secondHopKey, Depth: 2, Via: fromFirstHop},
+	})
+	if got := closure(privateReader); !reflect.DeepEqual(got, public) {
+		t.Errorf("another person's closure = %#v; want %#v, without the private document %s or the document %s reached only through it", got, public, privateDocumentKey, beyondPrivateKey)
+	}
+	all := sorted(append(slices.Clone(public),
+		Member{RefKey: privateDocumentKey, Depth: 2, Via: fromFirstHop},
+		Member{RefKey: beyondPrivateKey, Depth: 3, Via: model.ReferenceVia{Kind: "artifact", ID: privateDocument}},
+	))
+	if got := closure(privateAuthor); !reflect.DeepEqual(got, all) {
+		t.Errorf("the author's closure = %#v; want %#v", got, all)
+	}
+}
+
 // A private target is no mention another person reads among a document's outgoing ones, and a
 // private document lists no mention to them at all. Its author reads both.
 func TestOutgoingAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
