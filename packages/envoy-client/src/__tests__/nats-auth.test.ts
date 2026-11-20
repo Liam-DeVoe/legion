@@ -55,16 +55,30 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
   let open: NatsServer;
   let authorized: NatsServer;
 
+  // Both hooks run Docker (a container's start, its removal), which a loaded host makes slow while
+  // it still answers. A timeout of 0 is Bun's "none" (a hook given no timeout takes `bun test
+  // --timeout`, 30 s here), so the run's own deadline bounds them, as it bounds the readiness wait
+  // inside startNatsServer, which names the container it waits for. A server that started is kept
+  // for afterAll to stop even when the other one failed, so a failed start leaves no container.
   beforeAll(async () => {
-    [open, authorized] = await Promise.all([
+    const started = await Promise.allSettled([
       startNatsServer(serverDirectory),
       startNatsServer(serverDirectory, user.publicKey),
     ]);
-  }, 120_000);
+    const [first, second] = started.map((server) =>
+      server.status === "fulfilled" ? server.value : undefined
+    );
+    open = first as NatsServer;
+    authorized = second as NatsServer;
+    const failed = started.find(
+      (server): server is PromiseRejectedResult => server.status === "rejected"
+    );
+    if (failed) throw failed.reason;
+  }, 0);
   afterAll(() => {
     open?.stop();
     authorized?.stop();
-  }, 60_000);
+  }, 0);
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});
