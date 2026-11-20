@@ -60,26 +60,23 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 	checkHeadWords(t, rows)
 }
 
-// A mark that leads into a word goes with that word. The first word is the first word that holds
-// a letter or a number, with whatever leads into it: a backtick, a bracket, a quote, a dash, or
-// an emoji and a space. Where it runs past the limit, the answer keeps it whole with what leads
-// into it, as a test's name in backticks is written, and never the lead-in alone. A later word that
-// runs past the limit is left out with the marks that open its run, so the answer never ends with
-// a backtick or a bracket that opens a word it left out.
-func TestHeadWordsKeepsAMarkWithTheWordItLeadsInto(t *testing.T) {
+// Opening punctuation that leads into a word goes with that word. The first word is the first
+// word that holds a letter or a number, with whitespace and an opening backtick, bracket,
+// parenthesis or quote before it. Where it runs past the limit, the answer keeps it whole with
+// what leads into it, as a test's name in backticks is written, and never the lead-in alone. A
+// later word that runs past the limit is left out with the opening marks before it, so the answer
+// never ends with a backtick or a bracket that opens a word it left out. A separator, such as a
+// slash, stays a word boundary: a public-line filter can then inspect its complete budget prefix.
+func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 	name := "TestA" + strings.Repeat("LongName", 12) // 101 characters, a test's name
 	var rows []headWordsRow
 	for _, lead := range []struct{ open, close string }{
-		{"`", "`"}, {"[", "]"}, {"(", ")"}, {`"`, `"`}, {"'", "'"}, {"“", "”"}, {"--", ""}, {"✅ ", ""}, {"(`", "`)"},
+		{"`", "`"}, {"[", "]"}, {"(", ")"}, {`"`, `"`}, {"'", "'"}, {"“", "”"}, {"(`", "`)"},
 	} {
 		rows = append(rows, headWordsRow{
 			name:  fmt.Sprintf("a first word of 101 characters after %q is kept whole with it", lead.open),
 			value: lead.open + name + lead.close + " passed 20 of 20 runs.", limit: 80, want: lead.open + name, cut: true,
 		})
-		if strings.TrimSpace(lead.open) != lead.open {
-			// An emoji and a space are a word of their own before a later word, not its lead-in.
-			continue
-		}
 		rows = append(rows, headWordsRow{
 			name:  fmt.Sprintf("a later word of 101 characters after %q is left out with it", lead.open),
 			value: "Run " + lead.open + name + lead.close + " now.", limit: 80, want: "Run", cut: true,
@@ -185,6 +182,7 @@ func TestHeadWordsKeepsAURLWhole(t *testing.T) {
 		{name: "a first word that is a URL past the limit is kept whole", value: url + " shows the step.", limit: 80, want: url, cut: true},
 		{name: "a URL past the limit that is the whole value is returned whole", value: url, limit: 80, want: url, cut: false},
 		{name: "an address that starts with www and no scheme is one word", value: "See www.example.com/" + strings.Repeat("segment/", 12), limit: 80, want: "See", cut: true},
+		{name: "a www inside a word starts no link, so its run is cut at a slash", value: "See awww.example.com/" + strings.Repeat("segment/", 12), limit: 80, want: "See awww.example.com/" + strings.Repeat("segment/", 7), cut: true},
 		{name: "a markdown link's address is not cut inside", value: "See [the log](" + url + ") now", limit: 80, want: "See [the", cut: true},
 	})
 }

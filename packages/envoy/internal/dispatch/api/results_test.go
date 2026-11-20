@@ -200,101 +200,10 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
-// wordSeed is the text wordOfLength repeats: letters joined by underscores, which Unicode's
-// default word rules (UAX #29) keep in one word (WB5, WB13a, WB13b).
-const wordSeed = "results_branch_newest_"
-
-// wordOfLength is one word of length characters, cut from repeats of wordSeed.
-func wordOfLength(length int) string {
-	return strings.Repeat(wordSeed, length/len(wordSeed)+1)[:length]
-}
-
-// longFirstWord is one word of 110 characters, past the 80 a pull-request body line carries of a
-// reading or of a check's words (checkResultReadingRunes), so no word ends inside that budget.
-var longFirstWord = wordOfLength(110)
-
-// boundaryReadings are readings in which a word ends inside the budget only where Unicode's
-// default word rules (UAX #29) put a boundary at no space: text in scripts written without spaces
-// between their words, where a boundary falls beside each ideograph, each Hiragana character and
-// each Thai letter and none between a letter and its marks, and runs of emoji, of CJK radicals, of
-// Katakana words joined by a middle dot and of a path's segments, which the same rules part beside
-// each emoji, each radical, each dot and each slash. So each is cut inside the budget, and want is
-// what the line carries of it. None holds "://", since a check's words drop a URL (blockWords).
-var boundaryReadings = []struct{ what, reading, want string }{
-	{
-		// 208 characters, 16 to a sentence: the 80th ends the fifth sentence.
-		what:    "Chinese",
-		reading: strings.Repeat("运行了二十次，每次都打印了列表。", 13),
-		want:    strings.Repeat("运行了二十次，每次都打印了列表。", 5) + "…",
-	},
-	{
-		// 204 characters, 17 to a sentence: the 80th is the ideograph 功, and a Hiragana
-		// character follows it.
-		what:    "Japanese",
-		reading: strings.Repeat("テストは二十回すべて成功しました。", 12),
-		want:    strings.Repeat("テストは二十回すべて成功しました。", 4) + "テストは二十回すべて成功…",
-	},
-	{
-		// 228 characters: the 81st is the vowel mark U+0E35 of the letter ย, the 80th, so the
-		// cut falls before that letter and the line keeps 79.
-		what:    "Thai",
-		reading: "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 8),
-		want:    "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 2) + "การทดสอบผ่านครบทั้ง…",
-	},
-	{
-		// 100 Hiragana characters, 20 to a sentence: the 80th ends the fourth.
-		what:    "Hiragana alone",
-		reading: strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5),
-		want:    strings.Repeat("にじゅっかいのしけんはすべてとおりました", 4) + "…",
-	},
-	{
-		what:    "81 emoji",
-		reading: strings.Repeat("🛑", 81),
-		want:    strings.Repeat("🛑", 80) + "…",
-	},
-	{
-		what:    "100 CJK radicals",
-		reading: strings.Repeat("⺀", 100),
-		want:    strings.Repeat("⺀", 80) + "…",
-	},
-	{
-		// 105 characters, 7 to a word and its dot: the 77th is the eleventh dot, and the word
-		// after it ends at the 83rd.
-		what:    "Katakana words joined by a middle dot",
-		reading: strings.Repeat("データベース・", 15),
-		want:    strings.Repeat("データベース・", 11) + "…",
-	},
-	{
-		// 106 characters: the 74th is the eighth slash after "data", and the segment after it
-		// ends at the 81st.
-		what:    "a path",
-		reading: "/srv/data/" + strings.Repeat("segment/", 12),
-		want:    "/srv/data/" + strings.Repeat("segment/", 8) + "…",
-	},
-}
-
-// joinedPictographs is 100 stop signs joined by zero-width joiners, 199 characters that UAX #29
-// keeps in one word (WB3c).
-var joinedPictographs = strings.Repeat("🛑\u200d", 99) + "🛑"
-
-// firstWordReadings are readings that decide what the line keeps of a first word and what leaving
-// a character out is. A first word of 110 characters after a bracket, a parenthesis, a double or
-// a single quote, as a test's name is written, is kept whole with what leads into it; a long word
-// after a first word that ends inside the budget is left out, with a bracket that leads into it.
-// Marks alone after the last word kept are left out with `…`. A chain of joined pictographs is one
-// word: kept whole as the first word, and left out after a first word. A backtick is the
-// pull-request line's own row, since markdown makes a code span of a check's backticks.
-var firstWordReadings = []struct{ what, reading, want string }{
-	{what: "a first word of 110 characters after [", reading: "[" + longFirstWord + "] passed 20 of 20 runs.", want: "[" + longFirstWord + "…"},
-	{what: "a first word of 110 characters after (", reading: "(" + longFirstWord + ") passed 20 of 20 runs.", want: "(" + longFirstWord + "…"},
-	{what: `a first word of 110 characters after "`, reading: `"` + longFirstWord + `" passed 20 of 20 runs.`, want: `"` + longFirstWord + "…"},
-	{what: "a first word of 110 characters after '", reading: "'" + longFirstWord + "' passed 20 of 20 runs.", want: "'" + longFirstWord + "…"},
-	{what: "a word of 110 characters after a first word inside the budget", reading: "Run " + longFirstWord + " now.", want: "Run…"},
-	{what: "a word of 110 characters after a first word and a (", reading: "Run (" + longFirstWord + ") now.", want: "Run…"},
-	{what: "marks alone after the last word", reading: "Every run passed. " + strings.Repeat("\u0301", 100), want: "Every run passed.…"},
-	{what: "100 joined pictographs alone", reading: joinedPictographs, want: joinedPictographs},
-	{what: "100 joined pictographs before more words", reading: joinedPictographs + " and more", want: joinedPictographs + "…"},
-	{what: "100 joined pictographs after a first word", reading: "Log " + joinedPictographs, want: "Log…"},
+// letterWord is one word of length characters, of plain letters alone, which #4517's line keeps
+// (plainWord) and which Unicode's default word rules (UAX #29) keep in one word (WB5).
+func letterWord(length int) string {
+	return strings.Repeat("resultsbranchnewest", length/19+1)[:length]
 }
 
 // The pull-request body line carries the reading the role recorded, because that is the record
@@ -303,10 +212,10 @@ var firstWordReadings = []struct{ what, reading, want string }{
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
 // word that ends at the budget's last character is kept, and a reading of exactly the budget
 // prints whole. A first word longer than the budget is never cut in two, at any length: the line
-// keeps it whole with what leads into it, such as a backtick, marked as cut only where more of the
-// reading follows it. A reading in which UAX #29 puts a word boundary at no space is cut inside
-// the budget at that boundary. A URL is one word, kept whole or left out, and the ellipsis after a
-// URL stands after a space, since GitHub's markdown would take it into the link's address.
+// keeps it whole, with a parenthesis or a quote that leads into it, marked as cut only where more
+// of the reading follows it. Text in a script written without spaces between its words is cut
+// inside the budget at a UAX #29 boundary. Each row's words are plain, so #4517's filter keeps
+// them and the row tests the cut.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -315,116 +224,37 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
 	// fifteen is fifteen words of four characters, 74 characters before the word after them.
 	fifteen := strings.TrimSuffix(strings.Repeat("word ", 15), " ")
-	// urlPast, after "Log: ", ends at the 82nd character; urlInside at the 76th, and the word
-	// after it at the 82nd; urlFirst is 110 characters.
-	urlPast := "https://ci.example.com/acme/widgets/actions/runs/44602054328/job/135835989540"
-	urlInside := "https://ci.example.com/acme/widgets/actions/runs/44602054328/job/135835"
-	urlFirst := "https://ci.example.com/" + wordOfLength(87)
-	type lineRow struct {
-		name     string
-		observed string
-		want     string
-	}
+	name := letterWord(110)
+	type lineRow struct{ name, observed, want string }
 	rows := []lineRow{
+		{name: "a reading over the budget is cut at a word boundary", observed: long, want: "The rig drove the command against a local Dispatch and the refusal named the…"},
+		{name: "a reading under the budget prints whole", observed: "Every one of the twenty runs printed its listing.", want: "Every one of the twenty runs printed its listing."},
+		{name: "a result with no reading says so", observed: "", want: "The role recorded no reading."},
+		{name: "a word that ends at the 79th character is kept", observed: fifteen + " four more words follow.", want: fifteen + " four…"},
+		{name: "a word that ends at the 80th character is kept", observed: fifteen + " fives more words follow.", want: fifteen + " fives…"},
+		{name: "a word that ends at the 81st character is left out", observed: fifteen + " sixsix more words follow.", want: fifteen + "…"},
+		{name: "a reading of exactly 80 characters prints whole", observed: fifteen + " fives", want: fifteen + " fives"},
+		{name: "a first word of 110 characters after a parenthesis is kept whole with it", observed: "(" + name + ") passed 20 of 20 runs.", want: "(" + name + "…"},
+		{name: "a first word of 110 characters after a quote is kept whole with it", observed: `"` + name + `" passed 20 of 20 runs.`, want: `"` + name + "…"},
+		{name: "a word of 110 characters after a first word and a parenthesis is left out with it", observed: "Run (" + name + ") now.", want: "Run…"},
 		{
-			name:     "a reading over the budget is cut at a word boundary",
-			observed: long,
-			want:     "The rig drove the command against a local Dispatch and the refusal named the…",
+			// 208 characters, 16 to a sentence with no punctuation: the 80th ends the fifth.
+			name:     "a reading of Chinese is cut inside the budget at a word boundary",
+			observed: strings.Repeat("运行了二十次每次都打印了列表", 13),
+			want:     prefixRunes(strings.Repeat("运行了二十次每次都打印了列表", 13), 80) + "…",
 		},
 		{
-			name:     "a reading under the budget prints whole",
-			observed: "Every one of the twenty runs printed its listing.",
-			want:     "Every one of the twenty runs printed its listing.",
-		},
-		{
-			name:     "a word that ends at the 79th character is kept",
-			observed: fifteen + " four more words follow.",
-			want:     fifteen + " four…",
-		},
-		{
-			name:     "a word that ends at the 80th character is kept",
-			observed: fifteen + " fives more words follow.",
-			want:     fifteen + " fives…",
-		},
-		{
-			name:     "a word that ends at the 81st character is left out",
-			observed: fifteen + " sixsix more words follow.",
-			want:     fifteen + "…",
-		},
-		{
-			name:     "a reading of exactly 80 characters prints whole",
-			observed: fifteen + " fives",
-			want:     fifteen + " fives",
-		},
-		{
-			name:     "a result with no reading says so",
-			observed: "",
-			want:     "The role recorded no reading.",
-		},
-		{
-			name:     "a first word of 110 characters after a backtick is kept whole with it",
-			observed: "`" + longFirstWord + "` passed 20 of 20 runs.",
-			want:     "`" + longFirstWord + "…",
-		},
-		{
-			name:     "a word of 110 characters after a first word is left out with the backtick before it",
-			observed: "Run `" + longFirstWord + "` passed 20 of 20 runs.",
-			want:     "Run…",
-		},
-		{
-			// "`short` " is 8 characters, so the 14th of the fifteen words ends at the 77th.
-			name:     "a first word after a backtick that ends inside the budget is cut at a word boundary as before",
-			observed: "`short` " + fifteen + " more words follow.",
-			want:     "`short` " + strings.TrimSuffix(strings.Repeat("word ", 14), " ") + "…",
-		},
-		{
-			name:     "a URL across the 80th character is left out, and the line ends before it",
-			observed: "Log: " + urlPast + " shows the failing step.",
-			want:     "Log:…",
-		},
-		{
-			name:     "a URL that ends inside the budget is kept whole, with a space before the ellipsis",
-			observed: "Log: " + urlInside + " shows the failing step.",
-			want:     "Log: " + urlInside + " …",
-		},
-		{
-			name:     "a first word that is a URL of 110 characters is kept whole, with a space before the ellipsis",
-			observed: urlFirst + " shows the failing step.",
-			want:     urlFirst + " …",
-		},
-		{
-			name:     "a URL of 110 characters that is the whole reading prints whole",
-			observed: urlFirst,
-			want:     urlFirst,
+			// 100 Hiragana characters: the 80th ends the fourth sentence.
+			name:     "a reading of Hiragana is cut inside the budget at a word boundary",
+			observed: strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5),
+			want:     strings.Repeat("にじゅっかいのしけんはすべてとおりました", 4) + "…",
 		},
 	}
 	for _, length := range []int{81, 110, 161, 1000} {
-		word := wordOfLength(length)
+		word := letterWord(length)
 		rows = append(rows,
-			lineRow{
-				name:     fmt.Sprintf("a first word of %d characters is kept whole and marked when more words follow it", length),
-				observed: word + " passed 20 of 20 runs.",
-				want:     word + "…",
-			},
-			lineRow{
-				name:     fmt.Sprintf("a first word of %d characters that is the whole reading prints whole", length),
-				observed: word,
-				want:     word,
-			})
-	}
-	for _, reading := range boundaryReadings {
-		rows = append(rows, lineRow{
-			name:     "a reading of " + reading.what + " is cut inside the budget at a word boundary",
-			observed: reading.reading,
-			want:     reading.want,
-		})
-	}
-	for _, reading := range firstWordReadings {
-		rows = append(rows, lineRow{
-			name:     "a reading of " + reading.what + " is cut as the first word decides",
-			observed: reading.reading,
-			want:     reading.want,
-		})
+			lineRow{name: fmt.Sprintf("a first word of %d characters is kept whole and marked when more words follow it", length), observed: word + " passed 20 of 20 runs.", want: word + "…"},
+			lineRow{name: fmt.Sprintf("a first word of %d characters that is the whole reading prints whole", length), observed: word, want: word})
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -446,6 +276,11 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			}
 		})
 	}
+}
+
+// prefixRunes is the first n runes of s.
+func prefixRunes(s string, n int) string {
+	return string([]rune(s)[:n])
 }
 
 // A result is recorded against a check of the issue's own Verification document and against a
@@ -3345,35 +3180,21 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 }
 
 // The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
-// a reading (TestThePullRequestLineCarriesTheReading): at the last word boundary inside the
-// budget, where UAX #29 puts one at no space too, as beside a character in a script written
-// without spaces between its words; words of exactly the budget print whole; a first word longer
-// than the budget is kept whole with what leads into it, marked as cut where more words follow
-// it, and printed whole where it is all the check says.
+// a reading (TestThePullRequestLineCarriesTheReading), after the same filter: words of exactly
+// the budget print whole, and a first word longer than the budget is kept whole, with a
+// parenthesis that leads into it, marked as cut where more words follow it and printed whole
+// where it is all the check says.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
-	// exactly is fifteen words of four characters and one of five, 80 characters.
 	exactly := strings.Repeat("word ", 15) + "fives"
+	name := letterWord(110)
 	rows := []struct{ name, words, want string }{
-		{
-			name:  "a sentence over the budget is cut at a word boundary",
-			words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.",
-			want:  "The rig drove the command against a local Dispatch and the refusal named the…",
-		},
+		{name: "a sentence over the budget is cut at a word boundary", words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.", want: "The rig drove the command against a local Dispatch and the refusal named the…"},
 		{name: "words of exactly 80 characters print whole", words: exactly, want: exactly},
-		{name: "a first word over the budget is kept whole and marked when more words follow it", words: longFirstWord + " builds at the head.", want: longFirstWord + "…"},
-		{name: "a first word over the budget that is all the check says prints whole", words: longFirstWord, want: longFirstWord},
-	}
-	for _, reading := range boundaryReadings {
-		rows = append(rows, struct{ name, words, want string }{
-			name: "check words of " + reading.what + " are cut inside the budget at a word boundary", words: reading.reading, want: reading.want,
-		})
-	}
-	for _, reading := range firstWordReadings {
-		rows = append(rows, struct{ name, words, want string }{
-			name: "check words of " + reading.what + " are cut as the first word decides", words: reading.reading, want: reading.want,
-		})
+		{name: "a first word over the budget is kept whole and marked when more words follow it", words: name + " builds at the head.", want: name + "…"},
+		{name: "a first word over the budget that is all the check says prints whole", words: name, want: name},
+		{name: "a first word over the budget after a parenthesis is kept whole with it", words: "(" + name + ") builds at the head.", want: "(" + name + "…"},
 	}
 	var document strings.Builder
 	for index, row := range rows {

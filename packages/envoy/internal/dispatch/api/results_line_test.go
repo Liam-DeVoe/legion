@@ -402,17 +402,44 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 	}
 }
 
-// The line judges a text's words only until what it kept passes the cut's budget, because the cut
-// reads no further. For each body the line from that shortened reading equals the line from
-// reading the whole body: one body whose private words sit just past the cut, and one whose
-// dropped words come before it, so later words move in. A stop placed one word too early changes
-// the line, which shows the comparison can fail. Each kept `abcd` adds five runes with its blank,
-// so the kept text passes the budget at its seventeenth `abcd` (84 runes), and a budget two runes
-// lower stops at its sixteenth (79 runes), which the cut then leaves whole.
+// keepWithoutTheNextWord is keepThrough as it stood before a first word could pass the budget: it
+// stops as soon as its kept text is longer than budget runes and keeps no word after that. It is
+// the control of the two early-stop tests, and no line is written with it.
+func keepWithoutTheNextWord(w lineWords, text string, budget int) string {
+	var kept strings.Builder
+	runes := 0
+	for word := range strings.FieldsSeq(text) {
+		if runes > budget {
+			break
+		}
+		if w.drops(word) {
+			continue
+		}
+		if kept.Len() > 0 {
+			kept.WriteByte(' ')
+			runes++
+		}
+		kept.WriteString(word)
+		runes += utf8.RuneCountInString(word)
+	}
+	return kept.String()
+}
+
+// The line judges a text's words only until it has kept one word after its kept text passed the
+// cut's budget, because the cut reads no further: a first word past the budget is kept whole, and
+// only whether a word follows it decides its `…`. For each body the line from that shortened
+// reading equals the line from reading the whole body: one body whose private words sit just past
+// the cut, one whose dropped words come before it, so later words move in, and one whose first
+// kept word is longer than the budget. The control stops without that one word
+// (keepWithoutTheNextWord): it prints the long first word with no `…`, which shows the comparison
+// can fail.
 func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
-	lineOf := func(body string, budget int) string { return words.cut(words.keepThrough(body, budget)) }
-	for _, row := range []struct{ name, body string }{
+	for _, row := range []struct {
+		name, body string
+		// control is a row the stop without the next word gets wrong.
+		control bool
+	}{
 		{
 			name: "private words just past the cut",
 			body: strings.Repeat("abcd ", 17) + "ACME-12 dispatch.internal.example/x efgh",
@@ -421,14 +448,20 @@ func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 			name: "dropped words before the cut, so later words move in",
 			body: "ACME-1 dispatch://ACME-2/spec logs.example-tailnet.ts.net " + strings.Repeat("abcd ", 20) + "ACME-3",
 		},
+		{
+			name:    "a first kept word past the budget, then more words",
+			body:    "ACME-1 " + strings.Repeat("w", 110) + " ACME-2 tail",
+			control: true,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			whole := words.cut(words.keep(row.body))
-			if got := lineOf(row.body, checkResultReadingRunes); got != whole {
+			if got := words.cut(words.keepThrough(row.body, checkResultReadingRunes)); got != whole {
 				t.Fatalf("the line from the shortened reading = %q, want the whole reading's %q", got, whole)
 			}
-			if early := lineOf(row.body, checkResultReadingRunes-2); early == whole {
-				t.Fatalf("a stop one word too early gave the whole reading's line %q: the comparison cannot fail", early)
+			early := words.cut(keepWithoutTheNextWord(words, row.body, checkResultReadingRunes))
+			if row.control && early == whole {
+				t.Fatalf("a stop without the next word gave the whole reading's line %q: the comparison cannot fail", early)
 			}
 			requireNoPrivateReference(t, whole)
 		})
@@ -625,15 +658,15 @@ func wholeTextKept(w lineWords, text string) string {
 // earlyStopBodies is how many bodies TestTheEarlyStopPrintsWhatWholeTextJudgingPrints judges.
 const earlyStopBodies = 50000
 
-// The line judges a text's words only until its kept text passes the cut (keepThrough), and the
-// tail it prints, the kept text cut (cut), equals the tail judging the whole text prints
-// (wholeTextKept), over earlyStopBodies random bodies from a seeded generator, so every run judges
-// the same bodies. With nothing kept both tails are empty, since cut of an empty text is empty and
-// keepThrough keeps a word before it can stop. The run counts the bodies where the stop left out a
-// word that whole-text judging keeps (a lower bound on the bodies where judging stopped early) and
-// the bodies whose tail was cut, and fails on none of either, which would mean it tested nothing.
-// Its control stops judging one rune early (budget 79, as `runes >= budget` would): that tail must
-// differ from the whole text's on some body, which shows the comparison can fail.
+// The line judges a text's words only until it has kept one word after its kept text passed the
+// cut (keepThrough), and the tail it prints, the kept text cut (cut), equals the tail judging the
+// whole text prints (wholeTextKept), over earlyStopBodies random bodies from a seeded generator, so
+// every run judges the same bodies. With nothing kept both tails are empty, since cut of an empty
+// text is empty and keepThrough keeps a word before it can stop. The run counts the bodies where
+// the stop left out a word that whole-text judging keeps (a lower bound on the bodies where judging
+// stopped early) and the bodies whose tail was cut, and fails on none of either, which would mean
+// it tested nothing. Its control stops without that one word (keepWithoutTheNextWord): that tail
+// must differ from the whole text's on some body, which shows the comparison can fail.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
 	r := rand.New(rand.NewPCG(4517, 50))
@@ -655,17 +688,17 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 				t.Errorf("for %q the early stop prints %q, judging the whole text prints %q", body, got, whole)
 			}
 		}
-		if words.cut(words.keepThrough(body, checkResultReadingRunes-1)) != whole {
+		if words.cut(keepWithoutTheNextWord(words, body, checkResultReadingRunes)) != whole {
 			controlMismatches++
 		}
 	}
-	t.Logf("bodies %d: the stop left out a kept word on %d, the tail was cut on %d, mismatches %d; control (budget %d): mismatches %d",
-		earlyStopBodies, stopped, cut, mismatches, checkResultReadingRunes-1, controlMismatches)
+	t.Logf("bodies %d: the stop left out a kept word on %d, the tail was cut on %d, mismatches %d; control (no word past the budget): mismatches %d",
+		earlyStopBodies, stopped, cut, mismatches, controlMismatches)
 	if stopped == 0 || cut == 0 {
 		t.Fatalf("the stop left out a kept word on %d bodies and the tail was cut on %d: the run tested nothing", stopped, cut)
 	}
 	if controlMismatches == 0 {
-		t.Fatalf("a stop one rune early printed the whole text's tail on every body: the comparison cannot fail")
+		t.Fatalf("a stop without the next word printed the whole text's tail on every body: the comparison cannot fail")
 	}
 }
 

@@ -1162,20 +1162,23 @@ func (w lineWords) keep(text string) string {
 	return w.keepThrough(text, math.MaxInt)
 }
 
-// keepThrough is keep stopped once what it has kept is longer than budget runes. cut reads no more
-// of a text than that (text.HeadWords reads its first budget runes and whether there are more), so
-// a word past that point can change no line, and judging it would cost work that grows with the
-// text and changes nothing.
+// keepThrough is keep stopped once it has kept one more word after what it kept grew longer
+// than budget runes. cut reads no more of a text than that: text.HeadWords keeps a first word
+// longer than the budget whole and then asks only whether any character follows it, and every
+// other cut ends inside the budget, so a second word past that point can change no line, and
+// judging it would cost work that grows with the text and changes nothing. Stopping without that
+// one word would print a long first word with no `…` although more of the reading follows it.
 func (w lineWords) keepThrough(text string, budget int) string {
 	var kept strings.Builder
-	runes := 0
+	runes, followed := 0, false
 	for word := range strings.FieldsSeq(text) {
-		if runes > budget {
+		if followed {
 			break
 		}
 		if w.drops(word) {
 			continue
 		}
+		followed = runes > budget
 		if kept.Len() > 0 {
 			kept.WriteByte(' ')
 			runes++
@@ -1240,15 +1243,27 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 
 // cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
 // an ellipsis where it was cut, so a reader can tell a cut line from a short one
-// (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
-// what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
-// `ACME-12`), so a cut text is kept by w once more. cut is empty when nothing is left: when kept
-// is, or when w keeps nothing of the cut text, so a caller decides that nothing is left from what
-// cut answers and never prints a bare ellipsis.
+// (text.HeadWords). Its raw budget prefix is kept by w too: a UAX #29 boundary can stand before
+// a key that the raw prefix holds, while HeadWords' prefix ends sooner. Without that read, a
+// `////…ACME-12xyz` value could leave `ACME-` in the public line, although the budget prefix
+// holds the key. When HeadWords kept punctuation alone and the raw prefix holds a letter or a
+// number, cut writes that raw prefix: the punctuation is not the reading's useful head, and the
+// raw prefix is what w just checked. cut is empty when nothing is left: when kept is, when w
+// keeps nothing of the raw budget prefix, or when w keeps nothing of the word-boundary prefix, so
+// a caller decides that nothing is left and never prints a bare ellipsis.
 func (w lineWords) cut(kept string) string {
 	head, cut := text.HeadWords(kept, checkResultReadingRunes)
 	if !cut {
 		return head
+	}
+	raw := w.keep(text.HeadRunes(kept, checkResultReadingRunes))
+	if raw == "" {
+		return ""
+	}
+	if strings.IndexFunc(head, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	}) < 0 {
+		return raw + "…"
 	}
 	if head = w.keep(head); head == "" {
 		return ""
