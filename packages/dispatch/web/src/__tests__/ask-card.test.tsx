@@ -1422,8 +1422,11 @@ test("a card of the request that the person did not press shows Dispatch's form 
     );
 
     expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    // The options are drawn through the Markdown engine, a module loaded on first use, so the
+    // refusal can show before them in a run that reaches this row first.
     expect(
-      (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+      ((await within(card).findByRole("radio", { name: "Request changes" })) as HTMLInputElement)
+        .checked
     ).toBe(true);
     expect(elsewhere).toHaveFocus();
   } finally {
