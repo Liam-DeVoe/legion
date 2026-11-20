@@ -4557,6 +4557,31 @@ describe("health", () => {
     expect(code).toBe(1);
   });
 
+  // Catches: an answer production gives every agent of a Legion pod read as a broken world.
+  // `dispatch send-to-agent` posts to /api/v1/agents/{session_id}/messages, a route that requires
+  // the person scope, and a pod's agents run under the shared token, so Dispatch answers it 403
+  // OAUTH_SCOPE_REQUIRED: production gave the tester's own pod exactly that answer
+  // (`dispatch send-to-agent`, 2026-11-20T19:53:57Z). INFRA-764's round 27 at efea8554: the base
+  // reviewer of threads-closed-correct-base-1 (run 4b566212b91f) messaged the implementer that
+  // way, its world's Dispatch answered as production does, and rule 16 failed the run for it, so
+  // the world-health check refused the batch.
+  test("Dispatch's 403 to an agent's send-to-agent, which production answers every shared-token session, is healthy", () => {
+    const messaging = run("threads-closed-correct-base-14", [[], []], {
+      dispatch: [
+        handoffRead("2026-11-13T17:50:10.000Z", "plan", 200),
+        served(
+          "2026-11-13T17:51:10.000Z",
+          "POST",
+          "/api/v1/agents/{session_id}/messages",
+          "/api/v1/agents/01a1fa6a-91d9-730e-8cb2-d7c4a0372466/messages",
+          403
+        ),
+      ],
+    });
+    const { stdout } = health(messaging);
+    expect(verdict(stdout, messaging)).toBe("threads-closed-correct-base-14  healthy");
+  });
+
   // Catches: a run that reached another run's directory measured as its own: the 2026-11-14
   // agents, refused every push, read the pointer file of a sibling in the same runs directory,
   // and of a run of another batch. Any agent's transcript counts, a later half's too.
