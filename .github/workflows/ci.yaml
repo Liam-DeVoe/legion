@@ -2289,6 +2289,7 @@ jobs:
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/going/agentwire/*'
               - 'packages/envoy/going/agent/*'
+              - 'packages/envoy/going/agent/agenttest/*'
               - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
@@ -3299,6 +3300,7 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/agentwire/*'
+              - 'packages/envoy/going/agent/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
@@ -4016,6 +4018,8 @@ jobs:
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/going/agentwire/*'
+              - 'packages/envoy/going/agent/*'
+              - 'packages/envoy/going/agent/agenttest/*'
               - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/answer/*'
