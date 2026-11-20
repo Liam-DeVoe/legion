@@ -535,12 +535,6 @@ procs_naming() {
 # `pane_watcher &`): its /proc/<pid>/environ is the driver's environment at the driver's own exec,
 # which an `export` does not rewrite, so no sweep sees it, and each is stopped by the pid it had
 # when it started, and ends of itself once the driver has gone where its loop reads `kill -0 "$$"`.
-# They are: claude-backend-tmux.sh's, stage3-devbox-workflow.sh's and stage3-4b13b-acceptance.sh's
-# pane_watcher (watcher_pid), stage3-4b13b-acceptance.sh's instructor (instructor_pid),
-# stage4b-sandbox-tree.sh's watch_raw pod and event watches (watch_pid, events_pid), its node-memory
-# and interests samplers (sampler_pid, interests_pid) and its pod_shape_watcher (shape_pid),
-# lib/github-apps.sh's token refresher (app_token_refresher) and lib/bridge-tunnel.sh's watchdog
-# (bridge_watchdog_pid).
 run_marks=(LEGION_E2E_RUN XDG_CONFIG_HOME)
 
 # marked_processes DIR prints `PID START` for every process still alive that carries the mark of the
