@@ -40,18 +40,28 @@ import { MARGIN_COLUMN_CLASS, marginColumnWidth } from "./margin-width";
 // composer.
 const Margin = lazyChunk(() => import("./Margin").then((module) => ({ default: module.Margin })));
 
+/** What the shell tells the margin beside its own props: `drawer` is whether the margin is the
+ *  new issue page's Details drawer, which the shell's frame makes it on an issue's address for a
+ *  reader who chose that page (`app.tsx`'s `issueFrame`; `frame-shell.tsx` gives the margin its
+ *  drawer exactly where it gives the shell a frame). */
+interface MarginColumnProps extends MarginProps {
+  drawer: boolean;
+}
+
 /**
  * The margin's desktop column, empty: the class and the width `Margin.tsx` gives its column
  * (`margin-width.ts`), on the routes and viewports where that column takes any. A phone's margin
- * is a sheet over the page, and a collapsed margin is a fixed rail whose gutter the shell
- * reserves itself (`app.tsx`).
+ * is a sheet over the page, a collapsed margin is a fixed rail whose gutter the shell reserves
+ * itself (`app.tsx`), and the frame's Details is a drawer over the page, which takes no column
+ * open or closed (`Margin.tsx`'s `drawer`), so none of the three holds one here.
  * Without it, a document drawn before the margin arrives would be laid out again, narrower, when
- * the margin does.
+ * the margin does. With one where the margin takes none, the page would be drawn narrower until
+ * the margin arrives and then wider.
  */
-function MarginFrame({ collapsed = false, width }: MarginProps): ReactNode {
+function MarginFrame({ collapsed = false, drawer, width }: MarginColumnProps): ReactNode {
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const { pathname, search } = useLocation();
-  if (isCompactViewport || collapsed || !routeHasMargin(pathname, search)) {
+  if (drawer || isCompactViewport || collapsed || !routeHasMargin(pathname, search)) {
     return null;
   }
   return (
@@ -63,13 +73,13 @@ function MarginFrame({ collapsed = false, width }: MarginProps): ReactNode {
   );
 }
 
-export function MarginColumn(props: MarginProps): ReactNode {
+export function MarginColumn({ drawer, ...props }: MarginColumnProps): ReactNode {
   const drawn = useContentDrawn();
   if (!drawn) {
-    return <MarginFrame {...props} />;
+    return <MarginFrame drawer={drawer} {...props} />;
   }
   return (
-    <Suspense fallback={<MarginFrame {...props} />}>
+    <Suspense fallback={<MarginFrame drawer={drawer} {...props} />}>
       <Margin {...props} />
     </Suspense>
   );

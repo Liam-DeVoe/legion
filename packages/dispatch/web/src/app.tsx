@@ -1194,6 +1194,7 @@ function AppShell({
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
             collapsed={marginHidden}
+            drawer={issueFrame}
             onCollapsedChange={setMarginHidden}
             onWidthChange={setMarginWidth}
             width={marginWidth}
