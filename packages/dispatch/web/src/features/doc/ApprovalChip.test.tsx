@@ -11,7 +11,9 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import { growingField } from "../../theme/classes";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { draw, undraw } from "../issue-page/shared-controls-fixture";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
@@ -703,6 +705,38 @@ test("outside NoTooltips Approve is disabled while its write is out", async () =
     answer.reject(specFormRefusal());
     createArtifactReview.mockRestore();
     view.unmount();
+  }
+});
+
+// The reason Dispatch writes after a form refusal can run to many findings. Inside `NoTooltips`
+// the Request changes field grows with its text up to half the window (`growingField`), and an
+// empty one stays two lines tall (`min-h-14!`); outside it keeps main's fixed field, whose whole
+// class `shared-controls.options.test.tsx` pins. happy-dom lays nothing out, so this reads the
+// classes that ask the browser for that sizing, on both sides of `NoTooltips`.
+test("inside NoTooltips the Request changes reason grows with its text, and outside it keeps main's fixed field", async () => {
+  const user = userEvent.setup();
+  const growth = [...growingField.split(" "), "min-h-14!"];
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <ApprovalChip
+        artifact={artifact({ latest_version: 12, state: "awaiting" })}
+        variant="header"
+      />,
+      surface
+    );
+    try {
+      await user.click(within(view.container).getByRole("button", { name: /^Request changes/ }));
+      const dialog = await within(view.container).findByRole("dialog", { name: "Request changes" });
+      const reason = within(dialog).getByLabelText("Reason");
+      const classes = reason.className.split(/\s+/);
+      for (const token of growth) {
+        expect(classes.includes(token), `${surface}: ${token} in ${reason.className}`).toBe(
+          surface === "inside"
+        );
+      }
+    } finally {
+      undraw(view);
+    }
   }
 });
 

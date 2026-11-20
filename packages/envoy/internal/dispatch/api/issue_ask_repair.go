@@ -40,7 +40,7 @@ type IssueAskRepair struct {
 	Restored  int
 	Swept     int
 	// LeftResolved counts the withdrawn approval requests a restore left resolved, because a text
-	// of a document they name breaks the form of The Spec (restoreIssueAsksTx).
+	// of a document they name breaks the form of The Spec (prepareRestoration).
 	LeftResolved int
 }
 
@@ -86,9 +86,10 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 // transaction of its own that holds the issue's owner lock and reads its state and asks again
 // under it, so two passes running at once serialise on that lock and the second finds nothing
 // left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
-// logged and the pass goes on to the next; the returned error names how many failed. A restore
-// judges an approval request's form as a reopen does (restoreIssueAsksTx), using the routes'
-// shared dependencies and roots.
+// logged and the pass goes on to the next; the returned error names how many failed. It reads
+// deps.Store, deps.Docs and deps.Events. A restore judges an approval request's form as a reopen
+// does (spec_form.go), so deps are the routes' own (routes.AppContext.APIDeps in cmd/dispatch),
+// roots of The Spec included, never a set built beside them.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
@@ -306,16 +307,15 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			return repair, nil
 		}
 		// A withdrawn approval request whose text breaks the form of The Spec is left resolved,
-		// as a reopen leaves it (restoreIssueAsksTx), and counted apart.
-		var asks, left []model.Ask
-		asks, left, err = s.restoreIssueAsksTx(documentCtx, tx, issueKey, reopener)
-		if err == nil {
-			events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, asks, left, reopener)
-		}
+		// as a reopen leaves it (prepareRestoration), and counted apart.
+		restored, left, err := s.prepareRestoration(documentCtx, tx, issueKey, reopener)
 		if err != nil {
 			return repair, err
 		}
-		repair.Restored = len(asks)
+		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, left, reopener); err != nil {
+			return repair, err
+		}
+		repair.Restored = len(restored)
 		repair.LeftResolved = len(left)
 	default:
 		return repair, nil

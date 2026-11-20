@@ -24,8 +24,8 @@ import (
 // approval passes one of its two call sites: an approval request opens or is handed back in
 // requestArtifactApproval, an approval in a person's name is judged in approvalDocuments, which
 // gives the documents that approval covers, and a reopen or the repair pass opens a withdrawn
-// request again in restoreIssueAsksTx. Each writer of an approval in a person's name asks
-// approvalDocuments: a person's review in writeApprovalReviews, and the carry of an approval in
+// request again in prepareRestoration. Each writer of an approval in a person's name asks
+// approvalDocuments: a person's review in queueApprovalReviews, and the carry of an approval in
 // carryBreaksForm, the gate that writeCarriedReview asks. This test holds the code to that census.
 
 // asksTable names asks as a statement may write it: bare, schema-qualified, quoted, or both, as
@@ -149,7 +149,7 @@ func moduleRelative(source string) string {
 }
 
 // askOpeningWriterCensus is every production declaration that writes an open ask, by
-// module-relative file. restoreIssueAsksTx reaches WriteRestoredAsks after it judges the form.
+// module-relative file. prepareRestoration reaches WriteRestoredAsks after it judges the form.
 var askOpeningWriterCensus = map[string]string{
 	"openApprovalAsk":     "internal/dispatch/api/reviews.go",
 	"WriteRestoredAsks":   "internal/dispatch/docs/ask_row.go",
@@ -167,10 +167,10 @@ var askOpeningWriterCensus = map[string]string{
 var approvalCallers = map[string][]string{
 	"openApprovalAsk":                         {"requestArtifactApproval"},
 	"renewApprovalAsk":                        {"requestArtifactApproval"},
-	"docs.QueueReview(docs.ReviewKindPerson)": {"writeApprovalReviews"},
-	"approvalDocuments":                       {"carryBreaksForm", "writeApprovalReviews"},
+	"docs.QueueReview(docs.ReviewKindPerson)": {"queueApprovalReviews"},
+	"approvalDocuments":                       {"carryBreaksForm", "queueApprovalReviews"},
 	"refuseSpecForm":                          {"approvalDocuments", "requestArtifactApproval"},
-	"specFormOf":                              {"getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
+	"specFormOf":                              {"getArtifactSpecForm", "prepareRestoration", "refuseSpecForm"},
 	"docs: QueueReview(ReviewKindPerson)":     {"writeCarriedReview"},
 	"docs: gate":                              {"writeCarriedReview"},
 }
@@ -281,8 +281,8 @@ func plantedSource(t *testing.T, code string) moduleSource {
 }
 
 // Every statement of the module that opens an ask is one of the six writers of the census, and only
-// requestArtifactApproval opens or hands back an approval request, and only writeApprovalReviews
-// writes a person's review, each beside its call of the form gate; a person's review and the carry
+// requestArtifactApproval opens or hands back an approval request, and only queueApprovalReviews
+// queues a person's review, each beside its call of the form gate; a person's review and the carry
 // judge the documents of an approval by one function (approvalDocuments). A scan that read nothing
 // names fewer than six and fails; each control plants one writer the census must name, or one the
 // patterns must leave out, or a second caller that the caller part must refuse.

@@ -464,7 +464,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		appended = append(appended, answeredEvents...)
 		askID = &answered.ID
 	}
-	review, reviewEvents, err := s.writeApprovalReviews(documentCtx, tx, ledger, artifact, request, reviewed, state, actor, reason, askID)
+	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, request, reviewed, state, actor, reason, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -484,10 +484,21 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	WriteJSON(w, http.StatusCreated, *review)
 }
 
-// writeApprovalReviews queues a person's review on every document it covers: the named document
-// alone, or every document of the approval request it answers. approvalDocuments first judges the
-// form of every approval, so no queued review can approve a document that breaks it.
-func (s *server) writeApprovalReviews(
+// queueApprovalReviews queues state on every document a review of document covers
+// (approvalDocuments): document alone, or every document of request, the approval request the
+// review answers, each at the version named for it. An approval is judged for the form first,
+// each of those documents, as the carry of an approval judges them (spec_form.go). It returns the
+// named document's review with one event per document, all filled in once Commit has run the
+// write phase (docs.QueueReview). Each is a person's review (docs.ReviewKindPerson): a plan review
+// writes its own, on one document.
+//
+// A second document's row is read here, in the read phase. This transaction does write artifacts:
+// an event on a document no issue holds is owned by that document (docs.documentAskEvent), and the
+// append moves the row's last_seq (events/broker.go). What makes the read safe is that no write
+// this transaction queues changes a column artifactMetadata returns - artifactColumns, the row's
+// id, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role, created_by
+// and created_at - so the stored row is the one a read after the write phase would return.
+func (s *server) queueApprovalReviews(
 	ctx context.Context,
 	tx pgx.Tx,
 	ledger *docs.Ledger,
@@ -710,8 +721,11 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The form of The Spec is judged at the versions this request hands the person. A hand-back
-	// judges its existing documents at the versions the request records and any added document.
+	// The form of The Spec, call site 1 (spec_form.go), judged at the versions this request
+	// hands the person: the documents it names, or, with a request open, every document the open
+	// request names at the version the row records, which a hand-back hands back
+	// (handBackApprovalAsk), and any document this request adds. It comes after the settled
+	// branch above, which opens nothing.
 	judged := documents
 	if open != nil {
 		judged = renewedApprovalDocuments(open.Approval.Documents, documents)

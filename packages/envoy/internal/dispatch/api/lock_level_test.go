@@ -5,9 +5,9 @@
 // over every .go file of packages/envoy a second time.
 //
 // The tag is here for that saving rather than for the compiler. What this guard and the eight
-// others share - moduleSource, moduleSources, stringConstants, sqlStatements, literalText,
-// sqlWhitespace - is declared in module_source_test.go, which carries no tag because tests of
-// this package use declarations of it untagged and so must have them under -race too
+// others share - moduleSource, moduleSources, stringConstants, sqlStatements, sqlStatementsIn,
+// literalText, sqlWhitespace - is declared in module_source_test.go, which carries no tag because
+// tests of this package use declarations of it untagged and so must have them under -race too
 // (ask_asked_of_test.go:480, which normalises a migration's SQL with sqlWhitespace, and the
 // item-writer census, which walks the module). Declarations alone compile wherever nothing calls
 // them, so keeping them there costs the race build one file's compile and, of the walk, only what

@@ -367,7 +367,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		set("repo", repo)
 	}
 	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
-	// The close's and the reopen's document work (prepareWithdrawal, restoreIssueAsksTx): it reads
+	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
 	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
@@ -383,7 +383,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopenedAsks, leftResolved, err = s.restoreIssueAsksTx(documentCtx, tx, key, actor); err == nil {
+		// A withdrawn approval request whose text breaks the form of The Spec stays resolved,
+		// with the findings as its reason (prepareRestoration), and the reopen still answers 200.
+		if reopenedAsks, leftResolved, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
 			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, leftResolved, actor)
 		}
 	}

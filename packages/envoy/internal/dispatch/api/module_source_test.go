@@ -199,23 +199,9 @@ func sqlStatementsByFunction(file *ast.File, constants map[string]string) []loca
 	// locate adds the statements under node, which is in function or, outside any function, in
 	// the package-level value named value.
 	locate := func(node ast.Node, function, value string) {
-		ast.Inspect(node, func(node ast.Node) bool {
-			expression, ok := node.(ast.Expr)
-			if !ok {
-				return true
-			}
-			text, ok := literalText(expression, file.Name.Name, constants)
-			if !ok {
-				return true
-			}
-			statements = append(statements, locatedStatement{
-				function:  function,
-				value:     value,
-				statement: sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "),
-			})
-			// The whole concatenation is one statement; its parts are not statements of their own.
-			return false
-		})
+		for _, statement := range sqlStatementsIn(node, file.Name.Name, constants) {
+			statements = append(statements, locatedStatement{function: function, value: value, statement: statement})
+		}
 	}
 	for _, declared := range file.Decls {
 		general, ok := declared.(*ast.GenDecl)
@@ -257,8 +243,10 @@ func sqlStatementsByFunction(file *ast.File, constants map[string]string) []loca
 	return statements
 }
 
-// sqlStatementsIn returns the known string expressions under one node of a file in package pkg.
-// A caller that already narrowed the syntax tree uses it instead of scanning the whole file.
+// sqlStatementsIn is sqlStatements over one node of a file of package pkg: a declaration, a
+// function body or one expression, which the census of the writers that open an ask names by the
+// declaration that holds it (askOpeningWriters), and each part of a declaration that
+// sqlStatementsByFunction names.
 func sqlStatementsIn(node ast.Node, pkg string, constants map[string]string) []string {
 	var statements []string
 	ast.Inspect(node, func(visited ast.Node) bool {

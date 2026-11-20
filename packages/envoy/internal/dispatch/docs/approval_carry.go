@@ -302,8 +302,12 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // server takes a block's server-owned attributes off an upload. The version's blocks are read
 // only once the bytes match: the text alone is not the approved document, since a block the
 // approved version showed open, answered by someone since, comes back in the same bytes while its
-// row holds a decision nobody approved, which settlement then writes into the next version; its
-// reads and writes use the route's ledger. gate judges the version's form before any carry.
+// row holds a decision nobody approved, which settlement then writes into the next version; the
+// rows are the rows this transaction's own queued writes leave (loadAskBlocks). Its reads run
+// where it is called, the route's read phase, and its writes are queued there, as carryApproval's
+// are; the events it appends reach the ledger of the transaction it runs in (eventSink), which
+// publishes them after its Commit, beside the version move's own. gate judges the version's form,
+// as every carry's (writeCarriedReview).
 func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
@@ -460,13 +464,26 @@ func withOpenBlocksResolved(node *pmdoc.Node, blocks map[string]model.Ask) *pmdo
 	return &copied
 }
 
-// writeCarriedReview writes the carry of review to version number of artifactID and queues every
-// event through sink. The carry first asks gate whether the carried approval is allowed; a service
-// with no gate writes no approval in a person's name.
+// writeCarriedReview writes the carry of review to version number of artifactID with reason: the
+// open approval request's answer, Approve in the approver's name, when one is open and this carry
+// leaves every document it names approved, then the approved review and its artifact.approved. It
+// hands sink those events in that order, once the write phase has appended them. The carry records
+// the kind of the review it carries, since it is that review's approval it follows: a plan version
+// restored to the text its plan review approved stays approved by that plan review, not by the
+// session that wrote the version (ReviewKindPlanReview). A row read from artifact_reviews always
+// names its kind, and a review that names none is a person's, as the column's default says. It
+// holds no document service: every write it makes is a package function over tx and the broker,
+// which is what the restore's own caller outside this package holds (CarryRestoredApproval).
+// Every kind of carry writes here, so the form gate judges the approval first - this version, and
+// each other document of the open request the carried review is given against - and an approval
+// that breaks the form carries nothing, and nothing is written in anyone's name. With no gate,
+// nothing is carried either.
 func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
 	if gate == nil {
 		return nil
 	}
+	// The request as the version write's own move left it (MoveApprovalAsk), which names this
+	// version already.
 	open, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return err

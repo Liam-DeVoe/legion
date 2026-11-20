@@ -283,8 +283,11 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
 	// request to, and the one the human reviewed (revision). A request naming a spec and its
-	// issue's Verification document writes one review on each. The reviews are queued on the
-	// ledger in request order, and writeApprovalReviews judges the form of every approval first.
+	// issue's Verification document writes one review on each (approvalDocuments), which judges
+	// the form of every approval first. The reviews are queued on the ledger in the order the
+	// request names the documents (queueApprovalReviews), as the document header's review is, so
+	// the write phase writes the rows and appends their events in that order and this route
+	// publishes them.
 	transition.After = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) ([]*model.Event, error) {
 		if ask.Kind != "approval" {
 			return nil, nil
@@ -301,7 +304,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		if lead == nil {
 			return nil, fmt.Errorf("the approval request %s names no entry for the document %s it was opened on", ask.ID, artifact.ID)
 		}
-		_, reviewEvents, err := s.writeApprovalReviews(ctx, tx, ledger, artifact, ask.Approval, *lead, state, actor, reason, new(ask.ID))
+		_, reviewEvents, err := s.queueApprovalReviews(ctx, tx, ledger, artifact, ask.Approval, *lead, state, actor, reason, new(ask.ID))
 		if err != nil {
 			return nil, err
 		}

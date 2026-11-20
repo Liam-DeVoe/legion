@@ -805,8 +805,11 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	}
 }
 
-// A document service built with no form gate carries no approval in a person's name; the same
-// settled change with a gate that finds no break is the control that carries it.
+// A document service built with no form gate - as the backfill commands build theirs
+// (cmd/dispatch/subcommands.go), with a store and a broker alone - carries no approval: the
+// person's answer to a decision block, the whole change since her approval, leaves that approval
+// at the version she gave it, and no review is written in her name. The control: the same steps on
+// a service with a gate that finds no break carry her approval, so the steps can carry.
 func TestAServiceBuiltWithNoFormGateCarriesNoApproval(t *testing.T) {
 	run := func(t *testing.T, gate FormGate) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocumentGated(t, 20*time.Millisecond, gate)

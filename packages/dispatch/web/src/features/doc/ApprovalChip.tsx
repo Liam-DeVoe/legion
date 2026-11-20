@@ -270,9 +270,14 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
-            {/* Inside `NoTooltips` it grows with its text up to half the window (`growingField`),
-                so the reason Dispatch wrote after a form refusal shows whole, not in two lines.
-                Outside it keeps main's plain field. */}
+            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+                the body in a browser, and Tab would then leave the dialog. Outside both are
+                `disabled` while the write is out, as on `main`. Inside `NoTooltips` it also grows
+                with its text up to half the window (`growingField`), so the reason that Dispatch
+                wrote after a form refusal shows whole, not in two lines; `min-h-14!` keeps an
+                empty field two lines tall over styles.css's unlayered touch floor. Outside it
+                keeps main's plain field. */}
             <textarea
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : `min-h-14! ${growingField} ${ON_PAGE.reasonBox}`}`}
               disabled={page === null && saving}
@@ -393,6 +398,8 @@ export interface ApprovalChipProps {
 interface DocumentReview {
   readonly artifact: Artifact;
   readonly input: CreateArtifactReviewInput;
+  /** The press of Approve a form refusal of this review answers: its surface and the version it
+   *  approved (`form-refusals.ts`), so the refusal goes back to where the person pressed. */
   readonly refusal?: FormRefusalPress;
 }
 
@@ -433,7 +440,12 @@ export function ApprovalChip({
   const page = usePageWords();
 
   const review = useKeyedWrite({
-    // The press carries its document and refusal surface, including across a retry.
+    // The press carries the document it reviews: the indicator names it, the route takes its id,
+    // and the reads made again are its own, from the press rather than from the render the write
+    // runs under. An approval's press also carries the surface a form refusal answers.
+    // A form refusal of Approve shows under the actions, and Dispatch refuses the same document
+    // again until its text changes, so the shell's corner offers no Retry for it. Every other
+    // refusal is the corner's, with Retry and Discard.
     inline: ({ input }, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
     label: ({ artifact: reviewed, input }: DocumentReview) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
@@ -511,9 +523,10 @@ export function ApprovalChip({
   }, [sentReview, review.isPending, requestChangesOpen]);
 
   // The press a refusal answers keeps the focus on Approve while it is out (`aria-disabled`
-  // below), and a header that its host drew again while the press was out takes the focus it
-  // owes, unless the reader has put the focus elsewhere. Another header of the same document
-  // shows the refusal and takes no focus.
+  // below, inside `NoTooltips`; outside, Approve takes it back once its write has ended), and a
+  // header that its host drew again while the press was out takes the focus it owes, unless the
+  // reader has put the focus elsewhere. Another header of the same document shows the refusal and
+  // takes no focus.
   useEffect(() => {
     // onError publishes the refusal before TanStack clears pending. A native disabled Approve
     // cannot take focus yet, so keep the press's focus claim until the button is enabled again.
@@ -570,8 +583,8 @@ export function ApprovalChip({
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
               // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
-              // does nothing, so it keeps the focus: a `disabled` button drops it to the body in a
-              // browser. Outside it is `disabled` while the write is out, as on `main`.
+              // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
+              // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
               aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
@@ -586,6 +599,7 @@ export function ApprovalChip({
                 }
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
+                  // Each press is answered on its own: the refusal of the last one goes with it.
                   setFormRefusal(formRefusalKey, undefined);
                   review.mutate({
                     artifact,

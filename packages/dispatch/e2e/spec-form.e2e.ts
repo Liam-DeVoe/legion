@@ -313,8 +313,9 @@ test("the person's Approve on the header of a broken statement under the root sh
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     const reason = dialog.getByLabel("Reason");
     await expect(reason).toHaveValue(changesReason);
-    // This header is outside NoTooltips: it keeps main's ordinary, scrollable reason field.
-    // The NoTooltips growth contract is covered by shared-controls.options.test.tsx.
+    // This header is outside NoTooltips: it keeps main's ordinary, scrollable reason field. The
+    // growth inside NoTooltips, which no page of this harness draws with an approval yet, is
+    // held by web/src/features/doc/ApprovalChip.test.tsx and inbox/AskCard.test.tsx.
     await expect
       .poll(() =>
         reason.evaluate((field) => getComputedStyle(field).getPropertyValue("field-sizing"))
@@ -654,7 +655,9 @@ test("the person's note survives a refused Approve: the field holds Dispatch's r
 });
 
 // The ordinary Inbox is outside NoTooltips. Its reason field keeps main's fixed sizing, even
-// when Dispatch fills it with findings; the growing field belongs only to NoTooltips surfaces.
+// when Dispatch fills it with findings; the growing field belongs only to NoTooltips surfaces
+// (web/src/features/inbox/AskCard.test.tsx holds that growth). The refusal above the field still
+// names each finding, so the person reads them all.
 // SLOW(>=2s): three cold `bun` starts of the real `dispatch` command around the Inbox and two refused answers.
 test("the Inbox card outside NoTooltips keeps its fixed reason field at 390 px", async ({
   page,
