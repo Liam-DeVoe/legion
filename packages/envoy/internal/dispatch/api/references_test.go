@@ -124,8 +124,9 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("conditional issue references: status=%d etag=%q body=%q", notModified.Code, notModified.Header().Get("ETag"), notModified.Body.String())
 	}
 
-	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\nNo references\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice")
 	if updated.Code != http.StatusCreated {
 		t.Fatalf("update Design notes: status=%d body=%s", updated.Code, updated.Body.String())
@@ -256,6 +257,96 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 			t.Fatalf("unauthenticated %s: status=%d body=%s", target, response.Code, response.Body.String())
 		}
 	}
+}
+
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT and gives
+// its connection back. refs is locked in another connection, so the walk, which reads refs, waits
+// however fast it would run, and the bound is what ends it. The control is the first read, before
+// the lock: the same request answers 200.
+//
+// What ended the walk is told by the answer and by the statements the server sent, not by how
+// long it took. The server runs on a clock the test holds (clocktest.Held), so the context bound
+// boundedClosure arms on the server's clock, a second past referencesClosureBound, never fires: a
+// REFERENCES_TIMEOUT can only be Postgres ending the walk at the statement_timeout boundedClosure
+// sets, and the statement that sets it, which the server's pool traces (statementCounter), names
+// the bound in milliseconds. While the request waits, pg_stat_activity must show the walk blocked
+// by the lock: that is the control that the walk reached the database, and that the later count
+// of 0 means the walk ended rather than that the read cannot see it. The read counts the backends
+// of this test's database that another backend blocks (pg_blocking_pids), but for its own: the
+// lock's holder, idle in its transaction, blocks and is not blocked, and nothing but the walk reads
+// refs once the lock is held, so the count is 1 while the request waits and 0 once the bound has
+// ended the walk. A backend's state can lag the answer by a moment, so the freed state is waited
+// for.
+func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
+	statements := &statementCounter{}
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held(), tracer: statements})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
+		t.Fatalf("references before the lock: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	holdLock(t, database, "lock table refs in access exclusive mode")
+	blocked := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_stat_activity
+			where pid <> pg_backend_pid() and cardinality(pg_blocking_pids(pid)) > 0
+			  and datname = current_database()`).Scan(&count); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return count
+	}
+	if count := blocked(); count != 0 {
+		t.Fatalf("%d backends of the test's database wait on a lock before the request, want none", count)
+	}
+	acquired := database.Pool.Stat().AcquiredConns()
+	since := statements.mark()
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+issue.Key+"/references", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- response
+	}()
+	testwait.Eventually(t, "pg_stat_activity to show the closure walk blocked by the lock on refs", func() bool {
+		select {
+		case early := <-answered:
+			t.Fatalf("the route answered (status=%d body=%s) before pg_stat_activity showed its walk blocked",
+				early.Code, early.Body.String())
+		default:
+		}
+		return blocked() == 1
+	})
+	response := testwait.Receive(t, fmt.Sprintf("the route to answer, with its walk bound to a %s statement_timeout", referencesClosureBound), answered)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
+	}
+	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
+		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
+	}
+	bound := fmt.Sprintf("set local statement_timeout = '%dms'", referencesClosureBound.Milliseconds())
+	statements.mu.Lock()
+	sets := 0
+	for _, sent := range statements.sent[since:] {
+		if sent.sql == bound {
+			sets++
+		}
+	}
+	statements.mu.Unlock()
+	if sets != 1 {
+		t.Errorf("the walk's request sent %q %d times, want once: the statement_timeout is what bounds the walk", bound, sets)
+	}
+	type freed struct {
+		AcquiredConns int32
+		Blocked       int
+	}
+	testwait.Until(t, fmt.Sprintf("the pool to hold no more than the %d connections it held before the request and no backend to be blocked: the bound frees the walk's backend and the walk gives its connection back", acquired), func() (freed, bool) {
+		reading := freed{AcquiredConns: database.Pool.Stat().AcquiredConns(), Blocked: blocked()}
+		return reading, reading.AcquiredConns <= acquired && reading.Blocked == 0
+	})
 }
 
 func graphRequest(t *testing.T, handler http.Handler, query url.Values) *httptest.ResponseRecorder {

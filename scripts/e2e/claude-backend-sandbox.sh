@@ -195,6 +195,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing, such as the token refresher or the bridge watchdog, carries none and is stopped by
+# its pid (run_marks' comment there). The transcript's tee, started above, carries none, so it
+# outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 # fd 7 keeps the transcript for cleanup: a signal runs the EXIT trap under the redirections of the
 # command it interrupted, whose output may be /dev/null or an evidence file.
 exec 7>&1
@@ -251,9 +257,11 @@ session_dsn_key=SESSION_DSN
 daemon_log=$evidence/logs/daemon.log
 # The daemon's container under bridge (daemon_run_args): its name, whose prefix and trailing pid
 # refuse_leftovers reads as it reads the other containers', and its image, busybox pinned by digest
-# and pulled through the mirror (AGENTS.md). The daemon is a static binary and needs nothing of an
-# image; the image is there for the `sh`, `tr` and `cat` the Apps' credential commands run under
-# bridge (lib/github-apps.sh's write_github_apps --token-dir, after mint_app_tokens).
+# and pulled through the mirror (no CI job runs this script, the ground on which
+# .github/scripts/check-ci-images.sh's exception list admits it). The daemon is a static binary
+# and needs nothing of an image; the image is there for the `sh`, `tr` and `cat` the Apps'
+# credential commands run under bridge (lib/github-apps.sh's write_github_apps --token-dir, after
+# mint_app_tokens).
 daemon_container="legion-e2eccs-daemon-$$"
 daemon_image=mirror.gcr.io/library/busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # app_tokens_dir is the directory under XDG_RUNTIME_DIR that prerequisites mints the implement
@@ -986,6 +994,7 @@ start_daemon() {
     env "${daemon_env_unset[@]}" "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 7>&- &
   fi
   daemon_pid=$!
+  record_start "$daemon_pid" || true
   timeout_hook=report_boot
   # The boot runs the worker image's probe pod, so the bound is the cluster's, not a local process's.
   until_true 900 "the Go daemon to boot and answer /healthz" daemon_answers_or_exited
@@ -1085,7 +1094,7 @@ remove_app_tokens() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   # A second signal must not cut the teardown short, and a closed output must not end it.
   trap '' HUP INT TERM PIPE
   exec >&7 2>&7
@@ -1116,7 +1125,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch

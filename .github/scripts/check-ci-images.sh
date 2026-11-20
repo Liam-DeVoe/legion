@@ -122,8 +122,7 @@
 #      checked against the bytes it pushed. What it catches is a row left behind at an old
 #      digest. A gate on the bytes would read the attestation's source commit; none exists, by
 #      the controller's decision, no such attack having been seen, and no by-hand reading stands
-#      in for it (one was written and withdrawn, dispatch://INFRA-1443). AGENTS.md states the
-#      same limit in the item after its "Container images" one.
+#      in for it (one was written and withdrawn).
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;
@@ -340,6 +339,7 @@ REACH = (
     "packages/envoy/internal/tests3/seaweedfs.go",
     "packages/envoy-client/src/__tests__/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
+    ".github/scripts/dispatch-browser-visual-suite.sh",
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
@@ -380,7 +380,6 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 # cluster.sh, templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from
 # the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
 EXCEPTIONS = {
-    "AGENTS.md": NO_CI_JOB,
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
     "docs/plans/2026-10-14-envoy-infra-plan.md": NO_CI_JOB,

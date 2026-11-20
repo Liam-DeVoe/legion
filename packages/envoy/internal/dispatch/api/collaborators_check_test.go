@@ -70,9 +70,9 @@ func (c checkedDocsAPI) SeedText(ctx context.Context, artifactID, markdown strin
 	return c.next.SeedText(ctx, artifactID, markdown, actor)
 }
 
-func (c checkedDocsAPI) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
+func (c checkedDocsAPI) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	c.check(ctx, "ReplaceText")
-	return c.next.ReplaceText(ctx, artifactID, markdown, actor)
+	return c.next.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 }
 
 func (c checkedDocsAPI) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error) {
