@@ -133,9 +133,23 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134). The ubuntu-24.04 runner image
+      # ships tmux: `apt-get install tmux` answered `tmux is already the newest version
+      # (3.4-1ubuntu0.2)` in job 136050670942 of run 44664541053. So this step reads no network.
+      # The step it replaces ran `sudo apt-get update` first, which read 13.3 MB of package lists
+      # to install nothing, and in run 44665181416 it waited on a mirror from 03:05:59Z until this
+      # job's 70-minute limit cancelled it. An image without tmux installs Ubuntu's package
+      # through .github/scripts/network-install.sh, which bounds, retries and names that install,
+      # and the warning says the image changed.
+      - name: Use the runner image's tmux
+        run: |
+          if command -v tmux > /dev/null; then
+            tmux -V
+          else
+            echo "::warning::this runner image holds no tmux, so this job installs Ubuntu's package from the network"
+            .github/scripts/network-install.sh apt -- sudo apt-get update
+            .github/scripts/network-install.sh apt -- sudo apt-get install -y --no-install-recommends tmux
+          fi
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and

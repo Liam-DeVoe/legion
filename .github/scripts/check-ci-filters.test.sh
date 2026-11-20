@@ -39,8 +39,9 @@
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
-# under test is the code CI runs. It needs go and a
+# (ci_workflow_rules.py), the shell reader one of those rules imports (shell_commands.py) and the
+# path model they import (workflow_paths.py) into it, so the code under test is the code CI runs.
+# It needs go and a
 # python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
@@ -77,7 +78,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py shell_commands.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -3383,5 +3384,55 @@ check "and no ignored build output, test file, deleted file or skipped directory
   "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
 check "and without the tree, the directory's own files" \
   "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
+
+# Rule 21: a required job's install that waits on the network runs through
+# .github/scripts/network-install.sh, which bounds, retries and names it, or is refused by name.
+# The lint job is the fixture's job ci-ok holds to success, as every job of ci.yaml is held.
+echo "case: rule 21, an apt install in a required job, as main's tmux step was written"
+root=$(fixture network-apt)
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" \
+  "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the update, the job and the step" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml runs \`apt-get update\` in step \"Lint everything\": an install that waits on the network with no bound of its own")"
+check "names the install too" "$(contains "$out" "runs \`apt-get install\` in step \"Lint everything\"")"
+check "says how to run it" "$(contains "$out" "Run it as \`.github/scripts/network-install.sh <kind> -- <command>\`")"
+
+echo "case: rule 21, the same install through network-install.sh"
+root=$(fixture network-wrapped)
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" \
+  $'        run: |\n          .github/scripts/network-install.sh apt -- sudo apt-get update\n          .github/scripts/network-install.sh apt -- sudo apt-get install -y tmux'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: rule 21, an install in a composite action a required job uses"
+root=$(fixture network-action)
+mkdir -p "$root/.github/actions/setup"
+cat > "$root/.github/actions/setup/action.yml" <<'YAML'
+name: Set up
+runs:
+  using: composite
+  steps:
+    - name: Install the workspace
+      shell: bash
+      run: bun install --frozen-lockfile
+YAML
+replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n        run: echo lint' \
+  $'      - uses: ./.github/actions/setup\n      - name: Lint everything\n        run: echo lint'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the action, the job, the calling step and the install" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml, in .github/actions/setup/action.yml, which step \"./.github/actions/setup\" uses, runs \`bun install\` in step \"Install the workspace\"")"
+
+echo "case: rule 21, a fetch piped into a shell, a named Go fetch and timeout(1) alone"
+root=$(fixture network-others)
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" \
+  $'        run: |\n          curl -fsSL https://example.com/install.sh | sh\n          go mod download\n          timeout 60 pip install requests'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the pipe" "$(contains "$out" "runs \`curl piped into a shell\`")"
+check "names the Go fetch" "$(contains "$out" "runs \`go mod download\`")"
+check "names the install timeout(1) alone bounds" "$(contains "$out" "runs \`pip install\`")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

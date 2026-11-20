@@ -409,7 +409,8 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       # WHY EVERY JOB THAT RUNS THE SUITE CARRIES THIS STEP. Playwright loads
       # packages/dispatch/e2e/playwright.config.ts before it runs anything of this suite's own,
       # and that config imports e2e/api.ts, which imports `@legion/contracts`. Playwright's
@@ -896,7 +897,8 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
       # reads `@legion/contracts` out of a build this checkout has to make before the config
       # loads, and the entries Dispatch imports are all it needs.
@@ -1178,7 +1180,8 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
       # reads `@legion/contracts` out of a build this checkout has to make before the config
       # loads, and the entries Dispatch imports are all it needs. `bun run e2e:multiprocess`
@@ -1335,7 +1338,8 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # The e2e helpers the specs import read some of contracts' values from its built dist/,
         # through Playwright's own Node resolution (the shard job's step of the same name), which
@@ -1490,7 +1494,8 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # The e2e helpers the visual specs import read some of contracts' values from its built
         # dist/, through Playwright's own Node resolution (the shard job's step of the same name,
@@ -1679,7 +1684,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       # Every leg's blob report and row count, one directory per artifact. Each artifact holds a
       # blob-report/ and a rows/ directory, so the zips land together and the counts land beside
       # them rather than among them: `merge-reports` reads the zips of the directory it is given.

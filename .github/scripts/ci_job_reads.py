@@ -310,17 +310,21 @@ def setup_bun(job, workflow=""):
     )
 
 
-def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
+def bun_job(job, workflow="", install_step="Install dependencies"):
+    """setup_bun and a frozen `bun install`, which runs under .github/scripts/network-install.sh's
+    bound for bun. No .npmrc anywhere, and one Bun configuration file,
     packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
-    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
-    install = at(job, "bun install --frozen-lockfile", workflow)
+    install runs at the repository root, and Bun reads bunfig.toml from the working directory.
+    `install_step` is the name of the job's step that installs, which every job but
+    proof-sdk-offline calls "Install dependencies"."""
+    install = at(job, install_step, workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
+        (".github/scripts/network-install.sh", f"{install} runs the install through it, under its bound for bun"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -344,6 +348,27 @@ def install_jj(job):
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
     )
+
+
+def install_zsh(job):
+    """The zsh .github/actions/install-zsh installs from Ubuntu's two pinned packages: the action,
+    and the helper whose bounded fetch reads a package the Actions cache lacks."""
+    return reads(
+        (".github/actions/install-zsh/**", at(job, "./.github/actions/install-zsh")),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-zsh/action.yml:53 sources it, and :67's "
+                                        "ci_tools_curl fetches a package the cache lacks"),
+    )
+
+
+# The step of daemon-go and pi-envoy that uses the runner image's tmux.
+RUNNER_TMUX_STEP = "Use the runner image's tmux"
+
+
+def runner_tmux(job):
+    """The step that uses the runner image's tmux, which installs Ubuntu's tmux through
+    .github/scripts/network-install.sh where the image has none."""
+    return reads((".github/scripts/network-install.sh",
+                  f"{at(job, RUNNER_TMUX_STEP)} installs Ubuntu's tmux through it where the runner image has none"))
 
 
 def install_omp(job):
@@ -2284,6 +2309,9 @@ SCRIPT_TEST_GATES = [
     harness("check_gh_version_test", "Test the gh version check", f"{SCRIPTS}/check-gh-version.test.sh", [
         (f"{SCRIPTS}/check-gh-version.sh", "the script under test"),
     ]),
+    harness("network_install_test", "Test the bound on network installs", f"{SCRIPTS}/network-install.test.sh", [
+        (f"{SCRIPTS}/network-install.sh", "the script under test, which network-install.test.sh:17 runs"),
+    ]),
     harness("check_gitleaks_version_test", "Test the gitleaks version check",
             f"{SCRIPTS}/check-gitleaks-version.test.sh", [
         (f"{SCRIPTS}/check-gitleaks-version.sh",
@@ -2455,12 +2483,14 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:80-82)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:81-83)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+        (f"{SCRIPTS}/shell_commands.py", "the shell reader rule 21 imports, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2818 imports this table to derive the plain step's -run lists"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2905 and :3373 import this table, to derive the plain "
+                                       "step's -run lists and to read its gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
@@ -2590,7 +2620,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + runner_tmux("daemon-go")
+      + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2871,7 +2902,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + runner_tmux("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -2943,7 +2974,7 @@ GATES = [
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                          "(check-ts-filters.sh measures it)")
-      + bun_job("dispatch-ui")),
+      + install_zsh("dispatch-ui") + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
@@ -3062,7 +3093,7 @@ GATES = [
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
         (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
-    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
+    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + install_zsh("claude-envoy") + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
@@ -3608,6 +3639,9 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
+        (".github/scripts/shell_commands.py", "ci_workflow_rules.py's rule 21 finds each command a step runs with it"),
+        (".github/actions/**", "ci_workflow_rules.py's rule 21 reads every local action a job of ci.yaml or of a "
+                               "workflow it calls uses, and every action those use"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                      "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
@@ -3646,7 +3680,7 @@ GATES = [
          f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
          f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
          f"are that step's arguments"),
-    ) + bun_job("proof-sdk-offline")),
+    ) + bun_job("proof-sdk-offline", install_step="Frozen install behind the proxy, cold")),
 
     # The ci-images job: the image copy, the package mode of the image gate, which reads
     # ghcr.io, and the tool copy, which fills the second source of every tool install. These are

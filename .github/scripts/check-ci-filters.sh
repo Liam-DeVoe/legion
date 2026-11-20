@@ -343,7 +343,21 @@
 #      own tags, and one go list then compiles is the miss. The steps read their sets off the
 #      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
 #      Runs what it prints now, so this rule fails when that script stops printing a set a
-#      file needs.
+#      file needs,
+#  21. a step of a job of ci.yaml or of a workflow it calls, or of a local composite action such a
+#      job uses, whose `run:` installs from the network other than through
+#      .github/scripts/network-install.sh, naming the job, the file, the step and the install:
+#      apt, apt-get or aptitude with a verb that reads a mirror, a pip, pipx, uv or `python -m
+#      pip` install, an npm, pnpm, yarn or bun install or add, a gem, cargo, snap or brew install,
+#      a go command that names a fetch (`go mod download`, `go get`, `go install` or `go run` of
+#      a module at a version), any wget, and a curl or a wget piped into a shell, each found in
+#      the commands
+#      .github/scripts/shell_commands.py reads off the step, looked through sudo, timeout, nice,
+#      ionice, nohup and command. Every such job is on ci-ok's path or is pr-title, and an install
+#      that waits without a bound of its own fails the job for a cause outside its change: the
+#      daemon-go job of run 44665181416 waited in `sudo apt-get update` until its 70-minute limit.
+#      network-install.sh bounds each attempt, tries it three times and fails by name.
+#      ci_workflow_rules.check_network_installs says what it leaves alone and why.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -479,10 +493,11 @@ esac
 export CI_FILTERS_MODE="${1:-check}"
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
-# and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
+# and no go command (ci_workflow_rules.py: rules 10 to 14 and 21 above, the workspace one
 # given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
-# model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
+# one reading .github/workflows itself, rule 21 reading each command through shell_commands.py)
+# and the path model (workflow_paths.py) sit beside this script in the repository it checks. The
+# engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.

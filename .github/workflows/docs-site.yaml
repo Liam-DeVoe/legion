@@ -115,7 +115,8 @@ jobs:
             ~/.cache/go-build
           key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-{1}-', runner.os, runner.arch) || '' }}
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Typecheck the docs site
         run: bun run typecheck
         working-directory: docs/site

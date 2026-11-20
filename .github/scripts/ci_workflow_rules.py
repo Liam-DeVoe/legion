@@ -46,8 +46,10 @@ from ci_filter_coverage import (
     read_repository_text,
     script_lines,
     squash,
+    step_label,
     where_if,
 )
+from shell_commands import commands_of
 from workflow_paths import events
 
 
@@ -534,3 +536,186 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+
+
+# ------------------------------------------------- the network installs a required job runs
+# The one way a job of ci.yaml, or of a workflow it calls, may run an install that waits on the
+# network: through this script, which bounds each attempt, tries it a fixed number of times and
+# fails by name (its header says how each kind's bound was measured).
+NETWORK_INSTALL = ".github/scripts/network-install.sh"
+ACTIONS_PREFIX = "./.github/actions/"
+# The commands a step's `run:` is looked through to find the command they start, with the
+# options of each that take a value of their own.
+WRAPPERS = {
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "nice": {"-n"},
+    "ionice": {"-c", "-n", "-p"},
+    "nohup": set(),
+    "command": set(),
+}
+# apt's own verbs that read a mirror, and the options of apt and apt-get that take a value.
+APT = {"apt", "apt-get", "aptitude"}
+APT_VERBS = {"update", "install", "reinstall", "upgrade", "dist-upgrade", "full-upgrade", "build-dep", "source",
+             "download"}
+APT_VALUE_OPTIONS = {"-o", "-c", "-t", "--option", "--config-file", "--target-release"}
+# Every other installer, by its command name, with the verbs of it that install from the network:
+# the verb is the first word after the command that is no option.
+INSTALLERS = {
+    "pip": {"install", "download"}, "pip3": {"install", "download"}, "pipx": {"install"},
+    "npm": {"install", "i", "ci", "add"}, "pnpm": {"install", "i", "add"}, "yarn": {"install", "add"},
+    "bun": {"install", "i", "add"}, "gem": {"install"}, "cargo": {"install"}, "snap": {"install"},
+    "brew": {"install"},
+}
+# A fetch piped straight into a shell.
+PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n|;&]*\|\s*(sudo\s+(-\S+\s+)*)?(ba|da|z)?sh\b")
+
+
+def _unwrapped(words: list) -> list:
+    """The words of a command with the commands that only run another one taken off the front,
+    each with its options and the value an option takes: `sudo -E apt-get update` is apt-get's,
+    and `timeout 60 apt-get update` too, since timeout(1) bounds a wait but neither tries it again
+    nor names it."""
+    words = list(words)
+    while words and words[0].rsplit("/", 1)[-1] in WRAPPERS:
+        name = words.pop(0).rsplit("/", 1)[-1]
+        while words and words[0].startswith("-"):
+            option = words.pop(0)
+            if option in WRAPPERS[name] and words:
+                words.pop(0)
+        if name == "timeout" and words:
+            words.pop(0)  # the duration
+    return words
+
+
+def network_install(words: list) -> str:
+    """The install a command makes from the network, as the words that say so (`apt-get update`,
+    `bun install`), or "" where it makes none or runs through NETWORK_INSTALL."""
+    words = _unwrapped(words)
+    if not words:
+        return ""
+    name = words[0].rsplit("/", 1)[-1]
+    if name == NETWORK_INSTALL.rsplit("/", 1)[-1]:
+        return ""
+    rest = words[1:]
+    if name in APT:
+        skip = False
+        for word in rest:
+            if skip:
+                skip = False
+            elif word in APT_VALUE_OPTIONS:
+                skip = True
+            elif not word.startswith("-"):
+                return f"{name} {word}" if word in APT_VERBS else ""
+        return ""
+    if name == "wget":
+        return "wget"
+    if name == "uv" and rest[:2] in (["pip", "install"], ["tool", "install"]):
+        return f"uv {rest[0]} install"
+    if name.startswith("python") and rest[:2] == ["-m", "pip"] and "install" in rest[2:]:
+        return f"{name} -m pip install"
+    if name == "go":
+        return go_fetch(rest)
+    if name in INSTALLERS:
+        verb = next((word for word in rest if not word.startswith("-")), "")
+        return f"{name} {verb}" if verb in INSTALLERS[name] else ""
+    return ""
+
+
+def go_fetch(rest: list) -> str:
+    """The fetch a go command names, as words (`go mod download`, `go install <module>@<version>`),
+    or "" where it names none. A step that names a fetch is an install; the modules a `go build`,
+    `go test`, `go vet` or `go run` of a package of this repository downloads by itself are not,
+    since no step names them (pull request #4434 moves those into one fetch step per job, which
+    this rule then reads)."""
+    if rest[:1] == ["-C"]:
+        rest = rest[2:]
+    words = [word for word in rest if not word.startswith("-")]
+    if words[:2] == ["mod", "download"]:
+        return "go mod download"
+    if words[:1] == ["get"]:
+        return "go get"
+    if words[:1] in (["install"], ["run"]) and any("@" in word for word in words[1:]):
+        return f"go {words[0]} <module>@<version>"
+    return ""
+
+
+def _action_steps(uses: str, seen: set) -> list:
+    """The steps of the local composite action a `uses:` names, with each one's file, and those of
+    the local actions they use in turn, each action once. An action this repository does not hold
+    is check_table's to refuse, so it yields no steps here."""
+    path = uses[2:].rstrip("/")
+    if path in seen:
+        return []
+    seen.add(path)
+    for name in ("action.yml", "action.yaml"):
+        if (REPO / path / name).is_file():
+            document = load_repository_yaml(REPO / path / name) or {}
+            steps = []
+            for step in (document.get("runs") or {}).get("steps") or []:
+                steps.append((f"{path}/{name}", step))
+                inner = str(step.get("uses", ""))
+                if inner.startswith(ACTIONS_PREFIX):
+                    steps += _action_steps(inner, seen)
+            return steps
+    return []
+
+
+def check_network_installs(documents: dict, problems: list) -> None:
+    """No job of ci.yaml, nor of a workflow it calls, nor a local composite action one of them uses,
+    runs an install that waits on the network except through NETWORK_INSTALL. Every such job is on
+    the path of ci-ok, the check main's ruleset requires, or is pr-title, the other one, so an
+    install there that waits without a bound fails a pull request for a cause outside its change:
+    on 2026-11-20 run 44665181416's daemon-go job waited in `sudo apt-get update` from 03:05:59Z
+    until the job's 70-minute limit, on a mirror that had sent an answer's headers and then all
+    but stopped, which apt's own timeout, a wait for the next byte, never ends.
+
+    What it refuses, in each command a step's `run:` starts (shell_commands.commands_of, looked
+    through sudo, timeout, nice, ionice, nohup and command): apt, apt-get and aptitude with a verb
+    that reads a mirror; pip, pip3, pipx, `uv pip`, `uv tool` and `python -m pip` installing; npm,
+    pnpm, yarn and bun installing or adding; gem, cargo, snap and brew installing; a go command
+    that names a fetch (`go mod download`, `go get`, `go install` or `go run` of a
+    <module>@<version>); any wget; and a curl or a wget piped into a shell. timeout(1) alone is
+    refused too: it bounds the wait, but neither tries it again nor names what failed.
+
+    What it leaves alone, each for a reason: a `uses:` of an action this repository does not hold
+    (actions/setup-go, actions/cache), whose fetches are that action's own; a pull of an image
+    (`docker pull`), mise and Playwright's browser download, whose clients end a wait that gets no
+    answer (docker's 40 s for the response headers, mise's 20 s a request, Playwright's 30 s
+    socket timeout over five attempts); and curl outside a pipe into a shell, which a pinned
+    download makes through .github/scripts/ci-tools.sh's ci_tools_curl, bounded by --max-time and
+    --retry-max-time. The modules a `go build`, `go test`, `go vet` or `go run` of this
+    repository's own packages downloads by itself are no step's install: pull request #4434 moves
+    them into one fetch step per job, which this rule then reads, so whichever of that pull
+    request and this rule lands second wraps that step in NETWORK_INSTALL."""
+    for path, document in documents.items():
+        for job_id, job in ((document or {}).get("jobs") or {}).items():
+            seen: set = set()
+            for step in (job or {}).get("steps") or []:
+                located = [(path, step)]
+                uses = str(step.get("uses", ""))
+                if uses.startswith(ACTIONS_PREFIX):
+                    located += _action_steps(uses, seen)
+                for where, inner in located:
+                    run = inner.get("run")
+                    if not isinstance(run, str):
+                        continue
+                    found = [network_install(words) for words in commands_of(run)]
+                    found = [install for install in found if install]
+                    text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
+                    found += [f"{match.group(1)} piped into a shell" for match in PIPE_TO_SHELL.finditer(text)]
+                    label = step_label(inner)
+                    via = "" if where == path else f", in {where}, which step \"{step_label(step)}\" uses,"
+                    for install in dict.fromkeys(found):
+                        problems.append(error(where, f"job {job_id} of {path}{via} runs `{install}` in step "
+                                                     f"\"{label}\": an install that waits on the network with no "
+                                                     f"bound of its own, so a mirror or a registry that stops "
+                                                     f"answering holds the job until its limit and fails it for a "
+                                                     f"cause outside the change under test. Run it as "
+                                                     f"`{NETWORK_INSTALL} <kind> -- <command>` (from a composite "
+                                                     f"action, \"$GITHUB_ACTION_PATH/../../scripts/network-install.sh\"), "
+                                                     f"which bounds each attempt by that kind's measured bound, tries "
+                                                     f"it three times and fails by name; a kind it lacks is a line "
+                                                     f"of its table, with a bound measured from that install's own "
+                                                     f"runs. A tool every run needs belongs in the runner image or "
+                                                     f"in a cached, pinned download instead"))

@@ -357,6 +357,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
+      network_install_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
@@ -604,6 +605,8 @@ jobs:
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+              # Each frozen install runs under that script's bound for bun.
+              - '.github/scripts/network-install.sh'
             # `bunx biome check|lint` reads the root biome.json, which has it read the root
             # .gitignore too (biome.json:3-6, vcs.useIgnoreFile).
             biome: &biome
@@ -1028,6 +1031,8 @@ jobs:
             daemon_go_tests:
               - *ci_router
               - '.github/workflows/ci-job-daemon-go.yaml'
+              # The tmux step installs Ubuntu's tmux through it where the runner image has none.
+              - '.github/scripts/network-install.sh'
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
@@ -1313,6 +1318,8 @@ jobs:
               # which install-claude-code installs.
               - '.claude-code-pin'
               - '.github/actions/install-claude-code/**'
+              # tests/send-arguments.test.ts's zsh, which install-zsh installs.
+              - '.github/actions/install-zsh/**'
               # tests/daemon-api-version.test.ts:15 and its neighbours.
               - 'packages/contracts/fixtures/daemon-api/**'
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
@@ -1456,6 +1463,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-gh-version.test.sh'
               - '.github/scripts/check-gh-version.sh'
+            network_install_test: &network_install_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/network-install.test.sh'
+              - '.github/scripts/network-install.sh'
             check_gitleaks_version_test: &check_gitleaks_version_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1721,13 +1734,15 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :78-82 symlink the script and the modules it runs on into every fixture.
+              # :81-83 symlink the script and the modules it runs on into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
+              - '.github/scripts/shell_commands.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # :2818 imports the table to derive the plain step's -run lists.
+              # :2905 and :3373 import the table, to derive the plain step's -run lists and to read
+              # its gates.
               - '.github/scripts/ci_job_reads.py'
               # It runs the darwin vet step's own run text over a module with a negated tag.
               - '.github/workflows/ci-job-typecheck.yaml'
@@ -1807,6 +1822,7 @@ jobs:
               - *check_bun_workspace_manifests_test
               - *check_zod_version_test
               - *check_gh_version_test
+              - *network_install_test
               - *check_gitleaks_version_test
               - *workflow_paths_test
               - *check_image_trigger_paths_test
@@ -2114,6 +2130,7 @@ jobs:
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+              - '.github/scripts/network-install.sh'
             biome: &biome
               - 'biome.json'
               - '.gitignore'
@@ -2526,6 +2543,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
               - *bun_install
+              # e2e/__tests__/outside-path-reach-input.test.ts's zsh, which install-zsh installs.
+              - '.github/actions/install-zsh/**'
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
@@ -3561,6 +3580,7 @@ jobs:
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+              - '.github/scripts/network-install.sh'
             # The Envoy client's job (envoy-client). It moved from the second step to the first
             # when the listed blocks of dispatch_ui and dispatch_browser grew that string past
             # rule 18's margin, and from the first to this one when main's new test files grew the
@@ -4963,6 +4983,10 @@ jobs:
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
+              # Rule 21 finds each command a step runs with it, and reads every local action a job
+              # uses.
+              - '.github/scripts/shell_commands.py'
+              - '.github/actions/**'
               - '.github/scripts/workflow_paths.py'
               # ci_job_reads.py runs it for each darwin vet's tag sets, and rule 20 imports it.
               - '.github/scripts/go_build_tags.py'
@@ -5320,6 +5344,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ needs.changes.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ needs.changes.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
+      network_install_test: ${{ needs.changes.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
