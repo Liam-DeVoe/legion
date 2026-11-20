@@ -1,7 +1,8 @@
 # Decomposing a tree
 
 Read this before you read a child's handoff, create or adopt children, review a child's spec,
-split work across repositories, record a wait on outside work, or attach architecture components.
+split work across repositories, record a wait on outside work, set a parent link, or attach
+architecture components.
 
 ## Reading the tree
 
@@ -31,9 +32,10 @@ nothing: release the rest again without the child it names.
 2. Red-team the list with a fresh `task(agent="oracle")`, and `wait` for its verdict. Give it your
    issue's spec, the tree's open children with their repositories and pull requests, and each
    proposed child's title and whole spec, with this mandate: "You did not write this list. Argue
-   that each child should not exist. Name every child that is a to-do, a fix found in review, a
-   proof of the acceptance of the issue it is filed under, or a part of the architect's own work,
-   and say where it folds. Weigh each separate pull request against combining its work: each round
+   that each child should not exist. Name every child that is a to-do, a review fix of the issue's
+   own code, a proof of the acceptance of the issue it is filed under, or a part of the architect's
+   own work, and say where it folds: an open child's pull request, or the issue's own where it has
+   no child. Weigh each separate pull request against combining its work: each round
    tests a large pull request whole again, and each small one costs a workspace, an admission
    wait, review, CI, a queue wait and a deploy." A repeated change is one child, and deleting what
    this tree replaced is this tree's work.
@@ -56,8 +58,7 @@ nothing: release the rest again without the child it names.
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one
   Inbox.
 - A child's own architect starts beside its child's planner: decide first whether the child needs
-  children. If it does, file and release them, then tell the planner its plan covers only the
-  child's own part and the join of their work.
+  children. If it does, file and release them; the child then carries no code of its own.
 - Where the project has architecture components, give each child a `check` for the update of
   `.dispatch/architecture/<id>.md` of each component its pull request changes.
 - A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key
@@ -107,10 +108,32 @@ list; a credential scoped to one project cannot link another project's issue: `P
 blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker
 whose close is the fact the issue needs. Legion starts the issue once its blockers close.
 
+## An issue with children has no code of its own
+
+Every change of an issue with children, and a fix found in its work, goes into an open child's pull
+request or a new child. Where an issue whose branch already carries code needs children, file a
+child for that code, whose work starts from those commits.
+
 ## A root with no code of its own
 
 When every change lands through children, the root's implementer opens its pull request on an empty
 commit. Plan no code for the root, and create no child only to give it a commit.
+
+## Class roots and links
+
+A class root (an issue whose spec states a class of work, each member its child) that must take new
+members is a Legion root with no code of its own, never an issue that holds only a design. A
+mention of a class in prose is no link: only a Dispatch `child_of` link (`--parent`) is one, and a
+root counts only once a person approved its spec.
+
+- A new member of your root's class, new work in your tree's unfinished work, or such a defect the
+  controller sends becomes a child of the tree or part of an open issue's work.
+- Once your spec is approved, link each issue already filed that belongs to your root's class or
+  unfinished work: `dispatch issue-update --issue <KEY> --parent <ROOT>`. Release a linked issue
+  that has not run. One that runs as a root of its own stays its own tree: `envoy_publish` to its
+  architect's role topic your root's key and that "A root under an approved ancestor" in
+  `skill://legion-architect/references/design-gate.md` now applies to it.
+- Work outside the tree that another approved root holds is a finding for the controller.
 
 ## Architecture components
 

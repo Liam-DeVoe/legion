@@ -31,6 +31,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
 - A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+- On a message that the issue is in `awaiting_children`, commit and push what you have to the issue branch, do no more work on that phase, and do not complete it; while a merge forward has not landed, `skill://legion-worker/references/conflicts-and-rewrites.md` decides. Every other phase end still leaves the workspace read-only.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## Commits and pushes
@@ -60,7 +61,7 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 - Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
-- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
+- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a tester's merge of a parent's head with its base, a wait in `awaiting_children`, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.
 - Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
 - A problem outside your issue, or a failed production check: `skill://legion-worker/references/findings.md`.

@@ -31,13 +31,16 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
    yours, to `task(agent="design-outsider")`, and read its answer with `wait`. Record it on the
    issue or in `plan.md`, with your reason wherever you do not follow it. Run it again when a
    push-back or a review changes what the design is for.
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says,
-   since any new version closes the gate. A child: as
-   `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+3. A root, a view on an approved ancestor included: write and edit the spec as
+   `skill://legion-architect/references/design-gate.md` says, since any new version closes the
+   gate. A child: as `skill://legion-architect/references/decomposition.md`, "Creating children",
+   says.
 4. Decompose, adopt, split across repositories or record a wait on outside work as
-   `skill://legion-architect/references/decomposition.md` says, red-team check first.
+   `skill://legion-architect/references/decomposition.md` says, red-team check first. A review fix
+   of the issue's own code gets no child.
 5. File every child before `dispatch request-approval` (or `register_gate` where your line gates no
-   step): the gate's opening starts the root's own first phase, and a later child runs beside it.
+   step): the gate's opening starts the root's own first phase, and an open child holds every phase
+   start of its parent.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec: one
   `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`,
@@ -55,7 +58,7 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
 ## 2. Children in flight
 
 - A root releases no child until every gated step is open: `design-approved`, and under more than
-  one step `gatedSteps` in `read_record` showing each `approved`.
+  one step `gatedSteps` in `read_record` showing each `approved` or `open_on_basis`.
 - Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
   --blocked-by <b>`. It replaces the whole list, so read the existing links first (`dispatch read`).
 - Release each child once it is filed:
@@ -70,15 +73,25 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
 
 ## 3. Children complete
 
-A parent's own first phase waits while Dispatch shows an open child under it (the `children-first`
-row). A child filed after its parent started runs beside it, and the parent's sign-off waits for
-its last round (section 4).
+While a parent is in `awaiting_children`, act only on its children (release, close, icebox or
+`park_child` them under the rule, or move an unreleased one out of the tree), and start nothing for
+its return. Move an unreleased child that should not run now to no parent, never under another
+issue of the tree, since an open child holds every phase start of its parent. When the person says
+to run that child, move it back under its parent and release it; until they answer, sign off
+neither that parent nor any issue above it.
 
 ## 4. Integration verification
 
 - Prove every criterion of your issue in its own pull request, by its own tester evidence, never in
-  a child; never downgrade one. A parent signs off only after its last round
-  (`skill://legion-architect/references/acceptance.md`, "The last round").
+  a child; never downgrade one. A parent signs off on its head once each check a role runs has a
+  pass whose observed line names a base commit carrying the merge of every child the check needs;
+  send the tester no message, wait in `accepting` for no child, move nothing back for a child's
+  merge, a park, the last close or a conflict during the wait, and ask for no forward merge
+  (`skill://legion-architect/references/acceptance.md`, "A parent's head").
+- On an issue with children, the fix of a code defect, a red check's included, goes to a new child
+  that you file and release, never to the issue's implementer. After a tester fail or a review's
+  changes request there, file that child and tell the implementer to change no code until the
+  daemon stops its phase.
 - While the work is built, a role runs the application from the issue's branch and uses it as its
   user would: a passing check does not show that a person can do their job with it.
 - Where the work is a page or a tool a person uses, offer that person a running build before the
@@ -97,9 +110,11 @@ In `accepting` no worker runs; the issue's own architect accepts it. Read, again
 check and every requirement, in the five sources that
 `skill://legion-architect/references/acceptance.md`, "Accepting", lists.
 
-Run the `goal-red-team` read your role prompt names. Accept only when a pass stands for every
-`before_merge` check at the approved head, every requirement has a check, and none is unmet or read
-narrower than written: post a `dispatch comment` naming each check and its result, then
+Run the `goal-red-team` read your role prompt names. For a view, read the requirements as "A root
+under an approved ancestor" in `skill://legion-architect/references/design-gate.md` says. Accept
+only when a pass stands for every `before_merge` check at the approved head, every requirement has
+a check, and none is unmet or read narrower than written: post a `dispatch comment` naming each
+check and its result, then
 `legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
 (`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
 still going; a name no run answers is yours to correct in the check. Finding asks, refusals and

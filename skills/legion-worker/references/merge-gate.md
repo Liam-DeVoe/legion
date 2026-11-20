@@ -44,6 +44,8 @@ Never approve a head while a required item has no run. Sort it, in this order. C
 ### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says; a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says. A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
+- A root's own checks, `after_merge` ones included, are proven after the merges of every child its checks need.
+- On an issue with children, the fix of a code defect, a red check's included, goes to a new child that the architect files and releases, never to the issue's implementer.
 
 ### A merge of the base is reviewed for what it changed
 
