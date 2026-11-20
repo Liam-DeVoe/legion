@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -262,30 +263,161 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 	})
 }
 
-// parityRepo is the one repository the stand-in GitHub holds; its default branch is main.
+// TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter is the results row's state table
+// (plan D26) for results at commits of a linked repository, one the issue links a pull request in
+// and does not resolve to: GET /api/v1/issues/{key}/results read on the two stacks of
+// TestAReadOnlyResultsReadAnswersAsAWriterInEveryState, each read asserting what every read there
+// asserts (parityPair.read), and each row asserting what the writer answers, as main's linked
+// tests read it (TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository and
+// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository).
+//
+// In both rows Dispatch holds no row of the linked pull request, and GitHub names that pull
+// request for no commit until the results are recorded, so no record's read-through stores it.
+// The first read's read-through learns it: the writer's read stores the row, and the read-only
+// read keeps it in memory and reads the linked heads and the linked merge as they would stand had
+// it stored the row (delivery.HeadsAttributedToWith, delivery.BaseBranchMergedInWith). A read-only
+// read that learned nothing would read the stored rows alone, as the writer's does, and would
+// prove nothing about those two reads.
+func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	appKey := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+
+	t.Run("1 a before_merge result at the head of a linked pull request no stored row holds", func(t *testing.T) {
+		// toolsHead is a commit parityLinkedRepo holds and parityRepo does not.
+		const toolsHead = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+		pair := newParityPair(t, appKey)
+		pair.github.linksTo(parityLinked{held: []string{toolsHead}, states: map[int]string{7: "open"}})
+		issue := pair.issue(t, "ROL", parityBeforeMergeCheck)
+		learned := pair.clock.now().Add(-time.Hour)
+		pair.each(func(stack *parityStack) {
+			linkPullRequests(t, stack.rig.handler, issue, "https://github.com/"+parityLinkedRepo+"/pull/7")
+			// Dispatch holds the issue's own pull request 5, and nothing of the linked one.
+			storeParityHead(t, stack.rig.database, 5, headCommit, issue, learned)
+		})
+		pair.record(t, issue, "k1", toolsHead)
+		pair.takenAsLinked(t, 0)
+		// acme/tools#7's head comes to the result's commit, and no event tells Dispatch of it.
+		pair.github.namesLinkedPulls(toolsHead, parityLinkedPull(7, toolsHead, "main", ""))
+
+		first := pair.read(t, issue, "the first read")
+		// The writer asks acme/tools for the commit's pull requests, the repository the record
+		// stored with the result, and never parityRepo. It stores #7, attributed to no issue, and
+		// the link makes it a head k1 compares with, first since it was learned last, and the
+		// head the result stands at.
+		standsAtBasis(t, first.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo))
+		wantBases := []string{
+			fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo),
+			fmt.Sprintf("pull request 5 at %.7s", headCommit),
+		}
+		if bases := parityBases(checkOf(t, first.writer, "k1")); !slices.Equal(bases, wantBases) {
+			t.Errorf("the writer's k1 compared with %v, want %v", bases, wantBases)
+		}
+		first.calls(t, parityLinkedCall(parityPulls), 1)
+		first.calls(t, parityPulls, 0)
+
+		pair.clock.advance(time.Minute)
+		second := pair.read(t, issue, "the second read")
+		if second.writerBody != first.writerBody {
+			t.Errorf("the writer's second read answered\n%s\nwant its first read's answer\n%s", second.writerBody, first.writerBody)
+		}
+		second.callsNone(t)
+	})
+
+	t.Run("2 a branch check's result at a linked pull request's merge commit, compared in that repository", func(t *testing.T) {
+		// acme/tools#10 merged into integration/x as toolsMerge, and toolsHead was its head.
+		// parityRepo holds neither commit, and only integration/x carries toolsMerge. The branch
+		// is not acme/tools' default one, so the branch the read of the merge names is what
+		// places k4's result: a merge into main would name a branch the walk asks anyway.
+		const (
+			toolsHead  = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+			toolsMerge = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+		)
+		pair := newParityPair(t, appKey)
+		pair.github.linksTo(parityLinked{
+			held:     []string{toolsHead, toolsMerge},
+			states:   map[int]string{10: "merged"},
+			branches: map[string][]string{"integration/x": {toolsMerge}},
+		})
+		issue := pair.issue(t, "ROM", parityChecksOfEachWhen)
+		pair.each(func(stack *parityStack) {
+			linkPullRequests(t, stack.rig.handler, issue, "https://github.com/"+parityLinkedRepo+"/pull/10")
+		})
+		pair.record(t, issue, "k1", toolsHead)
+		pair.record(t, issue, "k4", toolsMerge)
+		pair.record(t, issue, "k5", toolsMerge)
+		for index := range 3 {
+			pair.takenAsLinked(t, index)
+		}
+		// From here GitHub names acme/tools#10, merged, for its head, and no event tells
+		// Dispatch of the merge.
+		pair.github.namesLinkedPulls(toolsHead, parityLinkedPull(10, toolsHead, "integration/x", toolsMerge))
+
+		read := pair.read(t, issue, "the first read")
+		// The read-through of k1's result stores #10, merged, and the yes its merge commit is on
+		// integration/x, before any check is answered. k4 and k5 name their own repository's
+		// main as their basis, and their results are walked in acme/tools: k4's asks the branch
+		// the linked pull request merged into first, which carries the commit by the stored yes,
+		// and k5's asks acme/tools' main alone, which does not carry it, in one compare read.
+		standsAtBasis(t, read.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 10 at %.7s of %s", toolsHead, parityLinkedRepo))
+		for _, check := range []string{"k4", "k5"} {
+			if bases := parityBases(checkOf(t, read.writer, check)); !slices.Equal(bases, []string{"branch main"}) {
+				t.Errorf("the writer's %s compared with %v, want its own repository's main alone", check, bases)
+			}
+		}
+		standsAtBasis(t, read.writer, "k4", pair.writer.ids[1], "branch integration/x of "+parityLinkedRepo)
+		offTrunk := standsAt(t, read.writer, "k5", pair.writer.ids[2], "the writer's result of k5", model.CommitOtherCommit, false)
+		if offTrunk.Repo != parityLinkedRepo {
+			t.Errorf("the writer's result of k5 is at another commit of %q, want of %s", offTrunk.Repo, parityLinkedRepo)
+		}
+		read.calls(t, parityLinkedCall(parityPulls), 1)
+		read.calls(t, parityLinkedCall(parityCompare), 1)
+		read.calls(t, parityPulls, 0)
+		read.calls(t, parityCompare, 0)
+	})
+}
+
+// parityRepo is the repository the stand-in GitHub holds and the test's issues resolve to; its
+// default branch is main.
 const parityRepo = "acme/widgets"
+
+// parityLinkedRepo is the second repository the stand-in GitHub holds once a test gives it one
+// (parityGitHub.linksTo): one a test's issue links a pull request in and does not resolve to. Its
+// default branch is main too.
+const parityLinkedRepo = "acme/tools"
 
 // behindHeadCommit is a commit a push left behind: GitHub names a pull request for it whose head
 // is another commit.
 const behindHeadCommit = "7777777777777777777777777777777777777777"
 
-// The table's Verification documents: one check of each `when`.
+// The table's Verification documents: one check of each `when`, and one document holding all
+// three.
 const (
 	parityBeforeMergeCheck   = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\nThe server records a result against a check.\n:::\n"
 	parityAfterMergeCheck    = ":::check{#m1 when=\"after_merge\"}\nThe branch the work merged into carries the commit.\n:::\n"
 	parityDefaultBranchCheck = ":::check{#d1 when=\"default_branch\"}\nThe trunk carries the commit.\n:::\n"
+	parityChecksOfEachWhen   = parityBeforeMergeCheck + "\n" + afterMergeAndDefaultChecks
 )
 
-// The stand-in GitHub's routes, which name the calls a read makes.
+// The stand-in GitHub's routes, which name the calls a read makes. A call about parityLinkedRepo
+// is counted apart, under parityLinkedCall's name.
 const (
 	parityInstallation = "GET /repos/{owner}/{repo}/installation"
 	parityToken        = "POST /app/installations/{id}/access_tokens"
 	parityRepository   = "GET /repos/{owner}/{repo}"
 	parityCommit       = "GET /repos/{owner}/{repo}/commits/{sha}"
 	parityPulls        = "GET /repos/{owner}/{repo}/commits/{sha}/pulls"
+	parityPull         = "GET /repos/{owner}/{repo}/pulls/{number}"
 	parityPullCommits  = "GET /repos/{owner}/{repo}/pulls/{number}/commits"
 	parityCompare      = "GET /repos/{owner}/{repo}/compare/{basehead}"
 )
+
+// parityLinkedCall is the name a call of route about parityLinkedRepo is counted under.
+func parityLinkedCall(route string) string {
+	return route + " of " + parityLinkedRepo
+}
 
 // parityTestSession is the session both tokens act for.
 const parityTestSession = "ses_parity"
@@ -310,13 +442,40 @@ func (c *parityClock) advance(by time.Duration) {
 }
 
 // parityGitHub is the script both stacks' stand-in GitHubs answer from: whether the App can read
-// parityRepo, the pull requests GitHub names for a commit (none until the test sets any), and a
-// compare read's HTTP status and status field (200 and diverged until the test sets them).
+// parityRepo, the pull requests GitHub names for a commit of it (none until the test sets any), a
+// compare read's HTTP status and status field (200 and diverged until the test sets them), and
+// parityLinkedRepo, which the stand-in holds only once the test gives it one (linksTo).
 type parityGitHub struct {
 	mu         sync.Mutex
 	unreadable bool
 	pulls      func(sha string) string
 	compare    func(base, head string) (int, string)
+	linked     *parityLinked
+}
+
+// parityLinked is parityLinkedRepo as the script answers it, as linkedGitHub answers each of its
+// repositories: the commits it holds, which parityRepo does not; the state of each of its pull
+// requests by number, open or merged, any other being GitHub's 404; the pull requests GitHub
+// names for each commit, a JSON array each, none until the test names any (namesLinkedPulls);
+// and the commits each of its branches carries (compare).
+type parityLinked struct {
+	held     []string
+	states   map[int]string
+	pulls    map[string]string
+	branches map[string][]string
+}
+
+// compare is GitHub's answer to a compare read of parityLinkedRepo: 404 for a commit it does not
+// hold, which is what GitHub answers a compare naming a commit it cannot find, `behind` for a
+// commit base carries, and `diverged` for every other.
+func (l *parityLinked) compare(base, head string) (int, string) {
+	switch {
+	case !slices.Contains(l.held, head):
+		return http.StatusNotFound, ""
+	case slices.Contains(l.branches[base], head):
+		return http.StatusOK, "behind"
+	}
+	return http.StatusOK, "diverged"
 }
 
 func (g *parityGitHub) answersPulls(pulls func(sha string) string) {
@@ -331,16 +490,45 @@ func (g *parityGitHub) answersCompare(compare func(base, head string) (int, stri
 	g.compare = compare
 }
 
-// loseRepository makes every read of parityRepo answer 404 from now on, as GitHub answers a
-// repository the App is no longer installed on. The client keeps the token it minted, so the
-// repository's own read is what says so.
+// loseRepository makes every read of parityRepo, and of parityLinkedRepo where the stand-in holds
+// it, answer 404 from now on, as GitHub answers a repository the App is no longer installed on.
+// The client keeps the token it minted, so the repository's own read is what says so.
 func (g *parityGitHub) loseRepository() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.unreadable = true
 }
 
-// parityCalls counts one stand-in's requests by route.
+// linksTo makes the stand-in hold parityLinkedRepo as linked says, from now on.
+func (g *parityGitHub) linksTo(linked parityLinked) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	linked.pulls = map[string]string{}
+	g.linked = &linked
+}
+
+// namesLinkedPulls makes GitHub answer pulls, a JSON array, as the pull requests of sha in
+// parityLinkedRepo from now on.
+func (g *parityGitHub) namesLinkedPulls(sha, pulls string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.linked.pulls[sha] = pulls
+}
+
+// holds is whether repo holds sha: parityLinkedRepo the commits the script names it, and
+// parityRepo every other commit.
+func (g *parityGitHub) holds(repo, sha string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	linked := g.linked != nil && slices.Contains(g.linked.held, sha)
+	if repo == parityLinkedRepo {
+		return linked
+	}
+	return !linked
+}
+
+// parityCalls counts one stand-in's requests by route, a request about parityLinkedRepo under
+// parityLinkedCall's name.
 type parityCalls struct {
 	mu     sync.Mutex
 	counts map[string]int
@@ -373,18 +561,25 @@ func (c *parityCalls) since(before map[string]int) map[string]int {
 func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) string {
 	t.Helper()
 	mux := http.NewServeMux()
+	repoOf := func(r *http.Request) string { return r.PathValue("owner") + "/" + r.PathValue("repo") }
 	route := func(pattern string, serve func(w http.ResponseWriter, r *http.Request)) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			calls.add(pattern)
+			if repoOf(r) == parityLinkedRepo {
+				calls.add(parityLinkedCall(pattern))
+			} else {
+				calls.add(pattern)
+			}
 			serve(w, r)
 		})
 	}
-	// unread answers 404 for a repository the App cannot read, and reports whether it did.
+	// unread answers 404 for a repository the App cannot read, and reports whether it did: every
+	// repository but parityRepo and, once the stand-in holds it, parityLinkedRepo.
 	unread := func(w http.ResponseWriter, r *http.Request) bool {
 		script.mu.Lock()
-		unreadable := script.unreadable
+		readable := !script.unreadable &&
+			(repoOf(r) == parityRepo || (repoOf(r) == parityLinkedRepo && script.linked != nil))
 		script.mu.Unlock()
-		if !unreadable && r.PathValue("owner")+"/"+r.PathValue("repo") == parityRepo {
+		if readable {
 			return false
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -402,26 +597,60 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 	})
 	route(parityRepository, func(w http.ResponseWriter, r *http.Request) {
 		if !unread(w, r) {
-			fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, parityRepo)
+			fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, repoOf(r))
 		}
 	})
 	route(parityCommit, func(w http.ResponseWriter, r *http.Request) {
-		if !unread(w, r) {
-			fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
+		if unread(w, r) {
+			return
 		}
+		sha := r.PathValue("sha")
+		if !script.holds(repoOf(r), sha) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprintf(w, `{"message":"No commit found for SHA: %s"}`, sha)
+			return
+		}
+		fmt.Fprintf(w, `{"sha":%q}`, sha)
 	})
 	route(parityPulls, func(w http.ResponseWriter, r *http.Request) {
 		if unread(w, r) {
 			return
 		}
+		sha := r.PathValue("sha")
 		script.mu.Lock()
-		pulls := script.pulls
+		pulls, named := script.pulls, ""
+		if repoOf(r) == parityLinkedRepo {
+			pulls, named = nil, script.linked.pulls[sha]
+		}
 		script.mu.Unlock()
-		if pulls == nil {
-			fmt.Fprint(w, `[]`)
+		if pulls != nil {
+			named = pulls(sha)
+		}
+		if named == "" {
+			named = `[]`
+		}
+		fmt.Fprint(w, named)
+	})
+	route(parityPull, func(w http.ResponseWriter, r *http.Request) {
+		if unread(w, r) {
 			return
 		}
-		fmt.Fprint(w, pulls(r.PathValue("sha")))
+		number, _ := strconv.Atoi(r.PathValue("number"))
+		state := ""
+		script.mu.Lock()
+		if repoOf(r) == parityLinkedRepo {
+			state = script.linked.states[number]
+		}
+		script.mu.Unlock()
+		switch state {
+		case "open":
+			fmt.Fprintf(w, `{"number":%d,"state":"open","merged":false,"merged_at":null}`, number)
+		case "merged":
+			fmt.Fprintf(w, `{"number":%d,"state":"closed","merged":true,"merged_at":"2026-11-14T00:00:00Z"}`, number)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		}
 	})
 	route(parityPullCommits, func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
@@ -433,6 +662,9 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
 		script.mu.Lock()
 		compare := script.compare
+		if repoOf(r) == parityLinkedRepo {
+			compare = script.linked.compare
+		}
 		script.mu.Unlock()
 		status, comparison := http.StatusOK, "diverged"
 		if compare != nil {
@@ -455,6 +687,21 @@ func parityOpenPull(number int, head, issueKey string) string {
 		"state":"open","merged":false,"updated_at":"2026-11-05T07:15:08Z",
 		"head":{"ref":"legion/x","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`,
 		number, issueKey+" the work", parityRepo, number, head, parityRepo)
+}
+
+// parityLinkedPull is GitHub's answer naming one pull request of parityLinkedRepo whose head is
+// head, from a branch of that repository into base: open where mergeCommit is "", and else merged
+// as mergeCommit. Its title names no issue, so the row a read-through writes of it is attributed
+// to none, and only the issue's link makes it the issue's.
+func parityLinkedPull(number int, head, base, mergeCommit string) string {
+	state := `"state":"open","merged_at":null,"merge_commit_sha":null`
+	if mergeCommit != "" {
+		state = fmt.Sprintf(`"state":"closed","merged_at":"2026-11-14T00:00:00Z","merge_commit_sha":%q`, mergeCommit)
+	}
+	return fmt.Sprintf(`[{"number":%d,"title":"The second half of the work","body":"","html_url":"https://github.com/%s/pull/%d",
+		%s,"updated_at":"2026-11-14T00:00:00Z",
+		"head":{"ref":"work","sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}]`,
+		number, parityLinkedRepo, number, state, head, parityLinkedRepo, base)
 }
 
 // parityStack is one of the pair's two stacks: its server, its stand-in's calls, the token its
@@ -540,6 +787,19 @@ func (p *parityPair) record(t *testing.T, issueKey, check, commit string) {
 			t.Fatalf("record %s at %s on %s's stack: status=%d body=%s", check, commit, stack.who, response.Code, response.Body.String())
 		}
 		stack.ids = append(stack.ids, decodeBody[recordedResult](t, response).Result.ID)
+	})
+}
+
+// takenAsLinked asserts that each stack stored the result it recorded at index with
+// parityLinkedRepo as its commit's repository, as the record route stores a result at a commit
+// only a repository the issue links a pull request in holds (refuseUnknownCommit).
+func (p *parityPair) takenAsLinked(t *testing.T, index int) {
+	t.Helper()
+	p.each(func(stack *parityStack) {
+		repo := storedCommitRepo(t, stack.rig.database, model.CheckResult{ID: stack.ids[index]})
+		if repo == nil || *repo != parityLinkedRepo {
+			t.Fatalf("result %d, on the stack of %s, stored commit_repo %v, want %s", index, stack.who, repo, parityLinkedRepo)
+		}
 	})
 }
 
@@ -661,11 +921,7 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 func (s *parityStack) summary(read issueResults) string {
 	var checks []string
 	for _, check := range read.Checks {
-		bases := make([]string, 0, len(check.ComparedWith))
-		for _, basis := range check.ComparedWith {
-			bases = append(bases, parityBasisName(&basis))
-		}
-		compared := "[" + strings.Join(bases, ", ") + "]"
+		compared := "[" + strings.Join(parityBases(check), ", ") + "]"
 		if check.ComparedNothing != "" {
 			compared = "nothing (" + check.ComparedNothing + ")"
 		}
@@ -688,15 +944,39 @@ func (s *parityStack) summary(read issueResults) string {
 	return strings.Join(checks, " | ")
 }
 
-// parityBasisName is a basis in short: a pull request with its head, a branch, or a commit.
+// parityBases is what check compared with, each basis in short (parityBasisName).
+func parityBases(check model.CheckBlock) []string {
+	bases := make([]string, 0, len(check.ComparedWith))
+	for _, basis := range check.ComparedWith {
+		bases = append(bases, parityBasisName(&basis))
+	}
+	return bases
+}
+
+// parityBasisName is a basis in short: a pull request with its head, a branch, or a commit, and
+// the linked repository it is of where it names one.
 func parityBasisName(basis *model.CheckBasis) string {
+	var name string
 	switch {
 	case basis.PullRequest != nil:
-		return fmt.Sprintf("pull request %d at %.7s", *basis.PullRequest, basis.Commit)
+		name = fmt.Sprintf("pull request %d at %.7s", *basis.PullRequest, basis.Commit)
 	case basis.Branch != "":
-		return "branch " + basis.Branch
+		name = "branch " + basis.Branch
 	default:
-		return fmt.Sprintf("commit %.7s", basis.Commit)
+		name = fmt.Sprintf("commit %.7s", basis.Commit)
+	}
+	if basis.Repo != "" {
+		name += " of " + basis.Repo
+	}
+	return name
+}
+
+// standsAtBasis asserts that the writer's result stands at the basis parityBasisName names want.
+func standsAtBasis(t *testing.T, read issueResults, check, resultID, want string) {
+	t.Helper()
+	stands := standsAt(t, read, check, resultID, "the writer's result of "+check, model.CommitAtBasis, false)
+	if stands.Basis == nil || parityBasisName(stands.Basis) != want {
+		t.Errorf("the writer's result of %s stands at %+v, want %s", check, stands.Basis, want)
 	}
 }
 
