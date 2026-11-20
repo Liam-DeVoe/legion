@@ -2610,6 +2610,11 @@ jobs:
               # change to it is a change to a shape the recordings carry, and this job's test
               # step is where that test runs.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # web/src/features/issue/parent-status/status-change-fixtures.ts:50 reads the route's
+              # answers by relative path (FIXTURES :19), which the Go API test
+              # TestStatusChangeAnswersMatchTheirFixtures writes, for the parent-status question's
+              # unit tests and the board's.
+              - 'packages/envoy/internal/dispatch/api/testdata/status-change/*.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
               # reads and parses with the app's own remark pipeline: a filter change that moves

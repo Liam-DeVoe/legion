@@ -66,6 +66,21 @@ Board and its components; a linked GitHub issue or pull request can be taken off
 
 Legion, when it works an issue, moves that issue's status itself.
 
+Dispatch keeps a parent's status in line with its children's. A parent is done only when each child
+is done. While a child is in work (Todo, In progress, Testing, Needs review or Retro), its parent is
+in work too. Before the page changes the status of an issue that has a parent or an open child, it
+asks Dispatch what the change would do. When the change would break this rule, a dialog names the
+issues that stop it and offers a choice:
+
+- **Move them with it**: each open issue under it takes the new status too.
+- **Unlink them**: each open child stops being a child of this issue and keeps its status.
+- **Move the parents into work too**: each parent that is not in work moves to In progress.
+- **Keep as it is** or **Cancel**: nothing changes. Escape does the same.
+
+The page offers the first two when a child stops the change, and the third when a parent stops it.
+Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each issue
+a choice changes.
+
 ## The List and the Board
 
 The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
@@ -131,6 +146,11 @@ Dropping a card in Done closes the issue. Moving it out of Done reopens it.
 
 Icebox and Done start as narrow folded columns. They still take drops. **Show Icebox & Done**
 opens them in full, and Dispatch remembers that choice.
+
+A card with a parent or an open child stays where it is while Dispatch checks the move. When the
+move would break the parent-status rule, the Board asks the same question as the issue page (see
+[Statuses](#statuses)). The card moves only after you confirm a choice. A later drop waits until
+that question ends.
 
 If someone else moved cards while you were dragging, the move fails with "The board changed while
 you were moving this card - refreshed, try again." The Board shows the fresh order.
