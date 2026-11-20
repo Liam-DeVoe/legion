@@ -18,11 +18,13 @@ related_issues:
 For an artifact that may be applied **at most once** — saved work, a migration payload, a
 one-time credential — and whose second application would destroy newer state:
 
-- **Record the claim and hand over the payload in one statement.** One `update … where <unclaimed>
-  returning <payload>` makes the eligibility test, the spend and the payload commit together; a
+- **Record the claim in one statement, and read the payload apart from it.** One `update … where
+  <unclaimed> returning <facts>` makes the eligibility test and the spend commit together; a
   read-then-mark lets two consumers both be served and lets a caller drop the mark after reading.
-  Return the payload conditionally inside the statement, so a refusal does not pull its bytes
-  through the process.
+  The statement that changes the row returns the artifact's facts and none of its payload: the
+  payload is a read of its own, by the consumer the row names as having spent the attempt, under
+  the bound of the hand-over that follows. A call that both changes the row and carries a large
+  payload has one bound for two jobs, and its failure cannot say which one failed.
 - **Refuse the producer by identity, not by ordering.** The holder the artifact was derived from
   still has the original, so it needs nothing put back — and it asks through the same code path as
   every other consumer. Record that holder's id on the artifact and exclude it, because ordering
@@ -46,8 +48,15 @@ one-time credential — and whose second application would destroy newer state:
 In sjawhar/legion#2642 a released Kubernetes pod's unpushed work travels to its replacement as a
 git bundle. `store.TakeWorkspaceBundleForRestore` is one `update workspace_bundles set
 attempt_pod_uid = $2, attempt_at = now(), attempt_outcome = case … where issue = $1 and
-attempt_pod_uid is null and source_pod_uid <> $2 returning attempt_outcome, case when
-attempt_outcome = 'sent' then bundle end, …`.
+attempt_pod_uid is null and source_pod_uid <> $2 returning attempt_outcome, at, head, tips,
+bookmarks, release_id, source_pod_uid`: it spends the attempt and returns no bytes of the bundle.
+`store.WorkspaceBundleSentTo` reads those bytes, and only for the pod that took the attempt as
+`sent` and for the release it took it of. The two were one statement until a later round found
+that the call that changes the row must not also carry the payload: under the short bound of a
+call that changes state, a slow read of up to 40 MiB came back as a store fault, and every retry
+read the whole payload again; under the hand-over's bound, the read used the time the consumer's
+start needed. Split, the take keeps its short bound and its meaning, and a failed read costs the
+hand-over and nothing else.
 
 Three review rounds built that shape, each from a traced loss:
 

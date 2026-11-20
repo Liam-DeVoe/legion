@@ -582,6 +582,31 @@ func TestAFailedIndexPushDoesNotRefuseTheStart(t *testing.T) {
 	}
 }
 
+// The push of the shared public leak check has the same bound and the same race as the index's:
+// a launcher that takes no slice within the hop's bound refuses the start with a cause that names
+// the bound, even where the connection reports its write timed out, "write pipe: i/o timeout", by
+// its own clock before the hop's timer has ended the hop.
+func TestALeakCheckWriteTheConnectionTimesOutEarlyNamesTheHopsBound(t *testing.T) {
+	var logs lockedLog
+	d := newLaunchers(servedLeakCheck(), nil, nil, nil, nil, slogTo(&logs))
+	d.leakCheckHop = 50 * time.Millisecond
+	session := d.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{
+		PodUID: "uid-pod-early", LauncherID: "launcher-of-uid-pod-early", LeakCheckTag: testLeakCheckTag,
+	})
+	pipe, peer := net.Pipe()
+	server := &closeNotice{Conn: pipe, closed: make(chan struct{}), early: 10 * time.Millisecond}
+	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
+	go (&indexLauncher{stall: true}).serve(peer, server.closed)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+	defer cancel()
+
+	err := d.serveLeakCheck(ctx, workerToken, "uid-pod-early")
+	if cause := runtime.LeakCheckCause(err); !strings.Contains(cause, "within 50ms") {
+		t.Fatalf("the push of the leak check answered %v, with the cause %q; want a refusal whose cause names the hop's bound, within 50ms", err, cause)
+	}
+}
+
 // A read that fails logs one warning and keeps the newest index read: the push after it carries
 // that index to a launcher that does not hold it.
 func TestAFailedReadKeepsTheNewestIndex(t *testing.T) {
