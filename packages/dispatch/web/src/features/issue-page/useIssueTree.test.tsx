@@ -1299,8 +1299,8 @@ const NAMING_ELSEWHERE = [
 // change under the parent, reads the child's names again, where the parent's new title, and an
 // older server's update that names none of its changes, does. A new comment is a new address,
 // which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone
-// renames nothing.
+// the versions that already refreshed them, and an issue's write that leaves its title alone and
+// a follower joining an ask rename nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -1329,6 +1329,7 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
     feedEvent("issue.updated", { changed: ["status"] }),
+    feedEvent("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   ];
   for (const event of editsNoWords) {
     expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
@@ -1461,7 +1462,9 @@ test("a project document's event refreshes the names reads naming that document,
 // A page can cite a document before it exists: the names read answers that address with nothing
 // until the document is created, and the creation is what gives the address words. So a
 // document's creation refreshes the names reads that cite it, of an issue and of a project, and
-// leaves a read naming another owner alone.
+// leaves a read naming another owner alone. Its payload carries the document's slug, so a project
+// document's creation leaves a read naming another document of the project alone too,
+// `roadmap-md-2` among them.
 test("an artifact.created event refreshes the names read that cites that document", () => {
   const citesPlan = [[`dispatch://${KEY}/artifact/${PLAN}`]];
   expect(
@@ -1478,7 +1481,12 @@ test("an artifact.created event refreshes the names read that cites that documen
         { artifact: roadmap },
         { artifact_id: roadmap.id, issue_key: null }
       ),
-      [...citesRoadmap, ["dispatch://ACME/artifact/roadmap-md"], [`dispatch://${KEY}`]]
+      [
+        ...citesRoadmap,
+        ["dispatch://ACME/artifact/roadmap-md"],
+        ["dispatch://CORE/artifact/roadmap-md-2"],
+        [`dispatch://${KEY}`],
+      ]
     )
   ).toEqual(citesRoadmap);
 });
