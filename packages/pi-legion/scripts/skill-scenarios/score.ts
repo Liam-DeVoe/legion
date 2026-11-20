@@ -1180,7 +1180,18 @@ function changedLines(
   file: string
 ): { removed: string[]; added: string[] } {
   const remote = path.join(runDir, "remote.git");
-  const git = Bun.spawnSync(["git", "-C", remote, "diff", "-U0", "--no-color", from, to, "--", file]);
+  const git = Bun.spawnSync([
+    "git",
+    "-C",
+    remote,
+    "diff",
+    "-U0",
+    "--no-color",
+    from,
+    to,
+    "--",
+    file,
+  ]);
   if (git.exitCode !== 0)
     throw new Error(
       `git -C ${remote} diff -U0 ${from} ${to} -- ${file} exited ${git.exitCode}: ${git.stderr.toString().trim()}`

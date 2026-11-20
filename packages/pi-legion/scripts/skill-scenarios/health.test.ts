@@ -1045,15 +1045,12 @@ describe("health: rule 1, finished, on the run's boot record", () => {
 
   // Catches: a reader that holds a run to more than it booted, or to less.
   test("a run whose every booted role finished is finished, a relaunch's repeated line one boot", () => {
-    expect(
-      judge(both("threads-closed-correct-head-2", "boot implementer\nboot reviewer\n"))
-    ).toBe(undefined);
+    expect(judge(both("threads-closed-correct-head-2", "boot implementer\nboot reviewer\n"))).toBe(
+      undefined
+    );
     expect(
       judge(
-        both(
-          "threads-closed-correct-base-2",
-          "boot implementer\nboot implementer\nboot reviewer\n"
-        )
+        both("threads-closed-correct-base-2", "boot implementer\nboot implementer\nboot reviewer\n")
       )
     ).toBe(undefined);
     // As boot_agent writes it now: each launch it asks the boot's reader about followed by the
@@ -1134,9 +1131,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
   test("a missing record, a role outside the definition, a role decided twice or out of order, or one left out is unfinished", () => {
     const definition =
       "threads-closed boots the implementer, then the reviewer (completion-answers.ts's ANSWERS)";
-    expect(
-      judge(both("threads-closed-correct-head-4", "boot reviewer\nboot implementer\n"))
-    ).toBe(
+    expect(judge(both("threads-closed-correct-head-4", "boot reviewer\nboot implementer\n"))).toBe(
       `boot record: <run>/booted starts with \`boot reviewer\`, not \`boot implementer\`; ${definition}`
     );
     expect(judge(both("threads-closed-correct-head-5", `${SKIPPED}boot reviewer\n`))).toBe(
@@ -1146,26 +1141,19 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       `boot record: <run>/booted starts with no line, not \`boot implementer\`; ${definition}`
     );
     expect(
-      judge(
-        both("threads-closed-correct-head-7", "boot implementer\nboot reviewer\nboot tester\n")
-      )
+      judge(both("threads-closed-correct-head-7", "boot implementer\nboot reviewer\nboot tester\n"))
     ).toBe(
       `boot record: <run>/booted decides the tester, a role threads-closed boots none of; ${definition}`
     );
     expect(
       judge(
-        both(
-          "threads-closed-correct-head-8",
-          "boot implementer\nboot reviewer\nboot implementer\n"
-        )
+        both("threads-closed-correct-head-8", "boot implementer\nboot reviewer\nboot implementer\n")
       )
     ).toBe(`boot record: <run>/booted decides the implementer twice; ${definition}`);
     expect(judge(both("threads-closed-correct-head-9", "boot implementer\n"))).toBe(
       `boot record: <run>/booted neither boots nor skips the reviewer; ${definition}`
     );
-    expect(() =>
-      judge(both("threads-closed-correct-head-10", "launched implementer\n"))
-    ).toThrow(
+    expect(() => judge(both("threads-closed-correct-head-10", "launched implementer\n"))).toThrow(
       "booted:1 is none of `boot <role>`, `since <role> <time>` and `skip <role> <reason>`: launched implementer"
     );
     expect(() =>
@@ -1268,9 +1256,9 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     } finally {
       entry.boots = defined;
     }
-    expect(
-      judge(both("threads-closed-correct-head-18", "boot implementer\nboot reviewer\n"))
-    ).toBe(undefined);
+    expect(judge(both("threads-closed-correct-head-18", "boot implementer\nboot reviewer\n"))).toBe(
+      undefined
+    );
   });
 });
 
@@ -1309,10 +1297,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
   test("a base run whose Dispatch server the head checkout built is unhealthy", () => {
     expect(
       judge(
-        baseRun(
-          "threads-closed-correct-base-1",
-          `dispatch label ${HEAD} sha256:${"1".repeat(64)}`
-        )
+        baseRun("threads-closed-correct-base-1", `dispatch label ${HEAD} sha256:${"1".repeat(64)}`)
       )
     ).toBe(
       `foreign service: the run's dispatch came from ${HEAD}, not from ${BASE}, the checkout of the base label its built-from names`
@@ -1322,10 +1307,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
   test("a base run whose provenance names its Dispatch server shared is unhealthy", () => {
     expect(
       judge(
-        baseRun(
-          "threads-closed-correct-base-2",
-          `dispatch shared ${HEAD} sha256:${"1".repeat(64)}`
-        )
+        baseRun("threads-closed-correct-base-2", `dispatch shared ${HEAD} sha256:${"1".repeat(64)}`)
       )
     ).toBe(
       `service provenance: <run>/services-from names no dispatch of the base label's own checkout (${BASE})`
@@ -1335,10 +1317,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
   test("a base run on the Dispatch server its own checkout built holds", () => {
     expect(
       judge(
-        baseRun(
-          "threads-closed-correct-base-3",
-          `dispatch label ${BASE} sha256:${"1".repeat(64)}`
-        )
+        baseRun("threads-closed-correct-base-3", `dispatch label ${BASE} sha256:${"1".repeat(64)}`)
       )
     ).toBeUndefined();
   });
