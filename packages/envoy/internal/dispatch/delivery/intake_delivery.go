@@ -223,8 +223,10 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // (bus.Client.DrainSubscription): a handle of the client's own once it has replaced its connection,
 // not sub, which went with the replaced connection while the client's handle went on delivering
 // here. The client holds nothing of this stopped callback's from the drain on. The messages waiting
-// behind their keys are taken before the drain, so that none of them starts its handler meanwhile;
-// they are held with the rest.
+// behind their keys are taken before the give-up is armed, and are held with the rest: a give-up
+// armed first wakes the handler in progress, and the keyed runner starts the next queued handler
+// as soon as that one returns, under a context that has already ended, so that handler's
+// hand-back is withheld rather than held. A second call takes nothing (keyedRunner.stop).
 //
 // Every hand-back is withheld until the drain has answered, and for good when NATS did not take the
 // drain within bus.ConnLockWait, or took it with the link down, when DrainSubscription unsubscribes
@@ -237,19 +239,19 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // could read stopping before it was set and publish a hand-back the stop withholds.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	d.stopping.Store(true)
+	for _, waiting := range d.keys.stop() {
+		// Work queued on a key (heldDurable.queue) holds no message to give back: it is
+		// dropped, and its owner queues it again at its next take-over.
+		if waiting.msg != nil {
+			d.giveBack(waiting.msg)
+		}
+	}
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
 	if armed := stopGiveUpArmed.Load(); armed != nil {
 		(*armed)()
 	}
 	d.stopped.Do(func() {
-		for _, waiting := range d.keys.stop() {
-			// Work queued on a key (heldDurable.queue) holds no message to give back: it is
-			// dropped, and its owner queues it again at its next take-over.
-			if waiting.msg != nil {
-				d.giveBack(waiting.msg)
-			}
-		}
 		draining, answered := callNATS("drain the intake's subscription", func() (*natsgo.Subscription, error) {
 			return d.nats.DrainSubscription(d.sub)
 		})
