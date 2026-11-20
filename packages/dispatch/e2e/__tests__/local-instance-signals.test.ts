@@ -1,6 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +42,10 @@ afterAll(() => {
  *  not taken for it. */
 function standInRuns(pid: number): boolean {
   try {
-    return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") === `sleep ${seconds}`;
+    return (
+      readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") ===
+      `sleep ${seconds}`
+    );
   } catch {
     return false;
   }
@@ -71,7 +81,14 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
       const said = join(dir, "said");
       const output = openSync(said, "w");
       const local = Bun.spawn(
-        ["/bin/sh", "-c", 'ulimit -c 0 && exec "$@"', "sh", process.execPath, "e2e/local-instance.ts"],
+        [
+          "/bin/sh",
+          "-c",
+          'ulimit -c 0 && exec "$@"',
+          "sh",
+          process.execPath,
+          "e2e/local-instance.ts",
+        ],
         {
           cwd: dispatchPackage,
           env: { HOME: process.env.HOME, PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir },
@@ -82,9 +99,10 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
       const ended = watch(local.exited);
       try {
         const started = await whether(() => standInRuns(recorded(pidFile)), ended);
-        expect(started, `the step's stand-in never ran; the command said:\n${readFileSync(said, "utf8")}`).toBe(
-          true
-        );
+        expect(
+          started,
+          `the step's stand-in never ran; the command said:\n${readFileSync(said, "utf8")}`
+        ).toBe(true);
         const standIn = recorded(pidFile);
         standIns.push(standIn);
         local.kill(signal);

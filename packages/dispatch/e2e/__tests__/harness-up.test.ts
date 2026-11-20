@@ -76,12 +76,24 @@ for (const row of [
   { name: "a SIGQUIT the moment the stack is up", up: "SIGQUIT" },
   { name: "a second Ctrl-C while the stack stops", up: "SIGINT", stop: "SIGINT" },
   { name: "a SIGHUP while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGHUP" },
+  { name: "a SIGQUIT while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGQUIT" },
 ]) {
   test(
     `${row.name} stops the stack once, not the script alone`,
     async () => {
       const run = await runBounded({
-        argv: [process.execPath, "--preload", preload, "e2e/harness-up.ts"],
+        // Under a shell that sets the core size to 0 and execs the script, so a SIGQUIT that met
+        // its default action would write no core into the tree.
+        argv: [
+          "/bin/sh",
+          "-c",
+          'ulimit -c 0 && exec "$@"',
+          "sh",
+          process.execPath,
+          "--preload",
+          preload,
+          "e2e/harness-up.ts",
+        ],
         bound: "short",
         cwd: dispatchPackage,
         env: {
