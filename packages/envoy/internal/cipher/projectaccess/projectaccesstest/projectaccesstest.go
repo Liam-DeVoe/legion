@@ -72,6 +72,10 @@ type Server struct {
 	mu    sync.Mutex
 	calls int
 	down  bool
+	// privateCalls counts the private-projects route's requests alone, and privateDown fails
+	// that route alone (SetPrivateProjectsDown).
+	privateCalls int
+	privateDown  bool
 }
 
 // StaticAccount is a bearer that never rotates: a ciphertoken.Account for a test.
@@ -121,6 +125,23 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
+// SetPrivateProjectsDown makes every later request of the private-projects route fail 503 (true)
+// or be answered again (false), while the project and person routes go on answering: a Dispatch
+// that answers one project but not the list of all of them.
+func (s *Server) SetPrivateProjectsDown(down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.privateDown = down
+}
+
+// PrivateProjectsCalls is how many requests of the private-projects route the stand-in has
+// answered, the ones it failed included.
+func (s *Server) PrivateProjectsCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.privateCalls
+}
+
 // SetRow makes Dispatch hold row for key from the next request on, as an owner's change of a
 // project's visibility or access list does, so a test can change Dispatch under a client whose
 // cache already holds the earlier answer.
@@ -158,6 +179,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
 	case r.URL.Path == privateProjectsPath:
+		s.mu.Lock()
+		s.privateCalls++
+		privateDown := s.privateDown
+		s.mu.Unlock()
+		if privateDown {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in's private-projects route is down"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"projects": s.privateProjects()})
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)

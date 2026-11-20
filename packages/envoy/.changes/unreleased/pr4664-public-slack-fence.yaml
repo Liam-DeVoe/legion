@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The airlock fences a Slack bot token tagged `project-channels=slack` from private projects'
+  channels when a session that names no private Dispatch project spends it. Once the broker knows
+  a project is private, it reads Dispatch's list of private projects and their channels with its
+  own token, and the proxy refuses `PRIVATE_CHANNEL`, without calling Slack, any call that names
+  one of those channel ids under `channel`, `channel_id` or `channels` (in the query, a JSON body
+  or a form, in any case, with white space or commas around it), any search method, and any body
+  it cannot read as naming none: one that is neither JSON nor a form, a compressed one, or one
+  over 1 MiB. While the broker cannot read the list, or the list names a private project with no
+  channel list, every call on the token is refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads
+  it again within a minute. Every value of a `project-channels` secret the airlock holds is read
+  again within ten minutes, in every deployment, so a value released before the first private
+  project learns of it. A private project's own credential posts to none of its project's
+  channels for 16 minutes 30 seconds after Dispatch last changed the list or the project turned
+  private, and `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens. With no private
+  project known, the broker asks Dispatch nothing for the fence and the proxy reads no body.
+time: 2026-11-20T23:06:39Z
+custom:
+    Issue: pr4664
