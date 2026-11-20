@@ -9,8 +9,8 @@ import type { Socket } from "bun";
  * - `silent`: accepts the connection and sends nothing;
  * - `hold`: sends INFO and nothing more, so the client's handshake waits;
  * - `serve`: sends INFO and answers each PING with a PONG, which is all a dial and a reconnect need;
- * - `late-serve`: as `serve`, with its INFO sent 600 ms after the connection opened, which a dial
- *   with a shorter timeout does not wait for.
+ * - `gated-serve`: as `serve`, with its INFO sent only once the row calls `answer()`, so the row
+ *   orders the server's answer after whatever it reads first.
  */
 export type FakeNatsBehaviour =
   | "refuse"
@@ -19,15 +19,17 @@ export type FakeNatsBehaviour =
   | "silent"
   | "hold"
   | "serve"
-  | "late-serve";
-
-/** How long `late-serve` waits before its INFO, unless `startFakeNats` is given another delay. */
-export const LATE_INFO_MS = 600;
+  | "gated-serve";
 
 export interface FakeNatsServer {
   readonly url: string;
   /** How many connections reached the server so far. */
   connections(): number;
+  /** Settles once `count` connections have reached the server, in the turn the last one opened,
+   *  so a row that awaits it acts before any timer runs. */
+  opened(count: number): Promise<void>;
+  /** Sends its INFO to each `gated-serve` connection open and not answered yet. */
+  answer(): void;
   /** Closes every connection that is open, from the server's side. */
   dropAll(): void;
   stop(): void;
@@ -40,14 +42,13 @@ interface ConnectionState {
 
 /**
  * A local TCP server that speaks only as much NATS as a dial needs. `behaviour(n)` decides what
- * the n-th connection (from 0) meets; `lateInfoMs` is how long `late-serve` waits before its INFO.
+ * the n-th connection (from 0) meets.
  */
-export function startFakeNats(
-  behaviour: (n: number) => FakeNatsBehaviour,
-  lateInfoMs: number = LATE_INFO_MS
-): FakeNatsServer {
+export function startFakeNats(behaviour: (n: number) => FakeNatsBehaviour): FakeNatsServer {
   let count = 0;
   const open = new Set<Socket<ConnectionState>>();
+  const gated = new Set<Socket<ConnectionState>>();
+  const waiting: { readonly count: number; readonly reached: () => void }[] = [];
   const info = (port: number) =>
     `INFO ${JSON.stringify({ server_id: "FAKE", server_name: "fake", version: "2.10.0", proto: 1, go: "go1", host: "127.0.0.1", port, headers: true, max_payload: 1048576 })}\r\n`;
   const server = Bun.listen<ConnectionState>({
@@ -79,15 +80,17 @@ export function startFakeNats(
           case "serve":
             socket.write(hello);
             break;
-          case "late-serve":
-            setTimeout(() => {
-              if (open.has(socket)) socket.write(hello);
-            }, lateInfoMs);
+          case "gated-serve":
+            gated.add(socket);
             break;
+        }
+        for (const waiter of waiting.filter((one) => one.count <= count)) {
+          waiting.splice(waiting.indexOf(waiter), 1);
+          waiter.reached();
         }
       },
       data(socket, data) {
-        if (socket.data.behaviour !== "serve" && socket.data.behaviour !== "late-serve") return;
+        if (socket.data.behaviour !== "serve" && socket.data.behaviour !== "gated-serve") return;
         socket.data.buffered += data.toString();
         for (
           let end = socket.data.buffered.indexOf("\r\n");
@@ -101,12 +104,23 @@ export function startFakeNats(
       },
       close(socket) {
         open.delete(socket);
+        gated.delete(socket);
       },
     },
   });
   return {
     url: `nats://127.0.0.1:${server.port}`,
     connections: () => count,
+    opened: (wanted) => {
+      if (count >= wanted) return Promise.resolve();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      waiting.push({ count: wanted, reached: resolve });
+      return promise;
+    },
+    answer: () => {
+      for (const socket of gated) socket.write(info(server.port));
+      gated.clear();
+    },
     dropAll: () => {
       for (const socket of open) socket.end();
     },

@@ -38,8 +38,10 @@ recheck's automaton checker reads from each pattern instead (`test/pattern-analy
 analyzes a pattern it reads in a moment, and holds a slower one to the verdict `bun run
 analyze:patterns` committed beside its test. Real sockets do not fit the fake clock, so the NATS
 dial's rows run `connectNats` on a clock they drive (`NatsDialClock`,
-`src/__tests__/driven-dial-clock.ts`), which holds each wait and bound until the row ends it, and
-read the timers nats.js's own code armed and ran from `@legion/test-fixtures/timer-record`.
+`src/__tests__/driven-dial-clock.ts`), which holds each wait and bound until the row ends it, hold
+nats.js's own timers until the row runs them (`src/__tests__/held-nats-timers.ts`), so no real
+time orders a bound or a handshake against one of them, and read the timers nats.js's own code
+armed and ran from `@legion/test-fixtures/timer-record`.
 
 ## Inbound delivery
 

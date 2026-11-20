@@ -149,16 +149,20 @@ export function dialOnDrivenClock(
 
 /**
  * The bound `run`'s dial holds once `ready` holds too (the server holds the dial's connection,
- * say). A run that ends before it arms one fails the row here, saying how it ended.
+ * say). `connectNats` arms a dial's bound as it calls `connect()`, before any I/O, so a dial under
+ * way with no bound held, or a run that ends before it arms one, fails the row here, saying which.
  */
 export async function heldBound(
   run: DrivenDial,
   ready: () => boolean = () => true
 ): Promise<HeldTimer> {
-  const next = await until(
-    "the dial's bound",
-    () => run.ended() ?? (ready() && run.driven.held().find((timer) => timer.kind === "bound"))
-  );
+  const next = await until("the dial's bound", () => {
+    const ended = run.ended();
+    if (ended !== undefined) return ended;
+    if (!ready()) return false;
+    return run.driven.held().find((timer) => timer.kind === "bound") ?? "none";
+  });
+  if (next === "none") throw new Error("the dial is under way and holds no bound");
   if ("kind" in next) return next;
   throw new Error(`the dial ended before it armed a bound: ${Bun.inspect(next)}`);
 }

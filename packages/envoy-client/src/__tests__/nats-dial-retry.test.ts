@@ -13,18 +13,26 @@ import {
 import { noAuthService } from "../nats-credential";
 import { dialOnDrivenClock, heldBound, type Outcome, outcomeOf } from "./driven-dial-clock";
 import { type FakeNatsBehaviour, type FakeNatsServer, startFakeNats } from "./fake-nats-server";
+import { type HeldNatsTimers, holdNatsTimers } from "./held-nats-timers";
 
 // Real nats.js against a local server, with `connectNats` on a clock each row drives
 // (`./driven-dial-clock`): the row ends each wait the dial arms, and the bound of a dial the server
 // holds silent, so it reads the delay of each wait, the bound of each dial and their order with
-// the dials, and no clock. A loaded machine changes none of those. The last row of `connectNats`
-// runs the dial on the process's own clock under Bun's fake timers, with a stand-in connect and no
-// socket, so the clock every session plugin dials on is held to the same delays.
+// the dials, and no clock. nats.js's own timers (each address's handshake timer) are held
+// (`./held-nats-timers`), so no real time decides whether nats.js's timer or the row's end of a
+// bound comes first, or whether a handshake beats its timer. A loaded machine changes none of
+// those. The last row of `connectNats` runs the dial on the process's own clock under Bun's fake
+// timers, with a stand-in connect and no socket, so the clock every session plugin dials on is
+// held to the same delays.
 
 const servers: FakeNatsServer[] = [];
 const connections: NatsConnection[] = [];
+/** nats.js's own timers, while a row holds them. */
+let nats: HeldNatsTimers | undefined;
 afterEach(async () => {
   jest.useRealTimers();
+  nats?.release();
+  nats = undefined;
   for (const nc of connections.splice(0)) await nc.close().catch(() => undefined);
   for (const server of servers.splice(0)) server.stop();
 });
@@ -58,9 +66,10 @@ interface DialRun {
 }
 
 /**
- * Runs `connectNats` against `server` with `plan` on a driven clock. The row ends each wait as
- * the dial arms it, and the bound of each dial `silent` names (counting from 1) once the server
- * holds that dial's connection: a server that never answers leaves a dial only its bound.
+ * Runs `connectNats` against `server` with `plan` on a driven clock, nats.js's own timers held to
+ * the row's end. The row ends each wait as the dial arms it, and the bound of each dial `silent`
+ * names (counting from 1) once the server holds that dial's connection: a server that never
+ * answers leaves a dial only its bound, since nats.js's own handshake timer never runs.
  */
 async function dialWith(
   server: FakeNatsServer,
@@ -76,6 +85,7 @@ async function dialWith(
     readonly blockOnRetryMs?: number;
   } = {}
 ): Promise<DialRun> {
+  nats = holdNatsTimers();
   const delays: number[] = [];
   let stopped = extra.stoppedFromStart === true;
   const run = dialOnDrivenClock(
@@ -254,6 +264,7 @@ describe("connectNats", () => {
 
   test("bounds the first dial at the caller's firstBoundMs", async () => {
     const server = fake(() => "silent");
+    nats = holdNatsTimers();
     const run = dialOnDrivenClock(
       connect,
       options(server.url),
