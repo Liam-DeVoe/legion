@@ -30,6 +30,7 @@ import type {
 import type {
   CheckResultEventPayload,
   CheckResultRetractedEventPayload,
+  CheckStateChangedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
   IssueClaimEventPayload,
@@ -248,6 +249,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.retracted";
       readonly payload: CheckResultRetractedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "check.state_changed";
+      readonly payload: CheckStateChangedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "issue.pull_request_attribution_changed";

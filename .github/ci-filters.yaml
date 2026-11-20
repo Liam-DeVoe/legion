@@ -1651,6 +1651,7 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/dispatch-events/check-state-changed.json'
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
   # why: .github/ci-notes/ci.md#envoy_go-internaldispatchtextwhitespace_fixture_testgo-holds-unicodeisspace-to-this
   - 'packages/contracts/fixtures/go-unicode-isspace.json'

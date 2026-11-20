@@ -1818,6 +1818,57 @@ type CheckResultRetractedEventPayload struct {
 	Reason       string `json:"reason"`
 }
 
+// CheckStateChangedEventType is the event Dispatch appends on a check's issue each time the state
+// of one of its `before_merge` checks at an open head changes.
+const CheckStateChangedEventType = "check.state_changed"
+
+// CheckStatesActor writes every check.state_changed: a system actor, since the state is what
+// Dispatch computed from the results, not something a person or a session wrote. Broker.Notify is
+// false for a system actor, so the event reaches no inbox; the outbox still publishes it.
+var CheckStatesActor = Actor{Kind: "system", ID: "dispatch-check-states"}
+
+// CheckStateChangedEventPayload is the payload of check.state_changed, appended on the check's
+// issue: the state of one before_merge check at one open head, as passStandsOf computed it.
+// Check, CheckVersion and State are nil in the set form: the event that tells a head's set of
+// checks when no check's own event tells it (a head with no check, a check removed).
+// CheckArtifactID is nil where the issue has no Verification document.
+type CheckStateChangedEventPayload struct {
+	Issue           string   `json:"issue"`
+	CheckArtifactID *string  `json:"check_artifact_id"`
+	Repo            string   `json:"repo"`
+	Head            string   `json:"head"`
+	PullRequests    []int    `json:"pull_requests"`
+	Checks          []string `json:"checks"`
+	Check           *string  `json:"check"`
+	CheckVersion    *int     `json:"check_version"`
+	State           *string  `json:"state" enum:"yes,no,unknown"`
+	Reason          string   `json:"reason" enum:",fail,no_result,pass_and_fail,read_failed"`
+	Roles           []string `json:"roles"`
+	Results         []string `json:"results"`
+	// CICase is the `ci.case` of a check CI proves at this head ("not_completed" while its run
+	// goes on), "" for every other check.
+	CICase string `json:"ci_case"`
+	// Serial counts the issue's check.state_changed events: 1, 2, 3 and on, one counter for the
+	// issue across all its heads.
+	Serial int64 `json:"serial"`
+}
+
+// MarshalJSON writes each list a writer left nil as [], never null: every reader of the event
+// reads its lists as arrays, and @legion/contracts' schema refuses null for any of them.
+func (payload CheckStateChangedEventPayload) MarshalJSON() ([]byte, error) {
+	type encoded CheckStateChangedEventPayload
+	shape := encoded(payload)
+	if shape.PullRequests == nil {
+		shape.PullRequests = []int{}
+	}
+	for _, list := range []*[]string{&shape.Checks, &shape.Roles, &shape.Results} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	return json.Marshal(shape)
+}
+
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
 // once a document has been quiet for a while after a person's settled browser edit: the versions
 // the quiet window spans (FromVersion is the one before the window's first person's version,

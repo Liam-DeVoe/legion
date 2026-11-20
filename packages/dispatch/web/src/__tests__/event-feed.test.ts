@@ -1545,6 +1545,31 @@ test("a retracted result refreshes the results of the check's issue and of the r
   ]);
 });
 
+// A check's new state at a head moves the one read that shows it: the results of the check's
+// issue, where the event sits, whose answer carries the state of each check at each head. The
+// event names no other issue, so no other issue's results move.
+test("a check's new state refreshes the results of the check's issue alone", () => {
+  const stateChanged = event(
+    "check.state_changed",
+    {
+      check: "k1",
+      checks: ["k1", "k2"],
+      head: "1111111111111111111111111111111111111111",
+      issue: "CORE-1",
+      pull_requests: [70],
+      reason: "fail",
+      state: "no",
+    },
+    { actor: { id: "dispatch-check-states", kind: "system" }, notify: false }
+  );
+  expect(eventRefreshTargets(stateChanged, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+  ]);
+});
+
 // A document version moves what the Spec tab's gap pills and the Verification tab's checks
 // read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
 // reads hang under the issue's key, and every issue target is `exact`, so the branch names them
@@ -1713,6 +1738,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "ask.resolved": event("ask.resolved", { anchor: null, id: "ask-1" }),
   "block.invalid": event("block.invalid", { block_id: "b-1" }),
   "block.repaired": event("block.repaired", { block_id: "b-1" }),
+  "check.state_changed": event(
+    "check.state_changed",
+    { check: "k1", checks: ["k1", "k2"], issue: "CORE-1", state: "no" },
+    { actor: { id: "dispatch-check-states", kind: "system" }, notify: false }
+  ),
   "child.added": event("child.added", { child_key: "CORE-2" }),
   "child.removed": event("child.removed", { child_key: "CORE-2" }),
   "child.status": event("child.status", { child_key: "CORE-2", from: "todo", to: "done" }),
