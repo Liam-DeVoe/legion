@@ -292,13 +292,14 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 // closedUnder reports whether err, a request's answer, is nats.go's answer for a close of conn
 // (closeAnswer) given while conn is closed or going away, or once conn has reconnected since the
 // request's life began at reconnect count reconnects. nats.go answers a request a close cut off
-// before the status report that ends the life (close clears the pending requests, nats.go:6086,
-// before changeConnStatus, :6142, and sets the status CLOSED first, :6070), and a forced reconnect
-// (ForceReconnect, which the keeper of a service's token makes to present a new one, natscred)
-// answers every pending request nats.ErrConnectionClosed and reconnects in place, counting the
-// reconnect before it reports the connection connected (doReconnect, nats.go:3482), so by the time
-// the request reads its answer the connection can be connected again: each answer is as lost as
-// one after the life ended, and a running client recovers its connection for the caller's retry.
+// before the status report that ends the life (close clears the pending requests, nats.go v1.55.0
+// :6265, before changeConnStatus, :6321, and sets the status CLOSED first, :6249), and a forced
+// reconnect (ForceReconnect, which the keeper of a service's token makes to present a new one,
+// natscred) answers every pending request nats.ErrDisconnected (clearPendingRequestCalls, :2667;
+// newRequest, :4962-4966) and reconnects in place, counting the reconnect before it reports the
+// connection connected (doReconnect, :3578), so by the time the request reads its answer the
+// connection can be connected again: each answer is as lost as one after the life ended, and a
+// running client recovers its connection for the caller's retry.
 // The same answer while conn is still connected and has not reconnected since is a handle's of an
 // earlier connection the client has since replaced (a request's send may use such a handle, where a
 // direct call is made on conn itself, lostIfClosed), which no retry on the client's connection
@@ -377,9 +378,10 @@ func (c *Client) requestReadUntil(ctx context.Context, conn *nats.Conn) (status 
 // object's connection while it is still the client's (heldNow), and nil once the client has
 // replaced it. A close answer for a call made on conn comes from conn's close or drain, or from a
 // drop or a forced reconnect of it (ForceReconnect, which the keeper of a service's token makes to
-// present a new one, natscred), each of which answers every pending flush, and a forced reconnect
-// every pending request, nats.ErrConnectionClosed (processOpErr's clearPendingFlushCalls; nats.go
-// v1.53.1 :2589-2622, :5948-5949): each is a loss of the connection,
+// present a new one, natscred), each of which answers every pending flush nats.ErrConnectionClosed
+// (processOpErr's clearPendingFlushCalls, nats.go v1.55.0 :3673; FlushTimeout, :6129-6131), and a
+// forced reconnect every pending request nats.ErrDisconnected (ForceReconnect's
+// clearPendingRequestCalls, :2667; newRequest, :4962-4966): each is a loss of the connection,
 // however late the answer is read, so no read of conn's state decides it, and none waits for a
 // reconnect's handshake. A nil conn answers err as it is, so a call on the handle of a connection
 // the client has replaced keeps nats.go's error, which no retry on the client's connection answers
@@ -393,10 +395,13 @@ func (c *Client) lostIfClosed(err error, conn *nats.Conn, unsent bool) error {
 }
 
 // closeAnswer reports whether err is nats.go's answer for a close of its connection: the
-// connection closed, draining, its drain timed out, or no server left to reconnect to.
+// connection closed, draining, its drain timed out, no server left to reconnect to, or a forced
+// reconnect that cut the call off, which nats.go v1.55.0 answers nats.ErrDisconnected where v1.53.1
+// answered nats.ErrConnectionClosed (newRequest, nats.go:4962-4966).
 func closeAnswer(err error) bool {
 	return errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrConnectionDraining) ||
-		errors.Is(err, nats.ErrDrainTimeout) || errors.Is(err, nats.ErrNoServers)
+		errors.Is(err, nats.ErrDrainTimeout) || errors.Is(err, nats.ErrNoServers) ||
+		errors.Is(err, nats.ErrDisconnected)
 }
 
 // heldNow is conn while it is c's connection, and nil once c has replaced it (lostIfClosed): the

@@ -36,11 +36,14 @@ type Proxy struct {
 	// hold is set from HoldConnectAnswers until Restore: each connection accepted meanwhile is
 	// held at its handshake.
 	hold *ConnectHold
+	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
+	// It holds only server-to-client reads and writes.
+	serverGate chan struct{}
 }
 
 // ConnectHold is a hold of the server's answer to a client's CONNECT (Proxy.HoldConnectAnswers):
 // the client has sent its CONNECT, and its handshake waits for the server's answer, with nats.go's
-// connection lock held (nats.go v1.53.1 processConnectInit, under doReconnect's lock, :3458-3485),
+// connection lock held (nats.go v1.55.0 processConnectInit, under doReconnect's lock, :3578-3581),
 // until Restore or until the client's own connect timeout ends the attempt. Every connection the
 // proxy accepts while the hold lasts is held the same way, each until Restore or its own end; Held
 // and Ended report the first connection whose CONNECT reached the server.
@@ -153,8 +156,20 @@ func (p *Proxy) Freeze() {
 	}
 }
 
-// Restore ends a Cut, a Freeze and a hold of CONNECT answers: the proxy accepts and relays
-// connections again, and the bytes a freeze or a hold kept move on.
+// FreezeServerReplies stops server replies while client writes still reach the server. Restore
+// releases the replies. A test uses it when it must prove a request stored before it loses the
+// request's acknowledgement.
+func (p *Proxy) FreezeServerReplies() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.serverGate == nil {
+		p.serverGate = make(chan struct{})
+	}
+}
+
+// Restore ends a Cut, a Freeze, a FreezeServerReplies and a hold of CONNECT answers: the proxy
+// accepts and relays connections again, the bytes a freeze or a hold kept move on, and server
+// replies resume.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -166,6 +181,10 @@ func (p *Proxy) Restore() {
 	if p.hold != nil {
 		close(p.hold.release)
 		p.hold = nil
+	}
+	if p.serverGate != nil {
+		close(p.serverGate)
+		p.serverGate = nil
 	}
 }
 
@@ -272,7 +291,7 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, pair *relayPair, toC
 		defer close(queue)
 		buffer := make([]byte, proxyReadBuffer)
 		for {
-			p.pass()
+			p.pass(toClient)
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
@@ -291,7 +310,7 @@ func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, pair *relayPair, toC
 	firstDone, prev := false, byte(0)
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
-		p.pass()
+		p.pass(toClient)
 		data := c.data
 		if hold != nil && !firstDone {
 			end := lineEnd(prev, data)
@@ -383,17 +402,25 @@ func lineEnd(prev byte, data []byte) int {
 	return -1
 }
 
-// pass waits while the proxy is frozen, and returns at once while it is not or once it closes.
-func (p *Proxy) pass() {
+// pass waits for any active gate before a relay read or write proceeds: a Freeze's, and for the
+// server-to-client direction (serverToClient) a FreezeServerReplies' too. It returns at once while
+// none is active, or once the proxy closes.
+func (p *Proxy) pass(serverToClient bool) {
 	p.mu.Lock()
 	gate := p.gate
+	serverGate := p.serverGate
 	p.mu.Unlock()
-	if gate == nil {
-		return
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-p.done:
+		}
 	}
-	select {
-	case <-gate:
-	case <-p.done:
+	if serverToClient && serverGate != nil {
+		select {
+		case <-serverGate:
+		case <-p.done:
+		}
 	}
 }
 

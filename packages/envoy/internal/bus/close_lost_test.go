@@ -51,14 +51,17 @@ func gatedClient(t *testing.T, hold *lifeEndHold) (*Client, *testnats.ReplyHold)
 	return client, relay
 }
 
-// connectionCloses is nats.go's answer for a request whose connection closed or is closing under
-// it, one row each, and one of them wrapped as a caller wraps it: the classes bindRequest names a
-// lost request on a running client (closedUnder).
+// connectionCloses is nats.go's answer for a request whose connection closed, is closing or was
+// forced to reconnect under it, one row each, and one of them wrapped as a caller wraps it: the
+// classes bindRequest names a lost request on a running client (closedUnder). nats.ErrDisconnected
+// is nats.go v1.55.0's answer for a request a forced reconnect cut off (newRequest, nats.go
+// :4962-4966).
 var connectionCloses = []error{
 	nats.ErrConnectionClosed,
 	nats.ErrConnectionDraining,
 	nats.ErrDrainTimeout,
 	nats.ErrNoServers,
+	nats.ErrDisconnected,
 	fmt.Errorf("nats: the reply's channel was closed: %w", nats.ErrConnectionClosed),
 }
 
