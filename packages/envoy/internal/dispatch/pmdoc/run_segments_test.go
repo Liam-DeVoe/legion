@@ -6,27 +6,33 @@ import (
 	"time"
 )
 
-// noOneSpelling is a paragraph no one spelling of the writer reads back: a `b` before an
-// emphasised tilde, whose emphasis opens only after the `b` is written as a reference (the
-// flanking spellings), then, after a space, a strong `~\~`, an emphasised `b` and two asterisks,
-// whose tilde before the delimiter run the browser editor reads beside it only as `\~` (the
-// tildeBackslash spellings of lastResorts, none of which writes a reference). Each half reads back
-// in a spelling of its own, so the run is written in one for each.
-const noOneSpelling = "&#98;*~* **\\~\\\\\\~***b***\n"
+// noOneSpelling is a paragraph no one spelling of the writer reads back. Its first half, a tilde
+// and a backslash before a letter beside an emphasised tilde, reads back only with that letter
+// written as a reference and the backslash before it as `\\` (the flanking spellings of
+// lastResorts); its second half, an emphasised letter and a struck emphasised tilde, only with the
+// emphasis closed and opened again inside the strikethrough (marksReopened), which no spelling
+// writes with references. Each half reads back in a spelling of its own, so the run is written in
+// one for each.
+const noOneSpelling = "p &#126;\\\\&#97;*&#126;* a*a*~*~*~\n"
 
 // deepestWholeSpelling is how many readers, from the first, the writing of nodes, a paragraph's
 // inline nodes, that reads back under the most of them does: its first writing and each spelling
-// inlineWithEscapes writes a run in, each written whole.
-func deepestWholeSpelling(nodes []*Node) int {
+// inlineWithEscapes writes a run in, each written whole, finalResorts' only where final says so.
+func deepestWholeSpelling(nodes []*Node, final bool) int {
 	r := &renderer{}
 	context := inlineContext{startsLine: true}
-	needs := runNeedsOf(nodes, context, r.writeInlineRun(nodes, "", context, runSpelling{}))
+	fused := r.writeInlineRun(nodes, "", context, runSpelling{})
+	needs := runNeedsOf(nodes, context, fused, r.misflanked(0))
 	labels, signature := referencedLabels(nodes), inlineSignature(nodes)
 	deepest := readsBackUnder(r.b.Bytes(), "", labels, signature)
 	spellings := runSpellings(needs)
-	for _, spelling := range append(spellings, lastResorts(needs, spellings)...) {
+	every := append(spellings, lastResorts(needs, spellings)...)
+	if final {
+		every = append(every, finalResorts(needs, nestsMarks(nodes))...)
+	}
+	for _, spelling := range every {
 		r.b.Reset()
-		if r.writeInlineRun(nodes, "", context, spelling) && spelling.order != marksAsWritten {
+		if r.writeInlineRun(nodes, "", context, spelling) && spelling.order != marksAsWritten && !spelling.flankingFused {
 			continue
 		}
 		deepest = max(deepest, readsBackUnder(r.b.Bytes(), "", labels, signature))
@@ -42,7 +48,7 @@ func TestARunNoOneSpellingReadsBackIsWrittenInOneForEachSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse(%q) = %v", noOneSpelling, err)
 	}
-	if deepest := deepestWholeSpelling(asWritten(doc).Children[0].Children); deepest != 0 {
+	if deepest := deepestWholeSpelling(asWritten(doc).Children[0].Children, true); deepest != 0 {
 		t.Fatalf("a whole spelling of %q reads back under %d readers, want none: the run proves nothing", noOneSpelling, deepest)
 	}
 	rendered, err := Render(doc)
@@ -55,7 +61,7 @@ func TestARunNoOneSpellingReadsBackIsWrittenInOneForEachSegment(t *testing.T) {
 	if _, err := ParseForWrite(rendered, nil); err != nil {
 		t.Fatalf("an upload of Render(Parse(%q)) = %q is refused: %v", noOneSpelling, rendered, err)
 	}
-	const want = "&#98;*&#126;* **\\~\\\\\\~***b***\n"
+	const want = "p &#126;\\\\&#97;*&#126;* a*a*~~*&#126;*~~\n"
 	if rendered != want {
 		t.Errorf("Render(Parse(%q)) = %q, want %q", noOneSpelling, rendered, want)
 	}
@@ -85,7 +91,7 @@ func TestAnEditBesideARunWrittenBySegmentsKeepsEveryOtherBlocksBytes(t *testing.
 		block          int
 	}{
 		{"an edit of the block before the run", "Words before it, edited.\n\n" + noOneSpelling + after, 0},
-		{"an edit inside the run", before + "&#98;*~* and **\\~\\\\\\~***b***\n" + after, 1},
+		{"an edit inside the run", before + "p &#126;\\\\&#97;*&#126;* and a*a*~*~*~\n" + after, 1},
 	}
 	for _, edit := range edits {
 		next, err := Parse(edit.markdown)
@@ -122,7 +128,7 @@ func TestAnEditBesideARunWrittenBySegmentsKeepsEveryOtherBlocksBytes(t *testing.
 // the run whole only where every group reads back. The run's address and www text give it more
 // spellings, each of which changes the bytes of the one group that holds them.
 func TestALargeRunNoOneSpellingReadsBackIsReadBackAFewTimesItsLength(t *testing.T) {
-	markdown := "&#98;*~* mail a@b.cc or see www.example.com " + strings.Repeat("plain words ", 25000) + "**\\~\\\\\\~***b***\n"
+	markdown := "p &#126;\\\\&#97;*&#126;* mail a@b.cc or see www.example.com " + strings.Repeat("plain words ", 25000) + "a*a*~*~*~\n"
 	doc, err := Parse(markdown)
 	if err != nil {
 		t.Fatalf("Parse = %v", err)

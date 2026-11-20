@@ -40,6 +40,9 @@ type renderer struct {
 	// segments: where its cuts are written, and the spelling each segment is written in where the
 	// run is written by segments.
 	segments *runSegments
+	// markRuns is each delimiter run the marks of the inline run being written wrote beside a text
+	// (markRun), for the run's first writing to be judged by (misflanked).
+	markRuns []markRun
 	// footnoteLineAt is where the last footnote definition's first line begins in the markdown,
 	// and footnoteLabel is its label as written, so that the line is read after a reference to it.
 	footnoteLineAt int

@@ -417,7 +417,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	// before the write (weighedFrom is nil where that tree was outside the schema, and then no text
 	// of it excuses anything). A write that leaves the text as it was stores nothing to judge.
 	if refuse != nil && !unchanged {
-		verdict, err := pmdoc.RefuseMisreadStored(weighedFrom, beforeMarkdown, tree.Node(), markdown)
+		verdict, err := pmdoc.RefuseMisreadStored(weighedFrom, judgedText(beforeMarkdown), tree.Node(), judgedText(markdown))
 		if err != nil {
 			return err
 		}

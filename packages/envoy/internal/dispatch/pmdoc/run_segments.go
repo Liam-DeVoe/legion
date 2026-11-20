@@ -166,8 +166,9 @@ type segmentReading struct {
 }
 
 // segmentRow is what one writing of a run read back as: its spelling, the index in readings of
-// what each group read back as, and, for a spelling that orders marks otherwise than as written,
-// each segment it fused two delimiter runs in, where it is never kept.
+// what each group read back as, and, for a spelling that orders marks otherwise than as written
+// and is not one of finalResorts' (flankingFused), each segment it fused two delimiter runs in,
+// where it is never kept.
 type segmentRow struct {
 	spelling runSpelling
 	readings []int
@@ -383,7 +384,7 @@ func (s *runSegments) read(written []byte, spelling runSpelling, whole map[[sha2
 		}
 	}
 	row := segmentRow{spelling: spelling, readings: make([]int, len(s.groups))}
-	if spelling.order != marksAsWritten {
+	if spelling.order != marksAsWritten && !spelling.flankingFused {
 		for segment, fused := range s.fused {
 			if fused {
 				row.fused = append(row.fused, segment)
