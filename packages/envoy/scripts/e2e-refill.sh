@@ -150,12 +150,13 @@ readonly boot_count=40000
 # minute rather than five); that record expires this long after the recreate; NATS is stopped this
 # long from the watcher's finding, well under the 10 s the listener's JetStream requests wait, so
 # the read of the new bucket comes after that expiry; the longer shape writes same and chg this many
-# times more.
+# times more; a shape whose run missed that window runs again, up to this many runs in all.
 readonly live_count=1000
 readonly live_ttl_seconds=60
 readonly live_renewed_expiry_ms=3500
 readonly live_stop_seconds=4
 readonly live_pads=2
+readonly live_attempts=3
 readonly outage_count=300
 readonly outage_api_count=3
 # The listener's stale bound: 2 minutes, or half a bucket's MaxAge when that is shorter (the session
@@ -617,11 +618,12 @@ run_interrupt() {
 # before the read delivers its renewal: the copy must keep it. A listener that finds a recreate only
 # by the tick's Check fails both shapes.
 live_shape() {
-  local shape=$1 pads=$2 n=$live_count pad offset line now_ms ready_ms probe_ms recreate_ms
+  local shape=$1 pads=$2 attempt=$3 n=$live_count pad offset line now_ms ready_ms probe_ms recreate_ms
   local renewed_from renewed_to
   local before="same=${n}:1,chg=${n}:1,hb=1:1" after="new=${n}:2,chg=${n}:2,same=${n}:1,hb=1:2"
   local universe="same=${n},chg=${n},new=${n},hb=1"
-  fresh "recreate-live/${shape}"
+  # Each run of a shape has a directory of its own, so a run again judges its own polls alone.
+  fresh "recreate-live/${shape}/run-${attempt}"
   "$rig" seed -nats "$nats_url" -create -buckets sessions -ttl "${live_ttl_seconds}s" -sets "" >&2
   "$rig" seed -nats "$nats_url" -create -buckets interests -sets "$universe" >&2
   start_listener
@@ -670,12 +672,26 @@ live_shape() {
     -renewed-from-ns "$renewed_from" -renewed-to-ns "$renewed_to" -ttl "${live_ttl_seconds}s" -shape "$shape")"
 }
 
+# live_shape_seen runs one shape until a run of it sees the window it is meant to observe, at most
+# live_attempts times. A run that missed it observed nothing of the listener: in CI run 44822857211
+# the read of the new bucket completed 1.0 s after the recreate, before NATS's stop held it back,
+# so hb's old record expired after the read and no poll could fall in between. A run that saw the
+# window and failed is never run again.
+live_shape_seen() {
+  local shape=$1 pads=$2 attempt
+  for ((attempt = 1; attempt <= live_attempts; attempt++)); do
+    live_shape "$shape" "$pads" "$attempt"
+    [[ "$phase_result" == INVALID* ]] || return 0
+    say "recreate-live (${shape}): run ${attempt} of ${live_attempts} missed its window: ${phase_result#INVALID }"
+  done
+}
+
 run_recreate_live() {
   local phases=()
-  live_shape shorter 0
+  live_shape_seen shorter 0
   phases+=("shorter old stream: ${phase_result}")
   say "${phases[-1]}"
-  live_shape longer "$live_pads"
+  live_shape_seen longer "$live_pads"
   phases+=("longer old stream: ${phase_result}")
   say "${phases[-1]}"
   verdict recreate-live "$(combine "${phases[@]}")"

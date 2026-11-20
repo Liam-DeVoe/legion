@@ -125,9 +125,12 @@ Each scenario prints `CHECK <scenario>: PASS` after a line naming what it saw, o
 `CHECK <scenario>: FAIL: <reason>`. A run that missed the window it was there to observe (no poll
 inside the read, a scan that finished before the interruption, a read that began before the bucket
 was filled, a self-health tick inside the read of `recreate-live`) is a `FAIL` naming that window,
-never a pass. It exits 0 when every check passes and 1 on a `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
+never a pass. A `recreate-live` shape whose run missed its window runs again, up to three runs in
+all, each in `recreate-live/<shape>/run-<n>`, since that window rests on the runner's timing; a
+run that saw its window and failed runs no more. It exits 0 when every check passes and 1 on a
+`FAIL`. `--listener-bin` and `--natsd-bin` run other builds, such as the merge base's for a
+negative control. The evidence (each scenario's listener and NATS logs and every poll, one JSON
+line each) goes to `--out` (default
 `$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
 ports. A full run takes about ten minutes; the `envoy-e2e-local` job of `ci.yaml` runs it.
 
