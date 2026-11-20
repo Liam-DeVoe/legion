@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -563,7 +565,10 @@ func (kv KeyValue) Status(ctx context.Context) (nats.KeyValueStatus, error) {
 // A panic in call reaches the caller as a panic of its own while the caller still waits, so a
 // caller that recovers a panic in its call (cistore's batch writer) still does when call runs on
 // another goroutine; once the caller has stopped waiting, it is a panic of call's own goroutine,
-// as it is for any goroutine.
+// as it is for any goroutine. The panic reaches the caller with the stack of call's goroutine at
+// the panic, which the caller's own trace does not show, and the caller logs that stack at ERROR
+// before it panics again with the value call panicked with, so a caller that recovers it reads the
+// value it always read.
 func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answered bool, err error) {
 	if ctx.Done() == nil {
 		value, err = call()
@@ -576,6 +581,7 @@ func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answe
 		value    T
 		err      error
 		panicked any
+		stack    []byte
 	}
 	answers := make(chan answer, 1)
 	var (
@@ -588,10 +594,11 @@ func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answe
 			if panicked == nil {
 				return
 			}
+			stack := debug.Stack()
 			mu.Lock()
 			gone := left
 			if !gone {
-				answers <- answer{panicked: panicked}
+				answers <- answer{panicked: panicked, stack: stack}
 			}
 			mu.Unlock()
 			if gone {
@@ -601,10 +608,18 @@ func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answe
 		value, err := call()
 		answers <- answer{value: value, err: err}
 	}()
+	// raise panics again, in the caller, with the value call panicked with, once the stack of
+	// call's own goroutine is logged.
+	raise := func(got answer) {
+		slog.Error("envoy a call bound to its caller's context panicked",
+			slog.String("panic", fmt.Sprint(got.panicked)),
+			slog.String("stack", string(got.stack)))
+		panic(got.panicked)
+	}
 	select {
 	case got := <-answers:
 		if got.panicked != nil {
-			panic(got.panicked)
+			raise(got)
 		}
 		return got.value, true, got.err
 	case <-ctx.Done():
@@ -614,7 +629,7 @@ func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answe
 		select {
 		case got := <-answers:
 			if got.panicked != nil {
-				panic(got.panicked)
+				raise(got)
 			}
 		default:
 		}

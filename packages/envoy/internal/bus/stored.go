@@ -268,9 +268,11 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders. The
 // request is bound to the life of the connection it is sent on (Request), so one the connection's
 // loss cut off answers ErrConnectionLost the moment nats.go reports the loss. One made while the
-// connection is down waits for it first on a client whose callers hold nothing, and answers
-// ErrConnectionLost at once on the session consumers' client, whose callers release what they hold
-// before they wait (connForRequest).
+// connection is down waits for it first for a caller that holds nothing, and answers
+// ErrConnectionLost at once, unsent, for one that holds a lock across it - every caller on the
+// session consumers' client, and one that marks its context so (WithLockHeld): the handover's
+// reads of a role's kept lane under the role's guard - which releases what it holds before it
+// waits (connForRequest).
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc

@@ -27,7 +27,7 @@ func bindJetStream(c *Client, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, bound := js.(boundJetStream); c == nil || bound {
 		return js
 	}
-	return boundJetStream{JetStreamContext: js, client: c, open: context.Background()}
+	return boundJetStream{JetStreamContext: js, client: c}
 }
 
 // boundJetStream is a legacy JetStream context whose account, stream, consumer, bucket-open,
@@ -54,7 +54,8 @@ type boundJetStream struct {
 	client *Client
 	// open is the context its bucket opens (KeyValue, CreateKeyValue) are bound with: nats.go's
 	// KeyValue and CreateKeyValue take no options, so the open passes its caller's context here
-	// (openWithin). context.Background when the wrapper is built (bindJetStream).
+	// (openWithin). nil for a wrapper no open has bound (bindJetStream), whose opens are made
+	// under context.Background (openContext).
 	open context.Context
 }
 
@@ -149,14 +150,24 @@ func (js boundJetStream) GetLastMsg(name, subject string, opts ...nats.JSOpt) (*
 	})
 }
 
+// openContext is the context a bucket open is bound with: the open's own (openWithin), and
+// context.Background for a wrapper no open has bound, made here at the call, as callContext makes
+// it for a call whose options carry none.
+func (js boundJetStream) openContext() context.Context {
+	if js.open == nil {
+		return context.Background()
+	}
+	return js.open
+}
+
 func (js boundJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
-	return RequestBounded(js.open, js.client, func() (nats.KeyValue, error) {
+	return RequestBounded(js.openContext(), js.client, func() (nats.KeyValue, error) {
 		return js.JetStreamContext.KeyValue(bucket)
 	})
 }
 
 func (js boundJetStream) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
-	return RequestBounded(js.open, js.client, func() (nats.KeyValue, error) {
+	return RequestBounded(js.openContext(), js.client, func() (nats.KeyValue, error) {
 		return js.JetStreamContext.CreateKeyValue(cfg)
 	})
 }

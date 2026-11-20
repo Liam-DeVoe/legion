@@ -26,9 +26,13 @@ func (c *Client) AwaitingConnectionForTest() bool { return c.awaitingFirstConnec
 // that its callers make within the probe's budget answer "unknown", as a read nats.go's lock kept
 // waiting past heldLockBudget does, while down reports true, until the function it answers takes
 // the seam out; a caller that holds a lock reads that as the connection down. Those reads are
-// LostNow's on any client, and on a client whose callers all hold a lock (withLossAtOnce) also
-// connForRequest's and a request's own (requestLife, closedUnder); a life's own goroutine reads past
-// it. It is for tests alone: it is the slow read a loaded box can give, made on demand.
+// LostNow's and the wait for a connection of a call whose caller holds a lock (connForRequest,
+// connForCall) on any client - a client whose callers all hold a lock (withLossAtOnce), and a call
+// made under a context marked so (WithLockHeld) - and, on a client whose callers all hold a lock, a
+// request's own reads (requestLife, closedUnder); a life's own goroutine reads past it. A row that
+// means one of those reads keys down to it (the caller's frames, say) rather than to a count of
+// reads, since a marked call adds reads of its own. It is for tests alone: it is the slow read a
+// loaded box can give, made on demand.
 func (c *Client) ProbeReadsDownForTest(down func() bool) (restore func()) {
 	previous := c.probeDown.Swap(&down)
 	return func() { c.probeDown.Store(previous) }

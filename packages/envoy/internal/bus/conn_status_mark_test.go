@@ -26,7 +26,8 @@ var markedCalls = []struct {
 		return err
 	}},
 	// A stored publish (the cursor write of a role's handover, PublishCursorAt; the kept copies'
-	// writes): publishJetStreamOn and publishStoredRaw wait for the connection in connForCall.
+	// writes): publishJetStreamOn waits for the connection in connForCall and publishStoredRaw in
+	// connForRequest, and each answers the loss at once for a marked caller.
 	{"stored publish", func(ctx context.Context, client *Client, _ KeyValue) error {
 		subject := contracts.AgentSubject(contracts.NoProject, "ses_marked_publish")
 		return client.PublishStoredAs(ctx, subject, contracts.Envelope{Topic: subject, Source: "test", DedupeKey: "marked"}, "marked-publish")
@@ -182,8 +183,8 @@ func TestAMarkedStoredPublishWhoseAnswerTheLossTookAnswersAtOnce(t *testing.T) {
 	hold.Cut()
 	select {
 	case err := <-answered:
-		if !errors.Is(err, ErrConnectionLost) {
-			t.Fatalf("the publish made under a lock, whose answer the loss took, answered %v, want ErrConnectionLost", err)
+		if !errors.Is(err, ErrConnectionLost) || !errors.Is(err, ErrUnacknowledged) {
+			t.Fatalf("the publish made under a lock, whose answer the loss took, answered %v, want ErrConnectionLost wrapped as ErrUnacknowledged, a publish that may have landed", err)
 		}
 	case <-waited:
 		t.Fatal("the publish made under a lock waited for the reconnect, with its caller's lock held")

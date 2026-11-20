@@ -227,19 +227,19 @@ func lockHeld(ctx context.Context) bool {
 // has exited and behind every callback queued before it, the reconnect hooks of the reconnect
 // before among them: a request a reconnect hook made would wait for its own hook to return before
 // the callback could end it.
-func Request[T any](ctx context.Context, c *Client, send func(context.Context) (T, error)) (T, error) {
+func Request[T any](ctx context.Context, c *Client, send func(context.Context) (T, error)) (value T, err error) {
 	bound, finish := c.bindRequest(ctx)
 	if bound.Err() != nil && ctx.Err() == nil {
-		var none T
 		err := finish(context.Cause(bound))
 		var lost *connectionLost
 		if errors.As(err, &lost) {
 			lost.unsent = true
 		}
-		return none, err
+		return value, err
 	}
-	value, err := send(bound)
-	return value, finish(err)
+	// finish is deferred, so a send that panics still stops the request's wait on its life.
+	defer func() { err = finish(err) }()
+	return send(bound)
 }
 
 // RequestBounded is Request for call, a request whose nats.go call takes no context (a legacy KV

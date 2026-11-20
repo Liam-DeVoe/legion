@@ -352,8 +352,10 @@ var errKVUnanswered = errors.New("cistore: the KV call did not answer")
 // write it conflicts, and if before, the retry's fresh read finds the batch's observations already
 // there and writes nothing; one given up on at ctx's end has no retry, and write says why its
 // landing late is safe too. A call that panics re-panics in its caller, as it would without the
-// goroutine, so the batch fails (writeBatch); one that panics after its caller has moved on is
-// logged through logger.
+// goroutine, so the batch fails (writeBatch); one whose own code panics after its caller has moved
+// on is logged through logger. The KV request inside call is bound under ctx (bus.Bounded), so a
+// panic in that request once ctx has ended is a panic of bus.Bounded's own goroutine, which no
+// recover here reaches, and it ends the process as any goroutine's panic does.
 func kvCall[T any](ctx context.Context, logger *logging.Logger, rewatched <-chan struct{}, call func() (T, error)) (T, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {

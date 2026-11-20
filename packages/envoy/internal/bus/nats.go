@@ -2336,19 +2336,23 @@ func unacknowledged(err error, mayHold bool) error {
 // stored. On a client still running that loss answers ErrConnectionLost, a close of the connection
 // among the losses (boundJetStream, closedUnder). A publish under a message id whose caller reads no
 // verdict (once false) is sent again on the connection that replaces it, within ctx
-// (Reconnected), since the stream stores it once under that id; on a client every caller of which
-// retries a lost request itself (withLossAtOnce) it answers the loss instead. The closed
-// connection's own error comes back from a client that was stopped (lostOrClosed), and from the
-// JetStream context of a connection the client replaced as the send began, which nats.go refuses
-// before it writes anything (nats.go v1.53.1 nats.go:4573-4576), and such a publish is sent again
-// on the connection connForRequest serves: the replacement, or the one Drain still drains. That is
-// ensureConnWithContext's wait on every client but one that answers a loss at once
+// (Reconnected), since the stream stores it once under that id, except where its caller holds a
+// lock across it: on a client every caller of which retries a lost request itself
+// (withLossAtOnce), and for a publish made under a context its caller marks as made under a lock
+// (WithLockHeld), it answers the loss instead, so the caller releases what it holds before it
+// waits. The closed connection's own error comes back from a client that was stopped
+// (lostOrClosed), and from the JetStream context of a connection the client replaced as the send
+// began, which nats.go refuses before it writes anything (nats.go v1.53.1 nats.go:4573-4576), and
+// such a publish is sent again on the connection connForRequest serves: the replacement, or the
+// one Drain still drains. That is ensureConnWithContext's wait for every caller but one that
+// holds a lock across the publish - every caller on a client that answers a loss at once
 // (withLossAtOnce), whose callers hold a session's lock, the shared stream read or a relay's
-// restart turn: there a replacement that is down, nats.go reconnecting it or having closed it in
-// turn, answers the loss at once (ErrConnectionLost, unsent), so the caller releases what it holds
-// before it waits, and its retry dials a closed one with nothing held (Reconnected); a replacement
-// that is up is sent the publish again. The session resume record is such a publish, under a
-// message id each write draws for its own sends (SessionConsumers.recordResumeFloorAt).
+// restart turn, and a caller that marks its context (WithLockHeld): there a replacement that is
+// down, nats.go reconnecting it or having closed it in turn, answers the loss at once
+// (ErrConnectionLost, unsent), so the caller releases what it holds before it waits, and its retry
+// dials a closed one with nothing held (Reconnected); a replacement that is up is sent the publish
+// again. The session resume record is such a publish, under a message id each write draws for its
+// own sends (SessionConsumers.recordResumeFloorAt).
 //
 // Every other publish is sent once and answers the error. One with no message id, whatever its
 // caller asks, since nothing would let the stream tell a second send of one that landed from a
