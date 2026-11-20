@@ -18,8 +18,8 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/broker-client/token-client";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/cipher-client/token-client";
 import {
   recordTimers,
   type TimerOnTheWay,
@@ -384,10 +384,10 @@ async function untilOrDump(what: string, probe: () => boolean, dump: () => strin
 }
 
 /** The roots of the program's own code the e2e rows record the timers of: this package's sources
- *  and the token client's (`@legion/broker-client`), whose trades the credential waits on. */
+ *  and the token client's (`@legion/cipher-client`), whose trades the credential waits on. */
 const programRoots = [
   path.join(import.meta.dir, ".."),
-  path.dirname(Bun.resolveSync("@legion/broker-client/token-client", import.meta.dir)),
+  path.dirname(Bun.resolveSync("@legion/cipher-client/token-client", import.meta.dir)),
 ];
 
 /** A row's own step in the record it shares with the program's timers. */

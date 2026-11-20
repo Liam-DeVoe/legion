@@ -111,7 +111,7 @@ describe("the script and style pattern", () => {
  * replaced it to the same output. */
 const LOOK_BEHIND_JWS = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 
-/** The JWS shapes the rows of this package and broker-client's build, each with fixed characters
+/** The JWS shapes the rows of this package and cipher-client's build, each with fixed characters
  * of the alphabets they draw from: a DPoP proof whose segments are fixture secrets
  * (`<prefix>-<letters>`), an RS256 subject of base64url segments, one of a hex segment and `sig`,
  * a token of one segment, and one of two. */

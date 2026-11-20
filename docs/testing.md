@@ -274,7 +274,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 `bun test` runs every file of a package in one process, so what one file leaves behind is what the next file reads:
 a directory, an environment variable, a port, a container, a cache.
 `@legion/test-fixtures` holds the shared pieces, and nine packages depend on it:
-broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared and proof-editor.
+cipher-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared and proof-editor.
 The one Bun package that does not is the fixture package itself, whose tests import its sources by relative path.
 
 A Bun test waits and is guarded as R2 and R5 above say:
@@ -524,7 +524,7 @@ With a long test name and a socket under it, or under a directory made from it (
   `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long one, as long as the `TMPDIR` a Legion role is told, so that its test proves sockets still bind where a role runs;
   a short directory would take the proof away.
   The once-per-binary directories a package's `TestMain` owns (the build directories of `internal/daemon`, `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon module;
-  the sign-in secret directory of `internal/broker/config` and the certificate directory of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget, and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that `TestMain`.
+  the sign-in secret directory of `internal/cipher/config` and the certificate directory of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget, and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that `TestMain`.
 
 - A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`, never a bare `os.Setenv` or `os.Unsetenv`.
   `t.Setenv` puts back what the process held when the test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel test runs only beside other parallel tests, so no test can read a value another test changed.

@@ -184,7 +184,7 @@ export function recordTimers(
  * write it ship there, and a shipped package cannot import this private one. This package depends
  * on no workspace package, and every other Bun package of `packages/` devDepends on it. An import
  * of `jsonLineRecord` here would make it depend on `@legion/envoy-client`, and through that on
- * `@legion/contracts` and `@legion/broker-client`: a cycle with each of the three. The writer could
+ * `@legion/contracts` and `@legion/cipher-client`: a cycle with each of the three. The writer could
  * be shared only from a package of its own, published as a runtime dependency of
  * `@legion/envoy-client`, for one write that drops its failure.
  */
