@@ -812,10 +812,17 @@ func (c *Client) JS() nats.JetStreamContext {
 }
 
 // Connected reports whether the client currently has a live NATS connection.
+//
+// It reads the connection under the client's lock (Connection) and its status with that lock
+// released. The status read waits for nats.go's connection lock, which nats.go holds through a
+// reconnect's dial and handshake. Held across that read, the client's lock kept every call that
+// takes it waiting until the attempt ended: the wait of a send for a connection
+// (ensureConnWithContext), Connection and JS, and the reads of the server's refusals. So a
+// Connected call made during a handshake waits for the attempt, and no other call waits behind it.
+// The keeper's pass, an outbox batch's check and a /healthz read call it.
 func (c *Client) Connected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+	conn := c.Connection()
+	return conn != nil && conn.Status() == nats.CONNECTED
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1257,14 +1264,22 @@ func (c *Client) CoreSubOK() bool {
 }
 
 func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
-	c.mu.Lock()
-	connOK := c.Conn != nil && c.Conn.Status() != nats.CLOSED
-	c.mu.Unlock()
+	connOK := c.connOpen()
 	c.subscriptionsMu.Lock()
 	subscription := &c.subscriptions[transport]
 	subOK := subscription.active != nil && subscription.active.IsValid() && !subscription.refused
 	c.subscriptionsMu.Unlock()
 	return connOK && subOK
+}
+
+// connOpen reports whether the client holds a connection nats.go has not closed. It reads the
+// connection under the client's lock and its status with that lock released, as Connected does:
+// the status read waits for nats.go's connection lock, which a reconnect's handshake holds, and no
+// lock of the client's is held across it. SubOK and CoreSubOK read it for a /healthz answer, and a
+// recovery reads it each pass (subscriptionsHealthy).
+func (c *Client) connOpen() bool {
+	conn := c.Connection()
+	return conn != nil && conn.Status() != nats.CLOSED
 }
 
 // subscriptionRefusal reads the server's refusal of a subscription: the subject, the queue group

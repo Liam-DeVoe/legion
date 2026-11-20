@@ -77,14 +77,14 @@ func Reconnecting(err error) error {
 	return err
 }
 
-// namedRequests is a legacy JetStream context whose requests name their error (named): each method
-// below sends one or more JetStream API requests on the context's connection, and answers an
+// namedRequests is a legacy JetStream context whose requests name their error (namedWith): each
+// method below sends one or more JetStream API requests on the context's connection, and answers an
 // error it returns while nats.go connects or reconnects that connection as the ErrReconnecting it
 // is. It is the one place this package names the error of such a request, so no call through the
 // context names it again. Every other method is the context's own: a publish names its own error
 // (Client.refused, window.unsent), and ConsumerNames answers no error.
 //
-// conn is the connection the context sends on, whose state named reads.
+// conn is the connection the context sends on, whose state namedWith reads.
 type namedRequests struct {
 	nats.JetStreamContext
 	conn *nats.Conn
@@ -122,9 +122,35 @@ func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamCon
 	return namedRequests{JetStreamContext: js, conn: conn}
 }
 
-// named is err, a request's answer, named by the state of the context's connection (namedOn). A
-// legacy context's request takes no context, so the state is read at once on this goroutine.
-func (j namedRequests) named(err error) error { return namedOn(context.Background(), j.conn, err) }
+// namedWith is err, the answer of a request j made with opts, named by the state of j's connection
+// (namedOn). The state is read within the request's own context (requestContext): the caller's
+// bound on the request bounds the read too. A request made with no nats.Context, which only its
+// context's MaxWait bounds, reads the state at once on the caller's goroutine.
+func namedWith[O any](j namedRequests, err error, opts []O) error {
+	if err == nil {
+		return nil
+	}
+	return namedOn(requestContext(opts), j.conn, err)
+}
+
+// requestContext is the context nats.go makes a request with opts under: the one the last
+// nats.Context among opts gives, since nats.go applies the options in order, and
+// context.Background() when they give none. The callers that bound a legacy JetStream request by
+// their own deadline give it that way: the takeover and kept-lane reads (TakeoverRecords,
+// KeptRoleLanes), the leader read of a key (KeyValue.GetFromLeader), the stream ensure's requests
+// (requestsUnder), and callers outside this package, such as the listener's /healthz read of its
+// durable.
+func requestContext[O any](opts []O) context.Context {
+	for i := len(opts) - 1; i >= 0; i-- {
+		if given, ok := any(opts[i]).(nats.ContextOpt); ok {
+			if given.Context == nil {
+				return context.Background()
+			}
+			return given.Context
+		}
+	}
+	return context.Background()
+}
 
 // namedOn is err, the answer of a request made on conn, as the ErrReconnecting it is when the
 // request was made while nats.go connects or reconnects conn: nats.go's refusal of its send
@@ -148,9 +174,10 @@ func (j namedRequests) named(err error) error { return namedOn(context.Backgroun
 // The read of conn's state waits for nats.go's connection lock, so it is made within ctx
 // (readWithin). A read that has not answered by then was made while nats.go holds the lock through
 // a reconnect's handshake, and err is named the ErrReconnecting it is, as for a read that answers
-// that nats.go reconnects conn. A caller whose request took a ctx passes it: requestConfirmed, and
-// streamRead.wait, which names ctx's own end. A legacy JetStream context's request takes none, so
-// named passes context.Background(), and the read is made at once on the caller's goroutine.
+// that nats.go reconnects conn. Each caller passes the context its request was made under:
+// requestConfirmed its own, streamRead.wait the one whose end it names, and a legacy JetStream
+// context's request the one its nats.Context option gives (namedWith). A request made with none
+// passes context.Background(), and the read is then made at once on the caller's goroutine.
 //
 // It is the one rule every place that names a request's error follows: a legacy JetStream context
 // (namedRequests), a request this package builds itself (Client.requestConfirmed), and a call
@@ -167,65 +194,67 @@ func namedOn(ctx context.Context, conn *nats.Conn, err error) error {
 
 func (j namedRequests) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	info, err := j.JetStreamContext.AddStream(cfg, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	info, err := j.JetStreamContext.UpdateStream(cfg, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	info, err := j.JetStreamContext.StreamInfo(stream, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) PurgeStream(stream string, opts ...nats.JSOpt) error {
-	return j.named(j.JetStreamContext.PurgeStream(stream, opts...))
+	return namedWith(j, j.JetStreamContext.PurgeStream(stream, opts...), opts)
 }
 
 func (j namedRequests) GetLastMsg(stream, subject string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
 	message, err := j.JetStreamContext.GetLastMsg(stream, subject, opts...)
-	return message, j.named(err)
+	return message, namedWith(j, err, opts)
 }
 
 func (j namedRequests) AddConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
 	info, err := j.JetStreamContext.AddConsumer(stream, cfg, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
 	info, err := j.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
 	info, err := j.JetStreamContext.ConsumerInfo(stream, consumer, opts...)
-	return info, j.named(err)
+	return info, namedWith(j, err, opts)
 }
 
 func (j namedRequests) DeleteConsumer(stream, consumer string, opts ...nats.JSOpt) error {
-	return j.named(j.JetStreamContext.DeleteConsumer(stream, consumer, opts...))
+	return namedWith(j, j.JetStreamContext.DeleteConsumer(stream, consumer, opts...), opts)
 }
 
 // KeyValue looks the bucket up: a STREAM.INFO of its stream, after a check of the server's version.
+// The call takes no options, so it is made with no nats.Context.
 func (j namedRequests) KeyValue(bucket string) (nats.KeyValue, error) {
 	kv, err := j.JetStreamContext.KeyValue(bucket)
-	return kv, j.named(err)
+	return kv, namedWith[nats.JSOpt](j, err, nil)
 }
 
 // CreateKeyValue creates the bucket: after a check of the server's version, the account's
-// JetStream info, then its stream's create.
+// JetStream info, then its stream's create. The call takes no options, so it is made with no
+// nats.Context.
 func (j namedRequests) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
 	kv, err := j.JetStreamContext.CreateKeyValue(cfg)
-	return kv, j.named(err)
+	return kv, namedWith[nats.JSOpt](j, err, nil)
 }
 
 // Subscribe binds or creates the subscription's consumer: a CONSUMER.INFO, and a CONSUMER.CREATE
 // when it creates one.
 func (j namedRequests) Subscribe(subject string, handler nats.MsgHandler, opts ...nats.SubOpt) (*nats.Subscription, error) {
 	sub, err := j.JetStreamContext.Subscribe(subject, handler, opts...)
-	return sub, j.named(err)
+	return sub, namedWith(j, err, opts)
 }
 
 // reconnectWaitEnded is the error of a wait for a connection nats.go is reconnecting whose ctx

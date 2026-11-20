@@ -228,3 +228,159 @@ func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *te
 		t.Fatalf("the core publish made during the held handshake was called %d time(s) after the hold's release, want none", n)
 	}
 }
+
+// A read of the client's connection state holds no lock of the client's while it waits for
+// nats.go's connection lock, so a bounded send made beside it during a reconnect's handshake
+// answers at its bound. Client.Connected, SubOK and a recovery's subscriptionsHealthy each read the
+// connection's status, which waits for nats.go's lock, and each held the client's lock across that
+// read. Every send takes the client's lock to read its connection (ensureConnWithContext,
+// Connection), so a keeper pass, a /healthz read or a recovery made during a handshake held every
+// bounded send until the attempt ended, at the client's connect timeout (connectTimeout, 5 s).
+//
+// The row starts the three reads while one handshake is held. Once they have been kept waiting for
+// nats.go's lock (testnats.RequireLockHeld), it makes three bounded sends at once, each under a ctx
+// bounded at 300 ms: ensureConnWithContext, Bounded on the connection Connection reads, and
+// LastStoredMessage. Each answers `bus: NATS is reconnecting: context deadline exceeded` once its
+// bound has passed, and not before, within the 300 ms bound and a margin of 700 ms (answerByName).
+// The Bounded call never starts.
+//
+// The controls: before the hold the client reads its connection as connected; the three reads are
+// still waiting when the sends have answered, so the sends answered beside them; and each read
+// answers once the hold is released. The negative control is the three reads as they were, with
+// the client's lock held across the status read: no send answers within the bound and the margin.
+func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) {
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	if !client.Connected() || !client.subscriptionsHealthy() {
+		t.Fatal("control: before the hold the client reads its connection as not live")
+	}
+
+	hold.HoldReconnect(t, conn)
+	reads := []struct {
+		what string
+		read func() bool
+	}{
+		{what: "Connected", read: client.Connected},
+		{what: "SubOK", read: client.SubOK},
+		{what: "subscriptionsHealthy", read: client.subscriptionsHealthy},
+	}
+	readAnswers := make(chan string, len(reads))
+	for _, r := range reads {
+		go func() {
+			r.read()
+			readAnswers <- r.what
+		}()
+	}
+	stillWaiting := func(when string) {
+		t.Helper()
+		select {
+		case what := <-readAnswers:
+			t.Fatalf("control: %s answered %s, while the handshake was held: it did not wait for nats.go's lock", what, when)
+		default:
+		}
+	}
+	testnats.RequireLockHeld(t, conn)
+	stillWaiting("before the sends began")
+
+	var started atomic.Int64
+	subject := KeptRoleSubject(fmt.Sprintf("held-handshake-reads-%d", time.Now().UnixNano()))
+	answerByName(t, hold, conn, []heldRow{
+		atBound("ensureConnWithContext", waitEnded, client.ensureConnWithContext),
+		atBound("Bounded on the connection Connection reads", waitEnded, func(ctx context.Context) error {
+			_, answered, err := Bounded(ctx, client.Connection(), func() (struct{}, error) {
+				started.Add(1)
+				return struct{}{}, nil
+			})
+			if answered {
+				return fmt.Errorf("an answered call, with %v", err)
+			}
+			return err
+		}),
+		atBound("LastStoredMessage", waitEnded, func(ctx context.Context) error {
+			_, err := client.LastStoredMessage(ctx, subject)
+			return err
+		}),
+	})
+	stillWaiting("before the sends had answered")
+	if n := started.Load(); n != 0 {
+		t.Fatalf("the Bounded call made during the held handshake started %d time(s), want none", n)
+	}
+
+	releaseUntilConnected(t, hold, conn)
+	for range reads {
+		select {
+		case <-readAnswers:
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: a read of the client's connection state gave no answer within 30 s of the hold's release")
+		}
+	}
+}
+
+// A legacy JetStream request whose nats.Context had ended names its error within that context
+// during a reconnect's handshake. nats.go answers such a request with ctx's error at once, before
+// it takes its connection lock, and the name of that error reads the connection's status (namedOn),
+// which waits for that lock. The read was made at once on the caller's goroutine, so the request
+// answered only when the handshake attempt ended, at the client's connect timeout
+// (connectTimeout, 5 s). A caller whose budget earlier steps spent makes such a request: the
+// listener's /healthz read of its durable, a durable's bind wait, and the stream ensure under a run's
+// context that the drop ended (requestsUnder). The row makes three at once while one handshake is
+// held, each under a ctx that had ended before the call:
+//   - StreamInfo through the client's JetStream context with nats.Context, the shape of those
+//     callers;
+//   - StreamInfo through requestsUnder over that context, which adds the nats.Context itself;
+//   - KeyValue.GetFromLeader, the leader read of a key.
+//
+// Each answers `bus: NATS is reconnecting`, which carries ctx's error, within ConnLockWait of the
+// call and so within the 300 ms bound and a margin of 700 ms (answerByName).
+//
+// The controls: the same three calls under the same ended ctx answer ctx's bare error, which names
+// no reconnect, before the hold and once it is released and the connection is back; and the leader
+// read under a live ctx answers that the key is not there. The negative control is the name read as
+// it was, at once on the caller's goroutine whatever the request's context: no call answers within
+// the bound and the margin.
+func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing.T) {
+	const key = "never-written"
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: "held-handshake-leader-read"})
+	if err != nil {
+		t.Fatalf("open the bucket: %v", err)
+	}
+	ended, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	named := "bus: " + ErrReconnecting.Error()
+	rows := []heldRow{
+		{what: "StreamInfo with nats.Context", want: named, run: func() error {
+			_, err := client.JS().StreamInfo(Stream, nats.Context(ended))
+			return err
+		}},
+		{what: "StreamInfo through requestsUnder", want: named, run: func() error {
+			_, err := requestsUnder(ended, client.JS()).StreamInfo(Stream)
+			return err
+		}},
+		{what: "GetFromLeader", want: fmt.Sprintf("read key %s of KV bucket %s from its stream's leader: %s", key, kv.Bucket(), named), run: func() error {
+			_, err := kv.GetFromLeader(ended, key)
+			return err
+		}},
+	}
+	bare := func(t *testing.T, when string) {
+		t.Helper()
+		for _, row := range rows {
+			if err := row.run(); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrReconnecting) {
+				t.Fatalf("control: %s under a ctx that had ended answered %v %s, want ctx's own error, which names no reconnect", row.what, err, when)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := kv.GetFromLeader(ctx, key); !errors.Is(err, nats.ErrKeyNotFound) {
+			t.Fatalf("control: GetFromLeader of a key never written %s answered %v, want nats.ErrKeyNotFound", when, err)
+		}
+	}
+	bare(t, "before the hold")
+
+	hold.HoldReconnect(t, conn)
+	answerByName(t, hold, conn, rows)
+
+	releaseUntilConnected(t, hold, conn)
+	bare(t, "once the hold was released")
+}
