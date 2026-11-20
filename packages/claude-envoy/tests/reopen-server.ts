@@ -9,17 +9,24 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
-import { settled } from "@legion/test-fixtures/wait"
 import {
   codexSessionRecordFile,
   processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
-import { waitFor } from "./channel-session-harness"
+import { SERVER_START_MS, waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+
+/** Each wait's last-resort bound. Every step here is a whole server process, which a loaded
+ *  machine starts and runs slowly, and each wait ends the moment its fact holds: this bound never
+ *  decides a row that works, only names the step of one that is stuck. A row that took 25.8 s
+ *  alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
+export const PROCESS_WAIT_MS = 120_000
+/** Each row's: above its chain of waits, so a stuck wait names its step before the runner does. */
+export const ROW_TIMEOUT_MS = 600_000
 
 /** How many times `text` holds `part`. */
 export function count(text: string, part: string): number {
@@ -165,9 +172,6 @@ export interface ReopenServer {
   relaySubscriptions(): number
   /** What a wait that timed out reports: the process, its relay, its connections, its stderr. */
   state(): string
-  /** The server's exit code once it exits; past the row's deadline the wait fails, naming `what`
-   *  and what the server's stderr said by then. */
-  exitCode(what: string): Promise<number>
   /** Each CONNECT the hub saw: its connection name, whether it presented a token, the port its
    *  client dialed the gate from, and the process that owns that port. */
   describeConnects(): Promise<string>
@@ -283,12 +287,14 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       async () => stderr.length > 0 || deliveries.length > 0,
       "the server's first stderr line",
       state,
+      SERVER_START_MS,
     )
     if (options.awaitRegistration !== false) {
       await waitFor(
         async () => deliveries.length > 0 && relaySubscriptions() === 1,
         "the session's first registration and its relay subscription",
         state,
+        PROCESS_WAIT_MS,
       )
     }
   } catch (error) {
@@ -308,17 +314,6 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     relaySubscriptions,
     state,
     describeConnects,
-    async exitCode(what) {
-      try {
-        return await settled(what, server.exited)
-      } catch (error) {
-        // Read when the wait gave up, not when it began: the line that says why comes late.
-        throw new Error(
-          `${error instanceof Error ? error.message : String(error)}; its stderr said: ${stderr}`,
-          { cause: error },
-        )
-      }
-    },
     async checkConnects(held, what) {
       if (!held) throw new Error(`${what}: ${await describeConnects()}`)
     },

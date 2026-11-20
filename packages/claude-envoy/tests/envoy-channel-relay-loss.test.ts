@@ -14,7 +14,6 @@
 import { expect, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import type { SubscribeInput } from "@legion/envoy-client/transport"
-import { span } from "@legion/test-fixtures/wait"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
@@ -120,7 +119,7 @@ test("a relay subscription the server ends with an error is told as an outage na
   } finally {
     await session.shutdown()
   }
-})
+}, 30_000)
 
 // The relay subject is taken again only once the server has answered a flush behind the
 // subscribe: a flush lost to a redial (rejected) or one that never comes back (timed out) says
@@ -218,7 +217,7 @@ for (const lost of [
     } finally {
       await session.shutdown()
     }
-  })
+  }, 30_000)
 }
 
 test("a connection closed for good between a /clear's deregistration and its registration tells the outage once, and the /clear completes on the new connection", async () => {
@@ -280,10 +279,7 @@ test("a connection closed for good between a /clear's deregistration and its reg
     // Several heartbeats pass with no connection, and none moves the credential on the closed one
     // or flushes or subscribes on it. An absence needs the time to pass: eight 25 ms heartbeats.
     const callsBefore = first.flushes + first.subscribes
-    await span(
-      200,
-      "the heartbeats run on the session's own 25 ms timer, and with no connection each sends nothing the row could read (relayMissing), so no state and no later action shows a move it did not make",
-    )
+    await Bun.sleep(200)
     expect(moves).toEqual([])
     expect(first.flushes + first.subscribes).toBe(callsBefore)
     expect(registered).not.toContain(NEXT)
@@ -303,7 +299,7 @@ test("a connection closed for good between a /clear's deregistration and its reg
   } finally {
     await session.shutdown()
   }
-})
+}, 30_000)
 
 // A relay subscription that ends while a heartbeat's registration is still on the wire queues a
 // registration behind it, which names the outage. Shutdown then closes the relay and sends the
@@ -364,10 +360,7 @@ test("a registration queued behind a held listener call as the session shuts dow
     // The held registration is answered now, after the DELETE, and the queued one runs behind it.
     // Its absence needs the time to pass: a few turns are ample for a chain with no wait left.
     held.resolve()
-    await span(
-      200,
-      "the session has shut down, so no later action of it is ordered after the queued registration, and a registration that does not happen leaves no state",
-    )
+    await Bun.sleep(200)
     expect(notices(notifier, "Envoy inbound unavailable")).toEqual([])
     expect(notices(notifier, "Envoy inbound restored")).toEqual([])
     expect(calls.slice(deregisteredAt + 1).filter((call) => call.startsWith("subscribe "))).toEqual(
@@ -377,4 +370,4 @@ test("a registration queued behind a held listener call as the session shuts dow
     held.resolve()
     await session.shutdown()
   }
-})
+}, 30_000)

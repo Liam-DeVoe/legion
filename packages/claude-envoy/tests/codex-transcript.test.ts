@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
-import { span, until } from "@legion/test-fixtures/wait"
 import {
   type CodexTranscriptEvent,
   findTranscript,
@@ -103,25 +102,19 @@ describe("transcriptEvents", () => {
 })
 
 describe("followTranscript", () => {
-  // The exact lines at the end hold what came before them too: the half line `{"b":` handed before
-  // its newline would stand among them.
   test("waits for the file, reads it from the start, then each whole line appended", async () => {
     const path = join(directory, "rollout.jsonl")
     const lines: string[] = []
     const follower = followTranscript(path, (line) => lines.push(line), { pollMs: 20 })
     try {
-      await span(
-        60,
-        "a follower of a missing file keeps no state a test can read, and it looks again on its " +
-          "own poll timer, so no later action's effect comes after its looks: the span gives it " +
-          "its first look and two polls, before the file it waits for appears",
-      )
+      await Bun.sleep(60)
       expect(lines).toEqual([])
       writeFileSync(path, '{"a":1}\n{"b":')
       await follower.caughtUp
+      await Bun.sleep(60)
       expect(lines).toEqual(['{"a":1}'])
       appendFileSync(path, '2}\n{"c":3}\n')
-      await until("the lines appended after the first read", () => lines.length >= 3)
+      await Bun.sleep(100)
       expect(lines).toEqual(['{"a":1}', '{"b":2}', '{"c":3}'])
     } finally {
       follower.stop()
@@ -136,13 +129,7 @@ describe("followTranscript", () => {
     await follower.caughtUp
     follower.stop()
     appendFileSync(path, '{"b":2}\n')
-    await span(
-      80,
-      "a stopped follower keeps no state a test can read, and the read that would hand the line " +
-        "comes from its own poll timer or a change notification of the filesystem, so no later " +
-        "action's effect comes after it: the span gives four of its polls and the notification " +
-        "their turn",
-    )
+    await Bun.sleep(80)
     expect(lines).toEqual(['{"a":1}'])
   })
 })

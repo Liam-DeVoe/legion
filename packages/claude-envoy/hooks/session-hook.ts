@@ -99,7 +99,6 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
-import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -151,14 +150,6 @@ const ANSWERS_LEAST_WAIT_MS = 150
 /** How long after the hook's print deadline a read that answered past it may still write
  *  `answers.json` for the next hook before the process exits. */
 const ANSWERS_SETTLE_MS = 50
-/** How long the answers hook's exit gives stderr (the notice, or the line saying why people's
- *  answers were not added) and stdout to take what it wrote before it exits whatever is still
- *  queued (`exitProcess`): Claude Code reads a hook's output as it comes, so only a reader that
- *  takes nothing keeps the hook this long. Claude Code and Codex kill the answers hook at 5 s
- *  (`hooks/hooks.json`'s and `codex/hooks/hooks.json`'s `timeout`), and it reaches its exit by
- *  its print deadline plus `ANSWERS_SETTLE_MS`: under a second after a quick start-up, and with a
- *  start-up of up to 3 s the flush still ends inside that grace. */
-const ANSWERS_EXIT_FLUSH_MS = 1_000
 /**
  * The host whose envoy.json this hook reads, and its mode and the mode's own arguments, from
  * `<mode> [arguments…] [--host <claude|codex>]`. Claude Code's hooks.json names no host, so it is
@@ -193,17 +184,9 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up;
- *  `exitBy`, the moment after printing that it exits by (`ANSWERS_SETTLE_MS` past the print
- *  deadline), `exitWaitMs`, the delay it armed for that, and `endedBy`, which came first, the
- *  reads still in flight settling (`reads`) or that delay (`deadline`), so a test across the
- *  process boundary holds the hook to the bound it chose and the path that ended it rather than
- *  to a clock; and `refresher`, the pid of the refresher this hook started (null: it started
- *  none), so a test can wait for that one process to end rather than search every process on the
- *  machine for it. Unset, as Claude Code runs it, the hook writes nothing. */
+ *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up.
+ *  Unset, as Claude Code runs it, the hook writes nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
-/** The pid of the refresher this hook process started, for `ANSWERS_TIMING_FILE`. */
-let startedRefresher: number | null = null
 
 const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
@@ -469,17 +452,12 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    const refresher = Bun.spawn(
-      [process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST],
-      {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        detached: true,
-      },
-    )
-    refresher.unref()
-    startedRefresher = refresher.pid
+    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    }).unref()
   }
   const file = join(directory, REFRESH_OUTCOME)
   for (;;) {
@@ -556,12 +534,6 @@ async function answers(text: string): Promise<never> {
   const by = Math.max(ANSWERS_BY_MS, began + ANSWERS_LEAST_WAIT_MS)
   const startedAt = Date.now() - performance.now()
   let printed: number | null = null
-  /** For `ANSWERS_TIMING_FILE`: the moment the hook exits by, the delay it armed for that, and
-   *  which came first, the reads still in flight settling or that delay; null where it printed
-   *  nothing. */
-  let exitBy: number | null = null
-  let exitWaitMs: number | null = null
-  let endedBy: "reads" | "deadline" | null = null
   try {
     const input = AnswersInput.parse(JSON.parse(text))
     const directory = claudeProjectDirectory(
@@ -588,11 +560,9 @@ async function answers(text: string): Promise<never> {
       )
     }
     printed = performance.now()
-    exitBy = by + ANSWERS_SETTLE_MS
-    exitWaitMs = remainingUntil(exitBy)
-    endedBy = await Promise.race([
-      sessionAnswersSettled(input.session_id).then(() => "reads" as const),
-      Bun.sleep(exitWaitMs).then(() => "deadline" as const),
+    await Promise.race([
+      sessionAnswersSettled(input.session_id),
+      Bun.sleep(remainingUntil(by + ANSWERS_SETTLE_MS)),
     ])
   } catch (error) {
     process.stderr.write(`envoy: people's answers were not added — ${messageFor(error)}\n`)
@@ -600,25 +570,13 @@ async function answers(text: string): Promise<never> {
   const timingFile = process.env[ANSWERS_TIMING_FILE]
   if (timingFile !== undefined) {
     try {
-      writeFileSync(
-        timingFile,
-        JSON.stringify({
-          began,
-          printed,
-          exitBy,
-          exitWaitMs,
-          endedBy,
-          ended: performance.now(),
-          refresher: startedRefresher,
-        }),
-      )
+      writeFileSync(timingFile, JSON.stringify({ began, printed, ended: performance.now() }))
     } catch {
       // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
     }
   }
-  // Exits rather than returns, since a read still running would hold the process open, once
-  // stderr has taken the notice or failure line: the one line that says why no answers came.
-  return exitProcess(0, ANSWERS_EXIT_FLUSH_MS)
+  // Exits rather than returns: a read still running would hold the process open.
+  process.exit(0)
 }
 
 /** The answers-refresh mode, which the answers hook starts detached with the session id and the

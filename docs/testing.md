@@ -408,10 +408,8 @@ A test, and each script library that a test runs, reads one process by its pid, 
 It reads that process's command line from `/proc/<pid>/cmdline`, its state, parent, process group and session from `/proc/<pid>/stat`, and its children from `/proc/<pid>/task/*/children`.
 A command name may hold spaces and parentheses, so the fields of `/proc/<pid>/stat` are read after its last `) `.
 `box_login_pid_args` in `scripts/e2e/lib/box-login.sh` prints one process's command line from that process's own `/proc/<pid>/cmdline`.
-`runsWith` in `packages/claude-envoy/tests/answers-hook.test.ts` asks whether one refresher still runs.
 `scripts/e2e/lib/process-tree.sh`, which `scripts/e2e/lib/rig.sh` sources, has `proc_parent`, `proc_group`, `proc_children` and `proc_describe`.
 Each of them asks `ps` or `pgrep` only on a host with no `/proc`, but for `proc_children`, which also asks `pgrep -P` where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`).
-`commandRuns` in the same answers-hook test asks the kernel about a token command's whole process group with one `kill(-pid, 0)`, so it also sees a child that the command left running.
 The test of `psCommandLine` in `packages/test-fixtures/src/deadline.ts`, the reading of a host with no `/proc`, hands it a stand-in for `ps`.
 
 `pgrep` reads every process on the machine, and so does procps-ng's `ps` with `-p`, even for one pid.

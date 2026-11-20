@@ -152,20 +152,18 @@ const MAX_ANCESTORS = 16
 /**
  * The `codex` process this process belongs to: the nearest ancestor Linux names `codex`, else the
  * parent. Codex runs a hook's command through a shell, which runs a single command in its own
- * place, so the parent is normally `codex` itself; the walk covers a shell that does not. The walk
- * starts at `parent`, this process's own parent unless a caller names another.
+ * place, so the parent is normally `codex` itself; the walk covers a shell that does not.
  */
 export function codexProcessId(
   readComm: (pid: number) => string | undefined = procComm,
   readParent: (pid: number) => number | undefined = procParent,
-  parent: number = process.ppid,
 ): number {
-  let pid: number | undefined = parent
+  let pid: number | undefined = process.ppid
   for (let step = 0; pid !== undefined && pid > 1 && step < MAX_ANCESTORS; step++) {
     if (readComm(pid) === "codex") return pid
     pid = readParent(pid)
   }
-  return parent
+  return process.ppid
 }
 
 function procComm(pid: number): string | undefined {

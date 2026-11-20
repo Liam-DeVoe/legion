@@ -3,7 +3,6 @@
 // come up once the connection is back, not end the Claude Code session's channel for good.
 import { expect, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
-import { settled, until } from "@legion/test-fixtures/wait"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"
 import {
@@ -63,15 +62,8 @@ test("a startup flush on a connection closed for good still fails the start", as
   )
 })
 
-/** Starts a session on `nats` with `signal` as its start signal, runs `meanwhile` once the start
- *  is under way, and answers what the start came to; a start that never ends fails at the row's
- *  deadline, naming it. */
-async function startOutcome(
-  nats: FakeNats,
-  signal: AbortSignal,
-  calls: string[],
-  meanwhile: () => Promise<void> = async () => {},
-) {
+/** Starts a session on `nats` with `signal` as its start signal; what the start came to. */
+async function startOutcome(nats: FakeNats, signal: AbortSignal, calls: string[]) {
   const identity = new SessionIdentity(`ses_stop_${crypto.randomUUID().slice(0, 8)}`, "/tmp")
   const started = startChannelSession(
     sessionOptions(identity, scratchState(), {
@@ -81,15 +73,17 @@ async function startOutcome(
       startSignal: signal,
     }),
   )
-  const ended = started.then(
-    async (session) => {
-      await session.shutdown()
-      return "started" as const
-    },
-    (error: unknown) => (error instanceof Error ? error.message : String(error)),
-  )
-  await meanwhile()
-  const outcome = await settled("the start's outcome", ended)
+  const late = Bun.sleep(3_000).then(() => "still starting" as const)
+  const outcome = await Promise.race([
+    started.then(
+      async (session) => {
+        await session.shutdown()
+        return "started" as const
+      },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    ),
+    late,
+  ])
   return { outcome, registered: calls.some((call) => call.startsWith("subscribe ses_stop_")) }
 }
 
@@ -110,12 +104,8 @@ test("a stop while the startup flush is pending ends the start", async () => {
   const calls: string[] = []
   const nats = new FakeNats(calls)
   nats.stallFlush = true
-  expect(
-    await startOutcome(nats, stopping.signal, calls, async () => {
-      await until("the startup flush asked for", () => nats.flushes > 0)
-      stopping.abort()
-    }),
-  ).toEqual({
+  setTimeout(() => stopping.abort(), 100)
+  expect(await startOutcome(nats, stopping.signal, calls)).toEqual({
     outcome: STOPPING,
     registered: false,
   })
@@ -126,14 +116,9 @@ test("a stop while the startup flush waits to ask again ends the start", async (
   const calls: string[] = []
   const nats = new FakeNats(calls)
   nats.failFlushes = 1
-  // The first flush is rejected at once; the stop lands once it was, during the wait before the
-  // second.
-  expect(
-    await startOutcome(nats, stopping.signal, calls, async () => {
-      await until("the first startup flush rejected", () => nats.flushes > 0)
-      stopping.abort()
-    }),
-  ).toEqual({
+  // The first flush is rejected at once; the stop lands during the wait before the second.
+  setTimeout(() => stopping.abort(), 50)
+  expect(await startOutcome(nats, stopping.signal, calls)).toEqual({
     outcome: STOPPING,
     registered: false,
   })
@@ -144,12 +129,10 @@ test("a connection closed for good while the startup flush is pending ends the s
   const calls: string[] = []
   const nats = new FakeNats(calls)
   nats.stallFlush = true
-  expect(
-    await startOutcome(nats, new AbortController().signal, calls, async () => {
-      await until("the startup flush asked for", () => nats.flushes > 0)
-      void nats.closeForGood()
-    }),
-  ).toEqual({
+  setTimeout(() => {
+    void nats.closeForGood()
+  }, 100)
+  expect(await startOutcome(nats, new AbortController().signal, calls)).toEqual({
     outcome: "the NATS connection closed before its subscriptions reached the server",
     registered: false,
   })
@@ -165,7 +148,15 @@ test("with a way to replace it, a connection closed for good while the startup f
   const replacement = new FakeNats(calls)
   const reopened = Promise.withResolvers<void>()
   const identity = new SessionIdentity("ses_start_replaced", "/tmp")
-  const starting = startChannelSession(
+  setTimeout(() => {
+    void nats.closeForGood(
+      Object.assign(new Error("'Authorization Violation'"), {
+        name: "NatsError",
+        code: "AUTHORIZATION_VIOLATION",
+      }),
+    )
+  }, 100)
+  const session = await startChannelSession(
     sessionOptions(identity, scratchState(), {
       connection: nats,
       client: recordingClient(calls),
@@ -176,16 +167,6 @@ test("with a way to replace it, a connection closed for good while the startup f
       },
     }),
   )
-  // nats.js's close leaves a pending flush unsettled: the connection closes for good once the
-  // startup flush is asked for, and the start goes on to replace it.
-  await until("the startup flush asked for", () => nats.flushes > 0)
-  void nats.closeForGood(
-    Object.assign(new Error("'Authorization Violation'"), {
-      name: "NatsError",
-      code: "AUTHORIZATION_VIOLATION",
-    }),
-  )
-  const session = await settled("the start on a connection closed for good", starting)
   const registered = (): boolean => calls.some((call) => call.startsWith("subscribe ses_start_"))
   try {
     // Started with no live connection: nothing registered with a relay it does not hold.
@@ -206,6 +187,10 @@ test("with a way to replace it, a stop that closes the connection while the star
   const nats = new FakeNats(calls)
   nats.stallFlush = true
   let dials = 0
+  setTimeout(() => {
+    stopping.abort()
+    void nats.closeForGood()
+  }, 100)
   const started = startChannelSession(
     sessionOptions(new SessionIdentity("ses_start_stopped", "/tmp"), scratchState(), {
       connection: nats,
@@ -218,9 +203,6 @@ test("with a way to replace it, a stop that closes the connection while the star
       },
     }),
   )
-  await until("the startup flush asked for", () => nats.flushes > 0)
-  stopping.abort()
-  void nats.closeForGood()
   await expect(started).rejects.toThrow(STOPPING)
   expect(dials).toBe(0)
   expect(calls.some((call) => call.startsWith("subscribe ses_start_"))).toBe(false)

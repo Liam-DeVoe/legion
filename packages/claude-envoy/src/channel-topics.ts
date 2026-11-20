@@ -3,7 +3,6 @@ import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
 import { natsFailureReason } from "@legion/envoy-client/errors"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
-import { SHUTDOWN_BOUNDS, type WayOut, wayOut } from "./way-out"
 
 /** A message as the broker yields it (a nats.js `Msg` satisfies this). */
 export interface ChannelBrokerMessage {
@@ -62,14 +61,13 @@ export interface ChannelTopics {
   topics(): readonly string[]
   /** True once the connection held now is closed for good. */
   isClosed(): boolean
-  /** Drain the connection held now, the drain bounded, then close it; never rejects. */
+  /** Drain the connection held now; never rejects. */
   close(): Promise<void>
 }
 
 export interface ChannelTopicsOptions {
-  /** The server's way out (`./way-out`), whose steps the drain and the close are; one that records
-   *  nothing where none is given. */
-  readonly wayOut?: WayOut | undefined
+  /** How long close waits for a broker drain before closing outright. */
+  readonly drainTimeoutMs?: number
 }
 
 // A delivery's identity fields parse independently: a field the shared rule refuses identifies
@@ -82,6 +80,8 @@ const DeliveryIdentity = DedupeIdentitySchema.extend({
   source_event_id: DedupeIdentitySchema.shape.source_event_id.catch(undefined),
   topic: z.string().min(1).optional().catch(undefined),
 })
+
+const DEFAULT_DRAIN_TIMEOUT_MS = 1_000
 
 /** A frame's identity fields, each kept only when valid; undefined for a frame that is not JSON. */
 export function deliveryIdentity(raw: string): z.infer<typeof DeliveryIdentity> | undefined {
@@ -113,7 +113,7 @@ export function createChannelTopics(
   options: ChannelTopicsOptions = {},
 ): ChannelTopics {
   const following = new Set<string>()
-  const way = options.wayOut ?? wayOut(undefined)
+  const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS
 
   return {
     follow(topic) {
@@ -137,22 +137,20 @@ export function createChannelTopics(
       // The connection held as the close begins: the session swaps none in once it is stopping.
       const held = connection()
       if (held.isClosed()) return
-      // A drain that fails ended the wait as much as one that finished: what it waited for came.
-      // Past its bound the close below ends the connection, which makes the rest of it moot.
-      await way.step(
-        "drain",
-        held
-          .drain()
-          .catch((error: unknown) => report("draining the broker connection failed", error)),
-        SHUTDOWN_BOUNDS.drain,
-      )
+      const timeout = Promise.withResolvers<void>()
+      const timer = setTimeout(timeout.resolve, drainTimeoutMs)
+      try {
+        await Promise.race([held.drain(), timeout.promise])
+      } catch (error) {
+        report("draining the broker connection failed", error)
+      }
+      clearTimeout(timer)
       if (held.isClosed()) return
-      await way.step(
-        "close",
-        held
-          .close()
-          .catch((error: unknown) => report("closing the broker connection failed", error)),
-      )
+      try {
+        await held.close()
+      } catch (error) {
+        report("closing the broker connection failed", error)
+      }
     },
   }
 }
