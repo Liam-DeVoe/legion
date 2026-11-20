@@ -1133,7 +1133,7 @@ test("stop_task stops the task its block names, and is the architect's alone", a
   expect(calls).toEqual([
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     ["taskStop", { grantId: "grant-208", issue: "LEGION-209", task: "default" }],
   ]);
