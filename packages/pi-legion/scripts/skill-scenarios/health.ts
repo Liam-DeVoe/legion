@@ -98,7 +98,14 @@
  *      run wrote and then ran, where the agent that ran it reached it (`fileRuns`, `Keeper`); and
  *      no network URL in any string argument of a tool
  *      TEXT_TOOLS does not name, a tool nobody named included. A URL in text a call writes (a
- *      review body, a reply, a commit message, a file never run) is a link, not a reach. A bash
+ *      review body, a reply, a commit message, a file never run) is a link, not a reach, and so
+ *      is a URL in a bash command that no command hands to something that may fetch it: one only
+ *      `echo` or `printf` prints or `grep`, `head`, `tail` or `jq` reads, its output going to
+ *      nothing that fetches (QUIET, `unfetched`), and a `for` list's word or an assignment's value
+ *      the reader writes into each place its variable is read (`literalFlow`). One the reader
+ *      cannot follow (into a shell, xargs or a file, through `eval`, to a command it does not
+ *      know) reaches its host, and a curl or a wget that takes its URLs from a file (`-K`, `-i`,
+ *      URL_FILES) is off the world. A bash
  *      command is read by each program's own grammar, in the positions that take a host
  *      (`commandHosts`): a remote in scp form, `[user@]host:path`, only where git, jj, scp, rsync
  *      or sftp take an address; the host operands of ssh, scp, sftp, rsync, nc, ncat and telnet
@@ -1931,6 +1938,14 @@ const WGET_VALUED = optionSet(`
 /** The options of WGET_VALUED whose value is a URL wget fetches from: `--base`, which it resolves
  * the links of its `--input-file` against. */
 const WGET_HOSTS = ["-B", "--base"];
+/** The options of CURL_VALUED and WGET_VALUED whose value is a file the command reads the URLs it
+ * fetches from, `-` its input: curl's config file (`-K`), whose `url` lines it fetches, and wget's
+ * input file (`-i`). The reader does not read the file, so the hosts such a command reaches are not
+ * in the text (`commandHosts`). */
+const URL_FILES: Readonly<Record<string, readonly string[]>> = {
+  curl: ["-K", "--config"],
+  wget: ["-i", "--input-file"],
+};
 
 /** A git or jj subcommand that takes a repository's address: its options whose value is the next
  * word, and the addresses its arguments give. */
@@ -2477,7 +2492,9 @@ const FIELD_FLAG = new RegExp(
  * `legion gh`, which reaches off the world unless it is the run's own stand-in, whatever host it
  * names (`ghHosts`); `get`, a reach that reads and sends nothing (a GET or a HEAD with no body,
  * `httpRead`; a `read` or `fetch` of the URL; git's read of a repository's refs, `refsRead`), the
- * one kind of reach rule 13 allows off the world (`githubRead`). */
+ * one kind of reach rule 13 allows off the world (`githubRead`); `unread`, why the hosts a command
+ * reaches are not in the text (a curl or a wget that takes its URLs from a file, URL_FILES), which
+ * makes the reach off the world whatever it names. */
 interface Reach {
   readonly host: string;
   readonly named: string;
@@ -2485,6 +2502,7 @@ interface Reach {
   readonly served?: readonly string[];
   readonly gh?: string;
   readonly get?: boolean;
+  readonly unread?: string;
 }
 
 /** curl's options that send a body: its data and form options and an upload; `-X`/`--request`
@@ -2676,10 +2694,11 @@ function programHosts(text: string, shell: boolean): Reach[] {
  * (`invocationOf`), by its own grammar, with `env` the variables it runs with: a remote in scp
  * form where `git` or `jj` takes a repository's address (`repositoryAddresses`, `scpHost`); a host
  * a curl or wget operand or an option of theirs that takes a host (CURL_HOSTS, WGET_HOSTS) names
- * without a scheme; the hosts of ssh, scp, sftp, rsync, nc, ncat and telnet (REMOTE_READERS); and
- * those a `gh` names, and the gh itself when it is named by a path or run as `legion gh`
- * (`ghHosts`). A host that holds an expansion (`ssh "$HOST"`, xargs's `{}`) is passed over,
- * since it is not in the text. */
+ * without a scheme, and the hosts of each file a curl or a wget takes its URLs from (URL_FILES),
+ * which are not in the text; the hosts of ssh, scp, sftp, rsync, nc, ncat and telnet
+ * (REMOTE_READERS); and those a `gh` names, and the gh itself when it is named by a path or run as
+ * `legion gh` (`ghHosts`). A host that holds an expansion (`ssh "$HOST"`, xargs's `{}`) is passed
+ * over, since it is not in the text. */
 function commandHosts(
   { word, name, words }: Invocation,
   env: ReadonlyMap<string, string>
@@ -2699,13 +2718,23 @@ function commandHosts(
       if (one !== undefined && bare !== null && !one.includes("://"))
         hosts.push({ host: hostName(bare[1] ?? ""), named: one, ...(get ? { get } : {}) });
     }
+    for (const [option, file = ""] of args.options.filter(([one]) =>
+      URL_FILES[name]?.includes(one)
+    ))
+      hosts.push({
+        host: `the hosts ${file === "-" ? "its input" : file} names`,
+        named: `${option} ${file}`,
+        unread: `${name} reads the URLs it fetches from there, which the reader does not read, so none is known to be a host of the run's world`,
+      });
   }
   hosts.push(...(REMOTE_READERS[name]?.(words) ?? []));
   if (name === "gh")
     hosts.push(...ghHosts(words, env, word.includes("/") && !/[$`]/.test(word) ? word : undefined));
   if (name === "legion" && words[0] === "gh")
     hosts.push(...ghHosts(words.slice(1), env, "legion gh"));
-  return hosts.filter((one) => one.gh !== undefined || !/[$`{}*?]/.test(one.host));
+  return hosts.filter(
+    (one) => one.gh !== undefined || one.unread !== undefined || !/[$`{}*?]/.test(one.host)
+  );
 }
 
 /** A gap between two tokens of shell text (`shellTokens`) that holds blanks alone, so the two are
@@ -2844,6 +2873,15 @@ interface Places {
   readonly literal: (readonly [from: number, to: number])[];
 }
 
+/** Literal text `flowed` writes where a variable it reads is set, as a place in the text it
+ * returns: a word of a loop's list that it writes the loop's body out with, or the value of an
+ * assignment it binds the variable to; `name` is the variable. */
+interface FlowSource {
+  readonly name: string;
+  readonly from: number;
+  readonly to: number;
+}
+
 /** Shell text (`text`, lying at `offset` in the call's), with the variables `bound` holds written
  * where the shell expands them (`expandedWord`), in order: each loop `literalLoop` reads written
  * out once per word of its list, its body read with its variable bound to that word where
@@ -2852,17 +2890,19 @@ interface Places {
  * the literal its value reads to (`literalWord`), or unbinding it where its value reads to none.
  * After a loop its variable and each one its body sets are unbound: the reader does not say which
  * word the loop ended on. `places` collects where each of those sets a variable, and the literal
- * text each reads. Returns the text and the variables it set. */
+ * text each reads. Returns the text, the variables it set, and where in that text each word of a
+ * list it wrote a loop out with and each value it bound a variable to lies (`sources`). */
 function flowed(
   text: string,
   offset: number,
   bound: Map<string, string>,
   eligible: ReadonlySet<string> | undefined,
   places: Places
-): { text: string; set: ReadonlySet<string> } {
+): { text: string; set: ReadonlySet<string>; sources: FlowSource[] } {
   const scan = scanned(text);
   const { tokens, raw, gaps, starts } = scan;
   const set = new Set<string>();
+  const sources: FlowSource[] = [];
   let out = "";
   let from = 0;
   // The brackets and compound commands open at the token, the backquotes before it, and the last
@@ -2896,7 +2936,20 @@ function flowed(
         else within.set(loop.name, value);
         return flowed(body, offset + opens.end, within, eligible, places);
       });
-      out += text.slice(from, opens.end) + copies.map((copy) => copy.text).join("\n");
+      out += text.slice(from, opens.end);
+      if (eligible?.has(loop.name))
+        for (const word of tokens.slice(i + 3, loop.opens))
+          sources.push({
+            name: loop.name,
+            from: out.length - (opens.end - word.at),
+            to: out.length - (opens.end - word.end),
+          });
+      for (const [index, copy] of copies.entries()) {
+        if (index > 0) out += "\n";
+        for (const one of copy.sources)
+          sources.push({ ...one, from: out.length + one.from, to: out.length + one.to });
+        out += copy.text;
+      }
       for (const name of [loop.name, ...copies.flatMap((copy) => [...copy.set])]) {
         bound.delete(name);
         set.add(name);
@@ -2906,7 +2959,8 @@ function flowed(
       continue;
     }
     if (starts[i]) binds = assignmentsAlone(scan, i, depth !== 0 || ticks % 2 !== 0);
-    out += text.slice(from, token.at) + expandedWord(word, bound);
+    const put = expandedWord(word, bound);
+    out += text.slice(from, token.at) + put;
     from = token.end;
     const found = i <= binds ? ASSIGNMENT.exec(word) : null;
     if (found !== null) {
@@ -2917,13 +2971,16 @@ function flowed(
       if (literalWord(written) !== undefined)
         places.literal.push([offset + token.end - written.length, offset + token.end]);
       if (value === undefined) bound.delete(name);
-      else bound.set(name, value);
+      else {
+        bound.set(name, value);
+        sources.push({ name, from: out.length - put.length + name.length + 1, to: out.length });
+      }
       set.add(name);
     }
     if (word === "{" || (starts[i] && OPENS.has(word))) depth++;
     else if (starts[i] && CLOSES.has(word)) depth--;
   }
-  return { text: out + text.slice(from), set };
+  return { text: out + text.slice(from), set, sources };
 }
 
 /** The commands that run text this reader does not read as the call's own commands: the string
@@ -3041,26 +3098,35 @@ function namedOnlyAt(code: string, name: string, places: Places): boolean {
  * read), a command of RUNS_TEXT, one of SETS_NAMED given an expansion among its words, one of
  * GIVES_ATTRIBUTES given `-i` or `-n` (each named bare or after `command` or `builtin`), or IFS,
  * which would split a value the reader writes as one word. What an earlier call left in a
- * persistent shell is not read, as no reader of a call's text reads it. */
-function literalFlow(code: string): string {
+ * persistent shell is not read, as no reader of a call's text reads it. Returns the text, and
+ * where in it each literal lies that it gave a variable and wrote into every place the text reads
+ * that variable (`flowed`'s `sources`, each of a variable of which no read stays in the text): that
+ * value reaches only what those places hand it to. A value of a variable read where the reader
+ * writes no value (after its loop, in single quotes, after an assignment of a value it does not
+ * hold) goes where the reader does not follow, and is none of them. */
+function literalFlow(code: string): {
+  code: string;
+  given: (readonly [from: number, to: number])[];
+} {
+  const whole = { code, given: [] };
   const scan = scanned(code);
   const { tokens, raw, gaps, starts } = scan;
-  if (/(?<!\w)IFS(?!\w)/.test(code)) return code;
+  if (/(?<!\w)IFS(?!\w)/.test(code)) return whole;
   // The words of each command of SETS_NAMED, any of which may name a variable with an option's
   // letters before it.
   const naming: string[] = [];
   for (const [i, word] of raw.entries()) {
-    if (tokens[i]?.redirect === undefined && word.startsWith("#")) return code;
+    if (tokens[i]?.redirect === undefined && word.startsWith("#")) return whole;
     if (!starts[i]) continue;
     const wrapped = (word === "command" || word === "builtin") && BLANK_GAP.test(gaps[i + 1] ?? "");
     const named = wrapped ? (raw[i + 1] ?? "") : word;
-    if (RUNS_TEXT.has(named)) return code;
+    if (RUNS_TEXT.has(named)) return whole;
     const last = commandEnd(scan, i);
     const words = raw.slice(i + 1, last + 1);
-    if (GIVES_ATTRIBUTES.has(named) && words.some((one) => /^-\w*[in]/.test(one))) return code;
+    if (GIVES_ATTRIBUTES.has(named) && words.some((one) => /^-\w*[in]/.test(one))) return whole;
     if (!SETS_NAMED.has(named)) continue;
     if (named === "printf" && !words.some((one) => one.startsWith("-v"))) continue;
-    if (words.some((one) => /[$`]/.test(one)) || /[(`]/.test(gaps[last + 1] ?? "")) return code;
+    if (words.some((one) => /[$`]/.test(one)) || /[(`]/.test(gaps[last + 1] ?? "")) return whole;
     naming.push(...words);
   }
   const places: Places = { sites: [], literal: childWords(scan) };
@@ -3075,30 +3141,246 @@ function literalFlow(code: string): string {
           !naming.some((word) => new RegExp(`${name}(?!\\w)`).test(word))
       )
   );
-  return eligible.size === 0
-    ? code
-    : flowed(code, 0, new Map(), eligible, { sites: [], literal: [] }).text;
+  if (eligible.size === 0) return whole;
+  const read = flowed(code, 0, new Map(), eligible, { sites: [], literal: [] });
+  return {
+    code: read.text,
+    given: read.sources
+      .filter((one) => !new RegExp(`\\$\\{?[#!]?${one.name}(?!\\w)`).test(read.text))
+      .map((one) => [one.from, one.to] as const),
+  };
 }
 
-/** Every host a `bash` command reaches, with the text that names it: the host of every network
- * URL in it but those in text it writes (the values of TEXT_FLAG and of a `body`, `title` or
- * `message` FIELD_FLAG, and here-document bodies but those an interpreter runs, `bodyRunner`) and
- * the repository URL a gh's `-R` names, which the gh rule reads (`ghHosts`); and every host each
- * of its commands reaches (`commandHosts`), the program a shell is given inline (`sh -c '…'`,
- * `inlineProgram`) read as a command of its own. No command is read inside a quoted string a
- * command is given as text (`spoken`). A command's words leave its redirections out
- * (`shellWords`), so `curl … > report.json` names no host `report.json`. The variables a command
- * runs with are those its prefix and its wrappers set, over those `env` holds and those a command
- * of assignments alone or an `export` set before it: every pane exports GH_HOST (empty,
- * daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it. Each of the text's variables
- * that a `for` loop over literal words or an assignment of a literal sets is read where it is
- * expanded (`literalFlow`), so a loop's body is read once per word of its list and every reach of
- * each of them is judged. */
+/** The commands that fetch nothing and run nothing they are given, each with why: a URL among
+ * their words or on their input is text they print or search, and reaches nothing where their own
+ * output does not go on to something that may fetch it (`unfetched`). */
+const QUIET: Readonly<Record<string, string>> = {
+  echo: "it prints its words",
+  printf:
+    "it prints its words by a format, unless `-v` sets a variable to them, which may go on anywhere",
+  grep: "it searches its input or its files for a pattern, as the measured calls' `| grep -E '\"sha\"'`",
+  head: "it prints the first lines of its input or its files, as the measured calls' `| head -5`",
+  tail: "it prints the last lines of its input or its files",
+  jq: "its program reaches no host (INTERPRETER), so what it is given is data",
+};
+/** The words that open a compound command a word closes, each with that word. */
+const CLOSER: Readonly<Record<string, string>> = {
+  if: "fi",
+  while: "done",
+  until: "done",
+  for: "done",
+  select: "done",
+  "{": "}",
+};
+/** The commands a command of QUIET may not stand beside: a function or an alias may be named as
+ * one and run anything (`echo() { curl "$@"; }`), and `exec` sends every later output where its
+ * redirections say. */
+const RENAMES = new Set(["function", "alias", "exec"]);
+
+/** Whether token `at` of `scan` makes one descriptor a copy of another, `N>&M` (`2>&1`, `>&2`),
+ * which shellTokens reads as the operator with no word, a gap of `&` and the word `M`. */
+function duplicates(scan: Scanned, at: number): boolean {
+  const token = scan.tokens[at];
+  return (
+    token?.redirect !== undefined &&
+    token.word === "" &&
+    /^\d*[<>]$/.test(token.redirect) &&
+    scan.gaps[at + 1] === "&" &&
+    /^(?:\d+-?|-)$/.test(scan.raw[at + 1] ?? "")
+  );
+}
+
+/** The last token of the command token `at` of `scan` starts (`commandEnd`), past each descriptor
+ * it copies (`duplicates`): `curl … 2>&1 | grep` is one command piped into grep. */
+function commandLast(scan: Scanned, at: number): number {
+  let last = commandEnd(scan, at);
+  while (duplicates(scan, last)) last = commandEnd(scan, last + 1);
+  return last;
+}
+
+/** Whether a redirection among tokens `from` to `to` of `scan` sends output where the reader does
+ * not follow it: every one but one that reads (`<`, `<<`), one to /dev/null, and `2>&1`, which
+ * sends the errors where the output goes. */
+function redirectsAway(scan: Scanned, from: number, to: number): boolean {
+  for (let at = from; at <= to; at++) {
+    const token = scan.tokens[at];
+    const redirect = token?.redirect;
+    if (redirect === undefined || /^\d*<<?$/.test(redirect) || token?.word === "/dev/null")
+      continue;
+    if (redirect === "2>" && duplicates(scan, at) && scan.raw[at + 1] === "1") continue;
+    return true;
+  }
+  return false;
+}
+
+/** A command or a compound command of shell text, as `unfetched` follows its output: the compound
+ * it stands in (`parent`, -1 for none); where its output goes (`outlet`): on where its compound's
+ * goes, or out of the call, `"on"`; into the piece a pipe hands it to, that piece's index; or where
+ * the reader does not follow it, `"lost"` (a file, a command substitution, the background); and,
+ * for a command of QUIET, the text it spans (`quiet`). */
+interface Piece {
+  readonly parent: number;
+  outlet?: "on" | "lost" | number;
+  readonly quiet?: readonly [from: number, to: number];
+}
+
+/** The spans of `code`, a `bash` command's text, that hand nothing to anything that fetches: each
+ * command of QUIET whose output goes, through each pipe and each compound command it stands in,
+ * out of the call or into a command of QUIET whose output goes so. A command of QUIET is none where
+ * an assignment comes before its name (`PATH=… grep`), where `printf` is given `-v`, where its text
+ * holds a command substitution, or where it redirects its output (`redirectsAway`). The commands
+ * are read off `spoken`, `code` with each quoted string that holds a separator emptied at its own
+ * length (`bashHosts`), by the tokens of `scanned` and the operators in the gaps between them: `;`,
+ * `&&`, `||` and a line break hand a command's output on where its compound's goes, `|` and `|&`
+ * into the command or compound after it, and `&`, a substitution (`$(`, `<(`, `>(`, a backquote)
+ * and an output redirection lose it. None in a text whose commands may run something by a quiet
+ * command's name or whose shape the reader does not follow: one with a function, an alias or
+ * `exec` (RENAMES), a command named by an expansion, a command of RUNS_TEXT, `case`, or a bracket
+ * or a compound command that does not close. */
+function unfetched(code: string, spoken: string): (readonly [from: number, to: number])[] {
+  const scan = scanned(spoken);
+  const { tokens, raw, gaps, starts } = scan;
+  const pieces: Piece[] = [];
+  // The brackets and compound commands open where the reader stands, each with what closes it.
+  const open: { piece: number; closer: string }[] = [];
+  // The piece whose outlet the next operator decides, and the one a pipe waits to hand on.
+  let current = -1;
+  let piping = -1;
+  const settle = (outlet: "on" | "lost") => {
+    const piece = pieces[current];
+    if (piece !== undefined) piece.outlet ??= outlet;
+    current = -1;
+  };
+  const add = (piece: Piece): number => {
+    const at = pieces.push(piece) - 1;
+    const from = pieces[piping];
+    if (from !== undefined) from.outlet ??= at;
+    piping = -1;
+    return at;
+  };
+  const parent = () => open.at(-1)?.piece ?? -1;
+  const close = (closer: string): boolean => {
+    const top = open.at(-1);
+    if (top?.closer !== closer || piping >= 0) return false;
+    settle("on");
+    open.pop();
+    current = top.piece;
+    return true;
+  };
+  // Reads the operators in the gap before token `at`; false for a gap the reader does not follow.
+  const operators = (at: number): boolean => {
+    const start = tokens[at - 1]?.end ?? 0;
+    for (const hit of (gaps[at] ?? "").matchAll(/;;|&&|\|\||\|&|[;\n|&()`]/g)) {
+      const op = hit[0];
+      if (op === "|" || op === "|&") {
+        if (current < 0 || piping >= 0) return false;
+        piping = current;
+        current = -1;
+      } else if (op === "(" || (op === "`" && open.at(-1)?.closer !== "`")) {
+        // A substitution's output is a word of the command it stands in, which may fetch it.
+        const capture = op === "`" || /[$<>]/.test(spoken[start + (hit.index ?? 0) - 1] ?? "");
+        if (current >= 0) settle("lost");
+        const piece = add({ parent: parent(), ...(capture ? { outlet: "lost" as const } : {}) });
+        open.push({ piece, closer: op === "(" ? ")" : "`" });
+      } else if (op === ")" || op === "`") {
+        if (!close(op)) return false;
+      } else if (piping >= 0) {
+        // A pipe goes on across a line break, and into nothing after any other operator.
+        if (op !== "\n") return false;
+      } else if (op === "&") settle("lost");
+      else if (op === ";;") return false;
+      else settle("on");
+    }
+    return true;
+  };
+  for (let i = 0; i < tokens.length; ) {
+    if (!starts[i] || !operators(i)) return [];
+    const word = raw[i] ?? "";
+    if (word === "case") return [];
+    if (Object.hasOwn(CLOSER, word)) {
+      open.push({ piece: add({ parent: parent() }), closer: CLOSER[word] ?? "" });
+      i = word === "for" || word === "select" ? commandEnd(scan, i) + 1 : i + 1;
+      continue;
+    }
+    if (TAKES_COMMAND.has(word)) {
+      i++;
+      continue;
+    }
+    const last = commandLast(scan, i);
+    if (CLOSES.has(word)) {
+      if (!close(word)) return [];
+      if (redirectsAway(scan, i + 1, last)) settle("lost");
+      i = last + 1;
+      continue;
+    }
+    let name = i;
+    while (
+      name <= last &&
+      (tokens[name]?.redirect !== undefined || ASSIGNMENT.test(raw[name] ?? ""))
+    )
+      name++;
+    const named = literalWord(raw[name] ?? "");
+    if (name <= last && named === undefined && /[$`]/.test(raw[name] ?? "")) return [];
+    const runs =
+      named === "command" || named === "builtin" ? literalWord(raw[name + 1] ?? "") : named;
+    if (runs !== undefined && (RUNS_TEXT.has(runs) || RENAMES.has(runs))) return [];
+    if (/^[ \t]*\([ \t]*\)/.test(gaps[name + 1] ?? "")) return [];
+    const from = tokens[i]?.at ?? 0;
+    const to = tokens[last]?.end ?? 0;
+    const quiet =
+      named !== undefined &&
+      Object.hasOwn(QUIET, named) &&
+      !raw.slice(i, name).some((one) => ASSIGNMENT.test(one)) &&
+      !(named === "printf" && raw.slice(name + 1, last + 1).some((one) => one.startsWith("-v"))) &&
+      !/\$\(|`|[<>]\(/.test(code.slice(from, to));
+    current = add({ parent: parent(), ...(quiet ? { quiet: [from, to] as const } : {}) });
+    if (redirectsAway(scan, i, last)) settle("lost");
+    i = last + 1;
+  }
+  if (!operators(tokens.length) || open.length > 0 || piping >= 0) return [];
+  settle("on");
+  const harmless = (at: number): boolean => {
+    const piece = pieces[at];
+    if (piece?.outlet === "on") return piece.parent < 0 || harmless(piece.parent);
+    return (
+      typeof piece?.outlet === "number" &&
+      pieces[piece.outlet]?.quiet !== undefined &&
+      harmless(piece.outlet)
+    );
+  };
+  return pieces.flatMap((piece, at) =>
+    piece.quiet !== undefined && harmless(at) ? [piece.quiet] : []
+  );
+}
+
+/** Every host a `bash` command reaches, with the text that names it: the host of each network URL
+ * in it that a command hands to something that may fetch it, which is every URL but those only a
+ * command of QUIET prints or searches, its output going on to nothing that fetches (`unfetched`:
+ * `echo "== $url =="`, `printf '%s\n' URL | grep x`, but not `echo URL | sh` or `echo URL | xargs
+ * curl`), the literal values `literalFlow` wrote into each place their variable is read, which
+ * reach what those places hand them to (a word of a `for` list, an assignment's value), those in
+ * text it writes (the values of TEXT_FLAG and of a `body`, `title` or `message` FIELD_FLAG, and
+ * here-document bodies but those an interpreter runs, `bodyRunner`) and the repository URL a gh's
+ * `-R` names, which the gh rule reads (`ghHosts`); and every host each of its commands reaches
+ * (`commandHosts`), the program a shell is given inline (`sh -c '…'`, `inlineProgram`) read as a
+ * command of its own. A URL a GET or a HEAD with no body is given, or git's read of refs, is read
+ * as such a reach (`get`); every other one reaches its host as a call that may send anything, so
+ * a URL that goes where the reader does not follow it (a pipe into a shell or xargs, `eval`, a
+ * file a later command reads, a command it does not know) is off the world unless its host is the
+ * world's. No command is read inside a quoted string a command is given as text (`spoken`). A
+ * command's words leave its redirections out (`shellWords`), so `curl … > report.json` names no
+ * host `report.json`. The variables a command runs with are those its prefix and its wrappers set,
+ * over those `env` holds and those a command of assignments alone or an `export` set before it:
+ * every pane exports GH_HOST (empty, daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh
+ * after it. Each of the text's variables that a `for` loop over literal words or an assignment of
+ * a literal sets is read where it is expanded (`literalFlow`), so a loop's body is read once per
+ * word of its list and every reach of each of them is judged. */
 function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()): Reach[] {
   const { code: written, bodies } = withoutBodies(command);
   // A here-document's body is read at the place of its `<<` in the text (`bodyRunner`), which a
   // variable's value written in would move: a call with one has none written in.
-  const code = bodies.length === 0 ? literalFlow(written) : written;
+  const flow = bodies.length === 0 ? literalFlow(written) : { code: written, given: [] };
+  const { code } = flow;
   const inline = [...code.matchAll(SHELL_INLINE)];
   // A quoted string that holds a `;`, `&`, `|`, a bracket, a backquote or a line break is text a
   // command is given (a commit message, a review body) or a program given whole (`sh -c '…'`):
@@ -3109,8 +3391,11 @@ function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()
     /[;&|()`\n]/.test(quoted) ? `${quoted[0]}${"_".repeat(quoted.length - 2)}${quoted[0]}` : quoted
   );
   // The text the URL reading reads: `code` with each repository URL a gh's `-R` names emptied at
-  // its own length, since the gh rule decides that host (github.com is the world's there).
+  // its own length, since the gh rule decides that host (github.com is the world's there), and
+  // each literal value `literalFlow` wrote where its variable is read and each command of QUIET
+  // whose output goes on to nothing that fetches (`unfetched`), neither of which reaches a host.
   const urls = code.split("");
+  for (const [from, to] of [...flow.given, ...unfetched(code, spoken)]) urls.fill("_", from, to);
   const commands: Reach[] = [];
   // The reaches of each command that reads and sends nothing (a GET or a HEAD with no body,
   // `httpRead`, and git's read of refs, `refsRead`): every URL of its own text, read there as
@@ -3793,7 +4078,8 @@ export type Keeper = (target: string, transcript: string) => string | undefined;
  * runs the same path runs nothing of it. A reach some hosts serve in place of
  * the world's (`served`) is held to those, and a gh run by a path (`gh`) to the run's own
  * stand-in, <own>/bin/gh of each of `own`, the run's directories, a relative path read from the
- * run's cwd (<own>/cwd, where launch starts the agent). Any other reach off the world is allowed
+ * run's cwd (<own>/cwd, where launch starts the agent). A reach whose hosts are not in the text
+ * (`unread`) is off the world whatever it names. Any other reach off the world is allowed
  * where it reads and sends nothing (a GET or a HEAD with no body, a `git ls-remote`) of one of
  * the public repositories the world's workflow names (`allowed`'s `uses`, `githubRead`), and the
  * reason for a reach of a host that serves those says why it is none (`githubReadRefusal`). */
@@ -3808,6 +4094,7 @@ export function offWorldReach(
   const { repositories } = allowed.uses;
   const standIns = own.map((dir) => path.posix.join(dir, "bin", "gh"));
   const outside = (one: Reach): boolean => {
+    if (one.unread !== undefined) return true;
     if (one.gh !== undefined)
       return !own.some((dir, at) => path.posix.resolve(dir, "cwd", one.gh ?? "") === standIns[at]);
     if (one.served !== undefined) return !one.served.includes(one.host);
@@ -3832,11 +4119,13 @@ export function offWorldReach(
     const off = reachesOf(call, reached).find(outside);
     if (off !== undefined)
       return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, ${
-        off.gh !== undefined
-          ? `a gh that is not the run's own stand-in (${standIns.join(", ")}), and no world of this rig serves another`
-          : off.served !== undefined
-            ? `no host the run's gh serves (${off.served.join(", ")})`
-            : `no host of the run's world (${allowedHosts})${githubReadRefusal(off, repositories)}`
+        off.unread !== undefined
+          ? off.unread
+          : off.gh !== undefined
+            ? `a gh that is not the run's own stand-in (${standIns.join(", ")}), and no world of this rig serves another`
+            : off.served !== undefined
+              ? `no host the run's gh serves (${off.served.join(", ")})`
+              : `no host of the run's world (${allowedHosts})${githubReadRefusal(off, repositories)}`
       }`;
     written.push(...record(writtenText(call), written, call.shown, call.file));
   }
