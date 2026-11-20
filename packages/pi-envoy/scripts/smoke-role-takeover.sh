@@ -328,6 +328,9 @@ wait_for() {
 # ---- the results -------------------------------------------------------------------------------
 # One row of R8's table (or one of A5's own claims), its outcome and the evidence for it. A failed
 # check never stops the run: every row is driven, so one run says which rows hold and which do not.
+# A row that starts from where an earlier row of its scenario left the role reads that first, so
+# where the earlier row failed, the later one fails naming where the role is, and not on a claim
+# that was never made.
 row_names=()
 row_outcomes=()
 row_details=()
@@ -727,6 +730,11 @@ row5_omp() {
   end_row
 
   begin_row "INFRA-783 — a release from the process that no longer holds the claim frees nothing"
+  # The row before gave B the role, and A's release is weighed against B's claim only where it
+  # did. So the row reads that first: where that row failed, this one fails naming B's missing
+  # hold, and not on a release that freed A's own claim.
+  expect "process B holds the role under X, as the row before left it" \
+    "$(role_holder "$role") $(role_instance "$role")" "${x} ${instance_b}"
   # A's branch records a release, so A ends its hold and hands the role topic back naming its own
   # process. A is the second process in X now — the standing claim is B's — and a release frees
   # the claims of the process that asks and no others, so B keeps the role. This is the incident
@@ -809,6 +817,10 @@ row6_predecessor() {
   end_row
 
   begin_row "R8 row 5 — an Oh My Pi move in the refused process is refused too"
+  # The rows before left the role under P, and this move's claim names P only while it is: where
+  # one of them failed and C took the role under Z, C's move names Z, its own. So the row reads
+  # that first, and fails naming where the role is rather than on a claim C never made.
+  expect "the role is still held under P, the predecessor this move's claim names" "$(role_holder "$role")" "$p"
   # D answers again right before the move, as it did before the fork: the move's claim names P,
   # which is live only while D has registered it inside the window.
   renew_omp omp-d "$p"
@@ -822,6 +834,9 @@ row6_predecessor() {
   end_row
 
   begin_row "A5 — after the holder exits, the refused Oh My Pi process takes the role on its next session event"
+  # As in the move row: the holder whose exit this row turns on holds the role under P only where
+  # the rows before left it there, so the row reads that first.
+  expect "the role is still held under P when its holder exits" "$(role_holder "$role")" "$p"
   send omp-d '{"op":"shutdown"}'
   expect_true "process D's session left the registry when it shut down" \
     wait_for "$listener_wait_timeout" unregistered "$p"
@@ -886,6 +901,11 @@ row5_claude() {
   end_row
 
   begin_row "R8 row 5 (A5 scenario 2) — a Claude Code /clear handoff naming a predecessor live inside another client instance is refused"
+  # A's handoff claims only while A's process holds the role, which the row before left with it.
+  # So the row reads that first: where that row failed and B took the role, this one fails naming
+  # B's hold, and not on a handoff claim A never made.
+  expect "process A still holds the role under X, as the row before left it" \
+    "$(role_holder "$role") $(role_instance "$role")" "${x} ${instance_a}"
   registered_last() {
     [[ "$(registered_at cc-b "$x")" -gt "$(registered_at cc-a "$x")" ]]
   }
