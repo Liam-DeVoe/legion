@@ -95,13 +95,20 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 }
 
 // ClonePool is Clone opened as a pool of testpool.PoolConns connections, closed when the test ends —
-// before the clone is dropped, since Clone registered that cleanup first. The size is fixed rather
-// than pgxpool's default, max(4, runtime.NumCPU()): a test whose work runs concurrently on the pool
-// opens as many connections as the pool allows, and on a machine of many CPUs that passed the
-// server's max_connections (testpool.PoolConns says more).
+// before the clone is dropped, since Clone registered that cleanup first. The pool is built from
+// store.PoolConfig, as the daemon's own is, so a test that wraps it with store.NewPool writes
+// through the store's text rule. The size is fixed rather than pgxpool's default,
+// max(4, runtime.NumCPU()), which PoolConfig leaves: a test whose work runs concurrently on the
+// pool opens as many connections as the pool allows, and on a machine of many CPUs that passed
+// the server's max_connections (testpool.PoolConns says more).
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := testpool.NewPool(context.Background(), Clone(t, prefix))
+	config, err := store.PoolConfig(Clone(t, prefix))
+	if err != nil {
+		t.Fatalf("configure a pool on the cloned database: %v", err)
+	}
+	config.MaxConns = testpool.PoolConns
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
