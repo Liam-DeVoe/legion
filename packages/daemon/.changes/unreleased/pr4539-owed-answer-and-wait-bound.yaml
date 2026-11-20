@@ -7,7 +7,10 @@ body: |-
   owes nothing, and the daemon sends that entry's task itself. The idle release holds a pod for a
   phase reminder that is due only while the claim owes its phase by the rule the owed answer reads,
   so a past-due reminder wake of a claim whose completion is recorded, that a merge forward holds,
-  or that is behind its entry holds no pod. While the daemon records that a started issue gave its
+  or that is behind its entry holds no pod. By the same rule a released claim that owes its phase
+  nothing gets no idle backstop: the release of its pod, a project's pause that stops it, and the
+  cancel of its release while the project is paused arm none, since any later work of it comes as
+  a daemon task, which wakes the pod. While the daemon records that a started issue gave its
   admission slot back to wait on another issue, the silence sweep writes no start row for its phase
   workers, tells the architect of a quiet worker once after 24 hours, and the idle backstop wakes
   its released pod no earlier than 24 hours after the release; the normal bounds apply again once

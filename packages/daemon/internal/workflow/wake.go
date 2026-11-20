@@ -298,9 +298,13 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
-// release, whatever else did or did not happen. The row is fired under a conditional update, so a
-// backstop two passes read fires once, and the row survives a restart, so one that came due while
-// the daemon was down fires at the first pass after it starts.
+// release, whatever else did or did not happen. That is for a claim that owes its phase work: a
+// claim that owes it nothing — its completion recorded while the issue stays in the phase, a
+// merge forward holding it, or behind its entry (record.PhaseOwed) — is armed no backstop
+// (internal/daemon's armBackstops, dispatch://INFRA-2746 R1), since any later work of it comes as
+// a daemon task, which wakes the pod. The row is fired under a conditional update, so a backstop
+// two passes read fires once, and the row survives a restart, so one that came due while the
+// daemon was down fires at the first pass after it starts.
 //
 // The backstop of an issue the daemon records as waiting on another issue
 // (record.Issue.ReleasedForWaitAt) wakes its pod only WaitSilenceBound after the release armed

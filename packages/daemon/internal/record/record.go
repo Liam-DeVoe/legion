@@ -2636,12 +2636,17 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // and for one a merge forward holds, and true otherwise. Whether the claim's role works the
 // phase the issue stands in is its caller's to ask first.
 //
-// It is the one rule two readers hold a phase worker to (dispatch://INFRA-2746 R1): the owed
-// answer (api's owedBy), which tells the claim's session whether it owes its phase, and the idle
-// release's reminder hold (workflow's IdleRelease, IdleHoldReminder), which keeps a pod for a
-// reminder only of a claim that owes its phase. The second reads the first's rule because a
-// claim that owes nothing is reminded of nothing, and the silence sweep does not nudge a role
-// whose completion stands, so a hold on such a claim's reported wake would never end.
+// It is the one rule the daemon holds a phase worker to wherever it asks whether that worker owes
+// its phase (dispatch://INFRA-2746 R1): the owed answer (api's owedBy), which tells the claim's
+// session whether it owes its phase; the idle release's reminder hold (workflow's IdleRelease,
+// IdleHoldReminder), which keeps a pod for a reminder only of a claim that owes its phase; and
+// the backstop of a released or pause-stopped worker (internal/daemon's owesItsPhase, read by
+// armBackstops, projectPause.stopTx and the paused cancel of a release), which arms no wake for
+// a claim that owes nothing. The other two read the owed answer's rule because a claim that owes
+// nothing is reminded of nothing and waits on nothing a backstop stands in for: the silence sweep
+// does not nudge a role whose completion stands, so a hold on such a claim's reported wake would
+// never end, and a backstop would wake it every backstop_minutes to do nothing, since any later
+// work of it comes as a daemon task, which wakes the pod.
 func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld bool) bool {
 	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld
 }
@@ -2652,10 +2657,12 @@ func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mer
 // PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, and whether a
 // merge forward of the issue's pull request holds the role (MergeForwardHolds). Those are the
 // facts the idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
-// PhaseOwed). It reads them through tx, the view's own transaction, in two statements whatever
-// the number of claims: the issue's phases rows and its pull request, the reads the completion
-// route's position takes (api's handoffPosition). The store's idle view calls it through the
-// reader the daemon hands it (store.IdleRecords), since that package cannot import this one.
+// PhaseOwed), and the ones a backstop's writer reads of the one claim it would arm a backstop for
+// (internal/daemon's owesItsPhase). It reads them through tx, the caller's own transaction, in two
+// statements whatever the number of claims: the issue's phases rows and its pull request, the
+// reads the completion route's position takes (api's handoffPosition). The store's idle view
+// calls it through the reader the daemon hands it (store.IdleRecords), since that package cannot
+// import this one.
 func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
 	rows, err := store.Phases(ctx, tx, issue)
 	if err != nil {

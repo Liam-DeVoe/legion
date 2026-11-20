@@ -528,6 +528,22 @@ func (s *Store) ClaimsTx(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, err
 	return readClaims(ctx, tx, "")
 }
 
+// ClaimTx is the claim of token through tx, as Claims reads every claim: with its pending
+// delivery, the entry it last served and its update round, which is what a rule of the claim's
+// own reads where a narrower read of it carries less, such as the entry it serves
+// (supervise.Claim.ServingEntry) after the released-claim read (ReleasedClaimsOf). A token no
+// claim holds is refused.
+func ClaimTx(ctx context.Context, tx pgx.Tx, token claim.Token) (supervise.Claim, error) {
+	claims, err := readClaims(ctx, tx, " where c.token = $1", string(token))
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	if len(claims) == 0 {
+		return supervise.Claim{}, fmt.Errorf("no claim holds token %s", token)
+	}
+	return claims[0], nil
+}
+
 // readClaims reads the claims filter selects — a where clause over claims c, binding args, and ""
 // for every claim — with their pending deliveries, in token order.
 func readClaims(ctx context.Context, q rowsQuerier, filter string, args ...any) ([]supervise.Claim, error) {

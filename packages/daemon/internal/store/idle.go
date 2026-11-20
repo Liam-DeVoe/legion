@@ -464,14 +464,24 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
-// where the deployment releases no pod), and which role works an issue's open phase
-// (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
-// required of every cancel, since whether the project is paused is read inside the cancel's own
-// transaction; a cancel made while the project runs reads nothing else of it.
+// where the deployment releases no pod), which role works an issue's open phase
+// (workflow.OpenPhaseRole), and whether such a worker owes that phase (OwesPhase), neither of
+// which the store restates (nil arms no backstop). At is required of every cancel, since whether
+// the project is paused is read inside the cancel's own transaction; a cancel made while the
+// project runs reads nothing else of it.
+//
+// OwesPhase answers, through tx, whether c, a released claim of the worker of the phase at that
+// its issue stands at, serving the issue's generation, owes that phase its completion: the rule a
+// release's backstop reads (internal/daemon's owesItsPhase, record.PhaseOwed), which reads the
+// workflow's record of the claim's role and which this package cannot import (IdleRecords says
+// why). A worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1): a
+// backstop would wake it to do nothing, and any later work of it comes as a daemon task, which
+// wakes it.
 type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration
 	OpenPhaseRole func(phase.Phase) claim.Role
+	OwesPhase     func(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error)
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -494,10 +504,12 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
-// backstop, which the record arms only where the stop owes no launch. A wake taken since is left
-// open: it is the launch the role is owed, and its start row runs at the resume. The caller holds
-// the issue's lock and held's row for share.
+// unpushed work; and, for the worker of the issue's open phase serving the issue's generation
+// that owes that phase (ReleaseCancelPause.OwesPhase, of its whole claim, ClaimTx, since the
+// entry it serves is supervise.Claim.ServingEntry's rule over what releasedRole does not carry),
+// its backstop, which the record arms only where the stop owes no launch. A wake taken since is
+// left open: it is the launch the role is owed, and its start row runs at the resume. The caller
+// holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
@@ -508,9 +520,19 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if paused.Backstop > 0 && paused.OpenPhaseRole != nil &&
+		if !owed && paused.Backstop > 0 && paused.OpenPhaseRole != nil && paused.OwesPhase != nil &&
 			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
-			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, ArmedAt: at, DueAt: at.Add(paused.Backstop)}
+			c, err := ClaimTx(ctx, tx, r.token)
+			if err != nil {
+				return err
+			}
+			owes, err := paused.OwesPhase(ctx, tx, standing.phase, standing.generation, c)
+			if err != nil {
+				return err
+			}
+			if owes {
+				rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, ArmedAt: at, DueAt: at.Add(paused.Backstop)}
+			}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err

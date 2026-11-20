@@ -1016,3 +1016,118 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 		t.Fatalf("backstops armed after the issue's close = %v, want none", got)
 	}
 }
+
+// dispatch://INFRA-2746 R1 at a project's pause (check c-idle-keeps-nothing-for-a-claim-that-owes-nothing):
+// both writers of the backstop a pause's stop of an open phase's worker arms read the rule a
+// release's backstop reads (owesItsPhase, record.PhaseOwed). The stop transaction
+// (projectPause.stopTx), and a cancel of the pod's release made while the project is paused,
+// which records the released role stopped by the pause in the store (outbox.cancelRelease,
+// store.ReleaseCancelPause.OwesPhase), each arm no backstop for LEGION-208's implementer when its
+// completion of the entry its phases row stands on is recorded while the issue stays in
+// implementing, and none when it is behind that entry, which the daemon sends it itself: in
+// neither case does it owe the phase anything a wake could bring back. The second row reads the
+// entry the claim serves from the whole claim (supervise.Claim.ServingEntry, store.ClaimTx). The
+// control, the same stop of an implementer that serves its row's entry and owes it, arms the
+// backstop as it always has. The stop is recorded in every case, so a case that arms none is a
+// stop that read the rule and not one that never ran.
+func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
+	for _, writer := range []struct {
+		name string
+		// released is whether the implementer's pod was released before the pause, so that
+		// stop is the cancel of that release: the claim suspended as `released` under the
+		// release's mark.
+		released bool
+		stop     func(r *pauseRig, held store.Pause, implementer supervise.Claim)
+	}{
+		{name: "the stop transaction", stop: func(r *pauseRig, held store.Pause, implementer supervise.Claim) {
+			r.mustStop(implementer, supervise.PauseStop{Pause: held.ID})
+		}},
+		{name: "a cancel of its release while paused", released: true, stop: func(r *pauseRig, _ store.Pause, _ supervise.Claim) {
+			r.cancelRelease()
+		}},
+	} {
+		for _, c := range []struct {
+			name string
+			// served is the entry the implementer last served, and rowEntry and completed its
+			// phases row: the entry the row stands on and whether it records the completion.
+			served, rowEntry int64
+			completed        bool
+			owes             bool
+		}{
+			{name: "its role's completion is recorded", served: 1, rowEntry: 1, completed: true},
+			{name: "it is behind its entry", served: 1, rowEntry: 2},
+			{name: "the control: its role owes its phase", served: 1, rowEntry: 1, owes: true},
+		} {
+			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
+				r := newPauseRig(t, claim.RoleImplementer)
+				implementer := r.claim(claim.RoleImplementer, supervise.StateSuspended)
+				implementer.ServedEntry = c.served
+				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
+				if writer.released {
+					r.markReleased(implementer)
+				}
+				held := r.pauseLegion()
+				writer.stop(r, held, implementer)
+
+				if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+					t.Fatalf("the implementer's stops = %+v, want one stopped and owed no launch", got)
+				}
+				armed := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`, pauseIssue)
+				if !c.owes && armed != 0 {
+					t.Errorf("the pause's stop of %s's implementer armed %d open backstops, want none: it owes nothing a wake could bring back",
+						pauseIssue, armed)
+				}
+				if c.owes && armed != 1 {
+					t.Errorf("the pause's stop of %s's implementer armed %d open backstops, want 1: it owes its phase", pauseIssue, armed)
+				}
+			})
+		}
+	}
+}
+
+// putPhaseRow writes role's phases row of LEGION-208 standing on entry, with its completion of
+// that entry recorded where completed is set (the handoff record a completion names, as the
+// workflow records it), and leaves the issue in its phase.
+func (r *pauseRig) putPhaseRow(role claim.Role, entry int64, completed bool) {
+	r.t.Helper()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := r.pauses.records.Phases(r.ctx, tx, pauseIssue)
+		if err != nil {
+			return err
+		}
+		row := record.PhaseRowOf(rows, role)
+		row.Issue, row.Role, row.Claim, row.Entry = pauseIssue, role, mustClaimToken(r.t, pauseIssue, role), entry
+		if completed {
+			row.HandoffRecord, row.HandoffVersion = "implementer-completion", 1
+		}
+		return r.pauses.records.PutPhase(r.ctx, tx, row)
+	}); err != nil {
+		r.t.Fatalf("write the phases row of %s's %s: %v", pauseIssue, role, err)
+	}
+}
+
+// markReleased leaves c, a suspended claim of LEGION-208, as an idle release that has not
+// finished leaves it: suspended as `released`, and named among the claims the issue's release
+// mark suspended, the set a cancel of that release stops for a pause (store.CancelIssueRelease).
+func (r *pauseRig) markReleased(c supervise.Claim) {
+	r.t.Helper()
+	if err := r.st.PutClaim(r.ctx, c); err != nil {
+		r.t.Fatalf("suspend the %s as released: %v", c.Role, err)
+	}
+	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 1, 18, 20, 22, 0, $2, $3, now())`, pauseIssue, string(c.Role), []string{string(c.Role)}); err != nil {
+		r.t.Fatalf("mark the release of %s: %v", pauseIssue, err)
+	}
+}
+
+// cancelRelease cancels LEGION-208's release through the outbox's own cancel, with the rig's
+// backstop, as a release whose save failed does.
+func (r *pauseRig) cancelRelease() {
+	r.t.Helper()
+	runner := &outbox{pool: r.pool, records: r.pauses.records, trees: r.st, project: "legion", backstop: r.pauses.backstop,
+		now: time.Now, log: quietLogger()}
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save of the release failed"); err != nil {
+		r.t.Fatalf("cancel the release of %s while LEGION is paused: %v", pauseIssue, err)
+	}
+}
