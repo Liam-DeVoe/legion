@@ -247,10 +247,8 @@ func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
 // ClaimActivity is the activity report the machines store for token's claim at launch generation,
 // as the store reads it (store.Store.ClaimActivity): none for another launch, nor for a launch
 // that has reported nothing.
-func (s *releaseRecord) ClaimActivity(_ context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error) {
-	s.claims.mu.Lock()
-	defer s.claims.mu.Unlock()
-	c, ok := s.claims.claims[token]
+func (s *releaseRecord) ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error) {
+	c, ok, _ := s.ClaimByToken(ctx, token)
 	if !ok || c.Generation != generation || c.ActivityAt.IsZero() {
 		return supervise.ActivityReport{}, false, nil
 	}

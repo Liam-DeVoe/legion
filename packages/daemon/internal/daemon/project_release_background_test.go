@@ -8,8 +8,6 @@ package daemon
 // line the test logs begins with its check's name.
 
 import (
-	"encoding/json"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -75,7 +73,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 			check, issue.pod, line.Outcome, dryAsked[issue.pod])
 	}
 
-	args := append(append([]string{"project", "release"}, rig.operatorFlags()...), "--bound", "90s", "--json")
+	args := rig.releaseArgs("--bound", "90s")
 	done := make(chan idleRigCommand, 1)
 	go func() { done <- legionRun(legion, args...) }()
 	var finishOnce sync.Once
@@ -84,14 +82,10 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		t.Helper()
 		finishOnce.Do(func() {
 			var ran idleRigCommand
-			select {
-			case ran = <-done:
-			case <-time.After(idleRigProjectReleaseWait):
-				t.Fatalf("legion project release did not end within %s", idleRigProjectReleaseWait)
-			}
-			if err := json.Unmarshal([]byte(ran.stdout), &finished); err != nil || finished.FinishedAt == nil || ran.code != 0 {
-				t.Fatalf("legion project release exited %d printing %q (stderr %q), want 0 and a finished release: %v",
-					ran.code, ran.stdout, ran.stderr, err)
+			ran, finished = awaitReleaseCommand(t, done)
+			if finished.FinishedAt == nil || ran.code != 0 {
+				t.Fatalf("legion project release exited %d printing %q (stderr %q), want 0 and a finished release",
+					ran.code, ran.stdout, ran.stderr)
 			}
 			t.Logf("%s: legion project release exited 0; release %d started at %s, bound at %s, finished at %s", check, finished.ID,
 				finished.StartedAt.UTC().Format(time.RFC3339Nano), finished.BoundAt.UTC().Format(time.RFC3339Nano),
@@ -101,12 +95,6 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 			t.Fatal("the release did not finish")
 		}
 		return finished
-	}
-	// running is the release as its GET serves it while it runs, and whether it is recorded yet.
-	running := func() (api.ProjectReleaseResponse, bool) {
-		status, body := rig.api.request(http.MethodGet, api.ProjectReleaseRoute, nil, true)
-		var release api.ProjectReleaseResponse
-		return release, status == http.StatusOK && json.Unmarshal(body, &release) == nil
 	}
 	// endedGone is when the second pod's Sandbox was first seen gone, and noteEndedGone looks.
 	var endedGone time.Time
@@ -126,7 +114,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		var answered time.Time
 		idleRigEventually(t, idleRigRecordWait, "the answer of "+background.pod+"'s role to the release's ask", func() bool {
 			noteEndedGone()
-			release, ok := running()
+			release, ok := rig.releaseNow()
 			if !ok {
 				return false
 			}
@@ -150,7 +138,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 		}
 		t.Logf("%s: the release asked %s's %s at %s and it answered at %s; the ask says: %q", check, background.pod, background.role,
 			asks[0].At.UTC().Format(time.RFC3339Nano), answered.UTC().Format(time.RFC3339Nano), asks[0].Text)
-		if rule := "no role reports a running subagent or background job"; !strings.Contains(asks[0].Text, rule) {
+		if rule := "each role's last report names no subagent and no background job that runs"; !strings.Contains(asks[0].Text, rule) {
 			t.Errorf("the ask to %s's %s does not say %q, the rule the pod is held to", background.pod, background.role, rule)
 		}
 
@@ -164,7 +152,7 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 				t.Fatalf("%s's Sandbox is gone %s after its role answered, while its role reports a running subagent", background.pod,
 					time.Since(answered))
 			}
-			if release, ok := running(); ok {
+			if release, ok := rig.releaseNow(); ok {
 				if line, ok := releaseLineNow(release, background.pod); ok && line.Outcome != api.ReleaseWaiting {
 					t.Fatalf("the release ended %s as %s while its role reports a running subagent", background.pod, lineJSON(line))
 				}

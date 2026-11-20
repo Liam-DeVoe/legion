@@ -12,8 +12,13 @@ import (
 // it once per release and issue and sends it on the role's own Envoy topic, as an update round's
 // ask goes (record.UpdateAsk, under round), so it can arrive in the middle of a turn and tells the
 // role to act now. It states the rule the pod is held to: the daemon deletes it before deletesAt
-// only once every asked role answered, no role is in a turn and no role reports a running
-// subagent or background job.
+// only once every asked role answered, no role is in a turn and each role's last report names no
+// subagent and no background job that runs, the report a role's plugin sends at the end of each
+// turn. So, as an update round's ask does (UpdateTask), it gives four steps: push, let each
+// subagent and each background job the role started finish or stop it and push what it made,
+// answer, and end the turn. A role whose work finishes after its answer pushes what that work
+// made before it ends that turn. A role whose tool has no ready_for_update is told to do the
+// first two steps, because the pod goes at deletesAt whatever it does.
 //
 // round is the ask's id, the round the role names in its answer: the `legion` tool's
 // ready_for_update takes any round string, and the daemon hands an answer that names the running
@@ -30,17 +35,20 @@ import (
 func ReleaseTask(round, issue string, deletesAt time.Time) string {
 	at := deletesAt.UTC().Format(time.RFC3339)
 	branch := "legion/" + issue
-	return fmt.Sprintf(`The daemon releases every pod of this project. It deletes the pod that runs this issue's roles at %s (UTC), and the disk goes with the pod. The disk holds your workspace. The daemon pushes nothing for you. Work that you do not push before %s is lost with the pod.
+	return fmt.Sprintf(`The daemon releases every pod of this project. It deletes the pod that runs this issue's roles at %[1]s (UTC), and the disk goes with the pod. The disk holds your workspace. The daemon pushes nothing for you. Work that you do not push before %[1]s is lost with the pod.
 
-The ask is %s. If every asked role of this pod answers, no role is in a turn and no role reports a running subagent or background job, the daemon deletes the pod before that moment. A turn in progress does not delay that moment.
+The ask is %[2]s. If every asked role of this pod answers, the daemon can delete the pod before that moment. It then deletes the pod once no role is in a turn and each role's last report names no subagent and no background job that runs. Your plugin sends that report at the end of each turn. A turn in progress does not delay that moment.
 
-This message can arrive while you are in a turn. Do these three steps now:
+This message can arrive while you are in a turn. Do these four steps now:
 
-1. Push every commit that you want to keep to the branch %s.
-2. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
-3. End your turn.
+1. Push every commit that you want to keep to the branch %[3]s.
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[1]s. Then commit and push what it made.
+3. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[2]s".
+4. End your turn.
 
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 now. Then end your turn. The daemon deletes the pod at %s whatever you do.
+If a subagent or a background job finishes after you answer, commit and push what it made before you end that turn.
 
-The daemon starts your process again in a new pod, in this same session, after the daemon starts again. The daemon holds your next task until then. Do not start new work now.`, at, at, round, branch, round, at)
+If your `+"`legion`"+` tool has no "ready_for_update" operation, do steps 1 and 2 now. Then end your turn. The daemon deletes the pod at %[1]s whatever you do.
+
+The daemon starts your process again in a new pod, in this same session, after the daemon starts again. The daemon holds your next task until then. Do not start new work now.`, at, round, branch)
 }

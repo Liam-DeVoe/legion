@@ -6463,6 +6463,8 @@ Where the class's reclaim policy is `Delete`, the disk goes with the claim.
 
 - The tree's cleanup when its linger ends (`CleanupTree`), and the orphan sweep (`ReconcileOrphans`).
 
+- The project release ([Releasing a project's pods](#releasing-a-projects-pods)), which ends each issue pod through `SuspendIssue`.
+
 - The reset (below).
 
 - A launch into a Sandbox of the other disk shape.
@@ -6887,7 +6889,7 @@ The release does five things, in this order:
    A role reports running background work when its activity report names a running subagent or background job, or when it has sent no report since its last turn: it is asked and waited for as a role in a turn is, as an update round reads that report since cybermonklabs/legion#4556 ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
    The ask reaches each role once, on the role's own Envoy topic, as an update round's ask does, so it can arrive in the middle of a turn (`supervise.ReleaseTask`).
    It gives the moment the daemon deletes the pod, and says that work not pushed by then goes with the pod.
-   It asks the role to push to `legion/<KEY>`, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
+   It asks the role to push to `legion/<KEY>`, to let its subagents and background jobs finish and push what they made, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
    Each asked pod waits until each asked role answered and no role of it is in a turn or reports running background work, or until the bound.
    A role that said it is ready takes its Envoy topic only at its session's first turn, or 30 seconds after it said so, and the release holds every task that would start that turn, so the ask can find no session on the topic.
    The daemon then publishes the ask again, a second later and then up to 64 seconds apart, until a session takes the topic or the bound comes.
@@ -6911,7 +6913,7 @@ The release does five things, in this order:
    Then it asks once more for each claim stored suspended by an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    Then it deletes the pod's Sandbox, with the pod and its disk.
-   A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is the Sandbox's own claim, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
+   A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
    A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
    The daemon pushes nothing for a role.

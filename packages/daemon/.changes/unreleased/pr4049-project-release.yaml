@@ -4,8 +4,9 @@ body: |-
   [--dry-run] [--json]` releases every pod of the daemon's project, the first step of moving the
   project's pods to another Kubernetes cluster. The daemon reads each issue pod's workspace for
   commits no remote holds. It asks each running role of a pod with such commits, a refused read or
-  a turn in progress to push to `legion/<KEY>` and answer, and it waits for the answers or the
-  bound, `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
+  a turn in progress to push to `legion/<KEY>`, to let its subagents and background jobs finish
+  and push what they made, and to answer. It waits for the answers or the bound,
+  `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
   Sandbox of the project. It saves no workspace.
   A role whose activity report names a running subagent or background job, or that has sent no
   report since its last turn, is asked and waited for as a role in a turn is, as an update round

@@ -470,8 +470,7 @@ type moveCommand struct {
 // since the command waits for the release to finish while the test acts on it, and answers what it
 // printed once it ends. It fails nothing itself.
 func (m *projectMove) runRelease(bound time.Duration) <-chan moveCommand {
-	r := m.rig
-	args := append(append([]string{"project", "release"}, r.operatorFlags()...), "--bound", bound.String(), "--json")
+	args := m.rig.releaseArgs("--bound", bound.String())
 	done := make(chan moveCommand, 1)
 	go func() {
 		command := legionRun(m.legion, args...)

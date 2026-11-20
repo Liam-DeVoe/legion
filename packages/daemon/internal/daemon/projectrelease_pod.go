@@ -97,6 +97,34 @@ func (r *projectReleaser) asks(ctx context.Context, read releaseRead, claims []s
 	return hold.holds(), hold
 }
 
+// background is the background hold over an issue pod whose claims are claims, read now by the
+// rule an update round's replacement reads its own pod's by since cybermonklabs/legion#4556
+// (backgroundHold.weigh): each claim that records a process and is not gone, whose activity
+// report names background work that runs, or that has sent no report since its last turn
+// started. The report is read from the store at the launch the claim's view holds
+// (projectReleaseStore.ClaimActivity), as roundGroup reads it: the activity route writes the
+// store alone, and a machine holds the report only as it read it at its own boot. A gone claim
+// holds nothing, so its report is not read. A report the store could not read is read as none,
+// which holds the pod as a session that has sent no report holds it.
+func (r *projectReleaser) background(ctx context.Context, claims []supervise.ClaimView) backgroundHold {
+	var hold backgroundHold
+	for _, view := range claims {
+		if view.Locator == nil || view.Gone() {
+			continue
+		}
+		c := view.Claim
+		report, _, err := r.store.ClaimActivity(ctx, c.Token, c.Generation)
+		if err != nil {
+			r.log.Warn("project release: read the activity report of a claim of the pod; it holds the pod as a claim with no report",
+				"claim", c.Token, "generation", c.Generation, "error", err)
+			report = supervise.ActivityReport{}
+		}
+		c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, report.Kinds
+		hold.weigh(c)
+	}
+	return hold
+}
+
 // takePod takes one issue pod to its end. A pod left from the start has its claims held for an
 // operator and stays. A pod with no read is deleted unread. A read pod is read first. A pod that
 // read asks for is asked and waits. One that the first read does not ask for is read again just

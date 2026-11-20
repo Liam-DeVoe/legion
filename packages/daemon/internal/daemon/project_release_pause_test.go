@@ -270,13 +270,12 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 	rig.launchAll()
 	waiting := rig.issue("waiting")
 
-	args := append(append([]string{"project", "release"}, rig.operatorFlags()...), "--bound", "40s", "--json")
+	args := rig.releaseArgs("--bound", "40s")
 	done := make(chan idleRigCommand, 1)
 	go func() { done <- legionRun(legion, args...) }()
 	idleRigEventually(t, idleRigProjectReleaseWait, "the release holding "+waiting.pod+" in its push wait", func() bool {
-		status, body := rig.api.request(http.MethodGet, api.ProjectReleaseRoute, nil, true)
-		var running api.ProjectReleaseResponse
-		if status != http.StatusOK || json.Unmarshal(body, &running) != nil || running.FinishedAt != nil {
+		running, ok := rig.releaseNow()
+		if !ok || running.FinishedAt != nil {
 			return false
 		}
 		line, ok := releaseLineNow(running, waiting.pod)
@@ -314,15 +313,9 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 		t.FailNow()
 	}
 
-	var ran idleRigCommand
-	select {
-	case ran = <-done:
-	case <-time.After(idleRigProjectReleaseWait):
-		t.Fatalf("legion project release did not end within %s", idleRigProjectReleaseWait)
-	}
-	var finished api.ProjectReleaseResponse
-	if err := json.Unmarshal([]byte(ran.stdout), &finished); err != nil || finished.FinishedAt == nil || finished.ID != running.ID {
-		t.Fatalf("legion project release exited %d printing %q (stderr %q), want release %d finished: %v", ran.code, ran.stdout, ran.stderr, running.ID, err)
+	ran, finished := awaitReleaseCommand(t, done)
+	if finished.FinishedAt == nil || finished.ID != running.ID {
+		t.Fatalf("legion project release exited %d printing %q (stderr %q), want release %d finished", ran.code, ran.stdout, ran.stderr, running.ID)
 	}
 	released := rig.roleStates()
 	t.Logf("%s: legion project release exited %d; release %d finished at %s; each role's state: %v", check, ran.code, finished.ID,

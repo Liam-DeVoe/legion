@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testbuild"
 )
 
 // goHomeKeys are the homes `go` derives its caches and its configuration from where GOPATH,
@@ -51,14 +52,13 @@ var goHomes = func() []string {
 }()
 
 // legionBuild is this test binary's one build of `legion`, which every buildLegion of the process
-// answers. The move and release tests that run the command each built their own before, four
-// builds inside the race step's one package deadline (dispatch://INFRA-3583). dir is the
-// directory made for it under os.TempDir, which TestMain removes once the tests are done
-// (removeLegionBuild), since a test's own temporary directory is gone before the next test runs;
-// by is the test whose call built it, and took is how long its `go build` ran.
+// answers. One build serves every test that runs the command: a build takes about a minute in an
+// issue pod, and the race step runs this package under one deadline (dispatch://INFRA-3583). The
+// binary goes into the directory testbuild builds into (testbuild.Dir), which testbuild.Main
+// removes once the tests are done, since a test's own temporary directory is gone before the next
+// test runs; by is the test whose call built it, and took is how long its `go build` ran.
 var legionBuild struct {
 	once   sync.Once
-	dir    string
 	binary string
 	by     string
 	took   time.Duration
@@ -75,12 +75,11 @@ func buildLegion(t *testing.T) string {
 	legionBuild.once.Do(func() {
 		built = true
 		legionBuild.by = t.Name()
-		dir, err := os.MkdirTemp("", "daemon-test-legion-")
+		dir, err := testbuild.Dir()
 		if err != nil {
-			legionBuild.err = fmt.Errorf("make the directory to build legion into: %w", err)
+			legionBuild.err = fmt.Errorf("find the directory to build legion into: %w", err)
 			return
 		}
-		legionBuild.dir = dir
 		legionBuild.binary = filepath.Join(dir, "legion")
 		legionBuild.took, legionBuild.err = compileLegion(legionBuild.binary)
 	})
@@ -115,22 +114,6 @@ func compileLegion(binary string) (time.Duration, error) {
 		return 0, fmt.Errorf("build legion from %s: %v\n%s", module, err, out)
 	}
 	return time.Since(started), nil
-}
-
-// removeLegionBuild removes the directory legionBuild's `legion` was built into, if a test built
-// it, once the tests are done, and answers code: 1 instead of 0 when the removal failed, so a
-// directory left behind is a red run, as testbuild.Main answers for the Envoy binaries'.
-func removeLegionBuild(code int) int {
-	if legionBuild.dir == "" {
-		return code
-	}
-	if err := os.RemoveAll(legionBuild.dir); err != nil {
-		fmt.Fprintf(os.Stderr, "remove the directory legion was built into, %s: %v\n", legionBuild.dir, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
 }
 
 // idleRigCommand is one run of the `legion` command: what it printed, its exit, and the error of a
@@ -177,16 +160,39 @@ func (r *idleWakeRig) operatorFlags() []string {
 	return []string{"--operator-token-file", r.cfg.OperatorTokenFile, "--port", strconv.Itoa(r.cfg.Port)}
 }
 
+// releaseArgs are the arguments of `legion project release` against the rig's daemon: the
+// operator's flags, then flags, then --json.
+func (r *idleWakeRig) releaseArgs(flags ...string) []string {
+	return slices.Concat([]string{"project", "release"}, r.operatorFlags(), flags, []string{"--json"})
+}
+
 // projectRelease runs `legion project release … --json` with the extra flags given, and answers
 // the run and the release it printed.
 func (r *idleWakeRig) projectRelease(binary string, flags ...string) (idleRigCommand, api.ProjectReleaseResponse) {
 	r.t.Helper()
-	args := append(append([]string{"project", "release"}, r.operatorFlags()...), append(flags, "--json")...)
-	ran := r.legion(binary, args...)
+	ran := r.legion(binary, r.releaseArgs(flags...)...)
 	var release api.ProjectReleaseResponse
 	if err := json.Unmarshal([]byte(ran.stdout), &release); err != nil {
 		r.t.Fatalf("legion project release %s exited %d printing %q (stderr %q), which is no release: %v",
 			strings.Join(flags, " "), ran.code, ran.stdout, ran.stderr, err)
+	}
+	return ran, release
+}
+
+// awaitReleaseCommand waits up to idleRigProjectReleaseWait for the run of `legion project
+// release` that a goroutine sends on done, and answers that run and the release it printed. A run
+// that does not end in that time, or that prints no release, fails t.
+func awaitReleaseCommand(t *testing.T, done <-chan idleRigCommand) (idleRigCommand, api.ProjectReleaseResponse) {
+	t.Helper()
+	var ran idleRigCommand
+	select {
+	case ran = <-done:
+	case <-time.After(idleRigProjectReleaseWait):
+		t.Fatalf("legion project release did not end within %s", idleRigProjectReleaseWait)
+	}
+	var release api.ProjectReleaseResponse
+	if err := json.Unmarshal([]byte(ran.stdout), &release); err != nil {
+		t.Fatalf("legion project release exited %d printing %q (stderr %q), which is no release: %v", ran.code, ran.stdout, ran.stderr, err)
 	}
 	return ran, release
 }

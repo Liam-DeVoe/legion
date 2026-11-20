@@ -59,6 +59,14 @@ func (r *idleWakeRig) readRelease() (api.ProjectReleaseResponse, []byte) {
 	return release, body
 }
 
+// releaseNow is the release as its GET serves it now, and whether the daemon has recorded one yet:
+// a GET before the release's record answers false.
+func (r *idleWakeRig) releaseNow() (api.ProjectReleaseResponse, bool) {
+	status, body := r.api.request(http.MethodGet, api.ProjectReleaseRoute, nil, true)
+	var release api.ProjectReleaseResponse
+	return release, status == http.StatusOK && json.Unmarshal(body, &release) == nil
+}
+
 // awaitReleaseFinished reads the release until it finished, and answers it as its GET served it.
 func (r *idleWakeRig) awaitReleaseFinished() (api.ProjectReleaseResponse, []byte) {
 	r.t.Helper()
