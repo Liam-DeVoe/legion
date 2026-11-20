@@ -1289,7 +1289,9 @@ all N shown** decides every request printed. A decision is posted to the broker'
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
 broker refuses it to the listed service `DECIDE_ON_BROKER_PAGE`, naming the page — or, for a
-request the model judge holds, `JUDGE_DECIDES`, naming no page. Those routes read no record for a
+request the model judge holds, `JUDGE_DECIDES`, naming no page — or, for a request a private
+project hides from the person the call names, `404 NOT_FOUND`, as for an id no record has, and
+`503 PROJECT_ACCESS_UNAVAILABLE` where Dispatch does not answer. Those routes read no record for a
 caller the broker has not authenticated: one with no ServiceAccount token, or one it does not
 accept, is refused alike for every record id, so it learns nothing of which records exist.
 
