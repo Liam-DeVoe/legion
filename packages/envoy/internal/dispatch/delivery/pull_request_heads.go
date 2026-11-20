@@ -620,12 +620,16 @@ type AttributedHead struct {
 // neither last and the pull request's own number breaking a tie, so the list does not turn on
 // whichever row the planner returned first. A reader taking the first head takes the one Dispatch
 // learned last.
-func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
+//
+// q is the pool, or the transaction of a caller that reads the heads inside its own write: the
+// record route does (api/results_linked.go, refuseUnknownCommit), so its read is the write's, in
+// the transaction whose commit marks the request's idempotency key.
+func HeadsAttributedTo(ctx context.Context, q Querier, issueKey string) ([]AttributedHead, error) {
 	statements, err := attribution()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, statements.headsAttributedTo, issueKey)
+	rows, err := q.Query(ctx, statements.headsAttributedTo, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}

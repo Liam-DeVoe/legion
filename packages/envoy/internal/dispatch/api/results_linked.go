@@ -81,7 +81,10 @@ const linkedPullRequestReads = 10
 // It refuses in two ways. Where Dispatch's own list of the links could not be read
 // (linkedRepositories), it answers that error, a server error to the caller, and nothing is
 // stored, whatever GitHub said of repo: the record cannot tell whether a linked repository holds
-// the commit. And where GitHub proved that repo does not hold the commit and every other
+// the commit. A failed read of Dispatch's rows of the issue's pull requests
+// (delivery.HeadsAttributedTo) refuses nothing by itself: it is logged, and the record asks
+// GitHub as it would with no such row, so a commit repo holds is still stored. And where GitHub
+// proved that repo does not hold the commit and every other
 // repository either does not count or, counting, is proved not to hold it either — which
 // delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
 // commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. A refusal with links left unread
@@ -108,7 +111,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	heads, err := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+	heads, err := delivery.HeadsAttributedTo(ctx, q, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
 			"issue", issueKey, "commit", sha, "error", err)

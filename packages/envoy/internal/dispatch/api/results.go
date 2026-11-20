@@ -281,11 +281,10 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// a check that compares with nothing from one it could not compare (results_comparison.go,
 	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
 	// the read-through it answers for are already answered by a nil, and the two nothings would
-	// earn one answer here anyway. Only GitHub's proof that the repository holds no such commit,
-	// a read of a linked repository that did not answer and a failed read of the issue's links
-	// refuse a record, and none of them is asked of a nil repository, so a resolve that did not
-	// answer stores the result, exactly as a deployment with no App key and an issue with no
-	// repository do.
+	// earn one answer here anyway. Only GitHub's proof that no repository the result may name
+	// holds the commit and a failed read of the issue's links refuse a record, and neither is
+	// asked of a nil repository, so a resolve that did not answer stores the result, exactly as a
+	// deployment with no App key and an issue with no repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
@@ -294,12 +293,12 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is
 	// one GitHub round trip or more, and the comment over that resolve records what a slow read
 	// under the two issues' owner locks costs. Nothing is written before it, so a refusal leaves
-	// no row and no event behind. linkedCommitRepo is the linked repository the commit is taken
-	// to be of, and nil where it is taken to be checkRepo's: a result at the head of a pull
-	// request the issue links in another repository names a commit of that repository. A linked
-	// read that did not answer, where no repository was shown to hold the commit, refuses the
-	// record for now rather than storing it under a repository no read showed to hold it
-	// (refuseUnknownCommit, results_linked.go).
+	// no row and no event behind. linkedCommitRepo is the repository other than checkRepo the
+	// commit is taken to be of, and nil where it is taken to be checkRepo's: a result at the head
+	// of a pull request the issue links in another repository names a commit of that repository.
+	// A read that did not answer, or a repository Dispatch cannot read, where no repository was
+	// shown to hold the commit, stores the result as checkRepo's (R17 of the spec of several open
+	// pull requests; refuseUnknownCommit, results_linked.go).
 	linkedCommitRepo, err := s.refuseUnknownCommit(r.Context(), pool, check.IssueKey, checkRepo, input.Commit)
 	if err != nil {
 		return refused(err)
