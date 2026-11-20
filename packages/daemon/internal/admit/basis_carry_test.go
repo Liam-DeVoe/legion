@@ -103,7 +103,8 @@ func handOver(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 // mirrorAncestor records what Dispatch last showed of the ancestor in the daemon's mirror.
 func mirrorAncestor(status string) func(context.Context, pgx.Tx, *record.Postgres) error {
 	return func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: carryAncestor, Project: testProject, Status: status, Seq: 5})
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: carryAncestor, Project: testProject, Seq: 5,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}
 }
 
@@ -127,7 +128,8 @@ func recordedAccepted(at phase.Phase) func(context.Context, pgx.Tx, *record.Post
 		if err := recordAncestor(at, "retro")(ctx, tx, records); err != nil {
 			return err
 		}
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: carryAncestor, Project: testProject, Status: "in_progress", Seq: 6})
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: carryAncestor, Project: testProject, Seq: 6,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}
 }
 

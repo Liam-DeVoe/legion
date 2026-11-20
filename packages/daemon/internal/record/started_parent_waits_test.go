@@ -93,13 +93,13 @@ func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 		}
 		// The root's gate stands open, so the children-first judgement below reads its tree.
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root, Step: DesignStepSpec, ArtifactID: "artifact-700", LatestVersion: 1, ApprovedVersion: new(1)}))
-		for _, row := range []DispatchIssueRow{
-			{Key: heldChild, Project: "LEGION", Status: "todo", Parent: parent, Seq: 1},
-			{Key: filed, Project: "LEGION", Status: "backlog", Parent: parent, Seq: 1},
-			{Key: finished, Project: "LEGION", Status: "done", Parent: parent, Seq: 1},
-			{Key: quietChild, Project: "LEGION", Status: "done", Parent: quiet, Seq: 1},
+		for _, reading := range []DispatchReading{
+			{Key: heldChild, Project: "LEGION", Seq: 1, Status: Carry("todo"), Parent: Carry(parent), Blockers: Carry[[]string](nil)},
+			{Key: filed, Project: "LEGION", Seq: 1, Status: Carry("backlog"), Parent: Carry(parent), Blockers: Carry[[]string](nil)},
+			{Key: finished, Project: "LEGION", Seq: 1, Status: Carry("done"), Parent: Carry(parent), Blockers: Carry[[]string](nil)},
+			{Key: quietChild, Project: "LEGION", Seq: 1, Status: Carry("done"), Parent: Carry(quiet), Blockers: Carry[[]string](nil)},
 		} {
-			must(t, records.PutDispatchIssue(ctx, tx, row))
+			must(t, records.PutDispatchIssue(ctx, tx, reading))
 		}
 
 		facts, err := ReadLineFacts(ctx, tx, records, "LEGION", issues, nil)

@@ -66,9 +66,10 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // other started parent follow (record.LineFacts.StartedParentWaits), which the admission pass
 // moves into awaiting_children or leaves where it stands from the same judgement.
 //
-// An open child is in the set because the turn's re-read is what rewrites its mirror row. A
+// An open child is in the set because the turn's re-read is what writes its row of the copy
+// again: a reading of all five values, each of which replaces the one an older reading wrote. A
 // child the architect filed and has not released has no event this daemon consumes — it reaches
-// the mirror from a Dispatch listing alone — so without this its row would stand until the next
+// the copy from a reading of Dispatch alone — so without this its row would stand until the next
 // boot, and its move to icebox, to another parent or out from under its parent would not end the
 // wait it holds.
 //
@@ -131,9 +132,10 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 // readObserved is Dispatch's answer for keys and for the children of parents. Where no issue has
 // started a phase, it is one GetIssue for each key while they number blockerReadFanout or fewer;
 // above that it is one whole-project listing, whose every summary is taken — it is one request
-// for all of them, and a row it refreshes beyond the keys asked for costs nothing behind the
-// mirror's own sequence fence. A key of another project is read one at a time in every branch,
-// since the listing is of this daemon's project alone and names no issue of another.
+// for all of them, and a summary of a key not asked for is a reading of Dispatch like any other,
+// which changes a value only where the copy holds it from an older reading or from none
+// (record.Store.PutDispatchIssue). A key of another project is read one at a time in every
+// branch, since the listing is of this daemon's project alone and names no issue of another.
 //
 // The children of parents are read from the listing, which is the one read of Dispatch the daemon
 // makes that names an issue's children (dispatch.IssueSummary.Parent). Above the bound the listing
@@ -231,8 +233,9 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 }
 
 // readBlocker is one key read singly, and whether Dispatch answered for it. The observation
-// carries the project Dispatch names on the issue, the one read that answers it, so the mirror
-// row of a blocker outside this project is that project's rather than this daemon's
+// carries all five values the copy holds of an issue — its status, its parent, its blockers, its
+// labels and its rank — and the project Dispatch names on the issue, the one read that answers
+// it, so the row of a blocker outside this project is that project's rather than this daemon's
 // (blockers.Mirror.put).
 //
 // An answer that names no project at all is left out as a failed read is, and logged the same
@@ -259,7 +262,8 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 		return intake.IssueStatus{}, false
 	}
 	return intake.IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
-		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent}, true
+		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent,
+		Labels: issue.Labels, Rank: issue.Rank}, true
 }
 
 // ownDispatchKey says whether key is an issue of this daemon's own Dispatch project, by its key's
