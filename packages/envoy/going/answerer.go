@@ -35,8 +35,7 @@ const answerOutputTokens = 4096
 
 // answerStreamLimit is the most bytes of one answer call's response stream the run reads
 // (agentloop.Request.StreamLimit): a call past it is cut there and the run fails, so a model that
-// streams without end costs the server 4 MiB and no more (R15, R16). It is the bound the answer's
-// stream had before the agent's runs (chatStreamLimit).
+// streams without end costs the server 4 MiB and no more (R15, R16).
 const answerStreamLimit = 4 << 20
 
 // answerQuotaShare is the server's share of the chat deployment's tokens a minute
@@ -205,8 +204,10 @@ func NewAnswerer(cfg AnswererConfig) (*Answerer, error) {
 	}
 	if cfg.TokensPerMinute > 0 {
 		// One rate.Limiter, as embed.RateLimitedEmbedder paces the embedder, sized at the
-		// server's share of the tokens a minute with a burst of a minute's share.
-		share := int(float64(cfg.TokensPerMinute) * answerQuotaShare)
+		// server's share of the tokens a minute with a burst of a minute's share, and at least
+		// one token: a quota of a few tokens a minute paces each call to one a minute rather
+		// than refusing every call.
+		share := max(int(float64(cfg.TokensPerMinute)*answerQuotaShare), 1)
 		answerer.limiter = rate.NewLimiter(rate.Limit(float64(share)/60), share)
 	}
 	return answerer, nil
@@ -253,15 +254,11 @@ type Request struct {
 }
 
 // Offer is what the decision model chose before the answer call, for that call to write: the
-// actions it offered, each with its own argument schema, whose arguments the reply's arguments
-// text carries, and the display the answer is shown in.
+// action it offered, with its own argument schema, whose arguments the reply's arguments text
+// carries.
 type Offer struct {
-	// Actions are the actions offered, best first: at most the decision's two best.
+	// Actions are the actions offered: the one the decision chose, or none.
 	Actions []OfferedAction
-	// Display is DisplayChart where the answer is drawn as a chart unasked, which the server
-	// settles from the decision's display choice and its measured threshold, and DisplayProse
-	// or empty otherwise.
-	Display string
 }
 
 // OfferedAction is one action the answer writes arguments for: its catalogue name and its
@@ -490,15 +487,13 @@ func (a *Answerer) paced(run *answerRun) agentloop.Model {
 	return model
 }
 
-// pace waits out the quota's own pacing for tokens. A reservation that cannot be served inside
-// the time the call has left is refused rather than waited on, because waiting it out would
-// spend the whole window to make no call at all.
+// pace waits out the quota's own pacing for tokens. A call estimated past the limiter's burst, a
+// minute's whole share, reserves the burst, as the agent's pacer does (going/agent): it waits for
+// a minute's share and is made, rather than being refused for a cost no wait could serve. A
+// reservation that cannot be served inside the time the call has left is refused rather than
+// waited on, because waiting it out would spend the whole window to make no call at all.
 func (a *Answerer) pace(ctx context.Context, tokens int) error {
-	reservation := a.limiter.ReserveN(a.now(), tokens)
-	if !reservation.OK() {
-		// The call costs more than a minute's whole quota, so no wait would ever serve it.
-		return errQuotaPastDeadline
-	}
+	reservation := a.limiter.ReserveN(a.now(), min(tokens, a.limiter.Burst()))
 	delay := reservation.DelayFrom(a.now())
 	if delay <= 0 {
 		return nil
@@ -772,16 +767,14 @@ func (r *answerRun) ask(items string) string {
 }
 
 // offerText is what the structured call is told beside the question: the blocks it may draw -
-// the kinds the words name, and a chart where the decision settled on one, each only where one
-// of the run's reads fills it (BlockGuide) - and the actions the decision offered, each with its
-// argument schema, whose arguments the reply's arguments text carries, keyed by the action's
-// name, each a list of argument objects. A run with no offer is told only that it offers
-// nothing, so its arguments are {}.
+// the kinds the words name, each only where one of the run's reads fills it (BlockGuide) - and
+// the actions the decision offered, each with its argument schema, whose arguments the reply's
+// arguments text carries, keyed by the action's name, each a list of argument objects. A run
+// with no offer is told only that it offers nothing, so its arguments are {}.
 func (r *answerRun) offerText() string {
 	offer := r.request.Offer
-	chart := offer.Display == DisplayChart
 	var out strings.Builder
-	out.WriteString(BlockGuide(OfferedKinds(r.request.Words, chart, r.request.Reads), chart))
+	out.WriteString(BlockGuide(OfferedKinds(r.request.Words, r.request.Reads)))
 	if len(offer.Actions) == 0 {
 		out.WriteString("\n\nYou are offered no action: write arguments as {}.\n")
 		return out.String()

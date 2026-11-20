@@ -50,12 +50,12 @@ func resolveDecisionModel(env settingValues) (decisionConfig, error) {
 // newDecider builds the decision model cfg names, or nil where there is none to build, which is
 // a server that boots and decides nothing rather than one that refuses to boot: no endpoint, no
 // model named, or a model the committed measurement does not hold (going.DecisionRecord), since
-// a model nobody measured has no thresholds and is no decision model (R11). Each of those logs
-// one line saying why. The decider's token is the file's contents at the moment of each call
-// (going.FileTokenSource), so a file that is absent or empty fails that call as the decision
-// model that cannot be reached (api.ErrDecisionModelUnreachable) and never the boot. The line it
-// logs for a decider names the model, the endpoint's host and the record's thresholds, never a
-// credential.
+// a model nobody measured is no decision model (R11). Each of those logs one line saying why. The
+// decider's token is the file's contents at the moment of each call (going.FileTokenSource), so a
+// file that is absent or empty fails that call as the decision model that cannot be reached
+// (api.ErrDecisionModelUnreachable) and never the boot. The line it logs for a decider names the
+// model, the endpoint's host and whether the record chose that model (going.Record.Chosen),
+// never a credential.
 func newDecider(cfg decisionConfig) *api.Decider {
 	switch {
 	case cfg.Endpoint == "" && cfg.Model == "":
@@ -77,24 +77,14 @@ func newDecider(cfg decisionConfig) *api.Decider {
 		ID: cfg.Model,
 	})
 	if !measured {
-		slog.Warn("dispatch: the decision model is not one the committed measurement holds, so it has no thresholds and the command bar decides nothing", "model", cfg.Model, "record", "packages/envoy/going/decision_models.json")
+		slog.Warn("dispatch: the decision model is not one the committed measurement holds, so the command bar decides nothing", "model", cfg.Model, "record", "packages/envoy/going/decision_models.json")
 		return nil
 	}
 	host := cfg.Endpoint
 	if parsed, err := url.Parse(cfg.Endpoint); err == nil {
 		host = strings.ToLower(parsed.Host)
 	}
-	record := decider.Record()
 	slog.Info("dispatch: decides with a measured decision model", "model", cfg.Model, "host", host,
-		"action_threshold", threshold(record.ActionThreshold), "chart_threshold", threshold(record.ChartThreshold))
+		"chosen", decider.Record().Chosen)
 	return decider
-}
-
-// threshold is a record's threshold as the boot line writes it: its value, or "none" where the
-// fit did not hold.
-func threshold(value *float64) any {
-	if value == nil {
-		return "none"
-	}
-	return *value
 }

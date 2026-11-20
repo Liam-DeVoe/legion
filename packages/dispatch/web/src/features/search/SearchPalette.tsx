@@ -49,19 +49,13 @@ import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
-import {
-  buildIssuePath,
-  buildProjectPath,
-  type DispatchReferenceRoute,
-  nodeRouteFromHref,
-} from "../refs/routes";
+import { buildProjectPath, type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { CapabilityNote } from "./CapabilityNote";
-import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -565,23 +559,31 @@ function PaletteDialog({
         ),
       }))
     : [];
-  // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits. Words
-  // that are an issue's key alone ask no model: their hit is the answer.
-  const { answers, gaps, shownAnswer, stale } = useGoingBar({
+  // The line on top (R2, R3): the next step the words lead to, which Enter on it takes - a run of
+  // the agent on them, a new issue filed from them, or, while the conversation's plan waits, a
+  // revision of that plan in those words. Words that are a hit's own key or title lead to that
+  // hit instead, so no line is offered, the hit heads the list, and no model is asked of them.
+  const namesItsHit =
+    ISSUE_KEY.test(searchText) || (showHits && results.some((result) => namesHit(result, needle)));
+  // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
+  // the line on top Jev chooses for them.
+  const { answers, enterLine, gaps, line, shownAnswer, stale } = useGoingBar({
     context: scope.context,
-    enabled: queryEnabled && !ISSUE_KEY.test(searchText),
+    enabled: queryEnabled && !namesItsHit,
     login,
     project: filters.project ?? "",
     showHits,
     words: searchText,
   });
-  // The line on top (R2, R3): the next step the words lead to, which Enter on it takes - a run of
-  // the agent on them, or, while the conversation's plan waits, a revision of that plan in those
-  // words. Words that are a hit's own key or title lead to that hit instead, so no line is
-  // offered and the hit heads the list.
-  const namesItsHit =
-    ISSUE_KEY.test(searchText) || (showHits && results.some((result) => namesHit(result, needle)));
-  const lineLabel = asking.planWaits ? "Revise the plan" : "Ask";
+  const lineLabel = asking.planWaits
+    ? "Revise the plan"
+    : line === "file"
+      ? scope.context.project
+        ? `File as a new issue in ${scope.context.project}`
+        : "File as a new issue"
+      : line === "do"
+        ? "Do"
+        : "Ask";
   const lineSection: CommandSection = {
     id: LINE_GROUP_ID,
     label: "Next step",
@@ -596,7 +598,8 @@ function PaletteDialog({
                 kind: "offer",
                 label: lineLabel,
                 select: () => {
-                  if (asking.enter(searchText)) {
+                  const kind = enterLine() === "file" ? "new_issue" : undefined;
+                  if (asking.enter(searchText, kind)) {
                     setQuery("");
                     setActive({ hits: "", id: null, left: false });
                   }
@@ -606,18 +609,6 @@ function PaletteDialog({
           ]
         : [],
   };
-  // Words the search answered and matched nothing with: the bar offers them as a new issue,
-  // under the rows this page can do and the projects they name, and never above them - the
-  // offer is the last thing left when nothing else answers.
-  const newIssue = useNewIssueOffer({
-    offered: showHits && results.length === 0,
-    onOpen: (key) => {
-      navigate(buildIssuePath({ key, kind: "issue" }));
-      onClose();
-    },
-    project: scope.targets.project,
-    words: searchText,
-  });
   const commandSections: readonly CommandSection[] = [
     lineSection,
     {
@@ -648,17 +639,9 @@ function PaletteDialog({
       })),
     },
   ];
-  // The two sections at the foot of the list, which the highlight never starts on and the arrows
-  // reach last: a More action is a coincidence of words, and the new issue is a write, so neither
-  // runs on an Enter the reader meant for the row above. The new issue comes under the actions,
-  // because it is the row that writes.
-  const newIssueRow = newIssue?.row;
-  const newIssueSection: CommandSection = {
-    id: NEW_ISSUE_GROUP_ID,
-    label: "New issue",
-    options:
-      newIssueRow === undefined ? [] : [{ hint: null, label: newIssueRow.label, row: newIssueRow }],
-  };
+  // The section at the foot of the list, which the highlight never starts on and the arrows
+  // reach last: a More action is a coincidence of words, so it never runs on an Enter the reader
+  // meant for the row above.
   const moreActions: CommandSection = {
     id: MORE_ACTIONS_GROUP_ID,
     label: "More actions",
@@ -666,7 +649,7 @@ function PaletteDialog({
   };
   // The order the foot is listed and walked in, written once: the rows, the count the highlight
   // rule keeps off them, and the groups drawn below all read this one array.
-  const footSections: readonly CommandSection[] = [moreActions, newIssueSection];
+  const footSections: readonly CommandSection[] = [moreActions];
   const footRows = footSections.reduce((count, section) => count + section.options.length, 0);
   const leadRows = commandSections.flatMap((section) =>
     section.options.map((option) => option.row)
@@ -685,10 +668,8 @@ function PaletteDialog({
   // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
   // send it to the head, and the head it lands on is then adopted, so a row coming back does
   // not take the highlight back from it. The head is the first row - the line on top where the
-  // words lead to one - unless that is one of the foot rows - the new issue and the More actions,
-  // which come last: the highlight never moves to a write by itself, so an Enter never runs a
-  // write the reader did not point at, and with only foot rows listed nothing is highlighted, and
-  // Enter runs nothing until the reader arrows.
+  // words lead to one - unless that is a foot row - a More action, which comes last: with only
+  // foot rows listed nothing is highlighted, and Enter runs nothing until the reader arrows.
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
@@ -733,11 +714,8 @@ function PaletteDialog({
 
   const selectRow = (row: PaletteRow) => {
     if (row.kind === "offer") {
-      // The rows that write or ask, each pressed through the row it carries rather than through
-      // the offer behind it. The new issue is made with the bar still open, so the person reads
-      // what was made and, with no session named, that nothing was started on it; that press
-      // closes the bar itself, by opening the issue. The line on top starts a run, which the bar
-      // stays open to show.
+      // The line on top, pressed through the row it carries rather than through what it
+      // starts: a run, which the bar stays open to show.
       row.select();
       return;
     }
@@ -979,9 +957,6 @@ function PaletteDialog({
           {shownAnswer === undefined || (searchText === "" && conversationOpen) ? null : (
             <AnswerPanel answer={shownAnswer} stale={stale} />
           )}
-          {/* What the bar says about the new issue it made from these words, above the message
-              that says the search found none: each is an answer to that search. */}
-          {newIssue?.said}
           {tooShort ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
               Type at least 2 characters

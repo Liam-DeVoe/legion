@@ -821,11 +821,9 @@ func requireTheRunsReaders(t *testing.T) {
 	for index := range runs {
 		runs[index] = server.recordRun(t, "alice", "queued", unreadShape)
 	}
-	type stream struct {
-		frames <-chan string
-		cancel func()
-	}
-	open := func(t *testing.T, run string) (int, string, stream) {
+	// open opens a stream of run's events and answers its lines, closed when the stream ends, or
+	// the refusal's status and body.
+	open := func(t *testing.T, run string) (int, string, <-chan string) {
 		t.Helper()
 		ctx, cancel := context.WithCancel(context.Background())
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.url("/api/v1/going/runs/"+run+"/events"), nil)
@@ -843,7 +841,7 @@ func requireTheRunsReaders(t *testing.T) {
 			body, _ := io.ReadAll(response.Body)
 			_ = response.Body.Close()
 			cancel()
-			return response.StatusCode, string(body), stream{}
+			return response.StatusCode, string(body), nil
 		}
 		lines := make(chan string, 16)
 		go func() {
@@ -855,9 +853,9 @@ func requireTheRunsReaders(t *testing.T) {
 			}
 		}()
 		t.Cleanup(cancel)
-		return http.StatusOK, "", stream{frames: lines, cancel: cancel}
+		return http.StatusOK, "", lines
 	}
-	var first []stream
+	var first []<-chan string
 	for reader := 1; reader <= 4; reader++ {
 		status, body, opened := open(t, runs[0])
 		if status != http.StatusOK {
@@ -884,14 +882,26 @@ func requireTheRunsReaders(t *testing.T) {
 	if answer := server.send(t, http.MethodPost, "/api/v1/going/runs/"+runs[0]+"/stop", "", asUser("alice")); answer.status != http.StatusOK {
 		t.Fatalf("stop the run answered %s", answer)
 	}
-	for index, opened := range first {
+	for index, lines := range first {
+		// Bounded, so a stream that never ends fails the row rather than hanging it.
+		deadline := time.After(10 * time.Second)
 		ended := false
-		for line := range opened.frames {
-			if line == "event: end" {
-				if waited := time.Since(stopped); waited > time.Second {
-					t.Errorf("reader %d was written the end frame %s after the stop, want within 1 s", index+1, waited)
+	read:
+		for {
+			select {
+			case line, more := <-lines:
+				if !more {
+					break read
 				}
-				ended = true
+				if line == "event: end" {
+					if waited := time.Since(stopped); waited > time.Second {
+						t.Errorf("reader %d was written the end frame %s after the stop, want within 1 s", index+1, waited)
+					}
+					ended = true
+				}
+			case <-deadline:
+				t.Errorf("reader %d's stream did not end within 10 s of the stop", index+1)
+				break read
 			}
 		}
 		if !ended {

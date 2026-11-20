@@ -1147,10 +1147,15 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 // abandoned mentions that failed (destinations.failed): each of those backs the event off once
 // the destinations the list names are sent, and holds none of them back.
 func (d *destinations) err(cause error) error {
-	if len(d.failed) == 0 {
+	return joinFailed(cause, d.failed)
+}
+
+// joinFailed is cause joined with each error of failed, and cause itself where none failed.
+func joinFailed(cause error, failed []error) error {
+	if len(failed) == 0 {
 		return cause
 	}
-	return errors.Join(append([]error{cause}, d.failed...)...)
+	return errors.Join(append([]error{cause}, failed...)...)
 }
 
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's

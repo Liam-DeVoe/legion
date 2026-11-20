@@ -25,9 +25,6 @@ import { type HarnessListenerKey, harnessPorts, stackValue } from "./harness-por
 /** The record `packages/envoy/going/decision_models.json` holds for one measured model. */
 export interface DecisionRecord {
   readonly model: string;
-  readonly action_threshold: number;
-  /** Null where the display did not fit. */
-  readonly chart_threshold: number | null;
   readonly chosen: boolean;
 }
 
@@ -36,8 +33,8 @@ const recordPath = fileURLToPath(
 );
 
 /** The entry of the committed decision record the record marks chosen, which is the model
- *  `e2e/run-server.sh` hands the server: a row reads its thresholds from here, so no row writes a
- *  threshold of its own and a new measurement moves every row with it. */
+ *  `e2e/run-server.sh` hands the server: a row reads the model from here, so no row names a model
+ *  of its own and a new measurement moves every row with it. */
 export function decisionRecord(): DecisionRecord {
   const entries = JSON.parse(readFileSync(recordPath, "utf8")) as DecisionRecord[];
   const chosen = entries.filter((entry) => entry.chosen === true);

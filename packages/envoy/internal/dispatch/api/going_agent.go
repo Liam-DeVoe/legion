@@ -913,7 +913,7 @@ func (s *server) stoppedGoingRuns(ctx context.Context, runs []string) (map[strin
 }
 
 // stopGoingRun stops run for reason: it is set stopped and its lease freed, so its owner can write
-// nothing more of it, its end frame names the reason, and the stop is announced on
+// nothing more of it, its end frame names the reason (stopGoingRunIn), and the stop is announced on
 // GoingRunsChannel, which answers the owner's waiting renew at once, on whichever process it
 // waits. A run that waited for its person also appends going_plan.updated, since its plan no
 // longer waits. It reports whether the run was one that could stop: queued, working or waiting.
@@ -936,27 +936,16 @@ func (s *server) stopGoingRun(ctx context.Context, run, reason string) (bool, er
 	default:
 		return false, nil
 	}
-	if _, err := tx.Exec(ctx, `
-		update going_runs set state = 'stopped', stop_reason = $2, lease_token = null, lease_owner = null,
-		  lease_ends_at = null, finished_at = now()
-		where id = $1::uuid
-	`, run, reason); err != nil {
-		return false, fmt.Errorf("stop run %s: %w", run, err)
-	}
-	frame, err := json.Marshal(agentwire.EndFrame{State: agentwire.StateStopped, Reason: reason, Offers: []string{}})
-	if err != nil {
+	if err := stopGoingRunIn(ctx, tx, run, reason, []string{}); err != nil {
 		return false, err
 	}
-	if err := appendGoingRunFrames(ctx, tx, run, []agentwire.Frame{{Name: agentwire.FrameEnd, Data: frame}}); err != nil {
-		return false, fmt.Errorf("end run %s: %w", run, err)
-	}
-	var event *model.Event
+	var events []model.Event
 	if state == agentwire.StateWaiting {
 		appended, err := s.appendGoingPlanEvent(ctx, tx, login, run)
 		if err != nil {
 			return false, err
 		}
-		event = &appended
+		events = append(events, appended)
 	}
 	// Delivered when the transaction commits, so no renew reads the run before its stop.
 	if _, err := tx.Exec(ctx, `select pg_notify($1, $2)`, GoingRunsChannel, "stop"); err != nil {
@@ -965,10 +954,33 @@ func (s *server) stopGoingRun(ctx context.Context, run, reason string) (bool, er
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	if event != nil {
-		s.publish(ctx, *event)
-	}
+	s.publish(ctx, events...)
 	return true, nil
+}
+
+// stopGoingRunIn sets run stopped for reason in tx, its lease freed, and appends its end frame,
+// which offers offers; the end of a new-issue run whose create landed also names the issue it
+// filed and offers Undo (goingNewIssueEnd). The caller holds the run's row for update.
+func stopGoingRunIn(ctx context.Context, tx pgx.Tx, run, reason string, offers []string) error {
+	ended := agentwire.EndFrame{State: agentwire.StateStopped, Reason: reason, Offers: offers}
+	if err := goingNewIssueEnd(ctx, tx, run, &ended); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		update going_runs set state = 'stopped', stop_reason = $2, lease_token = null, lease_owner = null,
+		  lease_ends_at = null, finished_at = now()
+		where id = $1::uuid
+	`, run, reason); err != nil {
+		return fmt.Errorf("stop run %s: %w", run, err)
+	}
+	frame, err := json.Marshal(ended)
+	if err != nil {
+		return err
+	}
+	if err := appendGoingRunFrames(ctx, tx, run, []agentwire.Frame{{Name: agentwire.FrameEnd, Data: frame}}); err != nil {
+		return fmt.Errorf("end run %s: %w", run, err)
+	}
+	return nil
 }
 
 // step saves one step of a run and appends its frames to the run's events, in sequence, in one
@@ -1079,7 +1091,6 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	if err := goingNewIssueEnd(ctx, tx, request.Run, &ended); err != nil {
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 	}
-	request.State, request.Reason = ended.State, ended.Reason
 	frame, err := json.Marshal(ended)
 	if err != nil {
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
@@ -1094,7 +1105,7 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 		    'tokens', coalesce((budget_used->>'tokens')::int, 0) + $7)
 		where id = $1::uuid and lease_token = $2::uuid and state = 'working'
 		returning author_login
-	`, request.Run, request.LeaseToken, request.State, request.Reason, request.Used.Calls, request.Used.WorkingMS, request.Used.Tokens).Scan(&login)
+	`, request.Run, request.LeaseToken, ended.State, ended.Reason, request.Used.Calls, request.Used.WorkingMS, request.Used.Tokens).Scan(&login)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agentwire.EndAnswer{}, goingStaleLease(request.Run)
 	}
@@ -1105,20 +1116,18 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 	}
 	// A turn that leaves its run waiting puts its plan in the person's Inbox.
-	var event *model.Event
-	if request.State == agentwire.StateWaiting {
+	var events []model.Event
+	if ended.State == agentwire.StateWaiting {
 		appended, err := a.s.appendGoingPlanEvent(ctx, tx, login, request.Run)
 		if err != nil {
 			return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 		}
-		event = &appended
+		events = append(events, appended)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 	}
-	if event != nil {
-		a.s.publish(ctx, *event)
-	}
+	a.s.publish(ctx, events...)
 	a.runEnded(request.Run)
 	return agentwire.EndAnswer{}, nil
 }
@@ -1126,7 +1135,9 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 // appendGoingRunFrames appends frames to run's events in tx, in order, each the next sequence
 // after the last, under the run's events lock, so the frames of two writers never share a
 // sequence, and announces the run on GoingRunEventsChannel when tx commits, which wakes the
-// streams of its events on every process.
+// streams of its events on every process. The announcement names the run as its canonical uuid
+// text, which is what a stream waits on whatever form of the id the writer was given, and goes
+// in the insert's own statement: Postgres runs a data-modifying WITH to its end whatever reads it.
 func appendGoingRunFrames(ctx context.Context, tx pgx.Tx, run string, frames []agentwire.Frame) error {
 	if len(frames) == 0 {
 		return nil
@@ -1138,14 +1149,14 @@ func appendGoingRunFrames(ctx context.Context, tx pgx.Tx, run string, frames []a
 	for _, frame := range frames {
 		names, data = append(names, frame.Name), append(data, string(frame.Data))
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into going_run_events (run_id, sequence, name, data)
-		select $1::uuid, base.last + f.n, f.name, f.data::jsonb
-		from (select coalesce(max(sequence), 0) as last from going_run_events where run_id = $1::uuid) base,
-		     unnest($2::text[], $3::text[]) with ordinality as f(name, data, n)
-	`, run, names, data); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `select pg_notify($1, $2)`, GoingRunEventsChannel, run)
+	_, err := tx.Exec(ctx, `
+		with appended as (
+			insert into going_run_events (run_id, sequence, name, data)
+			select $1::uuid, base.last + f.n, f.name, f.data::jsonb
+			from (select coalesce(max(sequence), 0) as last from going_run_events where run_id = $1::uuid) base,
+			     unnest($2::text[], $3::text[]) with ordinality as f(name, data, n)
+		)
+		select pg_notify($4, $1::uuid::text)
+	`, run, names, data, GoingRunEventsChannel)
 	return err
 }

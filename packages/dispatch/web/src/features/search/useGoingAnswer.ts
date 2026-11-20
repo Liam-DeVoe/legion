@@ -21,6 +21,7 @@ import type {
   GoingEndEvent,
   GoingEvent,
   GoingItemEvent,
+  GoingLine,
   GoingRosterEvent,
 } from "../../api/types";
 import { goingBounds } from "../going/going-store";
@@ -85,8 +86,9 @@ function answerTo(answer: GoingAnswer | undefined, words: string): GoingAnswer |
 /**
  * One run of Dispatch's answer to the words in the bar, as the frames of its stream have built
  * it so far. Every field is a frame's: the text is the `text` frames joined, the items are the
- * `item` frames in order, and so on. The decision model's `decision` and `proposal` frames are
- * no part of the answer the bar draws, and change nothing of it.
+ * `item` frames in order, and so on. The decision model's `decision` frame names the line on top
+ * (`line`), which the bar draws above the hits and the panel does not; its `proposal` frame
+ * changes nothing of the answer.
  */
 export interface GoingAnswer {
   /** The run, which addresses its stream; undefined while the request that starts it is out. */
@@ -115,6 +117,9 @@ export interface GoingAnswer {
   readonly unreachable: string | undefined;
   readonly roster: GoingRosterEvent["data"] | undefined;
   readonly block: GoingBlockData | undefined;
+  /** The line on top the decision model's action gives (`decision` frame), undefined until that
+   *  frame comes, and for a run that carries none. */
+  readonly line: GoingLine | undefined;
 }
 
 /** The last run of this page that answered, kept outside the bar so that reopening the bar draws
@@ -153,6 +158,7 @@ function freshAnswer(words: string, replayed: boolean, runId?: string): GoingAns
     end: undefined,
     error: undefined,
     items: [],
+    line: undefined,
     none: false,
     replayed,
     roster: undefined,
@@ -180,6 +186,7 @@ function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
     case GOING_EVENT_NONE:
       return { ...answer, none: true };
     case GOING_EVENT_DECISION:
+      return { ...answer, line: frame.data.line };
     case GOING_EVENT_PROPOSAL:
       return answer;
     case GOING_EVENT_BLOCK:

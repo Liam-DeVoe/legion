@@ -163,16 +163,6 @@ func (rig goingPlanRig) approved(t *testing.T, run string, ticks ...map[string]a
 	return rig.plan(t, run)
 }
 
-// issueMessages is every message root of issue, as alice reads its conversation.
-func (rig goingPlanRig) issueMessages(t *testing.T, issue string) []messageRead {
-	t.Helper()
-	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/issues/"+issue+"/messages", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET the messages of %s answered %d %s", issue, response.Code, response.Body.String())
-	}
-	return decodeBody[[]messageRead](t, response)
-}
-
 // sessionMessages is every conversation of session's own, issue-less, as alice reads them.
 func (rig goingPlanRig) sessionMessages(t *testing.T, session string) []model.Message {
 	t.Helper()
@@ -193,7 +183,7 @@ func (rig goingPlanRig) sessionMessages(t *testing.T, session string) []model.Me
 func (rig goingPlanRig) posted(t *testing.T, issue, body string) model.Message {
 	t.Helper()
 	var found []model.Message
-	for _, read := range rig.issueMessages(t, issue) {
+	for _, read := range issueMessageRows(t, rig.mux, issue) {
 		if read.Message.Body == body {
 			found = append(found, read.Message.Message)
 		}
@@ -264,7 +254,7 @@ func TestAMessageIsARowOfAPlan(t *testing.T) {
 		if row.Claim == nil || row.Claim.ID != "s-impl" {
 			t.Errorf("the row shows the claim %+v, want s-impl's", row.Claim)
 		}
-		if held, anywhere := len(rig.issueMessages(t, issue)), rig.stored(t, body); held != 0 || anywhere != 0 {
+		if held, anywhere := len(issueMessageRows(t, rig.mux, issue)), rig.stored(t, body); held != 0 || anywhere != 0 {
 			t.Fatalf("before approval the issue holds %d messages and %d hold the words, want none", held, anywhere)
 		}
 		rig.approved(t, run)
@@ -359,7 +349,7 @@ func TestAMessageIsARowOfAPlan(t *testing.T) {
 		}
 		rig.approved(t, run)
 		requireByThePerson(t, rig.posted(t, chosen, body), run, "s-moved", "btw")
-		if held := len(rig.issueMessages(t, claimed)); held != 0 {
+		if held := len(issueMessageRows(t, rig.mux, claimed)); held != 0 {
 			t.Errorf("the issue the session claims holds %d messages, want none", held)
 		}
 	})

@@ -447,6 +447,13 @@ type nearCopyChecksQuery struct {
 	Limit int `query:"limit"`
 }
 
+// agentListQuery is GET /api/v1/agents's query.
+type agentListQuery struct {
+	// Limit is how many of the newest seen sessions the list answers, one or more; absent, it
+	// answers every session.
+	Limit int `query:"limit"`
+}
+
 // sessionAnswersQuery is GET /api/v1/agents/{session_id}/answers's query.
 type sessionAnswersQuery struct {
 	// Since is the window's start, one RFC3339 time no older than the route's bound and not
@@ -870,12 +877,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/me/going/settings": {
 		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},
 	},
-	"POST /api/v1/going/display-fit/_test": {
-		Status: http.StatusOK, Response: goingDisplayFit{}, Request: goingDisplayFitInput{},
-	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
-	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}, Params: agentListQuery{}},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},

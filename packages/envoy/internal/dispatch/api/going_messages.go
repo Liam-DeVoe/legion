@@ -54,16 +54,12 @@ func (s *server) goingPlaceSend(ctx context.Context, doer GoingDoer, run string,
 	if goingText(arguments, "in_reply_to") != "" {
 		return "", nil
 	}
-	var page string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select coalesce(context->>'issue', '') from going_runs where id = $1::uuid
-	`, run).Scan(&page); err != nil {
-		return "", fmt.Errorf("read the page of run %s: %w", run, err)
-	}
+	// The run's page is read in the same statement: its issue sorts first among the session's.
 	var issue string
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select key from (
-		  select key, updated_at, key = $2 as paged,
+		  select key, updated_at,
+		    key = coalesce((select context->>'issue' from going_runs where id = $2::uuid), '') as paged,
 		    coalesce(claimed_by->>'kind' = 'session' and claimed_by->>'id' = $1, false) as claims,
 		    claimed_at
 		  from issues
@@ -72,7 +68,7 @@ func (s *server) goingPlaceSend(ctx context.Context, doer GoingDoer, run string,
 		) works
 		order by paged desc, claims desc, case when claims then claimed_at end desc nulls last, updated_at desc, key
 		limit 1
-	`, session, page).Scan(&issue)
+	`, session, run).Scan(&issue)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", nil

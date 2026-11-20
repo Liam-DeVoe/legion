@@ -2,8 +2,8 @@ package going
 
 // decide.go holds the one decision call the command bar makes before it answers: the three
 // questions put to the decision model and the state they are asked about. The server and the
-// bake-off (cmd/going-bakeoff) both build their call from here, so the thresholds the bake-off
-// fits are fitted on exactly what the server asks.
+// bake-off (cmd/going-bakeoff) both build their call from here, so the bake-off measures exactly
+// what the server asks.
 
 import (
 	"encoding/json"
@@ -49,7 +49,7 @@ type Action struct {
 }
 
 // The guidance the decision model is given beside the catalogue's descriptions. R5 corrects
-// this text, and never a case's label, where a threshold does not fit.
+// this text, and never a case's label, where the model chooses wrong.
 const (
 	actionInstructions = "The state holds the words a person typed into Dispatch's command bar and the page they typed them on. " +
 		"Choose the one action the words ask Dispatch to perform, judged by the change the person wants made. " +

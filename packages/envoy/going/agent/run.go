@@ -150,6 +150,7 @@ func (w *worker) endGrant(reason string) {
 // fails, or stops being the agent's to work. A plan proposed in Auto-review is reviewed before the
 // turn ends (review), and the rows the server approved with the plan run at once, which ends the
 // turn (runApproved): the create of a new-issue run. A new-issue run whose create ran ends there.
+// A run whose saved steps name a tool this build does not know fails at once (unknownTool).
 func (w *worker) work() {
 	level, known := Levels[w.run.Level]
 	switch {
@@ -158,6 +159,10 @@ func (w *worker) work() {
 		return
 	case !known:
 		w.end(agentwire.StateFailed, fmt.Sprintf("%s: the run's level %q is none of fast, standard and deep", codeAgentFailed, w.run.Level), nil)
+		return
+	}
+	if reason := w.unknownTool(); reason != "" {
+		w.end(agentwire.StateFailed, reason, nil)
 		return
 	}
 	w.level = level
@@ -390,10 +395,12 @@ func (w *worker) faulted(result agentloop.Result) stepOutcome {
 }
 
 // saveReply saves step, the model call of the step numbered base, and answers the tools it
-// called.
+// called. A call of a tool the run does not have is saved marked unknown (toolCall.Unknown): the
+// model made the name up, and a later step reads it as such rather than as a tool of a later build.
 func (w *worker) saveReply(base int, step agentloop.Step) []string {
 	var body modelBody
 	var tools []string
+	known := w.knownTools()
 	for _, block := range step.Blocks {
 		switch block.Kind {
 		case agentloop.TextBlock:
@@ -403,7 +410,7 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 			if !json.Valid(input) {
 				input = json.RawMessage(`{}`)
 			}
-			body.Calls = append(body.Calls, toolCall{ID: block.ToolCallID, Tool: block.Name, Arguments: input})
+			body.Calls = append(body.Calls, toolCall{ID: block.ToolCallID, Tool: block.Name, Arguments: input, Unknown: !known[block.Name]})
 			tools = append(tools, block.Name)
 		}
 	}

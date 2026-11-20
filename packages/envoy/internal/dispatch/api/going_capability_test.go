@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -175,8 +176,7 @@ func TestGoingCapabilityReadsAnUnmeasuredDecisionModelUnset(t *testing.T) {
 	if !built {
 		t.Fatal("NewDecider refused jev-latest, which the record holds")
 	}
-	if record := decider.Record(); record.ActionThreshold == nil || measured.ActionThreshold == nil ||
-		*record.ActionThreshold != *measured.ActionThreshold || record.ChartShare != measured.ChartShare {
+	if record := decider.Record(); !reflect.DeepEqual(record, measured) {
 		t.Fatalf("the decider carries %+v, want the record's own entry %+v", record, measured)
 	}
 	decided, _, _, _ := newRegisteredTestServer(t, testServerOptions{decider: decider})

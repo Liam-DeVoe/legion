@@ -351,34 +351,6 @@ func TestGoingBlockUnaskedOrOfAnUnknownKindIsDropped(t *testing.T) {
 	}
 }
 
-// A chart is drawn unasked when the decision's display choice is a chart at or above the measured
-// chart-display threshold, and the same plain question below it draws none.
-func TestGoingBlockChartDrawnUnaskedWhenTheDecisionSettlesOnOne(t *testing.T) {
-	_, chartThreshold := measuredThresholds(t)
-	if chartThreshold == nil || *chartThreshold <= 0 {
-		t.Skipf("the record holds no positive chart-display threshold for %s, so no chart is drawn unasked", goingDecisionModel)
-	}
-	spec := `{"source":"read_project_activity","params":{"project":"DEMO","weeks":4},"table":"weeks","x":"week","y":"events"}`
-	standIn := newDecisionStandIn(t)
-	rig := newBlockRig(t, testServerOptions{decider: standIn.decider(t, staticToken)}, blockAnswer(going.BlockChart, spec))
-	seedActivityFixture(t, rig.database)
-	words := "how active was DEMO lately"
-
-	standIn.answer(t, decidedAnswer{action: going.ActionNone, confidence: 1, about: going.ContextNone, display: going.DisplayChart, displayConfidence: *chartThreshold})
-	_, block := rig.askForBlock(t, words, "DEMO")
-	if block == nil || block.Kind != going.BlockChart || len(block.Rows) != 4 {
-		t.Fatalf("at the chart-display threshold the run drew %+v, want the chart of four weeks", block)
-	}
-	if told := userMessage(rig.model.Requests()[0]); !strings.Contains(told, "kind: chart") {
-		t.Errorf("the structured call was told %q, want the chart offered", told)
-	}
-
-	standIn.answer(t, decidedAnswer{action: going.ActionNone, confidence: 1, about: going.ContextNone, display: going.DisplayChart, displayConfidence: *chartThreshold - 0.01})
-	if _, block := rig.askForBlock(t, words, "DEMO"); block != nil {
-		t.Errorf("below the chart-display threshold the run drew %+v, want no chart for a plain question", block)
-	}
-}
-
 // userMessage is the user message one call was sent: the question, its items and the offer.
 func userMessage(request goingtest.ReceivedRequest) string {
 	for _, message := range request.Messages {

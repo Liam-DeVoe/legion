@@ -5,10 +5,9 @@ import {
   listIssueArtifacts,
   listProjectArtifacts,
   patchIssue,
-  setGoingDisplayFit,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { decisionRecord, modelsLane, scriptChat, scriptDecision } from "./fake-models-helpers";
+import { modelsLane, scriptChat } from "./fake-models-helpers";
 import {
   answerPanel,
   answerText,
@@ -31,10 +30,8 @@ import { asUser } from "./users";
 // read. Each row seeds a fixture whose counts it set, scripts the fake writing model to name the
 // read that fills a block - a spec that names fields and never a number - and reads what the
 // panel draws against the fixture. A plain question draws no block, even where the model writes
-// one; a chart appears unasked at or above the chart-display threshold the committed record holds
-// and not below it, and with the display fit turned off only an asked chart is drawn. A chart is
-// not stored: the issue and the project hold no new artifact after one, and reopening the bar
-// draws it again from the same run. Every row runs in the models lane alone.
+// one. A chart is not stored: the issue and the project hold no new artifact after one, and
+// reopening the bar draws it again from the same run. Every row runs in the models lane alone.
 
 declare global {
   interface Window {
@@ -314,64 +311,6 @@ test("a plain question draws no block, even where the model writes a table for i
     await expect(block(page)).toHaveCount(0);
   } finally {
     await context.close();
-  }
-});
-
-// SLOW(>=2s): two decisions and two answers.
-test("a chart appears unasked at the chart-display threshold and not below it", async ({
-  browser,
-}) => {
-  modelsLane();
-  test.setTimeout(90_000);
-  const threshold = decisionRecord().chart_threshold;
-  test.skip(threshold === null, "the committed record holds no chart-display threshold");
-  if (threshold === null) return;
-  await seedIssues();
-  await scriptDecision({
-    replies: [
-      { display: { choice: "chart", confidence: threshold } },
-      { display: { choice: "chart", confidence: threshold - 0.01 } },
-    ],
-  });
-  await scriptChat({ default: withBlock("chart", STATUS_CHART_SPEC) });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await openBarOver(page, "/projects/CORE/issues");
-    await askAndWait(page, "how are the CORE issues spread across statuses");
-    await expectChart(page);
-
-    await askAndWait(page, "how are the CORE issues spread out now");
-    await expect(answerText(page)).toContainText("Here it is.");
-    await expect(block(page)).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
-});
-
-// SLOW(>=2s): two decisions and two answers, with the display fit turned off and on again.
-test("with the chart-display threshold unset, a full-confidence chart choice draws no chart and an asked chart is drawn", async ({
-  browser,
-}) => {
-  modelsLane();
-  test.setTimeout(90_000);
-  await seedIssues();
-  await scriptDecision({ default: { display: { choice: "chart", confidence: 1 } } });
-  await scriptChat({ default: withBlock("chart", STATUS_CHART_SPEC) });
-  await setGoingDisplayFit(true);
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await openBarOver(page, "/projects/CORE/issues");
-    await askAndWait(page, "how are the CORE issues spread across statuses");
-    await expect(answerText(page)).toContainText("Here it is.");
-    await expect(block(page)).toHaveCount(0);
-
-    await askAndWait(page, "chart the CORE issues by status");
-    await expectChart(page);
-  } finally {
-    await context.close();
-    await setGoingDisplayFit(false);
   }
 });
 

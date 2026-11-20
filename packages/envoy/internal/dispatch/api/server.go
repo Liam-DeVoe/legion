@@ -96,12 +96,11 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
-	// from the words a person typed when those words match nothing it found
-	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-	// DISPATCH_NEW_ISSUE_SESSION), which a new-issue run's create carries (going_new_issue.go).
-	// NewIssueLabel empty is an issue that carries no label; NewIssueSession empty is an issue
-	// made with no route.
+	// NewIssueLabel and NewIssueSession configure the issue the command bar's File as a new issue
+	// files from a person's words (GET /api/v1/settings/new-issue; cmd/dispatch:
+	// DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION), which its new_issue run's create
+	// carries (going_new_issue.go). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
@@ -644,11 +643,6 @@ type server struct {
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
 	// server without TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
-	// displayFitOff is what the display-fit test hook last set
-	// (POST /api/v1/going/display-fit/_test): while it is set, no decision of this process draws
-	// a chart unasked, as with a decision model whose record holds no chart-display threshold.
-	// It is false on every server without TestHooksEnabled, since that mounts no hook.
-	displayFitOff atomic.Bool
 	// goingCancels is the cancel function of every going run this process is answering, by its
 	// request id, so a cancel that lands on this process ends that run at once rather than at
 	// its next frame (cancelGoingRequest). startGoingRun adds and removes its own entry.

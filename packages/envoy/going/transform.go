@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // A block of a run (RunBlock) names the tool results of the run it reads and a chain of steps,
@@ -41,6 +42,9 @@ const (
 	PerMonth = "month"
 	PerYear  = "year"
 )
+
+// Periods is every period a group buckets a time by, in the order the model is told them.
+var Periods = []string{PerDay, PerWeek, PerMonth, PerYear}
 
 // GroupNone is the group of a row whose field is null, missing, or an empty list.
 const GroupNone = "none"
@@ -103,7 +107,7 @@ func (t Transform) check() error {
 		return fmt.Errorf("a %s takes a field", t.Op)
 	case t.Per != "" && t.Op != TransformGroup:
 		return fmt.Errorf("a %s takes no per: only a group does", t.Op)
-	case t.Per != "" && !slices.Contains([]string{PerDay, PerWeek, PerMonth, PerYear}, t.Per):
+	case t.Per != "" && !slices.Contains(Periods, t.Per):
 		return fmt.Errorf("a group's per is day, week, month or year, not %q", t.Per)
 	case t.As != "" && slices.Contains([]string{TransformFilter, TransformSort}, t.Op):
 		return fmt.Errorf("a %s takes no as: it writes no column", t.Op)
@@ -113,7 +117,10 @@ func (t Transform) check() error {
 		return fmt.Errorf("a sort's order is asc or desc, not %q", t.Order)
 	}
 	for _, at := range []string{t.Since, t.Before} {
-		if _, ok := parseTime(at); at != "" && !ok {
+		if at == "" {
+			continue
+		}
+		if _, ok := parseTime(at); !ok {
 			return fmt.Errorf("%q is no time: write one as 2026-11-16 or 2026-11-16T09:00:00Z", at)
 		}
 	}
@@ -153,7 +160,9 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 		var err error
 		switch step.Op {
 		case TransformFilter:
-			table = slices.DeleteFunc(table, func(row chainRow) bool { return !step.keeps(row.columns) })
+			// The filter's one time, where its condition is one, is read once for every row.
+			bound, _ := parseTime(cmp.Or(step.Since, step.Before))
+			table = slices.DeleteFunc(table, func(row chainRow) bool { return !step.keeps(row.columns, bound) })
 		case TransformGroup:
 			if grouped {
 				err = fmt.Errorf("a chain groups once, and its rows are grouped already")
@@ -188,8 +197,9 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 	return answer, nil
 }
 
-// keeps reports whether row meets the filter's one condition.
-func (t Transform) keeps(row map[string]any) bool {
+// keeps reports whether row meets the filter's one condition; bound is the condition's time, read
+// from Since or Before, where it is one of those.
+func (t Transform) keeps(row map[string]any, bound time.Time) bool {
 	value, _ := fieldValue(row, t.Field)
 	text, isText := valueText(value)
 	switch {
@@ -209,27 +219,29 @@ func (t Transform) keeps(row map[string]any) bool {
 		})
 	case t.Since != "":
 		at, isTime := valueTime(value)
-		since, _ := parseTime(t.Since)
-		return isTime && !at.Before(since)
+		return isTime && !at.Before(bound)
 	case t.Before != "":
 		at, isTime := valueTime(value)
-		before, _ := parseTime(t.Before)
-		return isTime && at.Before(before)
+		return isTime && at.Before(bound)
 	}
 	return false
 }
 
 // group makes one row of each value of the step's field across table, in the order each value
-// first comes.
+// first comes. A group's key is its value as text, the text a filter's is compares (valueText),
+// so a 1 and a "1" are one group as a filter on "1" keeps both; and a row is a member of each of
+// its groups once, whatever a list of it holds twice.
 func (t Transform) group(table []chainRow) ([]chainRow, error) {
 	column := cmp.Or(t.As, t.Per, t.Field)
 	var groups []chainRow
 	at := map[string]int{}
+	var joined []int
 	for index, row := range table {
 		keys, err := t.groupKeys(row.columns)
 		if err != nil {
 			return nil, fmt.Errorf("row %d: %w", index+1, err)
 		}
+		joined = joined[:0]
 		for _, key := range keys {
 			text, _ := valueText(key)
 			place, held := at[text]
@@ -238,33 +250,37 @@ func (t Transform) group(table []chainRow) ([]chainRow, error) {
 				at[text] = place
 				groups = append(groups, chainRow{columns: map[string]any{column: key}})
 			}
+			if slices.Contains(joined, place) {
+				continue
+			}
+			joined = append(joined, place)
 			groups[place].members = append(groups[place].members, row.columns)
 		}
 	}
 	return groups, nil
 }
 
-// groupKeys is each group row belongs to: GroupNone for no value, each value of a list, and its
-// period where the step has one.
+// groupKeys is each group row belongs to: GroupNone for no value and for an empty list, each
+// value of a list, and its period where the step has one.
 func (t Transform) groupKeys(row map[string]any) ([]any, error) {
 	value, _ := fieldValue(row, t.Field)
 	values := []any{value}
 	if list, isList := value.([]any); isList {
+		if len(list) == 0 {
+			return []any{GroupNone}, nil
+		}
 		values = list
 	}
-	if t.Per != "" {
-		keys := make([]any, 0, len(values))
-		for _, value := range values {
+	keys := make([]any, 0, len(values))
+	for _, value := range values {
+		if t.Per != "" {
 			at, isTime := valueTime(value)
 			if !isTime {
 				return nil, fmt.Errorf("%s holds %s, which is no time to group by %s: filter on present first to keep only the rows that hold one", t.Field, valueShown(value), t.Per)
 			}
 			keys = append(keys, period(at, t.Per))
+			continue
 		}
-		return keys, nil
-	}
-	keys := make([]any, 0, max(len(values), 1))
-	for _, value := range values {
 		switch value.(type) {
 		case nil:
 			keys = append(keys, GroupNone)
@@ -276,9 +292,6 @@ func (t Transform) groupKeys(row map[string]any) ([]any, error) {
 		default:
 			return nil, fmt.Errorf("%s holds %s, which no group is made of: group by one field of it, as %s.<field>", t.Field, valueShown(value), t.Field)
 		}
-	}
-	if len(keys) == 0 {
-		keys = append(keys, GroupNone)
 	}
 	return keys, nil
 }
@@ -378,51 +391,70 @@ func formatNumber(value float64) (json.Number, error) {
 }
 
 // sort orders table by the step's field, stably, a row with no value last whatever the order.
+// Each row's place is read once (orderOf), not at each comparison.
 func (t Transform) sort(table []chainRow) {
-	slices.SortStableFunc(table, func(a, b chainRow) int {
-		left, _ := fieldValue(a.columns, t.Field)
-		right, _ := fieldValue(b.columns, t.Field)
+	type placed struct {
+		row   chainRow
+		order orderKey
+	}
+	rows := make([]placed, len(table))
+	for index, row := range table {
+		value, _ := fieldValue(row.columns, t.Field)
+		rows[index] = placed{row: row, order: orderOf(value)}
+	}
+	slices.SortStableFunc(rows, func(a, b placed) int {
 		switch {
-		case left == nil && right == nil:
+		case !a.order.held && !b.order.held:
 			return 0
-		case left == nil:
+		case !a.order.held:
 			return 1
-		case right == nil:
+		case !b.order.held:
 			return -1
 		}
-		order := compareValues(left, right)
+		order := a.order.compare(b.order)
 		if t.Order == "desc" {
 			order = -order
 		}
 		return order
 	})
+	for index, row := range rows {
+		table[index] = row.row
+	}
 }
 
-// compareValues orders two values: numbers by their value, before text, which is ordered as
+// orderKey is where a value sorts: numbers by their value, before text, which is ordered as
 // written (a time as RFC 3339 writes it orders as its moment); anything else after both, by its
-// JSON text.
-func compareValues(left, right any) int {
-	rank := func(value any) int {
-		switch value.(type) {
-		case json.Number:
-			return 0
-		case string:
-			return 1
-		}
-		return 2
+// JSON text. held is false for null and missing.
+type orderKey struct {
+	held   bool
+	rank   int
+	number float64
+	text   string
+}
+
+// orderOf is value's orderKey.
+func orderOf(value any) orderKey {
+	switch value := value.(type) {
+	case nil:
+		return orderKey{}
+	case json.Number:
+		number, _ := value.Float64()
+		return orderKey{held: true, rank: 0, number: number}
+	case string:
+		return orderKey{held: true, rank: 1, text: value}
 	}
-	if byRank := cmp.Compare(rank(left), rank(right)); byRank != 0 {
+	return orderKey{held: true, rank: 2, text: valueShown(value)}
+}
+
+// compare orders two held keys.
+func (k orderKey) compare(other orderKey) int {
+	if byRank := cmp.Compare(k.rank, other.rank); byRank != 0 {
 		return byRank
 	}
-	switch left := left.(type) {
-	case json.Number:
-		a, _ := left.Float64()
-		b, _ := right.(json.Number).Float64()
-		return cmp.Compare(a, b)
-	case string:
-		return strings.Compare(left, right.(string))
+	if k.rank == 0 {
+		return cmp.Compare(k.number, other.number)
 	}
-	return strings.Compare(valueShown(left), valueShown(right))
+	return strings.Compare(k.text, other.text)
 }
 
 // fieldValue is the value at path in row, its parts apart by dots, each naming a field of the
@@ -478,14 +510,19 @@ func parseTime(text string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// valueShown is a value as an error names it: its JSON text, at most 80 bytes of it.
+// valueShown is a value as an error names it: its JSON text, at most 80 bytes of it, cut where a
+// character starts.
 func valueShown(value any) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Sprintf("%v", value)
 	}
 	if len(encoded) > 80 {
-		return string(encoded[:80]) + "…"
+		cut := 80
+		for cut > 0 && !utf8.RuneStart(encoded[cut]) {
+			cut--
+		}
+		return string(encoded[:cut]) + "…"
 	}
 	return string(encoded)
 }
@@ -542,6 +579,7 @@ func readPage(ref StepRef, result Result) (resultPage, error) {
 	if err != nil {
 		return resultPage{}, err
 	}
+	page.rows = make([]map[string]any, 0, len(list))
 	for index, element := range list {
 		row, isObject := element.(map[string]any)
 		if !isObject {
@@ -610,7 +648,8 @@ func wholeNumber(value any) (int, bool) {
 // list they page through: a page whose next cursor no page among them was read with, a page that
 // says more rows follow it with no cursor, or pages of one paged read that leave rows of it out,
 // its last page among them. Where two pages of one read overlap, the rows the earlier one holds
-// are read once.
+// are read once. The reads are judged in the order of their keys, so a block with two reads that
+// are not whole is refused for the same one every time.
 func wholeRows(pages []resultPage) ([]map[string]any, error) {
 	for _, page := range pages {
 		switch {
@@ -632,7 +671,8 @@ func wholeRows(pages []resultPage) ([]map[string]any, error) {
 	for index, page := range pages {
 		kept[index] = page.rows
 	}
-	for _, indexes := range reads {
+	for _, read := range slices.Sorted(maps.Keys(reads)) {
+		indexes := reads[read]
 		slices.SortStableFunc(indexes, func(a, b int) int { return cmp.Compare(pages[a].offset, pages[b].offset) })
 		covered, total := 0, pages[indexes[0]].total
 		for _, index := range indexes {

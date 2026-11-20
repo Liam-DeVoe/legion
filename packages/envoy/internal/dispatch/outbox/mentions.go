@@ -927,16 +927,16 @@ func (d *destinations) workingSessionHold(sessionID string) copyHold {
 // that names them at all (unpinnedRoleMentions): the row it holds is keyed by that session, and
 // the pass reads the attempts again rather than the keys this batch read, which name no session
 // while the sender has pinned none. A destination this event already reached gave the session a
-// copy, so it needs no row. A mention whose send was abandoned
-// is settled by the outbox first (mentionComment.settleAbandoned), and the copy follows what key's
-// attempts are once that settle commits: one a sender claimed before the settle took its row is
-// pending, so the copy is held back and the sender owns the outcome; one the settle took is
-// failed, and the copy is the outbox's. Only one of the two acts on an attempt, so the session
-// gets the mention or the copy, not both. A settle that fails holds the copy back and backs the
-// event off, so it is read again. Any other key - every attempt failed, or none was recorded - is
-// published to as if it had not been mentioned, except that a session copy for a failed attempt
-// carries that attempt's dedupe key (destinations.addSession): a send that landed before its
-// attempt failed has given the host the comment already, and the host drops the copy.
+// copy, so it needs no row. A mention whose send was abandoned is settled by the outbox first
+// (mentionComment.settleAbandoned), and the copy follows what key's attempts are once that settle
+// commits: one a sender claimed before the settle took its row is pending, so the copy is held
+// back and the sender owns the outcome; one the settle took is failed, and the copy is the
+// outbox's. Only one of the two acts on an attempt, so the session gets the mention or the copy,
+// not both. A settle that fails holds the copy back and backs the event off, so it is read again.
+// Any other key - every attempt failed, or none was recorded - is published to as if it had not
+// been mentioned, except that a session copy for a failed attempt carries that attempt's dedupe
+// key (destinations.addSession): a send that landed before its attempt failed has given the host
+// the comment already, and the host drops the copy.
 //
 // unnamed is asked by the copies of a session the owner's own work names and by no other
 // (destinations.workingSessionHold): a live attempt whose role this read could name no holder
@@ -1120,10 +1120,7 @@ func holdFallbackCopies(holds []fallbackHold, err error) error {
 			failed = append(failed, holdErr)
 		}
 	}
-	if len(failed) == 0 {
-		return err
-	}
-	return errors.Join(append([]error{err}, failed...)...)
+	return joinFailed(err, failed)
 }
 
 // holdFallbackCopy records the fallback row of the copy of the comment at destination, decided by

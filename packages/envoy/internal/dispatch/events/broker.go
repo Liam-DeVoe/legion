@@ -88,15 +88,15 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     common row have no defined order, so either commit order is a valid serialization. Order
 //     matters only between writes that conflict, and every ownerless append follows its
 //     transaction's own lock on the row it changes, which orders it against every write that
-//     changes that row. A message create
-//     (api/messages.go createStoredMessage) and a broadcast (api/broadcasts.go writeBroadcast)
-//     append after inserting the new message row, a reply's insert taking its parent message
-//     row for key share through the foreign key, and a broadcast's new broadcasts and
-//     idempotency-key rows before it. An accept (api/message_delivery.go acceptDelivery) and a
-//     pending delivery's supersede receipt (recordPendingMessageDelivery) append after locking
-//     the message row for no key update and writing the attempt's message_deliveries row. The
-//     reply route's failure receipt and a session's reply (replyMessage, insertSessionReply)
-//     append after locking the attempt row for update. A viewer's state (api/state.go
+//     changes that row. A message create (api/messages.go createStoredMessage) and a broadcast
+//     (api/broadcasts.go writeBroadcast) append after inserting the new message row, a reply's
+//     insert taking its parent message row for key share through the foreign key, and a
+//     broadcast's new broadcasts and idempotency-key rows before it. An accept
+//     (api/message_delivery.go acceptDelivery) and a pending delivery's supersede receipt
+//     (recordPendingMessageDelivery) append after locking the message row for no key update and
+//     writing the attempt's message_deliveries row. The reply route's failure receipt and a
+//     session's reply (replyMessage, insertSessionReply) append after locking the attempt row
+//     for update. A viewer's state (api/state.go
 //     putUserAgentState) appends only after it wrote a user_agent_state, user_agent_read or
 //     user_agent_reply_read row. A delivery settle (api/envoy_resolve.go settleDeliveryAttempt)
 //     appends after its update writes the attempt row it claimed; on the branch where that
@@ -109,10 +109,9 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     command-bar plan's event (api/going_run_stream.go, appendGoingPlanEvent) appends
 //     `going_plan.updated` after writing the going_runs row of the run whose plan it names, which
 //     the update holds until the transaction ends. A per-session, per-priority or per-person lock
-//     would add no order these
-//     row locks do not give, only deadlock cycles: the accept path would take it before the
-//     message row and a pending delivery after, and a broadcast one per recipient in no sorted
-//     order.
+//     would add no order these row locks do not give, only deadlock cycles: the accept path would
+//     take it before the message row and a pending delivery after, and a broadcast one per
+//     recipient in no sorted order.
 func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Event, error) {
 	var appended model.Event
 	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
@@ -125,10 +124,9 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 
 // nextOwnerSeq is the sequence an append takes: one past its owner row's last_seq, and 0 for an
 // event with no owner row (a session-addressed message, a priority's write or a command-bar plan's
-// change). The insert names
-// it for the event's own seq and, for a payload that carries the owner row (ownerLastSeqPayload),
-// for the last_seq that payload stores; both read the one snapshot the statement runs in, so they
-// are the same number.
+// change). The insert names it for the event's own seq and, for a payload that carries the owner
+// row (ownerLastSeqPayload), for the last_seq that payload stores; both read the one snapshot the
+// statement runs in, so they are the same number.
 const nextOwnerSeq = `coalesce(
 				(select last_seq from issues where key = $1) + 1,
 				(select last_seq from artifacts where id = $2) + 1,
@@ -201,11 +199,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// last_seq as the statements before it left it, and the owner's update writes the very
 	// sequence the insert took. Only the owner the event names matches a row: the other two keys
 	// are null, and an ownerless event (a session-addressed message, a priority's write or a
-	// command-bar plan's change) takes
-	// sequence 0 and advances nothing. The thread_logins the payload names are read in the same
-	// snapshot, which holds every write the transaction made before it, and so is the last_seq a
-	// payload that carries the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the
-	// expression the event's own seq reads, so the payload records the sequence the event took.
+	// command-bar plan's change) takes sequence 0 and advances nothing. The thread_logins the
+	// payload names are read in the same snapshot, which holds every write the transaction made
+	// before it, and so is the last_seq a payload that carries the owner row names
+	// (ownerLastSeqPayload): it reads nextOwnerSeq, the expression the event's own seq reads, so
+	// the payload records the sequence the event took.
 	storedPayload, storedLogins := `$6`, `null::jsonb`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
@@ -356,9 +354,8 @@ func agentEventSessionID(e model.Event) (string, error) {
 
 // eventOwnerLock is the owner lock of e's owner, false for an ownerless event (a session-addressed
 // message, a priority's write or a command-bar plan's change), which has no owner row and no lock.
-// An event on an issue or a
-// document names its owner as every other row of that collaboration does (store.OwnerOf); a
-// project event, which no such row has, names the project.
+// An event on an issue or a document names its owner as every other row of that collaboration
+// does (store.OwnerOf); a project event, which no such row has, names the project.
 func eventOwnerLock(e model.Event) (store.Owner, bool) {
 	if owner := store.OwnerOf(e.IssueKey, e.ArtifactID); owner != nil {
 		return *owner, true

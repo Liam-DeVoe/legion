@@ -1237,6 +1237,9 @@ ENV_ALLOWED = frozenset({
     # ci-job-dispatch-memory-group.yaml's switch for the memory-group test: the test reads it, go
     # does not, and it moves nothing go compiles.
     "DISPATCH_TEST_MEMORY_GROUP",
+    # ci-job-dispatch-two-builds.yaml's going-runs build (check c25 of INFRA-1588), read by the
+    # test as DISPATCH_FIRST_ROLLOUT_BUILD is; go reads neither.
+    "DISPATCH_GOING_RELEASE_BUILD", "GOING_RELEASE_COMMIT",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and

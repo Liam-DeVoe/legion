@@ -227,13 +227,14 @@ fi
 # configures its own: DISPATCH_ANSWERER=endpoint and its DISPATCH_CHAT_* settings
 # (cmd/dispatch/answerer.go), and the System One decision model with its endpoint and token file
 # (cmd/dispatch/decision.go). The decision model is the one the committed record marks chosen
-# (packages/envoy/going/decision_models.json), read here rather than written, so the server reads
-# that entry's thresholds and so does every row (e2e/fake-models-helpers.ts). The server takes only
-# https endpoints, and both fakes serve the certificate DISPATCH_E2E_MODELS_DIR holds, which the
-# harness made for this stack beside one bearer token per fake; Go's crypto/x509 reads its roots
-# from SSL_CERT_FILE, which is how this server trusts that certificate and nothing else, as
-# packages/envoy/scripts/going-smoke.sh trusts its own. DISPATCH_TEST_HOOKS=1 below is what the
-# lane's display-fit hook (POST /api/v1/going/display-fit/_test) needs, and every run sets it.
+# (packages/envoy/going/decision_models.json), read here rather than written, so the server decides
+# with that entry's model and every row reads the same one (e2e/fake-models-helpers.ts). The server
+# takes only https endpoints, and both fakes serve the certificate DISPATCH_E2E_MODELS_DIR holds,
+# which the harness made for this stack beside one bearer token per fake; Go's crypto/x509 reads
+# its roots from SSL_CERT_FILE, which is how this server trusts that certificate and nothing else,
+# as packages/envoy/scripts/going-smoke.sh trusts its own. DISPATCH_TEST_HOOKS=1 below is what the
+# lane's new-issue settings hook (POST /api/v1/settings/new-issue/_test) needs, and every run sets
+# it.
 models_env=()
 if [ "${DISPATCH_E2E_MODELS:-}" = "fake" ]; then
   : "${FAKE_CHAT_MODEL_PORT:?FAKE_CHAT_MODEL_PORT must name the fake chat model (e2e/fake-chat-model.ts) that DISPATCH_E2E_MODELS=fake answers through}"

@@ -107,8 +107,9 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
 // settings cannot be read or its loop fails, which the server answers by starting it again.
 // DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
-// turns the loop's test hooks on, and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way,
-// makes it allocate at full speed that long after its start (growAgentHeap).
+// turns the loop's test hooks on and makes each SIGUSR1 collect the agent's heap and log what it
+// found (collectAgentOnSignal), and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
+// it allocate at full speed that long after its start (growAgentHeap).
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
 	if socket == "" {
@@ -145,16 +146,20 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 			return 1
 		}
 	}
-	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_GROW_AFTER")); raw != "" {
-		after, err := time.ParseDuration(raw)
-		if err != nil || after <= 0 {
-			fmt.Fprintf(stderr, "agent: DISPATCH_TEST_AGENT_GROW_AFTER=%q (expected a positive Go duration)\n", raw)
-			return 1
-		}
+	// The server checked DISPATCH_TEST_HOOKS before it passed this on, so the agent reads it alone.
+	var after time.Duration
+	if err := testHookDuration(env, "DISPATCH_TEST_AGENT_GROW_AFTER", true, &after); err != nil {
+		fmt.Fprintf(stderr, "agent: %v\n", err)
+		return 1
+	}
+	if after > 0 {
 		growAgentHeap(after, stderr)
 	}
-	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots,
-		Hooks: strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"}
+	hooks := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"
+	if hooks {
+		collectAgentOnSignal(stderr)
+	}
+	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks}
 	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, config); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)
 		return 1

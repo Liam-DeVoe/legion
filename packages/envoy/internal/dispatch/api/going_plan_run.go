@@ -403,7 +403,7 @@ func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown,
 
 // reviewCall is a review call (agentwire.KindReview) of a run in Auto-review: Auto-review's
 // model call named the rows of the run's latest plan that the person's words ask for (Asked), and
-// the server approves each of them that Auto-review may let through (goingAutoReviewLets) whose
+// the server approves each of them that Auto-review may let through (autoReviewLets) whose
 // needed rows it approves too, once for the plan, in one transaction that holds the run's lease.
 // It answers the rows to run, the same a claim of the run would (goingPendingRows), and how many
 // rows wait for the person. A second review of the plan approves nothing more.
@@ -443,7 +443,7 @@ func (a *AgentListener) reviewCall(ctx context.Context, request agentwire.CallRe
 		}
 		lets := map[int]bool{}
 		for _, row := range stored.rows {
-			if row.state != "waiting" || !slices.Contains(request.Asked, row.row) || !goingAutoReviewLets(row.tool, row.arguments, row.shown.Waits) {
+			if row.state != "waiting" || !slices.Contains(request.Asked, row.row) || !row.autoReviewLets() {
 				continue
 			}
 			if slices.ContainsFunc(row.needs, func(need int) bool { return !lets[need] }) {
@@ -460,9 +460,7 @@ func (a *AgentListener) reviewCall(ctx context.Context, request agentwire.CallRe
 				return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 			}
 		}
-		if _, err := tx.Exec(ctx, `
-			update going_plans set approved_at = now(), approved_by = '{"by": "auto_review"}' where run_id = $1::uuid and plan = $2
-		`, run.id, plan); err != nil {
+		if err := recordGoingPlanApproval(ctx, tx, run.id, plan, map[string]string{"by": "auto_review"}); err != nil {
 			return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 		}
 		if _, err := tx.Exec(ctx, goingPlanStateSQL, run.id, plan); err != nil {

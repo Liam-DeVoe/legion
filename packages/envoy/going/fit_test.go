@@ -5,150 +5,11 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
-	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 )
-
-// right and wrong are answered action outcomes at a confidence; unanswered is a call that gave
-// none.
-func right(c float64) going.ActionOutcome {
-	return going.ActionOutcome{Answered: true, Right: true, Confidence: c}
-}
-func wrong(c float64) going.ActionOutcome { return going.ActionOutcome{Answered: true, Confidence: c} }
-
-var unanswered = going.ActionOutcome{}
-
-// repeat is n copies of one outcome.
-func repeat[T any](n int, o T) []T {
-	out := make([]T, n)
-	for i := range out {
-		out[i] = o
-	}
-	return out
-}
-
-func TestTheActionThresholdIsTheLowestValueWithNoWrongChoiceAtOrAboveIt(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		outcomes  []going.ActionOutcome
-		exists    bool
-		threshold float64
-		share     float64
-		holds     bool
-	}{
-		{
-			name:     "a right choice tied with a wrong one has a wrong choice at its value",
-			outcomes: []going.ActionOutcome{wrong(0.8), right(0.8), right(0.85), right(0.9), right(0.95)},
-			exists:   true, threshold: 0.85, share: 0.6, holds: true,
-		},
-		{
-			name:     "exactly 60% at or above holds",
-			outcomes: slices.Concat(repeat(12, right(0.9)), []going.ActionOutcome{wrong(0.6)}, repeat(7, right(0.5))),
-			exists:   true, threshold: 0.9, share: 0.6, holds: true,
-		},
-		{
-			name:     "under 60% at or above does not hold",
-			outcomes: slices.Concat(repeat(11, right(0.9)), []going.ActionOutcome{wrong(0.6)}, repeat(8, right(0.5))),
-			exists:   true, threshold: 0.9, share: 0.55, holds: false,
-		},
-		{
-			name:     "with no wrong choice the lowest confidence admits every case",
-			outcomes: []going.ActionOutcome{right(0.3), right(0.5), right(0.9)},
-			exists:   true, threshold: 0.3, share: 1, holds: true,
-		},
-		{
-			name:     "a wrong choice above every right one admits no value",
-			outcomes: []going.ActionOutcome{right(0.5), right(0.9), wrong(0.99)},
-		},
-		{
-			name:     "an unanswered case counts against the share and is no wrong choice",
-			outcomes: slices.Concat(repeat(3, right(0.9)), repeat(2, unanswered)),
-			exists:   true, threshold: 0.9, share: 0.6, holds: true,
-		},
-		{
-			name:     "too many unanswered cases leave the fit under 60%",
-			outcomes: slices.Concat(repeat(3, right(0.9)), repeat(3, unanswered)),
-			exists:   true, threshold: 0.9, share: 0.5, holds: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fit := going.FitActionThreshold(tc.outcomes)
-			if fit.Exists != tc.exists || fit.Holds != tc.holds {
-				t.Fatalf("fit %+v, want exists %t and holds %t", fit, tc.exists, tc.holds)
-			}
-			if tc.exists && (fit.Threshold != tc.threshold || math.Abs(fit.Share-tc.share) > 1e-9) {
-				t.Errorf("fit %+v, want the threshold %v leaving %v at or above it", fit, tc.threshold, tc.share)
-			}
-		})
-	}
-}
-
-// chart and prose are display outcomes: a chart-worthy case or not, answered chart or prose at a
-// confidence.
-func chart(worthy bool, c float64) going.DisplayOutcome {
-	return going.DisplayOutcome{ChartWorthy: worthy, Chart: true, Confidence: c}
-}
-func prose(worthy bool, c float64) going.DisplayOutcome {
-	return going.DisplayOutcome{ChartWorthy: worthy, Confidence: c}
-}
-
-func TestTheChartThresholdIsTheLowestChartWorthyChartAboveEveryWrongChart(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		outcomes  []going.DisplayOutcome
-		exists    bool
-		threshold float64
-		share     float64
-		holds     bool
-	}{
-		{
-			name:     "a chart-worthy chart tied with a wrong chart is no candidate",
-			outcomes: []going.DisplayOutcome{chart(false, 0.7), chart(true, 0.7), chart(true, 0.8), chart(true, 0.9), chart(true, 0.95)},
-			exists:   true, threshold: 0.8, share: 0.75, holds: true,
-		},
-		{
-			name:     "chart-worthy cases answered prose count against the 60%: six of ten holds",
-			outcomes: slices.Concat(repeat(6, chart(true, 0.9)), repeat(4, prose(true, 0.99)), []going.DisplayOutcome{chart(false, 0.5)}),
-			exists:   true, threshold: 0.9, share: 0.6, holds: true,
-		},
-		{
-			name:     "chart-worthy cases answered prose count against the 60%: five of ten does not hold",
-			outcomes: slices.Concat(repeat(5, chart(true, 0.9)), repeat(5, prose(true, 0.99)), []going.DisplayOutcome{chart(false, 0.5)}),
-			exists:   true, threshold: 0.9, share: 0.5, holds: false,
-		},
-		{
-			name:     "a prose answer, chart-worthy or not, is no wrong display",
-			outcomes: []going.DisplayOutcome{prose(true, 0.99), prose(false, 0.99), chart(true, 0.6), chart(true, 0.7), chart(false, 0.65)},
-			exists:   true, threshold: 0.7, share: 1.0 / 3, holds: false,
-		},
-		{
-			name:     "with no wrong chart the lowest chart-worthy chart admits them all",
-			outcomes: []going.DisplayOutcome{chart(true, 0.4), chart(true, 0.8), prose(false, 0.9)},
-			exists:   true, threshold: 0.4, share: 1, holds: true,
-		},
-		{
-			name:     "a wrong chart above every chart-worthy one admits no value",
-			outcomes: []going.DisplayOutcome{chart(true, 0.6), chart(true, 0.8), chart(false, 0.85)},
-		},
-		{
-			name:     "no chart-worthy case answered chart admits no value",
-			outcomes: []going.DisplayOutcome{prose(true, 0.9), prose(false, 0.9)},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fit := going.FitChartThreshold(tc.outcomes)
-			if fit.Exists != tc.exists || fit.Holds != tc.holds {
-				t.Fatalf("fit %+v, want exists %t and holds %t", fit, tc.exists, tc.holds)
-			}
-			if tc.exists && (fit.Threshold != tc.threshold || math.Abs(fit.Share-tc.share) > 1e-9) {
-				t.Errorf("fit %+v, want the threshold %v leaving %v of the chart-worthy cases at or above it", fit, tc.threshold, tc.share)
-			}
-		})
-	}
-}
 
 // bakeoffCase is one committed case, read as the bake-off reads it.
 type bakeoffCase struct {
@@ -214,31 +75,8 @@ func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 	}
 }
 
-// c12's first control: a model answering chart on every case either admits no display value or
-// one that leaves under 60% of the chart-worthy cases at or above it.
-func TestAModelAnsweringChartOnEveryCaseAdmitsNoDisplayFit(t *testing.T) {
-	cases := committedCases(t)
-	sure := make([]going.DisplayOutcome, 0, len(cases))
-	for _, c := range cases {
-		sure = append(sure, chart(c.ChartWorthy, 0.97))
-	}
-	if fit := going.FitChartThreshold(sure); fit.Exists {
-		t.Errorf("always chart at one confidence: fit %+v, want no value", fit)
-	}
-	for seed := range uint64(200) {
-		r := rand.New(rand.NewPCG(seed, 1588))
-		outcomes := make([]going.DisplayOutcome, 0, len(cases))
-		for _, c := range cases {
-			outcomes = append(outcomes, chart(c.ChartWorthy, r.Float64()))
-		}
-		if fit := going.FitChartThreshold(outcomes); fit.Holds {
-			t.Fatalf("always chart at random confidences (seed %d): fit %+v holds", seed, fit)
-		}
-	}
-}
-
-// c12's second control: a model choosing at random among the catalogue's actions and none scores
-// at chance, one in the number of choices, and admits no action fit.
+// c12's control: a model choosing at random among the catalogue's actions and none scores at
+// chance, one in the number of choices.
 func TestARandomModelScoresAtChance(t *testing.T) {
 	catalogue, err := api.BuildGoingCatalogue()
 	if err != nil {
@@ -256,12 +94,9 @@ func TestARandomModelScoresAtChance(t *testing.T) {
 		outcomes := make([]going.ActionOutcome, 0, len(cases))
 		for _, c := range cases {
 			choice := choices[r.IntN(len(choices))]
-			outcomes = append(outcomes, going.ActionOutcome{Answered: true, Right: choice == c.Action, Confidence: r.Float64()})
+			outcomes = append(outcomes, going.ActionOutcome{Answered: true, Right: choice == c.Action})
 		}
 		total += going.Accuracy(outcomes)
-		if fit := going.FitActionThreshold(outcomes); fit.Holds {
-			t.Fatalf("a random model (seed %d) admits the action fit %+v", seed, fit)
-		}
 	}
 	chance := 1 / float64(len(choices))
 	if mean := total / trials; math.Abs(mean-chance) > 0.01 {

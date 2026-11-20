@@ -554,10 +554,10 @@ func TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone(t *testi
 }
 
 // TestRunTellsTheStructuredCallTheOffer: the structured call is told each offered action with its
-// argument schema and the chart the decision settled on, which is what lets it write their
-// arguments and the chart's block; the prose call that follows a refusal is told neither, since
-// prose carries no arguments and no block. The chart is offered because the run holds a read that
-// fills one (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
+// argument schema and the chart the words name, which is what lets it write their arguments and
+// the chart's block; the prose call that follows a refusal is told neither, since prose carries
+// no arguments and no block. The chart is offered because the run holds a read that fills one
+// (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
 func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
 		Final:        &goingtest.Final{Answer: "Claimed.", Arguments: `{"dispatch_claim":[{"issue":"DEMO-12"}]}`},
@@ -565,7 +565,7 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
-	request := testReads().request("claim DEMO-12", stream)
+	request := testReads().request("claim DEMO-12 and chart its activity", stream)
 	request.Reads = map[string]going.ReadFunc{going.ReadProjectActivity: func(context.Context, json.RawMessage) (going.Read, error) {
 		return going.Read{}, nil
 	}}
@@ -574,7 +574,6 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 			{Name: "dispatch_claim", Schema: json.RawMessage(`[{"name":"issue","kind":"string","required":true}]`)},
 			{Name: "dispatch_comment", Schema: json.RawMessage(`[{"name":"body","kind":"string","required":true}]`)},
 		},
-		Display: going.DisplayChart,
 	}
 	if err := answerer.Run(t.Context(), request, stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -596,7 +595,7 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	for _, want := range []string{
 		"name: dispatch_claim", `schema: [{"name":"issue","kind":"string","required":true}]`,
 		"name: dispatch_comment", `schema: [{"name":"body","kind":"string","required":true}]`,
-		"chart block",
+		"kind: chart",
 	} {
 		if !strings.Contains(structured, want) {
 			t.Errorf("the structured call was told %q, want %q in it", structured, want)
@@ -878,27 +877,37 @@ func (d *deadlineTransport) sent() ([]time.Time, int) {
 	return slices.Clone(d.deadlines), d.unbounded
 }
 
-// TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall: a quota too small to pace the next
-// call inside the time left ends the run the same way, and no call is made: the quota is taken
-// before the request goes out.
+// TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall: a call estimated past a minute's whole
+// share is made at once while the share is unspent, and a quota of 1 token a minute paces calls
+// rather than refusing them all; a quota that cannot pace the next call inside the time left
+// ends that run as the deadline does, and no call is made: the quota is taken before the request
+// goes out. The clock stands still, so the second run finds the first run's token still spent.
 func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
-	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	model := goingtest.NewModel(t, answer("An answer nobody will see."))
+	frozen := time.Now()
+	model := goingtest.NewModel(t, answer("The first run's answer."))
 	answerer := testAnswerer(t, model, going.AnswererConfig{
 		TokensPerMinute: 1,
 		Now:             func() time.Time { return frozen },
 	})
-	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+	first := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", first), first.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	first.ended(t)
+	if got := model.Calls(); got != 1 {
+		t.Fatalf("model served %d calls, want the first run's one: a call past the share is paced, not refused", got)
+	}
 
-	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
+	second := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order now", second), second.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := second.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
 	}
-	if got := model.Calls(); got != 0 {
-		t.Errorf("model served %d calls, want none: the quota could pace none of them", got)
+	if got := model.Calls(); got != 1 {
+		t.Errorf("model served %d calls, want the first run's one alone: the quota could pace no second call within the run's %s", got, contracts.GoingRunWindow)
 	}
 }
 

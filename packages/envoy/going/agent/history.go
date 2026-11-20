@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -31,11 +32,63 @@ type modelBody struct {
 }
 
 // toolCall is one tool call a model step asked for: the provider's id for it, the tool and its
-// arguments as the model wrote them.
+// arguments as the model wrote them, and whether the build that saved it knew no tool of that
+// name: the model made the name up, and the call was answered as no tool of the run.
 type toolCall struct {
 	ID        string          `json:"id"`
 	Tool      string          `json:"tool"`
 	Arguments json.RawMessage `json:"arguments"`
+	Unknown   bool            `json:"unknown,omitempty"`
+}
+
+// knownTools is the names of the run's tools (tools), the ones a saved step may name.
+func (w *worker) knownTools() map[string]bool {
+	tools := w.tools(0)
+	known := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		known[tool.Name] = true
+	}
+	return known
+}
+
+// unknownTool is the reason a run fails with whose saved steps name a tool this build does not
+// know, "" where each names one it knows: each call of a model step that its build knew names one
+// of the run's tools, and so does each tool step, but a row of the run's plan, which names a tool
+// of Dispatch. Such a step was saved by a build that has the tool; replayed to the model, its call
+// would be answered as no tool of the run and the run would go on without it. A step saved only
+// as its note names no tool here.
+func (w *worker) unknownTool() string {
+	known := w.knownTools()
+	unknown := func(step agentwire.SavedStep, tool string) string {
+		return fmt.Sprintf("%s: step %d of this run names the tool %q, which this build of the agent does not know", agentwire.CodeUnknownTool, step.Step, tool)
+	}
+	for _, step := range w.history {
+		switch step.Kind {
+		case agentwire.StepModel:
+			var body modelBody
+			if json.Unmarshal(step.Body, &body) != nil {
+				continue
+			}
+			for _, call := range body.Calls {
+				if !call.Unknown && !known[call.Tool] {
+					return unknown(step, call.Tool)
+				}
+			}
+		case agentwire.StepTool:
+			var body toolBody
+			if json.Unmarshal(step.Body, &body) != nil {
+				continue
+			}
+			if body.Row != nil {
+				if _, held := dispatchTool(body.Call.Tool); !held {
+					return unknown(step, body.Call.Tool)
+				}
+			} else if !known[body.Call.Tool] {
+				return unknown(step, body.Call.Tool)
+			}
+		}
+	}
+	return ""
 }
 
 // toolBody is the body of a saved tool step: the call, what the model was told of its result,
@@ -55,14 +108,11 @@ func note(text string) string {
 		return text
 	}
 	cut := noteLimit
-	for cut > 0 && !utf8RuneStart(text[cut]) {
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
 		cut--
 	}
 	return text[:cut] + "…"
 }
-
-// utf8RuneStart reports whether b starts a rune rather than continuing one.
-func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 // wholeBytes is the bytes of the whole steps of history, which historyLimit bounds.
 func wholeBytes(history []agentwire.SavedStep) int {

@@ -1,11 +1,10 @@
 package going
 
 // record.go reads the record the bake-off (cmd/going-bakeoff) writes: one entry for each
-// decision model it measured, with the two thresholds fitted on that model's own answers. A
-// deployment names a model and nothing else, and a model with no entry here is no decision model
-// (R11), so no threshold reaches the server that nobody measured. It also holds R7's choice rule
-// (Choose), which the bake-off names the chosen model by and the record's own test holds the
-// committed choice to, and the writer of the record's bytes (EncodeRecords).
+// decision model it measured, with that model's measurement. A deployment names a model and
+// nothing else, and a model with no entry here is no decision model (R11). It also holds R7's
+// choice rule (Choose), which the bake-off names the chosen model by and the record's own test
+// holds the committed choice to, and the writer of the record's bytes (EncodeRecords).
 
 import (
 	_ "embed"
@@ -24,9 +23,7 @@ var decisionModelsJSON []byte
 // on the cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS
 // (MeetsFloors), measured on at least LeastCases cases of which at least LeastChartCases are
 // chart-worthy. The floors admit a model and rank nothing: a p95 well under the ceiling counts
-// for no more than one just under it. An action fit is no floor: a candidate without one ranks
-// as any other, and where it ranks first the rule names no model until R5's repair gives it one
-// (Choose).
+// for no more than one just under it.
 const (
 	NamedFloor      = 0.90
 	OtherFloor      = 0.70
@@ -35,23 +32,13 @@ const (
 	LeastChartCases = 20
 )
 
-// Record is one measured model: its two fitted thresholds and the measurement they were fitted
-// on. A threshold is nil where its fit does not hold: a model with no action fit is never chosen
-// and acts on nothing, and one with no display fit draws a chart only on an explicit request
-// (R5). Chosen marks the model R7's rule named (Choose), or the architect where it named none.
-// A run may ask every case more than once (Repeats); every share, accuracy, latency and display
-// rate here then pools every answer of every repeat, and both thresholds are fitted on them all.
+// Record is one measured model and its measurement. Chosen marks the model R7's rule named
+// (Choose), or the architect where it named none. A run may ask every case more than once
+// (Repeats); every accuracy, latency and display rate here then pools every answer of every
+// repeat.
 type Record struct {
 	Model    string `json:"model"`
 	Endpoint string `json:"endpoint"`
-	// ActionThreshold is the action fit's value, nil where none holds, and ActionShare the
-	// share of all the answers, every case in every repeat, at or above it.
-	ActionThreshold *float64 `json:"action_threshold"`
-	ActionShare     float64  `json:"action_share"`
-	// ChartThreshold is the chart-display fit's value, nil where none holds, and ChartShare
-	// the share of the answers to chart-worthy cases at or above it.
-	ChartThreshold *float64 `json:"chart_threshold"`
-	ChartShare     float64  `json:"chart_share"`
 	// MeasuredAt is when the run measured the model, and ReleaseDate the release date the
 	// endpoint gave for the model then, both RFC 3339.
 	MeasuredAt  string `json:"measured_at"`
@@ -86,9 +73,9 @@ type Record struct {
 	// the same cases and repeats. It is evidence of how far a lead in right choices can be
 	// trusted, recorded beside the choice; it names no model.
 	PairedTests []PairedTest `json:"paired_tests"`
-	// Chosen marks the model the choice named, and ChosenBy how (ChosenByRightChoices,
-	// ChosenByDisplayFit or ChosenByPerson). ChosenReason is the architect's reason for a model
-	// they named, on a ChosenByPerson entry alone. Both are empty on every entry not chosen.
+	// Chosen marks the model the choice named, and ChosenBy how (ChosenByRightChoices or
+	// ChosenByPerson). ChosenReason is the architect's reason for a model they named, on a
+	// ChosenByPerson entry alone. Both are empty on every entry not chosen.
 	Chosen       bool   `json:"chosen"`
 	ChosenBy     string `json:"chosen_by,omitempty"`
 	ChosenReason string `json:"chosen_reason,omitempty"`
@@ -98,15 +85,11 @@ type Record struct {
 // it, or by the architect where the rule names none.
 const (
 	// ChosenByRightChoices is the candidate with the most right choices pooled over every
-	// repeat, alone at that count and with an action fit; the one model that meets the floors,
-	// with an action fit, is that too.
+	// repeat, alone at that count; the one model that meets the floors is that too.
 	ChosenByRightChoices = "right_choices"
-	// ChosenByDisplayFit is R7's tiebreak: of the candidates level at the most right choices,
-	// the one alone in having a display fit, and with an action fit.
-	ChosenByDisplayFit = "display_fit"
 	// ChosenByPerson is the candidate the architect named where the rule names none, the
-	// leading candidates being level on right choices and alike in the display fit, each with an
-	// action fit (going-bakeoff --tie-break); the entry's ChosenReason says why.
+	// leading candidates being level on right choices (going-bakeoff --tie-break); the entry's
+	// ChosenReason says why.
 	ChosenByPerson = "person"
 )
 
@@ -186,11 +169,6 @@ func (r *Record) MeetsFloors() bool {
 	return r.NamedAccuracy >= NamedFloor && r.OtherAccuracy >= OtherFloor && r.P95MS < P95CeilingMS
 }
 
-// DisplayFit is whether the model's chart-display fit holds: the key of R7's tiebreak.
-func (r *Record) DisplayFit() bool {
-	return r.ChartThreshold != nil
-}
-
 // PairedAgainst is the model's paired test against the named model, and whether it holds one.
 func (r *Record) PairedAgainst(model string) (PairedTest, bool) {
 	for _, test := range r.PairedTests {
@@ -208,18 +186,12 @@ const (
 	// NoCandidate is a run none of whose models meets R7's floors: nothing is ranked, and no
 	// model is named.
 	NoCandidate ChoiceOutcome = "no_candidate"
-	// Named is a run whose one candidate ranked first has an action fit, which the rule names
-	// (ChosenByRightChoices, or ChosenByDisplayFit where the tiebreak put it first), or a full
-	// tie the architect broke (Break, ChosenByPerson).
+	// Named is a run whose one candidate ranked first the rule names (ChosenByRightChoices), or
+	// a full tie the architect broke (Break, ChosenByPerson).
 	Named ChoiceOutcome = "named"
-	// FullTie is a run whose candidates ranked first are several, level on right choices and
-	// alike in the display fit, each with an action fit: the rule names none, and the architect
-	// may name one of them (Break).
+	// FullTie is a run whose candidates ranked first are several, level on right choices: the
+	// rule names none, and the architect may name one of them (Break).
 	FullTie ChoiceOutcome = "full_tie"
-	// OwedRepair is a run whose candidates ranked first include one with no action fit: the
-	// rule names no model, not the next one with a fit, and no person may, since R5's repair,
-	// correcting the catalogue's descriptions until a value fits, is owed first.
-	OwedRepair ChoiceOutcome = "owed_repair"
 )
 
 // Candidate is a model that meets R7's floors, with the count the rule ranks it by: its right
@@ -238,38 +210,29 @@ type Choice struct {
 	// Model is the model named and By how, a ChosenBy value; both are empty unless Outcome is
 	// Named. Reason is the architect's, on a Choice they made alone.
 	Model, By, Reason string
-	// Ranked is every candidate in the order the rule ranks them: by right choices, those with
-	// a display fit first among a level count, and the records' order last, which names nothing.
-	// It is empty where no model meets the floors.
+	// Ranked is every candidate in the order the rule ranks them: by right choices, and the
+	// records' order last, which names nothing. It is empty where no model meets the floors.
 	Ranked []Candidate
 	// Of is the answers each candidate gave over every repeat, the count its Right is of.
 	Of int
-	// Level is the candidates ranked first, in the records' order: those with the most right
-	// choices and, where some of those have a display fit and some none, those with one. It
-	// holds one model where the ranking puts one first, every model of a full tie where it puts
-	// several, and nothing where no model meets the floors.
+	// Level is the candidates ranked first, those with the most right choices, in the records'
+	// order. It holds one model where the ranking puts one first, every model of a full tie
+	// where it puts several, and nothing where no model meets the floors.
 	Level []string
-	// Unfit is the models of Level with no action fit, which make the Outcome OwedRepair.
-	Unfit []string
-	// Why is, where the rule names no model, why: no model meets the floors, the models ranked
-	// first include one with no action fit, or they are a full tie. A person's choice keeps the
-	// Why of the tie it broke. It is empty where the rule names a model.
+	// Why is, where the rule names no model, why: no model meets the floors, or the models
+	// ranked first are a full tie. A person's choice keeps the Why of the tie it broke. It is
+	// empty where the rule names a model.
 	Why string
 }
 
 // Choose is R7's choice rule over one run's records, and what it came to (Outcome) with the
 // right choices it ranked the candidates by (Ranked). Every model that meets R7's three floors
-// is a candidate (MeetsFloors), ranked by its right choices pooled over every repeat; where the
-// most right choices are level, R7 prefers a model with a display fit, as a tiebreak only, so
-// the level candidates with a display fit rank first. Where one candidate ranks first and has an
-// action fit, it is named (ChosenByRightChoices, or ChosenByDisplayFit where the tiebreak put it
-// first). Where a candidate ranked first has no action fit, the rule names no model, not the
-// next one with a fit: that model acts on nothing, and R5's repair, correcting the catalogue's
-// descriptions until a value fits, is owed before a model can be named. Where several rank
-// first, each with an action fit, the run is a full tie and the rule names none: the architect
-// names one of Level (Break). Nothing else decides: the paired test says how far a lead in right
-// choices can be trusted and names no model, p95 is a floor and no key, and the records' order
-// names nothing, Ranked and Level keeping it only to print by.
+// is a candidate (MeetsFloors), ranked by its right choices pooled over every repeat. Where one
+// candidate ranks first, it is named (ChosenByRightChoices). Where several rank first, level on
+// right choices, the run is a full tie and the rule names none: the architect names one of Level
+// (Break). Nothing else decides: the paired test says how far a lead in right choices can be
+// trusted and names no model, p95 is a floor and no key, and the records' order names nothing,
+// Ranked and Level keeping it only to print by.
 func Choose(records []Record) Choice {
 	type ranking struct {
 		record *Record
@@ -284,74 +247,33 @@ func Choose(records []Record) Choice {
 	if len(ranked) == 0 {
 		return Choice{Outcome: NoCandidate, Why: "no model meets R7's floors"}
 	}
-	slices.SortStableFunc(ranked, func(a, b ranking) int {
-		switch {
-		case a.right != b.right:
-			return b.right - a.right
-		case a.record.DisplayFit() == b.record.DisplayFit():
-			return 0
-		case a.record.DisplayFit():
-			return -1
-		}
-		return 1
-	})
+	slices.SortStableFunc(ranked, func(a, b ranking) int { return b.right - a.right })
 	first, most := ranked[0].record, ranked[0].right
 	choice := Choice{Ranked: make([]Candidate, len(ranked)), Of: first.Cases * first.Repeats}
-	atMost := 0 // the candidates at the most right choices, whatever their display fit
 	for n, c := range ranked {
 		choice.Ranked[n] = Candidate{Model: c.record.Model, Right: c.right}
-		if c.right != most {
-			continue
-		}
-		atMost++
-		if c.record.DisplayFit() == first.DisplayFit() {
+		if c.right == most {
 			choice.Level = append(choice.Level, c.record.Model)
-			if c.record.ActionThreshold == nil {
-				choice.Unfit = append(choice.Unfit, c.record.Model)
-			}
 		}
 	}
-	by := ChosenByRightChoices
-	if atMost > 1 {
-		by = ChosenByDisplayFit
+	if len(choice.Level) == 1 {
+		choice.Outcome, choice.Model, choice.By = Named, first.Model, ChosenByRightChoices
+		return choice
 	}
-	count := fmt.Sprintf("%d of %d right choices pooled over every repeat", most, choice.Of)
-	fits := "none of them has a display fit"
-	if first.DisplayFit() {
-		fits = "each has a display fit"
-	}
-	const repair = "R5's repair, correcting the catalogue's descriptions until a value fits, is owed before a model can be named"
-	switch {
-	case len(choice.Level) == 1 && len(choice.Unfit) == 0:
-		choice.Outcome, choice.Model, choice.By = Named, first.Model, by
-	case len(choice.Unfit) == 0:
-		choice.Outcome = FullTie
-		choice.Why = fmt.Sprintf("%s are level at %s and %s, so R7's rule names none and the architect names one of them", nameList(choice.Level), count, fits)
-	case len(choice.Level) > 1:
-		choice.Outcome = OwedRepair
-		choice.Why = fmt.Sprintf("%s rank first among the models that meet R7's floors, level at %s and %s, and %s %s no action fit, so R7's rule names no model and no person may: %s",
-			nameList(choice.Level), count, fits, nameList(choice.Unfit), hasHave(len(choice.Unfit)), repair)
-	case by == ChosenByRightChoices:
-		choice.Outcome = OwedRepair
-		choice.Why = fmt.Sprintf("%s ranks first among the models that meet R7's floors, with the most right choices pooled over every repeat (%d of %d), and has no action fit, so R7's rule names no model: %s", first.Model, most, choice.Of, repair)
-	default:
-		choice.Outcome = OwedRepair
-		choice.Why = fmt.Sprintf("%s ranks first among the models that meet R7's floors, alone with a display fit of those level at %s, and has no action fit, so R7's rule names no model: %s", first.Model, count, repair)
-	}
+	choice.Outcome = FullTie
+	choice.Why = fmt.Sprintf("%s are level at %d of %d right choices pooled over every repeat, so R7's rule names none and the architect names one of them",
+		nameList(choice.Level), most, choice.Of)
 	return choice
 }
 
 // Break is the architect's choice of model, for reason, where the rule names none. It refuses
-// every Outcome but FullTie - a run the rule decides, a run whose models ranked first include one
-// with no action fit, a run with no candidate - a model outside the full tie and a reason that
-// says nothing, returning c as it was: a person names a model only among models the measurement
-// cannot tell apart and each could be named, and the record keeps why.
+// every Outcome but FullTie - a run the rule decides, a run with no candidate - a model outside
+// the full tie and a reason that says nothing, returning c as it was: a person names a model only
+// among models the measurement cannot tell apart, and the record keeps why.
 func (c Choice) Break(model, reason string) (Choice, error) {
 	switch c.Outcome {
 	case Named:
-		return c, fmt.Errorf("R7's rule names %s (%s), and a person names a model only where the leading candidates are level on right choices and on the display fit", c.Model, c.By)
-	case OwedRepair:
-		return c, fmt.Errorf("a person names a model only on a full tie of models that each have an action fit, and here %s", c.Why)
+		return c, fmt.Errorf("R7's rule names %s (%s), and a person names a model only where the leading candidates are level on right choices", c.Model, c.By)
 	case NoCandidate:
 		return c, errors.New("no model meets R7's floors, so there is no tie to break")
 	case FullTie:
@@ -374,13 +296,6 @@ func nameList(names []string) string {
 		return strings.Join(names, "")
 	}
 	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
-}
-
-func hasHave(n int) string {
-	if n == 1 {
-		return "has"
-	}
-	return "have"
 }
 
 // EncodeRecords is the bytes of the record the bake-off writes: Go's indented JSON, with a final

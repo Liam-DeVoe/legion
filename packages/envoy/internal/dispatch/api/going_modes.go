@@ -196,9 +196,13 @@ func (s *server) goingRowEvent(ctx context.Context, tool string, prepared goingP
 	return &event, nil
 }
 
-// goingAutoReviewLets reports whether Auto-review may let a row of tool with arguments through
-// that waits for waits: its class (goingRowClass) is one goingAutoReviewClasses names, and it waits
-// for nothing in both modes.
-func goingAutoReviewLets(tool string, arguments json.RawMessage, waits []string) bool {
-	return goingAutoReviewClasses[goingRowClass(tool, arguments)] && len(waits) == 0
+// class is the row's class (goingRowClass), read from its tool and the arguments it runs with.
+func (row goingPlanRowStored) class() goingWriteClass {
+	return goingRowClass(row.tool, row.arguments)
+}
+
+// autoReviewLets reports whether Auto-review may let the row through: its class is one
+// goingAutoReviewClasses names, and it waits for nothing in both modes.
+func (row goingPlanRowStored) autoReviewLets() bool {
+	return goingAutoReviewClasses[row.class()] && len(row.shown.Waits) == 0
 }

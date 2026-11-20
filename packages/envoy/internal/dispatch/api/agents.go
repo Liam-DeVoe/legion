@@ -4,9 +4,10 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
+	"net/url"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -108,8 +109,17 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // `state`, so the Agents page shows a session that missed its heartbeats as stalled rather than
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
 // pick (dispatch://INFRA-392).
+//
+// `limit` answers the newest seen sessions alone, as many as it names, and reads the open asks
+// and the last activity of those alone (agentRows); the command bar's roster read sends it, so
+// a run's read of a roster of any size loads no more rows than it answers.
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	limit, err := parseAgentListLimit(r.URL.Query())
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	if s.deps.Envoy == nil {
@@ -134,7 +144,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeEnvoyError(w, roster.err)
 		return
 	}
-	rows, err := s.agentRows(r.Context(), roster.sessions)
+	rows, err := s.agentRows(r.Context(), roster.sessions, limit)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -160,22 +170,17 @@ func (s *server) agentRoster(ctx context.Context) (routeRoster, error) {
 	return roster, nil
 }
 
-// agentRows is the agents list's rows for the listed sessions: newest seen first, each with its
-// open asks and last activity, the machine standing in for a host a listener left out. The
-// listed sessions are every read's (routeRoster), so the sort orders a copy of them. GET
-// /api/v1/agents and the going run's roster read (going_reads.go) answer through it alike.
-func (s *server) agentRows(ctx context.Context, listed []envoy.Session) ([]agentResponse, error) {
-	if len(listed) == 0 {
+// agentRows is the agents list's rows for the listed sessions: newest seen first, at most limit
+// of them (every one for a limit of 0), each with its open asks and last activity, the machine
+// standing in for a host a listener left out. Only the sessions it answers are looked up, so a
+// limit bounds the rows its two reads load as it bounds the rows it answers. GET /api/v1/agents
+// and the going run's roster read (going_reads.go) answer through it alike.
+func (s *server) agentRows(ctx context.Context, listed []envoy.Session, limit int) ([]agentResponse, error) {
+	sessions := newestSessions(listed, limit)
+	if len(sessions) == 0 {
 		// Nothing to look up: both aggregates would bind an empty id list and return no rows.
 		return []agentResponse{}, nil
 	}
-	sessions := slices.Clone(listed)
-	sort.SliceStable(sessions, func(left, right int) bool {
-		if sessions[left].LastSeen != sessions[right].LastSeen {
-			return sessions[left].LastSeen > sessions[right].LastSeen
-		}
-		return sessions[left].SessionID < sessions[right].SessionID
-	})
 	sessionIDs := make([]string, len(sessions))
 	for index, session := range sessions {
 		sessionIDs[index] = session.SessionID
@@ -206,4 +211,47 @@ func (s *server) agentRows(ctx context.Context, listed []envoy.Session) ([]agent
 		})
 	}
 	return rows, nil
+}
+
+// agentListLimitMost is the most sessions a `limit` of GET /api/v1/agents may name.
+const agentListLimitMost = math.MaxInt32
+
+// parseAgentListLimit reads GET /api/v1/agents' `limit`: how many of the newest seen sessions the
+// list answers, 0 where the caller named none and the list answers every session.
+func parseAgentListLimit(query url.Values) (int, error) {
+	limit, present, valid := parseQueryInt(query, "limit", 1, agentListLimitMost)
+	if present && !valid {
+		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", agentListLimitMost)
+	}
+	return limit, nil
+}
+
+// newestSessions is a copy of the listed sessions, newest seen first and then by id, at most
+// limit of them (every one for a limit of 0). The listed sessions are every read's (routeRoster),
+// so it orders a copy; a limit below the list's length keeps only the newest as it reads the list,
+// in a slice of the limit's size, so a roster of any size copies limit sessions.
+func newestSessions(listed []envoy.Session, limit int) []envoy.Session {
+	newer := func(left, right envoy.Session) int {
+		if order := cmp.Compare(right.LastSeen, left.LastSeen); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.SessionID, right.SessionID)
+	}
+	if limit <= 0 || limit >= len(listed) {
+		sessions := slices.Clone(listed)
+		slices.SortStableFunc(sessions, newer)
+		return sessions
+	}
+	kept := make([]envoy.Session, 0, limit+1)
+	for _, session := range listed {
+		if len(kept) == limit && newer(session, kept[limit-1]) >= 0 {
+			continue
+		}
+		at, _ := slices.BinarySearchFunc(kept, session, newer)
+		kept = slices.Insert(kept, at, session)
+		if len(kept) > limit {
+			kept = kept[:limit]
+		}
+	}
+	return kept
 }

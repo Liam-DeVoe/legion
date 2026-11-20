@@ -231,7 +231,7 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 	level := input.Level
 	switch {
 	case input.Kind != "" && input.Kind != agentwire.RunNewIssue:
-		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("kind %q is not new_issue: leave it out for a run of the words", input.Kind))
+		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("kind %q is not %s: leave it out for a run of the words", input.Kind, agentwire.RunNewIssue))
 		return
 	case input.Kind == agentwire.RunNewIssue && level != "" && level != goingNewIssueLevel:
 		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("a new-issue run is Fast, not %s", level))
@@ -310,7 +310,8 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := insertGoingRun(r.Context(), tx, run); err != nil {
+	started, err := insertGoingRun(r.Context(), tx, run)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -321,11 +322,6 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 	// Delivered when the transaction commits, so no claim reads the queue before the run is in it.
 	if _, err := tx.Exec(r.Context(), `select pg_notify($1, $2)`, GoingRunsChannel, "ready"); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("announce the run: %w", err))
-		return
-	}
-	started, err := readGoingRun(r.Context(), tx, run.id, grant.login)
-	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read the run started: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -491,36 +487,34 @@ func (s *server) streamGoingRunEvents(w http.ResponseWriter, r *http.Request) {
 	defer idle.Stop()
 	check := time.NewTicker(goingRunStreamCheck)
 	defer check.Stop()
-	for {
+	// pass is one read of the run's frames and one wait for its next: false once the stream ends.
+	// The pass's wait is released as it returns, whichever way it does.
+	pass := func() bool {
 		woken, done := s.goingRunEvents.wait(run.ID)
+		defer done()
 		state, frames, err := s.readGoingRunFrames(r.Context(), run.ID, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run's conversation under this
 			// reader; either way there is nothing left to read.
-			done()
-			return
+			return false
 		}
 		for _, frame := range frames {
 			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", frame.sequence, frame.name, frame.data); err != nil {
-				done()
-				return
+				return false
 			}
 			after = frame.sequence
 		}
 		if len(frames) > 0 {
 			if err := stream.Flush(); err != nil {
-				done()
-				return
+				return false
 			}
 			idle.Reset(goingRunStreamIdle)
 		}
 		if len(frames) == goingRunStreamBatch {
-			done()
-			continue
+			return true
 		}
 		if goingRunEnded(state) {
-			done()
-			return
+			return false
 		}
 		select {
 		case <-woken:
@@ -528,16 +522,15 @@ func (s *server) streamGoingRunEvents(w http.ResponseWriter, r *http.Request) {
 		case <-idle.C:
 			_, _ = fmt.Fprintf(w, "event: %s\ndata: {}\n\n", goingFrameKeepalive)
 			_ = stream.Flush()
-			done()
-			return
+			return false
 		case <-r.Context().Done():
-			done()
-			return
+			return false
 		case <-s.lifetime.Done():
-			done()
-			return
+			return false
 		}
-		done()
+		return true
+	}
+	for pass() {
 	}
 }
 
@@ -591,21 +584,22 @@ func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("list my waiting plans: %w", err))
 		return
 	}
-	page := goingWaitingPlansPage{Rows: []goingWaitingPlan{}, Limit: limit, Offset: offset}
-	for rows.Next() {
-		var plan goingWaitingPlan
-		var total int64
-		if err := rows.Scan(&plan.Run, &plan.Conversation, &plan.Words, &plan.Plan, &plan.Summary, &plan.CreatedAt, &plan.Waiting, &total); err != nil {
-			rows.Close()
-			s.writeHandlerError(w, fmt.Errorf("list my waiting plans: %w", err))
-			return
-		}
-		page.Rows, page.Total = append(page.Rows, plan), int(total)
+	type listed struct {
+		plan  goingWaitingPlan
+		total int64
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	plans, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (listed, error) {
+		var one listed
+		err := row.Scan(&one.plan.Run, &one.plan.Conversation, &one.plan.Words, &one.plan.Plan, &one.plan.Summary, &one.plan.CreatedAt, &one.plan.Waiting, &one.total)
+		return one, err
+	})
+	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("list my waiting plans: %w", err))
 		return
+	}
+	page := goingWaitingPlansPage{Rows: make([]goingWaitingPlan, 0, len(plans)), Limit: limit, Offset: offset}
+	for _, one := range plans {
+		page.Rows, page.Total = append(page.Rows, one.plan), int(one.total)
 	}
 	WriteJSON(w, http.StatusOK, page)
 }

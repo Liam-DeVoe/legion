@@ -52,6 +52,7 @@ require (
 	github.com/wasilibs/go-pgquery v0.0.0-20261027025405-3048dd293555
 	github.com/yuin/goldmark v1.8.6
 	go.opentelemetry.io/otel v1.47.0
+	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0

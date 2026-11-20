@@ -28,24 +28,16 @@ func goingFixtureBlock(t *testing.T, kind, title, spec string, tables map[string
 // TestTheGoingFrameFixturesAreWhatTheServerWrites holds packages/contracts/fixtures/going, which
 // the contracts' Bun test (src/going.test.ts) holds to the hand-written frames of
 // packages/contracts/src/going.ts key for key, to the data of the frames this server writes on a
-// run's stream: a decision with its two best actions, a proposal with an invocation complete, one
-// missing an enumeration's value and one missing an item, each kind of block as a block's spec
-// and its read fill it, and the roster frame. A field the Go types gain, lose or rename changes
-// a fixture here, and the Bun test then fails until going.ts says the same.
+// run's stream: a decision with its action and the line on top it gives, a proposal with an
+// invocation complete, one missing an enumeration's value and one missing an item, each kind of
+// block as a block's spec and its read fill it, and the roster frame. A field the Go types gain,
+// lose or rename changes a fixture here, and the Bun test then fails until going.ts says the
+// same.
 // `go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
 // rewrites them.
 func TestTheGoingFrameFixturesAreWhatTheServerWrites(t *testing.T) {
-	confidence, chosen, runnerUp := 0.91, 0.84, 0.12
 	frames := map[string]any{
-		"decision.json": goingDecision{
-			Actions: []goingDecidedAction{
-				{Action: "dispatch_issue_update", Confidence: &confidence, Probability: &chosen},
-				{Action: "dispatch_comment", Probability: &runnerUp},
-			},
-			Act:     true,
-			Context: going.ContextPage,
-			Display: goingDecidedDisplay{Choice: going.DisplayChart, Confidence: 0.77, Chart: true},
-		},
+		"decision.json": goingDecision{Action: "dispatch_issue_update", Line: goingLineDo, Context: going.ContextPage},
 		"proposal.json": goingProposal{Offers: []goingOffer{
 			{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
 				{Arguments: map[string]any{"issue": "DEMO-12", "status": "done"}, Automatic: true, TargetArgument: "issue"},

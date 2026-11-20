@@ -1906,7 +1906,10 @@ which needs the whole history and the tags (fetch-depth 0), and builds it from `
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
-it the same way.
+it the same way. The going-runs row of INFRA-1588's check c25 runs a third build, the release
+legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a reason
+of its own: that release's sweep deletes going_requests older than an hour, which the newest
+release need not do, so only a fixed release shows that a run of the head survives it.
 Each build is cached by its commit and the script that built it, so a pull request builds each
 release once; its src/ is left out of the cache, since the test reads only the parts the script
 copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job

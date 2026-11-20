@@ -152,7 +152,7 @@ Each item below names a variable, then its purpose.
 
   The System One model the command bar's one decision call is put to before it answers (which action the words ask for, whether they point at the page's item, chart or prose), the endpoint's base URL, which `/v1/systemone` is appended to and which must be an absolute https URL with a host and no query or fragment, and the file holding the bearer token every call presents.
   Each defaults to empty; the endpoint and the token file are set together or not at all, and boot refuses one without the other, naming the one missing; the model is optional, since a deployment renders the endpoint and the file before it names a model.
-  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes): the server reads that model's two fitted thresholds from it, and a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint.
+  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes, and which marks the model its rule chose): a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint. The boot line of a measured model says whether the record chose it.
   The token file is read on every call and never at boot, so a rotation needs no restart; a file that is absent or empty at a call fails that call as the decision model that cannot be reached, with no request made, and the capability route reports it unreachable.
 
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
@@ -3587,15 +3587,16 @@ A run is its person's one question in flight, so a newer `POST` of the same cred
 a server answers 32 runs at once, and the next waits for a free slot within its 30 seconds, its decision call too, ending `ANSWER_DID_NOT_ARRIVE` where the window ends first;
 the 30 seconds bound the whole loop, all its calls together, not each call; each call's stream is read up to 4 MiB, past which the run fails `ANSWER_FAILED`; and the answerer paces its calls to 25% of `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, the agent's runs taking the rest.
 
-With a measured decision model configured, a run first makes one decision call, bounded at one second.
-It asks three questions: which action of the catalogue (`GET /api/v1/going/catalogue`) the words ask for, among the actions the caller's credential may run, or `none`; whether the words are about the item the context chip names, items they name, or nothing; and chart or prose.
-The run compares the confidences with that model's thresholds in `packages/envoy/going/decision_models.json`.
-The stream's first frame is then `decision`: the two best actions, `act` (whether the bar runs the first at once), the context and the display.
+Words that are an issue's key, or the very key, title or name of a hit the keyword search finds for them, are the fast tier: the run stores that hit's `item` frame and `end`, and asks no model at all, neither the decision model nor the answer.
+With a measured decision model configured, a run of any other words first makes one decision call, bounded at one second.
+It asks three questions: which action of the catalogue (`GET /api/v1/going/catalogue`) the words ask for, among the actions the caller's credential may run, or `none`; whether the words are about the item the context chip names, items they name, or nothing; and chart or prose, which the run does not read.
+The stream's first frame is then `decision`: the action chosen, the line on top of the bar it gives (`ask` for `none`, `file` for `dispatch_issue`, the line File as a new issue, and `do` for any other action), and the context.
+The bar reads the line from that frame, and drops it where it comes 500 ms or more after the pause that asked it, so the line reads Ask.
 A decision call that fails gives no `decision` frame, and the run answers as with no decision model.
-The answer asks the model for a structured reply first: the answer, one block, and the arguments of each action the decision offered.
+The answer asks the model for a structured reply first: the answer, one block of a kind the words name, and the arguments of the action the decision chose.
 A service that refuses that request with a `400`, or a reply that does not fit it, is asked again for prose, with no block and no arguments; after a `400`, this process asks for prose alone until it restarts.
 After the text frames come `block`, the one typed block the words asked for, which the server fills from its own read, and `roster`, `{age_ms, source}`, where the run read the roster.
-The last frame before the ending is `proposal`: the arguments of each offered action, each held to that action's own schema, with a target filled from the chip only where the words are about the page.
+The last frame before the ending is `proposal`: the arguments of the chosen action, held to that action's own schema, with a target filled from the chip only where the words are about the page.
 An upload under the name of a document its owner already holds, as the proposal reads the store, would write that document's next version over the text it holds: without `force` every write of it is refused and the bar has no control that sets `force`, and with `force` a person's pick of it from the bar does not say it replaces the document.
 So it is offered only with `force` where the answer wrote the name the document is stored under, its file name, and the person's own words write that name as a whole word, whatever its case.
 An upload that finds the document by its slug is withheld whatever the words, and the offer's `withheld` names the stored name the person would have to write; the stored name without its extension counts for nothing.
@@ -3662,7 +3663,7 @@ Two kills for memory within an hour that no run alone caused halve the agent's r
 The limits come from the container's memory limit L, read through automemlimit's reader (`memlimit.FromCgroup`: cgroup v2's `memory.max` or cgroup v1's `memory.limit_in_bytes`, `cmd/dispatch/memlimits.go`): the agent's ceiling is the smaller of 4 GiB and L/6, its `GOMEMLIMIT` 75% of that, and the server's own memory limit 90% of what L leaves after the ceiling, set at boot unless `GOMEMLIMIT` already sets one; with no limit the ceiling is 4 GiB and the server sets none.
 The socket's directory is `dispatch-agent` under `XDG_RUNTIME_DIR`, a row of the settings table that the server hands its API server, so the API package reads no environment.
 The agent works 8 runs at once.
-`DISPATCH_TEST_AGENT_CEILING`, under the test hooks, sets the ceiling in bytes for a test of the kill; `DISPATCH_TEST_AGENT_GOMEMLIMIT` the agent's `GOMEMLIMIT`, `DISPATCH_TEST_AGENT_SLOTS` its slots, `DISPATCH_TEST_AGENT_HOOKS=1` the agent's own test hooks (`going/agent/hooks.go`), and `DISPATCH_TEST_AGENT_CALL_HOOK` rules, apart by `;`, on routes that panic in, or hold before their route answers or after it, every call the server runs for the agent.
+`DISPATCH_TEST_AGENT_CEILING`, under the test hooks, sets the ceiling in bytes for a test of the kill; `DISPATCH_TEST_AGENT_GOMEMLIMIT` the agent's `GOMEMLIMIT`, `DISPATCH_TEST_AGENT_SLOTS` its slots, `DISPATCH_TEST_AGENT_HOOKS=1` the agent's own test hooks (`going/agent/hooks.go`, among them `test_soft_limit`, a tool that works the agent at its soft limit until its run ends) and a collection of the agent's heap at each `SIGUSR1`, which it logs as `agent: collection N found B bytes live and G goroutines` (`collectAgentOnSignal` in `cmd/dispatch/memory_hooks.go`), and `DISPATCH_TEST_AGENT_CALL_HOOK` rules, apart by `;`, on routes that panic in, or hold before their route answers or after it, every call the server runs for the agent.
 For the test of the memory group (Tests, below), `DISPATCH_TEST_AGENT_GROW_AFTER` makes the agent allocate as fast as it can, on as many goroutines as its `GOMAXPROCS`, from that long after each start until it is killed, and `DISPATCH_TEST_SERVER_HEAP` makes the server hold that many bytes on its heap from its boot (`cmd/dispatch/memory_hooks.go`).
 
 `/metrics` shows both processes: `envoy_dispatch_process_goroutines`, `envoy_dispatch_process_heap_live_bytes`, `envoy_dispatch_process_memory_total_bytes`, `envoy_dispatch_process_memory_limit_bytes` and `envoy_dispatch_process_start_time_seconds`, each with `process="server"` and `process="agent"` (the agent's runtime figures as its latest renew carried them, none before its first renew); `envoy_dispatch_cache_bytes` with `cache` `read`, `display_tree` and `list_answer`; `envoy_dispatch_going_runs` with `state` `working`, `queued` and `waiting`; and `envoy_dispatch_agent_slots`, `envoy_dispatch_agent_slots_in_use`, `envoy_dispatch_agent_stuck_goroutines` and `envoy_dispatch_agent_memory_kills`, the agent's kills for memory since the server started.
@@ -4224,11 +4225,12 @@ Each item below names a path with its method and identity, then its purpose.
   An Ask row's id, a row id of neither shape and an id that is not a uuid are each `400 INVALID_QUERY`.
   Answers `{dismissed}`, how many threads it changed; a request that changes nothing answers 0 and appends no event.
 
-- `/api/v1/agents` (GET; cookie, trusted header, or bearer)
+- `/api/v1/agents?limit=` (GET; cookie, trusted header, or bearer)
 
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
+  `limit`, a whole number of 1 or more (else `400 INVALID_QUERY`), lists that many of the newest seen sessions alone and reads the open asks and last activity of those alone; the command bar's roster read (`read_roster`) sends 50, so a run's read of a roster of any size loads no more rows than it answers. Without it every session is listed.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4321,10 +4323,10 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
 
-  What the dashboard's search bar files a person's typed words as when those words match nothing it found:
+  What the command bar's File as a new issue files a person's words as:
   `{label, session}`, the label that new issue carries and the session it is routed to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
   Each is `""` where the deployment set none: the issue then carries no label, and takes no route.
-  Enter on the bar's line File as a new issue starts a new-issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`, and nothing is posted on the issue: no first message goes to the session, since a message to an agent is a change of a plan the person approves.
+  Enter on the bar's File as a new issue starts a new_issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`, and nothing is posted on the issue: no first message goes to the session, since a message to an agent is a change of a plan the person approves.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -5547,5 +5549,13 @@ It measures the agent's fastest growth in 50 ms, holds the server's heap so that
 The comparison holds the heap outside the rooms (samples with a `reearth/ygo` frame) and the read cache (a `coldRead` frame) to 2 MB an hour, and the rooms' part divided by `resident_bytes` under twice its value at the first set.
 With `DISPATCH_TEST_KEEP_CLOSED_ROOMS=1` the server keeps a copy of the document of each room a document socket leaves, and the rooms' ratio passes twice its first value;
 with `DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=1` it stores 1 MB for each request in a map nothing prunes, and the heap outside grows past its bound, with the hook's function among the five whose flat heap grew most.
-Both hooks are refused without `DISPATCH_TEST_HOOKS=1` (`memory_hooks.go`).
+Both hooks are refused without `DISPATCH_TEST_HOOKS=1` (`testHookBool` in `main.go`).
 `TestTheLeaksOfC28AreFixed` holds a subtest for each leak that comparison named in production, and says it holds none while it named none.
+
+`TestBackgroundRunsHoldNoMemory` (`agent_soak_test.go`, untagged) works 1,000 runs through a server's own agent after 100 more fill the caches - answers, searches, reads of a spec of 1 MiB, approved plans, follow-ups, runs their person stops, runs stopped at a bound of their level, runs that lose their lease and runs whose tool panics - and holds the agent's live heap, read from its collection at a `SIGUSR1`, to less than 1 KiB of growth for each run, and its goroutines to their count at the start; it then leaves 1,000 plans waiting and holds the agent to no goroutine more and both processes to less than 1 KiB for each, the server's live heap read from `/metrics` just after `/debug/pprof/heap?gc=1` made it collect.
+`goleak` (`go.uber.org/goleak`) fails `going/agent`, `going/agentwire` and `internal/dispatch/api` at the end of their run when a test left a goroutine behind (`TestMain` in each).
+
+Two tests of `agent_load_test.go` build under the `memory` tag.
+`TestTheServerHeapUnderEightDeepRuns` seeds an Envoy listener of 200,000 sessions, a project of 5,000 issues, an issue of 1,000 comments and a spec of 1 MiB for each run, fills the read cache to its budget, and measures one Deep run at its limits: the most the agent's total Go memory rises while it works is one run's peak, and the claim gate (70% of the agent's `GOMEMLIMIT`) less the agent's base, divided by that peak, 8 at the most, must be the agent's slots (`agentSlots` in `memlimits.go`).
+Then 8 Deep runs at once read the issue listing, search, the roster, an issue's events and their spec, and edit it: the server's live heap outside the document rooms (samples with a `reearth/ygo` or a room frame of `internal/dispatch/docs`) stays under 1 GiB above its level before them and comes back to within 5% of it once the rooms close, and the agent's total Go memory stays under its `GOMEMLIMIT`.
+`TestTheAgentLeavesTheServerItsCPU` holds the p99 of one fixed read under twice its p99 with the agent idle, and every `/livez` under 1 s, while the agent works at its soft limit of 1 GiB through `test_soft_limit`.

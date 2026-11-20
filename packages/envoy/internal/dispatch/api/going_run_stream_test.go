@@ -86,11 +86,7 @@ func TestAConversationIsDeletedWhole(t *testing.T) {
 	if response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+keptFirst, nil, "alice"); response.Code != http.StatusOK {
 		t.Errorf("GET the earlier run 8 days old answered %d %s, want 200 while its conversation is listed", response.Code, response.Body.String())
 	}
-	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-runs", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/me/going-runs answered %d %s", response.Code, response.Body.String())
-	}
-	page := decodeBody[goingConversationsPage](t, response)
+	page := goingHistory(t, rig.mux, "alice", "")
 	if len(page.Rows) != 1 || page.Rows[0].ID != keptFirst || len(page.Rows[0].Runs) != 2 ||
 		page.Rows[0].Runs[0].ID != keptNext || page.Rows[0].Runs[1].ID != keptFirst {
 		t.Errorf("History lists %+v, want the one conversation %s with its follow-up and its earlier run", page.Rows, keptFirst)
@@ -153,23 +149,32 @@ func openGoingRunStream(t *testing.T, server *httptest.Server, run, login, last 
 			if err != nil {
 				return
 			}
-			switch line = strings.TrimSuffix(line, "\n"); {
-			case line == "":
+			if frame.take(strings.TrimSuffix(line, "\n")) {
 				if frame.name != "" {
 					frames <- frame
 				}
 				frame = goingStreamFrame{}
-			case strings.HasPrefix(line, "id: "):
-				frame.id = strings.TrimPrefix(line, "id: ")
-			case strings.HasPrefix(line, "event: "):
-				frame.name = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				frame.data = strings.TrimPrefix(line, "data: ")
 			}
 		}
 	}()
 	t.Cleanup(cancel)
 	return http.StatusOK, "", goingRunStream{frames: frames, close: cancel}
+}
+
+// take reads one line of a stream's frame into f, and reports whether the line ends the frame: the
+// empty line after it.
+func (f *goingStreamFrame) take(line string) bool {
+	switch {
+	case line == "":
+		return true
+	case strings.HasPrefix(line, "id: "):
+		f.id = strings.TrimPrefix(line, "id: ")
+	case strings.HasPrefix(line, "event: "):
+		f.name = strings.TrimPrefix(line, "event: ")
+	case strings.HasPrefix(line, "data: "):
+		f.data = strings.TrimPrefix(line, "data: ")
+	}
+	return false
 }
 
 // next is the stream's next frame, which must come within within.
@@ -188,10 +193,11 @@ func (s goingRunStream) next(t *testing.T, within time.Duration, what string) go
 }
 
 // TestTheRunStreamResumes: a stream of a run's events writes each frame the run stores, as it
-// stores it, woken by the run's NOTIFY well before its own re-read; a reader that drops and comes
-// back with its Last-Event-ID is written the frames after it and none before; past 4 streams of
-// one run the next is refused 429 GOING_RUN_READERS_FULL, and once one closes another is admitted;
-// and the run's Stop ends every stream with the run's end frame.
+// stores it, woken by the run's NOTIFY well before its own re-read, whatever form of the run's id
+// the writer named it by; a reader that drops and comes back with its Last-Event-ID is written the
+// frames after it and none before; past 4 streams of one run the next is refused 429
+// GOING_RUN_READERS_FULL, and once one closes another is admitted; and the run's Stop ends every
+// stream with the run's end frame.
 func TestTheRunStreamResumes(t *testing.T) {
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
@@ -200,7 +206,8 @@ func TestTheRunStreamResumes(t *testing.T) {
 	// At a shape no build reads, so nothing claims it while the streams read it.
 	run := rig.queued(t, "alice", goingRunShape+1, "a run the streams read")
 	stored := 0
-	store := func(t *testing.T, count int) {
+	// store appends count frames to the run its writer names id.
+	store := func(t *testing.T, id string, count int) {
 		t.Helper()
 		ctx := context.Background()
 		tx, err := rig.database.Pool.Begin(ctx)
@@ -213,7 +220,7 @@ func TestTheRunStreamResumes(t *testing.T) {
 			stored++
 			frames = append(frames, agentwire.Frame{Name: "text", Data: json.RawMessage(fmt.Sprintf(`{"n": %d}`, stored))})
 		}
-		if err := appendGoingRunFrames(ctx, tx, run, frames); err != nil {
+		if err := appendGoingRunFrames(ctx, tx, id, frames); err != nil {
 			t.Fatalf("store frames: %v", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -230,23 +237,40 @@ func TestTheRunStreamResumes(t *testing.T) {
 	}
 
 	t.Run("a reader resumes from its last sequence", func(t *testing.T) {
-		store(t, 3)
+		store(t, run, 3)
 		status, code, first := openGoingRunStream(t, server, run, "alice", "")
 		if status != http.StatusOK {
 			t.Fatalf("the stream answered %d %s", status, code)
 		}
 		read(t, first, 5*time.Second, "1", "2", "3")
-		store(t, 1)
+		store(t, run, 1)
 		// Woken by the run's NOTIFY, well before the stream would read again of itself.
 		read(t, first, goingRunStreamCheck/3, "4")
 		first.close()
-		store(t, 2)
+		store(t, run, 2)
 		status, code, again := openGoingRunStream(t, server, run, "alice", "4")
 		if status != http.StatusOK {
 			t.Fatalf("the stream resumed after 4 answered %d %s", status, code)
 		}
 		read(t, again, 5*time.Second, "5", "6")
 		again.close()
+	})
+
+	t.Run("a writer that names the run in capitals wakes its stream", func(t *testing.T) {
+		status, code, stream := openGoingRunStream(t, server, run, "alice", fmt.Sprint(stored))
+		if status != http.StatusOK {
+			t.Fatalf("the stream answered %d %s", status, code)
+		}
+		// Stored once the stream waits for the run's next frame, so only a NOTIFY wakes it.
+		goingEventually(t, "the stream to wait for the run's next frame", func() bool {
+			rig.served.goingRunEvents.mu.Lock()
+			defer rig.served.goingRunEvents.mu.Unlock()
+			return rig.served.goingRunEvents.runs[run] != nil
+		})
+		store(t, strings.ToUpper(run), 1)
+		// Woken by the run's NOTIFY, which names the run as its stream waits on it.
+		read(t, stream, goingRunStreamCheck/3, fmt.Sprint(stored))
+		stream.close()
 	})
 
 	t.Run("the fifth reader of a run is refused", func(t *testing.T) {
@@ -284,8 +308,13 @@ func TestTheRunStreamResumes(t *testing.T) {
 			if frame.name != agentwire.FrameEnd || json.Unmarshal([]byte(frame.data), &end) != nil || end.State != agentwire.StateStopped || end.Reason != goingStoppedByPerson {
 				t.Errorf("reader %d was written %+v after the stop, want the end frame of the stopped run", index+1, frame)
 			}
-			if _, more := <-stream.frames; more {
-				t.Errorf("reader %d's stream went on past the run's end", index+1)
+			select {
+			case _, more := <-stream.frames:
+				if more {
+					t.Errorf("reader %d's stream went on past the run's end", index+1)
+				}
+			case <-time.After(goingRunStreamCheck / 3):
+				t.Errorf("reader %d's stream did not end within %s of the run's end frame", index+1, goingRunStreamCheck/3)
 			}
 		}
 	})

@@ -9,10 +9,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -80,7 +83,8 @@ var outsideReads = []contracts.DispatchTool{
 }
 
 // drawBlockTool is draw_block's spec, as find_tools answers it beside the specs of Dispatch's own
-// tools: the arguments are going.RunBlock's, which the server reads.
+// tools: the arguments are going.RunBlock's, which the server reads, and each list of values is
+// the one going checks them against.
 var drawBlockTool = contracts.DispatchTool{
 	Name: toolDrawBlock,
 	Description: "Draw a table, a chart or one number (a metric) beside your answer. The server makes every number in it: name the tool results of this run it reads, " +
@@ -88,7 +92,7 @@ var drawBlockTool = contracts.DispatchTool{
 		"then the columns of the chain's answer the block draws. Write no number in these arguments but those steps and calls. A result that was cut, or a list whose later pages you did not read " +
 		"and name, is refused as not whole: read the rest and call draw_block again.",
 	Arguments: []contracts.ToolField{
-		{Name: "kind", Kind: contracts.ToolFieldEnum, Required: true, Values: []string{"chart", "table", "metric"}, Description: "What the block is drawn as."},
+		{Name: "kind", Kind: contracts.ToolFieldEnum, Required: true, Values: going.RunBlockKinds, Description: "What the block is drawn as."},
 		{Name: "title", Kind: contracts.ToolFieldString, Required: true, Description: "What the block shows, with no number in it."},
 		{Name: "steps", Kind: contracts.ToolFieldArray, Required: true, Description: "The tool results the block reads, in order: each page of a list read.", Item: &contracts.ToolField{
 			Kind: contracts.ToolFieldObject, Fields: []contracts.ToolField{
@@ -99,7 +103,7 @@ var drawBlockTool = contracts.DispatchTool{
 		}},
 		{Name: "chain", Kind: contracts.ToolFieldArray, Required: true, Description: "The steps run over the rows, in order. A field is a field of the rows, a.b for a field within one.", Item: &contracts.ToolField{
 			Kind: contracts.ToolFieldObject, Fields: []contracts.ToolField{
-				{Name: "op", Kind: contracts.ToolFieldEnum, Required: true, Values: []string{"filter", "group", "count", "sum", "mean", "min", "max", "sort"},
+				{Name: "op", Kind: contracts.ToolFieldEnum, Required: true, Values: going.Transforms,
 					Description: "filter keeps the rows that meet one condition; group makes one row of each value of field (per a period for a time), whose column is named as, else per, else field; " +
 						"count, sum, mean, min and max write how many rows each group holds, or that of field's numbers, in a column named as, else the step (before a group, of all rows); " +
 						"sort orders the rows by field."},
@@ -111,14 +115,14 @@ var drawBlockTool = contracts.DispatchTool{
 				{Name: "since", Kind: contracts.ToolFieldString, Description: "filter: the field is a time at or after this one, such as 2026-11-16."},
 				{Name: "before", Kind: contracts.ToolFieldString, Description: "filter: the field is a time before this one."},
 				{Name: "present", Kind: contracts.ToolFieldBoolean, Description: "filter: the field holds a value (true), or is null or missing (false)."},
-				{Name: "per", Kind: contracts.ToolFieldEnum, Values: []string{"day", "week", "month", "year"}, Description: "group: the period a time field is grouped by."},
+				{Name: "per", Kind: contracts.ToolFieldEnum, Values: going.Periods, Description: "group: the period a time field is grouped by."},
 				{Name: "as", Kind: contracts.ToolFieldString, Description: "The name of the column the step writes."},
 				{Name: "order", Kind: contracts.ToolFieldEnum, Values: []string{"asc", "desc"}, Description: "sort: asc, the default, or desc."},
 			},
 		}},
 		{Name: "x", Kind: contracts.ToolFieldString, Description: "chart: the column along the axis."},
 		{Name: "y", Kind: contracts.ToolFieldString, Description: "chart: the column of numbers it plots."},
-		{Name: "mark", Kind: contracts.ToolFieldEnum, Values: []string{"bar", "line"}, Description: "chart: bar, the default, or line."},
+		{Name: "mark", Kind: contracts.ToolFieldEnum, Values: []string{going.MarkBar, going.MarkLine}, Description: "chart: bar, the default, or line."},
 		{Name: "columns", Kind: contracts.ToolFieldArray, Item: &contracts.ToolField{Kind: contracts.ToolFieldString}, Description: "table: the columns it shows, in order."},
 		{Name: "field", Kind: contracts.ToolFieldString, Description: "metric: the column of its one row it shows."},
 		{Name: "label", Kind: contracts.ToolFieldString, Description: "metric: what the number counts."},
@@ -217,9 +221,27 @@ func (w *worker) read(ctx context.Context, step int, input json.RawMessage) (str
 	return w.callServer(ctx, agentwire.CallRequest{Step: step, Call: 1, Kind: agentwire.KindRoute, Tool: dispatchRead, Arguments: input})
 }
 
+// findable is a tool find_tools may answer, with the lowercase text it matches a need's words
+// against: its name, its name in words, and its description.
+type findable struct {
+	tool contracts.DispatchTool
+	text string
+}
+
+// findableTools is each tool of Dispatch, the two reads outside it and draw_block, made findable
+// once, at find_tools' first call.
+var findableTools = sync.OnceValue(func() []findable {
+	tools := slices.Concat(contracts.DispatchTools, outsideReads, []contracts.DispatchTool{drawBlockTool})
+	out := make([]findable, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, findable{tool: tool, text: strings.ToLower(tool.Name + " " + strings.ReplaceAll(tool.Name, "_", " ") + " " + tool.Description)})
+	}
+	return out
+})
+
 // findTools answers the specs that fit the model's need: each tool of Dispatch, the two reads
-// outside it and draw_block, scored by how many of the need's words its name and description
-// hold, the best foundTools of them.
+// outside it and draw_block (findableTools), scored by how many of the need's words its name and
+// description hold, the best foundTools of them.
 func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Need string `json:"need"`
@@ -233,16 +255,15 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 		score int
 	}
 	var found []scored
-	for _, tool := range append(append(slices.Clone(contracts.DispatchTools), outsideReads...), drawBlockTool) {
-		text := strings.ToLower(tool.Name + " " + strings.ReplaceAll(tool.Name, "_", " ") + " " + tool.Description)
+	for _, candidate := range findableTools() {
 		score := 0
 		for _, word := range words {
-			if len(word) > 2 && strings.Contains(text, word) {
+			if len(word) > 2 && strings.Contains(candidate.text, word) {
 				score++
 			}
 		}
 		if score > 0 {
-			found = append(found, scored{tool, score})
+			found = append(found, scored{candidate.tool, score})
 		}
 	}
 	slices.SortStableFunc(found, func(a, b scored) int { return b.score - a.score })
@@ -438,10 +459,13 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 // (draw_block), with its status; and the notes after a body the model was given only the first
 // bytes of, or that the server cut.
 const (
-	resultHead    = "step %d, call %d: status %d\n"
-	shortenedNote = "\n[This answer holds %d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]"
-	serverCutNote = "\n[The server cut this answer at %d bytes: what it holds past them is not here.]"
+	resultHead      = "step %d, call %d: status %d\n"
+	shortenedPrefix = "\n[This answer holds "
+	shortenedNote   = shortenedPrefix + "%d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]"
 )
+
+// serverCutNote is the note after an answer the server cut at agentwire.CallBodyLimit.
+var serverCutNote = fmt.Sprintf("\n[The server cut this answer at %d bytes: what it holds past them is not here.]", agentwire.CallBodyLimit)
 
 // resultText is what the model is told of call's answer: that it is data, the call and its
 // status, and at most modelResultLimit bytes of its body, with a note that names the rest.
@@ -451,7 +475,7 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 	body := answer.Body
 	if len(body) > modelResultLimit {
 		cut := modelResultLimit
-		for cut > 0 && !utf8RuneStart(body[cut]) {
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
 			cut--
 		}
 		out.Write(body[:cut])
@@ -460,7 +484,7 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 		out.Write(body)
 	}
 	if answer.Cut {
-		fmt.Fprintf(&out, serverCutNote, agentwire.CallBodyLimit)
+		out.WriteString(serverCutNote)
 	}
 	return out.String()
 }
@@ -468,8 +492,26 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 // resultHeadLine and shortenedStart read back resultHead and the start of shortenedNote.
 var (
 	resultHeadLine = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
-	shortenedStart = regexp.MustCompile(`^\n\[This answer holds (\d+) bytes and you were given the first (\d+):`)
+	shortenedStart = regexp.MustCompile(`^` + regexp.QuoteMeta(shortenedPrefix) + `(\d+) bytes and you were given the first (\d+):`)
 )
+
+// cutShortened is rest without the shortenedNote that ends it, and whether it held one.
+func cutShortened(rest string) (string, bool) {
+	at := strings.LastIndex(rest, shortenedPrefix)
+	if at < 0 {
+		return rest, false
+	}
+	sizes := shortenedStart.FindStringSubmatch(rest[at:])
+	if sizes == nil {
+		return rest, false
+	}
+	total, _ := strconv.Atoi(sizes[1])
+	given, _ := strconv.Atoi(sizes[2])
+	if rest[at:] != fmt.Sprintf(shortenedNote, total, given) {
+		return rest, false
+	}
+	return rest[:at], true
+}
 
 // SavedResult is what a saved tool step of a run holds of its call's answer, as resultText told
 // the model it: the tool it called and the arguments it called it with (call_tool's own tool and
@@ -502,16 +544,8 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 	saved := SavedResult{Tool: step.Call.Tool, Arguments: step.Call.Arguments}
 	saved.Call, _ = strconv.Atoi(numbers[2])
 	saved.Status, _ = strconv.Atoi(numbers[3])
-	rest, saved.Cut = strings.CutSuffix(rest, fmt.Sprintf(serverCutNote, agentwire.CallBodyLimit))
-	if at := strings.LastIndex(rest, "\n[This answer holds "); at >= 0 {
-		if sizes := shortenedStart.FindStringSubmatch(rest[at:]); sizes != nil {
-			total, _ := strconv.Atoi(sizes[1])
-			given, _ := strconv.Atoi(sizes[2])
-			if rest[at:] == fmt.Sprintf(shortenedNote, total, given) {
-				rest, saved.Shortened = rest[:at], true
-			}
-		}
-	}
+	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
+	rest, saved.Shortened = cutShortened(rest)
 	saved.Body = []byte(rest)
 	switch step.Call.Tool {
 	case toolCallTool:

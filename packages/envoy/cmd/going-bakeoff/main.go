@@ -1,33 +1,30 @@
-// Command going-bakeoff measures the decision models of the command bar (R7) and fits their two
-// thresholds (R5). It puts every committed case of going/bakeoff/cases.json to every model named,
-// through the same three questions and the same state the server asks (going.DecisionQuestions,
-// going.DecisionState) over the catalogue the server serves (api.BuildGoingCatalogue), one
-// agentloop.Decide call per case per model, one call at a time so each latency is one call's own.
-// --repeats asks every case that many times: each repeat puts every case to each model in turn,
-// so a drift of the endpoint over the run reaches every model alike, and the accuracies, the
-// latencies, the display rates and both fits pool every answer of every repeat.
+// Command going-bakeoff measures the decision models of the command bar (R7). It puts every
+// committed case of going/bakeoff/cases.json to every model named, through the same three
+// questions and the same state the server asks (going.DecisionQuestions, going.DecisionState)
+// over the catalogue the server serves (api.BuildGoingCatalogue), one agentloop.Decide call per
+// case per model, one call at a time so each latency is one call's own. --repeats asks every
+// case that many times: each repeat puts every case to each model in turn, so a drift of the
+// endpoint over the run reaches every model alike, and the accuracies, the latencies and the
+// display rates pool every answer of every repeat.
 //
 // It prints a markdown table and writes going/decision_models.json (going.EncodeRecords), which
-// the server reads its thresholds from (R11). Beside the pooled table it prints each repeat's
+// holds the models a deployment may name (R11). Beside the pooled table it prints each repeat's
 // right choices, their spread, the cases a model chose right in some repeats and wrong in others,
 // and the paired test of each two models over the same cases and repeats (going.ComparePaired).
 //
 // R7's rule names the chosen model (going.Choose). Every model that meets R7's three floors is a
-// candidate, and the candidates are ranked by their right choices pooled over every repeat;
-// where the most right choices are level, a display fit breaks the tie, and nothing else does.
-// The candidate ranked first is named where it has an action fit. An action fit is no floor:
-// where a candidate ranked first has none, the rule names no model, not the next one with a fit,
-// since R5's repair, correcting the catalogue's descriptions until a value fits, is owed first;
-// the run writes its record with no model chosen, says so and exits non-zero, and no tie-break
-// is taken. Where several candidates rank first, each with an action fit, the run is a full tie
-// and the rule names none: the run writes its record with no model chosen, says so and exits
-// non-zero, and the architect names one of the level models with --tie-break and says why with
-// --tie-reason, which the record keeps. A tie-break on any other run is refused, and so is one
-// with no reason. The paired test is printed and recorded beside the choice as evidence of how
-// far the lead in right choices can be trusted; it names no model.
+// candidate, and the candidates are ranked by their right choices pooled over every repeat; the
+// candidate ranked first alone is named, and nothing else decides. Where several candidates rank
+// first, level on right choices, the run is a full tie and the rule names none: the run writes
+// its record with no model chosen, says so and exits non-zero, and the architect names one of the
+// level models with --tie-break and says why with --tie-reason, which the record keeps. A
+// tie-break on any other run is refused, and so is one with no reason. The paired test is printed
+// and recorded beside the choice as evidence of how far the lead in right choices can be trusted;
+// it names no model.
 //
-//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--repeats <n>] [--tie-break <model> --tie-reason <why>]
+//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--repeats <n>] [--answers-out <file>] [--tie-break <model> --tie-reason <why>]
 //	going-bakeoff --from-record going/decision_models.json [--tie-break <model> --tie-reason <why>]
+//	going-bakeoff --score <answers file> --out <file> [--cases <file>]
 //
 // --from-record measures nothing: it puts R7's rule to a record a run wrote, its entries
 // measured on the same cases the same number of times, prints the run's table with what the
@@ -35,10 +32,17 @@
 // run that tied. A tie-break the record already holds is put to the rule again with its own
 // model and reason: kept where it still holds, and refused, writing nothing, where it does not.
 //
+// --answers-out saves what each model answered to each case of each repeat, and its latency, as
+// JSON. --score calls no model: it scores the answers such a file saved against the cases of
+// --cases, read in their order and matched by their words and page, as a run scores the answers
+// it got, prints the table and writes the record to --out, which it must be given, so a scoring
+// never writes the committed record. Scoring one run's answers against a case set whose labels
+// are changed is how a reading of the labels is proven to move the score.
+//
 // Run it from inside the envoy module: the case file and the record default to their committed
-// paths under the module's root. It never prints the key. With no key it says so, writes no fit
-// and exits non-zero; with fewer than 80 cases or fewer than 20 chart-worthy cases run, the run is
-// void and writes nothing.
+// paths under the module's root. It never prints the key. With no key it says so, measures
+// nothing and exits non-zero; with fewer than 80 cases or fewer than 20 chart-worthy cases run,
+// the run is void and writes nothing.
 package main
 
 import (
@@ -123,17 +127,19 @@ func run() error {
 		keyFile    = flag.String("key-file", "", "a file holding the endpoint's key")
 		casesArg   = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
 		outArg     = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
-		repeats    = flag.Int("repeats", 1, "how many times each model is asked every case; the accuracies, the fits and the choice pool every repeat")
+		repeats    = flag.Int("repeats", 1, "how many times each model is asked every case; the accuracies and the choice pool every repeat")
 		fromRecord = flag.String("from-record", "", "a record a run wrote: put R7's rule to it, print its table and write it to --out, measuring nothing")
-		tieBreak   = flag.String("tie-break", "", "the model the architect names where the run is level on right choices and on the display fit; refused on any other run")
+		tieBreak   = flag.String("tie-break", "", "the model the architect names where the run is level on right choices; refused on any other run")
 		tieReason  = flag.String("tie-reason", "", "why the architect named the --tie-break model, which the record keeps")
+		answersOut = flag.String("answers-out", "", "a file to save every answer of the run to, as JSON, for --score")
+		scoreArg   = flag.String("score", "", "a file --answers-out saved: score its answers against --cases, calling no model, and write the record to --out")
 	)
 	flag.Parse()
 	if (*tieBreak == "") != (strings.TrimSpace(*tieReason) == "") {
 		return errors.New("--tie-break and --tie-reason go together: a person names a model only with a reason the record keeps")
 	}
 	if *fromRecord != "" {
-		for _, name := range []string{"models", "endpoint", "key-file", "cases", "repeats"} {
+		for _, name := range []string{"models", "endpoint", "key-file", "cases", "repeats", "answers-out", "score"} {
 			if isSet(name) {
 				return fmt.Errorf("--from-record measures nothing, so it takes no --%s", name)
 			}
@@ -152,6 +158,29 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "wrote %s\n", *outArg)
 		return nil
 	}
+	if *scoreArg != "" {
+		for _, name := range []string{"models", "endpoint", "key-file", "repeats", "answers-out"} {
+			if isSet(name) {
+				return fmt.Errorf("--score calls no model, so it takes no --%s", name)
+			}
+		}
+		if !isSet("out") {
+			return errors.New("--score writes its record only where --out names a file, so the committed record is never written from saved answers")
+		}
+		if rootErr != nil && !isSet("cases") {
+			return fmt.Errorf("finding the envoy module for the default --cases: %w; run from inside packages/envoy or pass --cases", rootErr)
+		}
+		cases, _, err := caseSet(*casesArg)
+		if err != nil {
+			return err
+		}
+		results, err := loadAnswers(*scoreArg, cases)
+		if err != nil {
+			return err
+		}
+		source := fmt.Sprintf("Scored from %s, answers a run saved, against %s; no model was called", *scoreArg, *casesArg)
+		return finish(results, source, *tieBreak, *tieReason, *outArg)
+	}
 	if rootErr != nil && (!isSet("cases") || !isSet("out")) {
 		return fmt.Errorf("finding the envoy module for the default paths: %w; run from inside packages/envoy or pass --cases and --out", rootErr)
 	}
@@ -162,34 +191,17 @@ func run() error {
 		return fmt.Errorf("--repeats %d asks no case; it must be at least 1", *repeats)
 	}
 	if *keyFile == "" {
-		return errors.New("no key: --key-file names no file, so no model was measured and no fit is recorded")
+		return errors.New("no key: --key-file names no file, so no model was measured")
 	}
 	ctx := context.Background()
 	token := going.FileTokenSource{Path: *keyFile}.Token
 	if _, err := token(ctx); err != nil {
-		return fmt.Errorf("no key: the key file %s cannot be read or is empty, so no model was measured and no fit is recorded", *keyFile)
+		return fmt.Errorf("no key: the key file %s cannot be read or is empty, so no model was measured", *keyFile)
 	}
 
-	catalogue, err := api.BuildGoingCatalogue()
-	if err != nil {
-		return fmt.Errorf("the catalogue: %w", err)
-	}
-	actions := api.GoingDecisionActions(catalogue.Actions())
-	cases, err := readCases(*casesArg, actions)
+	cases, actions, err := caseSet(*casesArg)
 	if err != nil {
 		return err
-	}
-	// A void run measures nothing, names no choice and writes nothing (c12): every model is put
-	// every case, so the case set alone says whether a run would stand.
-	worthy := 0
-	for _, c := range cases {
-		if c.ChartWorthy {
-			worthy++
-		}
-	}
-	if len(cases) < going.LeastCases || worthy < going.LeastChartCases {
-		return fmt.Errorf("%w: the cases hold %d cases, %d chart-worthy, under R7's %d and %d, so nothing is measured or written",
-			errVoid, len(cases), worthy, going.LeastCases, going.LeastChartCases)
 	}
 
 	served, err := servedModels(ctx, *endpoint, token)
@@ -242,6 +254,48 @@ func run() error {
 			m.repeats = append(m.repeats, answers)
 		}
 	}
+	if *answersOut != "" {
+		if err := saveAnswers(*answersOut, results); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "saved the answers to %s\n", *answersOut)
+	}
+	source := fmt.Sprintf("The endpoint serves %d model(s)", len(served))
+	if len(unmeasured) > 0 {
+		source += "; not measured: " + strings.Join(unmeasured, ", ")
+	}
+	return finish(results, source, *tieBreak, *tieReason, *outArg)
+}
+
+// caseSet is the case set at path, over the catalogue's decision actions, refused where it is too
+// small for a run to stand: a void run measures nothing, names no choice and writes nothing
+// (c12), and every model is put every case, so the case set alone says whether a run would stand.
+func caseSet(path string) ([]testCase, []going.Action, error) {
+	catalogue, err := api.BuildGoingCatalogue()
+	if err != nil {
+		return nil, nil, fmt.Errorf("the catalogue: %w", err)
+	}
+	actions := api.GoingDecisionActions(catalogue.Actions())
+	cases, err := readCases(path, actions)
+	if err != nil {
+		return nil, nil, err
+	}
+	worthy := 0
+	for _, c := range cases {
+		if c.ChartWorthy {
+			worthy++
+		}
+	}
+	if len(cases) < going.LeastCases || worthy < going.LeastChartCases {
+		return nil, nil, fmt.Errorf("%w: the cases hold %d cases, %d chart-worthy, under R7's %d and %d, so nothing is measured or written",
+			errVoid, len(cases), worthy, going.LeastCases, going.LeastChartCases)
+	}
+	return cases, actions, nil
+}
+
+// finish scores each model's answers, pairs each two models, prints the table and what R7's rule
+// names on it, writes the record to out, and names each case a model missed.
+func finish(results []*measured, source, tieBreak, tieReason, out string) error {
 	for _, m := range results {
 		score(m)
 	}
@@ -253,24 +307,111 @@ func run() error {
 			}
 		}
 	}
-
 	records := make([]going.Record, 0, len(results))
 	for _, m := range results {
 		records = append(records, m.record)
 	}
-	source := fmt.Sprintf("The endpoint serves %d model(s)", len(served))
-	if len(unmeasured) > 0 {
-		source += "; not measured: " + strings.Join(unmeasured, ", ")
-	}
-	err = conclude(os.Stdout, records, source, *tieBreak, *tieReason, *outArg)
+	err := conclude(os.Stdout, records, source, tieBreak, tieReason, out)
 	for _, m := range results {
 		printMisses(os.Stderr, m)
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "wrote %s\n", *outArg)
+	fmt.Fprintf(os.Stderr, "wrote %s\n", out)
 	return nil
+}
+
+// savedAnswer is one case's answer as --answers-out saves it and --score reads it: the case's
+// words and page, whether the model answered both questions, its two decisions, the call's
+// latency and the fault of a call that answered nothing.
+type savedAnswer struct {
+	Words     string             `json:"words"`
+	Context   going.PageContext  `json:"context"`
+	Answered  bool               `json:"answered"`
+	Action    agentloop.Decision `json:"action"`
+	Display   agentloop.Decision `json:"display"`
+	LatencyMS float64            `json:"latency_ms"`
+	Fault     string             `json:"fault,omitempty"`
+}
+
+// savedModel is one model's answers of a run: the model, where and when it was measured, and its
+// answers to every case in each repeat, in the cases' order.
+type savedModel struct {
+	Model       string          `json:"model"`
+	Endpoint    string          `json:"endpoint"`
+	ReleaseDate string          `json:"release_date"`
+	MeasuredAt  string          `json:"measured_at"`
+	Repeats     [][]savedAnswer `json:"repeats"`
+}
+
+// saveAnswers writes every answer of results to path.
+func saveAnswers(path string, results []*measured) error {
+	saved := make([]savedModel, 0, len(results))
+	for _, m := range results {
+		model := savedModel{Model: m.record.Model, Endpoint: m.record.Endpoint, ReleaseDate: m.record.ReleaseDate, MeasuredAt: m.record.MeasuredAt}
+		for _, answers := range m.repeats {
+			repeat := make([]savedAnswer, len(answers))
+			for i, a := range answers {
+				repeat[i] = savedAnswer{
+					Words: a.c.Words, Context: a.c.Context, Answered: a.answered, Action: a.action, Display: a.display,
+					LatencyMS: float64(a.latency.Microseconds()) / 1000, Fault: a.fault,
+				}
+			}
+			model.Repeats = append(model.Repeats, repeat)
+		}
+		saved = append(saved, model)
+	}
+	encoded, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		return fmt.Errorf("save the answers: %w", err)
+	}
+	return nil
+}
+
+// loadAnswers is the answers path saved, each put to the case of cases it answers: the case at
+// its place, which must hold its words and page, so answers of another case set are refused.
+func loadAnswers(path string, cases []testCase) ([]*measured, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("the saved answers: %w", err)
+	}
+	var saved []savedModel
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		return nil, fmt.Errorf("the saved answers %s: %w", path, err)
+	}
+	if len(saved) == 0 {
+		return nil, fmt.Errorf("the saved answers %s hold no model", path)
+	}
+	results := make([]*measured, 0, len(saved))
+	for _, model := range saved {
+		if len(model.Repeats) == 0 {
+			return nil, fmt.Errorf("the saved answers of %s hold no repeat", model.Model)
+		}
+		m := &measured{record: going.Record{
+			Model: model.Model, Endpoint: model.Endpoint, ReleaseDate: model.ReleaseDate, MeasuredAt: model.MeasuredAt,
+			Repeats: len(model.Repeats),
+		}}
+		for r, repeat := range model.Repeats {
+			if len(repeat) != len(cases) {
+				return nil, fmt.Errorf("repeat %d of %s holds %d answers, and the cases are %d", r+1, model.Model, len(repeat), len(cases))
+			}
+			answers := make([]answer, len(repeat))
+			for i, s := range repeat {
+				if s.Words != cases[i].Words || s.Context != cases[i].Context {
+					return nil, fmt.Errorf("answer %d of repeat %d of %s answers %q, and case %d is %q", i+1, r+1, model.Model, s.Words, i+1, cases[i].Words)
+				}
+				answers[i] = answer{c: cases[i], answered: s.Answered, action: s.Action, display: s.Display,
+					latency: time.Duration(s.LatencyMS * float64(time.Millisecond)), fault: s.Fault}
+			}
+			m.repeats = append(m.repeats, answers)
+		}
+		results = append(results, m)
+	}
+	return results, nil
 }
 
 // readRecords is the record a run wrote, its entries measured on the same cases, as many naming
@@ -307,9 +448,8 @@ func readRecords(path string) ([]going.Record, error) {
 // given, or else with the tie-break the records already hold, put to the rule again with its own
 // model and reason. It prints the run's table and what the rule names to w, and writes the
 // record to out. It writes nothing where a tie-break is refused or no model meets the floors,
-// and where the rule names no model, a model ranked first having no action fit or the run being
-// a full tie no tie-break breaks, it writes the record with no model chosen; each of those is an
-// error, so the tool exits non-zero.
+// and where the rule names no model, the run being a full tie no tie-break breaks, it writes the
+// record with no model chosen; each of those is an error, so the tool exits non-zero.
 func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, out string) error {
 	choice := going.Choose(records)
 	var refused error
@@ -347,8 +487,6 @@ func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, 
 	switch choice.Outcome {
 	case going.Named:
 		return nil
-	case going.OwedRepair:
-		return fmt.Errorf("wrote %s with no model chosen: %s", out, choice.Why)
 	case going.FullTie:
 		return fmt.Errorf("wrote %s with no model chosen: %s: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>", out, choice.Why, out)
 	default:
@@ -505,11 +643,10 @@ func ask(ctx context.Context, model agentloop.Model, questions map[string]agentl
 }
 
 // score fills the model's record from its answers, pooling every repeat: the accuracies, the
-// latencies, the display rates and both fits count every answer, and each repeat's right choices,
-// their spread and the cases answered both ways are kept beside them.
+// latencies and the display rates count every answer, and each repeat's right choices, their
+// spread and the cases answered both ways are kept beside them.
 func score(m *measured) {
-	var named, other, all []going.ActionOutcome
-	var displays []going.DisplayOutcome
+	var named, other []going.ActionOutcome
 	latencies := make([]float64, 0, len(m.repeats)*len(m.repeats[0]))
 	r := &m.record
 	cases := m.repeats[0]
@@ -519,8 +656,7 @@ func score(m *measured) {
 		var counted going.RepeatRight
 		rights := make([]bool, len(answers))
 		for i, a := range answers {
-			outcome := going.ActionOutcome{Answered: a.answered, Right: a.right(), Confidence: a.action.Confidence}
-			all = append(all, outcome)
+			outcome := going.ActionOutcome{Answered: a.answered, Right: a.right()}
 			if a.c.NamesAction {
 				named = append(named, outcome)
 			} else {
@@ -538,11 +674,6 @@ func score(m *measured) {
 			if !a.answered {
 				r.Unanswered++
 			}
-			displays = append(displays, going.DisplayOutcome{
-				ChartWorthy: a.c.ChartWorthy,
-				Chart:       a.answered && a.display.Choice == going.DisplayChart,
-				Confidence:  a.display.Confidence,
-			})
 			latencies = append(latencies, float64(a.latency.Microseconds())/1000)
 		}
 		counted.Total = counted.Named + counted.Other
@@ -571,17 +702,6 @@ func score(m *measured) {
 	r.NamedAccuracy, r.OtherAccuracy = going.Accuracy(named), going.Accuracy(other)
 	slices.Sort(latencies)
 	r.P50MS, r.P95MS = percentile(latencies, 0.50), percentile(latencies, 0.95)
-
-	action := going.FitActionThreshold(all)
-	r.ActionShare = action.Share
-	if action.Holds {
-		r.ActionThreshold = &action.Threshold
-	}
-	chart := going.FitChartThreshold(displays)
-	r.ChartShare = chart.Share
-	if chart.Holds {
-		r.ChartThreshold = &chart.Threshold
-	}
 	r.DisplayRates = displayRates(m.repeats)
 }
 
@@ -639,18 +759,16 @@ func render(records []going.Record, choice going.Choice, source string) string {
 	var b strings.Builder
 	first := records[0]
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
-	fmt.Fprintf(&b, "%d case(s) per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. A threshold holds where at least 60%% of the answers it counts are at or above it (R5). Every accuracy, latency, threshold, share and display rate pools every answer of every repeat.\n\n",
+	fmt.Fprintf(&b, "%d case(s) per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. Every accuracy, latency and display rate pools every answer of every repeat.\n\n",
 		first.Cases, first.Repeats, source, going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
-	b.WriteString("| Model | Released | Named accuracy | Rest accuracy | p50 ms | p95 ms | Action threshold | Answers at or above | Chart threshold | Chart-worthy answers at or above | Chart-worthy cases used | Unanswered | Floors met |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Model | Released | Named accuracy | Rest accuracy | p50 ms | p95 ms | Chart-worthy cases used | Unanswered | Floors met |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for i := range records {
 		r := &records[i]
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %.0f | %.0f | %s | %.1f%% | %s | %.1f%% | %d | %d | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %.0f | %.0f | %d | %d | %s |\n",
 			r.Model, r.ReleaseDate,
 			share(r.NamedAccuracy, r.NamedCases*r.Repeats), share(r.OtherAccuracy, r.OtherCases*r.Repeats),
 			r.P50MS, r.P95MS,
-			threshold(r.ActionThreshold), r.ActionShare*100,
-			threshold(r.ChartThreshold), r.ChartShare*100,
 			r.ChartWorthyCases, r.Unanswered, yesNo(r.MeetsFloors()))
 	}
 	b.WriteString("\n### Display rates\n\n| Model | Label | Answered | Answers | Rate |\n| --- | --- | --- | --- | --- |\n")
@@ -741,19 +859,10 @@ func says(records []going.Record, choice going.Choice) string {
 		case len(others) > 0:
 			fmt.Fprintf(&b, ", against %s.", strings.Join(others, ", "))
 		case len(records) == 1:
-			b.WriteString(". It is the one model measured; it meets R7's floors, and its action threshold holds.")
+			b.WriteString(". It is the one model measured, and it meets R7's floors.")
 		default:
-			b.WriteString(". It is the one model that meets R7's floors, and its action threshold holds.")
+			b.WriteString(". It is the one model that meets R7's floors.")
 		}
-	case going.ChosenByDisplayFit:
-		var level []string
-		for _, c := range choice.Ranked {
-			if c.Right == most {
-				level = append(level, c.Model)
-			}
-		}
-		fmt.Fprintf(&b, "**Choice:** `%s`, by R7's tiebreak: %s are level at %d of %d right choices pooled over every repeat, and `%s` alone of them has a display fit.",
-			choice.Model, modelList(level), most, choice.Of, choice.Model)
 	default:
 		fmt.Fprintf(&b, "**Choice:** `%s`, named by the architect: %s. The reason recorded: %s", choice.Model, choice.Why, choice.Reason)
 	}
@@ -781,27 +890,8 @@ func says(records []going.Record, choice going.Choice) string {
 	return b.String()
 }
 
-// modelList is the model names, each as code, joined as a sentence lists them.
-func modelList(names []string) string {
-	quoted := make([]string, len(names))
-	for i, name := range names {
-		quoted[i] = "`" + name + "`"
-	}
-	if len(quoted) < 2 {
-		return strings.Join(quoted, "")
-	}
-	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
-}
-
 func share(rate float64, n int) string {
 	return fmt.Sprintf("%.1f%% (%d of %d)", rate*100, int(math.Round(rate*float64(n))), n)
-}
-
-func threshold(v *float64) string {
-	if v == nil {
-		return "none holds"
-	}
-	return fmt.Sprintf("%.3f", *v)
 }
 
 func interval(v *[2]float64) string {

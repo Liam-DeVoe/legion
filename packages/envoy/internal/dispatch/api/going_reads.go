@@ -291,7 +291,7 @@ func (s *server) goingRoster(ctx context.Context) ([]agentResponse, goingRosterF
 			return nil, goingRosterFrame{}, err
 		}
 		if roster.answered {
-			rows, err := s.agentRows(ctx, roster.sessions)
+			rows, err := s.agentRows(ctx, roster.sessions, 0)
 			if err != nil {
 				return nil, goingRosterFrame{}, err
 			}

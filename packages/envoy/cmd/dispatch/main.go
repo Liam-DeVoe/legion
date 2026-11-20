@@ -86,9 +86,9 @@ type bootConfig struct {
 	RepoProjects   string
 	DefaultProject string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
-	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
-	// words carries, and the session that issue is routed to; nothing is posted on it. Empty is
-	// a deployment that configured neither: the issue carries no label, and takes no route.
+	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the command bar's File as a new issue files
+	// carries, and the session that issue is routed to; its new_issue run posts nothing on it.
+	// Empty is a deployment that configured neither: the issue carries no label, and takes no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	EnvoyURL        string

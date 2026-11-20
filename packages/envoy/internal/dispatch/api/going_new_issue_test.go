@@ -20,7 +20,9 @@ import (
 // project, parent, priority and spec its agent wrote, the label of the deployment's new issues and,
 // where the deployment names a session for them, that session's route, and nothing is posted on it;
 // the run's end names the issue and offers Undo. A run whose create is refused, and one whose agent
-// proposes no issue, file nothing, and their end says why.
+// proposes no issue, file nothing, and their end says why; a create whose labels are no list is
+// refused, not given the deployment's label in their place; and a run its person stops after its
+// create landed names the issue in its end and offers Undo.
 func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 	rig := newGoingPlanRig(t)
 	const session = "0199e2a0-1111-7000-8000-00000000c10a"
@@ -81,9 +83,9 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		}{
 			{"title", filed.Title, "PDF export times out on boards with images"},
 			{"project", filed.Project, "DEMO"},
-			{"parent", goingTextOf(filed.Parent), parent},
+			{"parent", deref(filed.Parent), parent},
 			{"priority", goingNumberOf(filed.Priority), 1},
-			{"route", goingTextOf(filed.Route), "session:" + session},
+			{"route", deref(filed.Route), "session:" + session},
 			{"label", slices.Contains(filed.Labels, "from-the-bar"), true},
 			{"spec", strings.Contains(documentMarkdown(t, rig.mux, filed.PrimaryArtifactID), strings.TrimSpace(spec)), true},
 		} {
@@ -117,7 +119,7 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
 		}
 		if filed := rig.issueRead(t, rig.endFrame(t, run.ID).Issue); filed.Route != nil || slices.Contains(filed.Labels, "from-the-bar") {
-			t.Errorf("the issue filed with no settings has the route %v and the labels %v, want neither", goingTextOf(filed.Route), filed.Labels)
+			t.Errorf("the issue filed with no settings has the route %v and the labels %v, want neither", deref(filed.Route), filed.Labels)
 		}
 	})
 
@@ -155,6 +157,56 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		}
 	})
 
+	t.Run("a create whose labels are no list is refused, not given the deployment's label in their place", func(t *testing.T) {
+		const words = "file a bug labelled bug: the export button is grey"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "labels": "bug"}))
+			}
+			return answered("The create was refused.")
+		})
+		page := rig.issue(t, "Exports")
+		before := issues(t)
+		run := start(t, words, page)
+		rig.ended(t, run.ID, time.Minute)
+		asked := rig.loop.fake.Asking(words)
+		if len(asked) < 2 || !slices.ContainsFunc(asked[1].ToolResults(), func(result string) bool {
+			return strings.Contains(result, "labels") && strings.Contains(result, "must be an array")
+		}) {
+			t.Errorf("the model was not told its labels must be an array: it made %d calls", len(asked))
+		}
+		if after := issues(t); after != before {
+			t.Errorf("Dispatch holds %d issues after the run, %d before, want none filed", after, before)
+		}
+	})
+
+	t.Run("a run stopped after its create landed names the issue it filed and offers undo", func(t *testing.T) {
+		const words = "file a bug: the board's legend covers its first column"
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The board's legend covers its first column"}))
+			}
+			// Held until the test ends, so the run still works when its person stops it.
+			return agenttest.Reply{Hold: release, Text: "Filed."}
+		})
+		page := rig.issue(t, "Boards")
+		before := issues(t)
+		run := start(t, words, page)
+		goingEventually(t, "the run's create to land", func() bool { return issues(t) > before })
+		if response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run.ID+"/stop", nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("stop the run answered %d %s", response.Code, response.Body.String())
+		}
+		frame := rig.endFrame(t, run.ID)
+		if frame.State != agentwire.StateStopped || frame.Issue == "" || !slices.Contains(frame.Offers, agentwire.OfferUndo) {
+			t.Fatalf("the stopped run's end is %+v, want it stopped, naming the issue it filed and offering undo", frame)
+		}
+		if filed := rig.issueRead(t, frame.Issue); filed.Title != "The board's legend covers its first column" {
+			t.Errorf("the end names %s, titled %q, want the issue the run filed", frame.Issue, filed.Title)
+		}
+	})
+
 	t.Run("a new-issue run at a level but Fast is refused", func(t *testing.T) {
 		response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs",
 			map[string]any{"words": "file it", "kind": agentwire.RunNewIssue, "level": "deep"}, "alice")
@@ -162,14 +214,6 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 			t.Errorf("a deep new-issue run answered %d %s, want 400 %s", response.Code, response.Body.String(), codeGoingInput)
 		}
 	})
-}
-
-// goingTextOf is a text a pointer holds, "" for none.
-func goingTextOf(text *string) string {
-	if text == nil {
-		return ""
-	}
-	return *text
 }
 
 // goingNumberOf is a number a pointer holds, -1 for none.

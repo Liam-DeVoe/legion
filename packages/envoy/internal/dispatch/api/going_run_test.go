@@ -26,8 +26,7 @@ import (
 )
 
 // goingDecisionModel is the measured model the decision tests configure: the one the committed
-// record names chosen, whose thresholds every expectation below reads from the record rather
-// than writing a number, so the tests run what production runs.
+// record names chosen, so the tests run what production runs.
 const goingDecisionModel = "jev-preview"
 
 // decisionStandIn is a System One endpoint that answers each decision with the answer the test
@@ -126,16 +125,6 @@ func (s *decisionStandIn) offeredActions(t *testing.T) []string {
 	return slices.Sorted(maps.Keys(criteria))
 }
 
-// measuredThresholds is the record's two thresholds for the decision tests' model.
-func measuredThresholds(t *testing.T) (action float64, chart *float64) {
-	t.Helper()
-	record, held := going.DecisionRecord(goingDecisionModel)
-	if !held || record.ActionThreshold == nil {
-		t.Fatalf("the record holds no action threshold for %s", goingDecisionModel)
-	}
-	return *record.ActionThreshold, record.ChartThreshold
-}
-
 // storedGoingFrames waits for the run to end and answers every frame it stored, in order.
 func storedGoingFrames(t *testing.T, rig goingRoutesRig, id string) []goingEvent {
 	t.Helper()
@@ -187,17 +176,16 @@ func askRun(t *testing.T, rig goingRoutesRig, login string, body map[string]any)
 }
 
 // A run with a measured decision model decides first: the decision is the stream's first frame,
-// and the one answer call is told the two actions the decision offered with their argument
-// schemas, which it could only have been told once the decision was in hand. Its arguments come
-// back as the proposal, the last frame before the ending: each offered action's list of
-// invocations as the answer wrote them, one per item, and nothing for an action the decision
-// did not offer, which is never attempted. The pause writes nothing: no landing, and no run of
-// the bar's agent (going_runs).
-func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.T) {
-	threshold, _ := measuredThresholds(t)
+// and the one answer call is told the action the decision chose with its argument schema, which
+// it could only have been told once the decision was in hand. Its arguments come back as the
+// proposal, the last frame before the ending: the chosen action's list of invocations as the
+// answer wrote them, one per item, and nothing for an action the decision did not choose, which
+// is never attempted. The pause writes nothing: no landing, and no run of the bar's agent
+// (going_runs).
+func TestGoingRunDecidesBeforeItAnswersAndProposesTheChosenAction(t *testing.T) {
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{
-		action: "dispatch_issue_update", confidence: min(threshold+0.2, 1),
+		action: "dispatch_issue_update", confidence: 0.9,
 		probabilities: map[string]float64{"dispatch_issue_update": 0.7, "dispatch_comment": 0.2, going.ActionNone: 0.1},
 		about:         going.ContextNamed, display: going.DisplayProse, displayConfidence: 0.9,
 	})
@@ -225,11 +213,8 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 
 	var decision goingDecision
 	frameData(t, frames, contracts.GoingEventDecision, &decision)
-	if len(decision.Actions) != 2 || decision.Actions[0].Action != "dispatch_issue_update" || decision.Actions[1].Action != "dispatch_comment" {
-		t.Fatalf("the decision ranks %+v, want dispatch_issue_update then dispatch_comment", decision.Actions)
-	}
-	if decision.Actions[0].Confidence == nil || decision.Actions[1].Confidence != nil || !decision.Act {
-		t.Errorf("the decision is %+v, want the first action's own confidence, none for the runner-up, and act", decision)
+	if decision.Action != "dispatch_issue_update" || decision.Line != goingLineDo || decision.Context != going.ContextNamed {
+		t.Fatalf("the decision is %+v, want dispatch_issue_update, the line Do, about items the words name", decision)
 	}
 
 	requests := chat.Requests()
@@ -242,13 +227,13 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 			told = message.Content
 		}
 	}
-	for _, want := range []string{"name: dispatch_issue_update", "name: dispatch_comment", `"name":"status"`, `"name":"body"`} {
+	for _, want := range []string{"name: dispatch_issue_update", `"name":"status"`} {
 		if !strings.Contains(told, want) {
-			t.Errorf("the answer call was told %q, want %q in it: the offered actions with their schemas", told, want)
+			t.Errorf("the answer call was told %q, want %q in it: the chosen action with its schema", told, want)
 		}
 	}
-	if strings.Contains(told, "dispatch_not_an_action") || strings.Contains(told, "name: dispatch_claim") {
-		t.Errorf("the answer call was told %q, want only the two offered actions", told)
+	if strings.Contains(told, "name: dispatch_comment") || strings.Contains(told, "dispatch_not_an_action") || strings.Contains(told, "name: dispatch_claim") {
+		t.Errorf("the answer call was told %q, want only the chosen action", told)
 	}
 
 	var proposal goingProposal
@@ -259,18 +244,13 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}, Automatic: true, TargetArgument: "issue"},
 			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}, Automatic: true, TargetArgument: "issue"},
 		}},
-		{Action: "dispatch_comment", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "body": "Closing both."}, Automatic: true, TargetArgument: "issue"},
-		}},
 	}}
 	if !reflect.DeepEqual(proposal, want) {
 		t.Fatalf("the proposal is %+v, want %+v", proposal, want)
 	}
 
-	var landed, runs int
-	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_landings where run_id = $1::uuid`, id).Scan(&landed); err != nil || landed != 0 {
-		t.Errorf("the pause landed %d requests (%v), want none: it makes no write", landed, err)
-	}
+	// With no run row a pause lands no write either: going_landings.run_id references going_runs.
+	var runs int
 	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_runs where id = $1::uuid`, id).Scan(&runs); err != nil || runs != 0 {
 		t.Errorf("the pause wrote %d runs (%v), want none: a pause is no run of the bar's agent", runs, err)
 	}
@@ -303,89 +283,43 @@ func TestGoingDecisionOffersOnlyTheActionsTheCallersCredentialMayRun(t *testing.
 	}
 }
 
-// act is the bar running the first action at once on submit: true at or above the measured action
-// threshold, false below it, false for none, and false for the two writes that always ask however
-// sure the decision is.
-func TestGoingDecisionActsOnlyAtOrAboveTheThresholdAndNeverForTheTwoThatAlwaysAsk(t *testing.T) {
-	threshold, _ := measuredThresholds(t)
+// The line on top (R2): words that are an issue's key, or an issue's exact title whatever the
+// case, are answered by their hit alone and ask the decision model nothing, nor the answer; for
+// any other words the decision model's action names the line the decision frame carries - none
+// gives Ask, the create of an issue gives File as a new issue, and any other action gives Do.
+func TestTheLineOnTop(t *testing.T) {
 	standIn := newDecisionStandIn(t)
-	server := directServer(Deps{Decider: standIn.decider(t, staticToken)})
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := goingRunStart{actions: catalogue.runnableBy(goingCredential{cookie: true, credential: personCredential})}
-	for _, tc := range []struct {
-		action     string
-		confidence float64
-		act        bool
-	}{
-		{"dispatch_claim", threshold, true},
-		{"dispatch_claim", 1, true},
-		{"dispatch_claim", threshold - 0.01, false},
-		{going.ActionNone, 1, false},
-		{"dispatch_issue", 1, false},
-		{"dispatch_send_to_agent", 1, false},
-	} {
-		standIn.answer(t, decidedAnswer{action: tc.action, confidence: tc.confidence, about: going.ContextPage, display: going.DisplayProse, displayConfidence: 1})
-		decision, decided := server.goingDecide(t.Context(), "the words", start)
-		if !decided {
-			t.Fatalf("%s at %v: no decision", tc.action, tc.confidence)
-		}
-		if decision.Act != tc.act {
-			t.Errorf("%s at %v (threshold %v): act=%v, want %v", tc.action, tc.confidence, threshold, decision.Act, tc.act)
-		}
-	}
-}
-
-// A chart is drawn unasked only at or above the measured chart-display threshold, and never while
-// the display-fit test hook is on, which is a deployment whose model has no display fit; turned
-// off, the record's threshold holds again. A body that names no off is refused and changes
-// nothing.
-func TestGoingDecisionDrawsNoChartUnaskedWithTheDisplayFitHookOn(t *testing.T) {
-	_, chartThreshold := measuredThresholds(t)
-	standIn := newDecisionStandIn(t)
-	standIn.answer(t, decidedAnswer{action: going.ActionNone, confidence: 1, about: going.ContextNone, display: going.DisplayChart, displayConfidence: 1})
-	answerer := &fakeAnswerer{frames: []going.Event{going.Text("Counts per week."), going.End(3, 0)}}
-	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
-		answerer: answerer, decider: standIn.decider(t, staticToken), testHooks: true,
-	})
+	answerer := &fakeAnswerer{frames: []going.Event{going.Text("The answer."), going.End(2, 0)}}
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{answerer: answerer, decider: standIn.decider(t, staticToken)})
 	rig := goingRoutesRig{handler: handler, server: directServer(deps), database: database}
-	chartOf := func() bool {
-		t.Helper()
-		var decision goingDecision
-		if !frameData(t, storedGoingFrames(t, rig, askRun(t, rig, "alice", map[string]any{"words": "issues closed per week"})), contracts.GoingEventDecision, &decision) {
-			t.Fatal("the run stored no decision")
+	key := createTestIssue(t, handler, "SKY", "Polish the telescope")
+
+	for _, words := range []string{key, "Polish the telescope", "polish THE Telescope"} {
+		frames := storedGoingFrames(t, rig, askRun(t, rig, "alice", map[string]any{"words": words}))
+		var item going.ItemData
+		if got, want := frameNames(frames), []string{contracts.GoingEventItem, contracts.GoingEventEnd}; !slices.Equal(got, want) ||
+			!frameData(t, frames, contracts.GoingEventItem, &item) || item.Kind != "issue" || item.ID != key {
+			t.Fatalf("%q stored %v naming %+v, want the item of %s and the end: its hit, and no answer", words, got, item, key)
 		}
-		return decision.Display.Chart
 	}
-	setFit := func(off bool) {
-		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/going/display-fit/_test", map[string]any{"off": off}, "alice")
-		if response.Code != http.StatusOK {
-			t.Fatalf("display-fit hook: status=%d body=%s", response.Code, response.Body.String())
-		}
+	if calls := standIn.calls.Load(); calls != 0 {
+		t.Fatalf("a key and an exact title called the decision model %d times, want none", calls)
 	}
 
-	setFit(true)
-	if chartOf() {
-		t.Fatal("with the display-fit hook on, a chart answered at full confidence draws unasked")
-	}
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/going/display-fit/_test", map[string]any{}, "alice"); response.Code != http.StatusBadRequest {
-		t.Fatalf("display-fit hook with no off: status=%d body=%s, want 400", response.Code, response.Body.String())
-	}
-	if chartOf() {
-		t.Fatal("a display-fit body with no off turned the hook off")
-	}
-	setFit(false)
-	if got, want := chartOf(), chartThreshold != nil; got != want {
-		t.Fatalf("with the hook off, chart=%v, want %v (the record's chart threshold is %v)", got, want, chartThreshold)
-	}
-	if chartThreshold != nil && *chartThreshold > 0 {
-		standIn.answer(t, decidedAnswer{action: going.ActionNone, confidence: 1, about: going.ContextNone, display: going.DisplayChart, displayConfidence: *chartThreshold - 0.01})
-		if chartOf() {
-			t.Fatalf("a chart answered below the threshold %v draws unasked", *chartThreshold)
+	for _, tc := range []struct{ action, line string }{
+		{going.ActionNone, goingLineAsk},
+		{goingIssueCreateTool, goingLineFile},
+		{"dispatch_issue_update", goingLineDo},
+	} {
+		standIn.answer(t, decidedAnswer{action: tc.action, confidence: 0.99, about: going.ContextNamed, display: going.DisplayProse, displayConfidence: 0.9})
+		frames := storedGoingFrames(t, rig, askRun(t, rig, "alice", map[string]any{"words": "we need a dome for the telescope"}))
+		var decision goingDecision
+		if !frameData(t, frames, contracts.GoingEventDecision, &decision) || decision.Action != tc.action || decision.Line != tc.line {
+			t.Errorf("Jev answering %s stored the decision %+v, want the line %q", tc.action, decision, tc.line)
 		}
+	}
+	if calls := standIn.calls.Load(); calls != 3 {
+		t.Fatalf("three questions called the decision model %d times, want once each", calls)
 	}
 }
 

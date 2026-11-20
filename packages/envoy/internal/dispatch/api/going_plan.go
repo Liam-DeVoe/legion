@@ -201,7 +201,7 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 	answer := goingPlanAnswer{Run: run, Plan: p.plan, State: p.state, Summary: p.summary, Mode: mode, Rows: []goingPlanRow{}}
 	for _, row := range p.rows {
 		read := goingPlanRow{
-			Row: row.row, Tool: row.tool, Class: string(goingRowClass(row.tool, row.arguments)), Arguments: row.arguments,
+			Row: row.row, Tool: row.tool, Class: string(row.class()), Arguments: row.arguments,
 			Needs: append([]int{}, row.needs...), State: row.state, Item: row.shown.Item, Issue: row.shown.Issue,
 			Fields: append([]string{}, row.shown.Fields...), Now: row.shown.Now, Claim: row.shown.Claim,
 			Waits: append([]string{}, row.shown.Waits...), Changed: row.shown.Changed,
@@ -277,9 +277,9 @@ func readGoingPlan(ctx context.Context, q goingQuerier, run string, number int) 
 	return &plan, nil
 }
 
-// goingPlanStateSQL sets the state of plan $2 of run $1 from its rows: rejected stays rejected,
-// and otherwise it is running while a row runs, approved while a row is approved, waiting while a
-// row waits, and done.
+// goingPlanStateSQL sets the state of plan $2 of run $1 from its rows, and answers it: rejected
+// stays rejected, and otherwise it is running while a row runs, approved while a row is approved,
+// waiting while a row waits, and done.
 const goingPlanStateSQL = `
 	update going_plans p set state = case
 	  when p.state = 'rejected' then 'rejected'
@@ -288,7 +288,20 @@ const goingPlanStateSQL = `
 	  when exists (select 1 from going_plan_rows r where r.run_id = p.run_id and r.plan = p.plan and r.state = 'waiting') then 'waiting'
 	  else 'done' end
 	where p.run_id = $1::uuid and p.plan = $2
+	returning p.state
 `
+
+// recordGoingPlanApproval records in tx that by, as going_plans.approved_by holds it, approved
+// plan of run now.
+func recordGoingPlanApproval(ctx context.Context, tx pgx.Tx, run string, plan int, by any) error {
+	encoded, err := json.Marshal(by)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `update going_plans set approved_at = now(), approved_by = $3::jsonb where run_id = $1::uuid and plan = $2`,
+		run, plan, string(encoded))
+	return err
+}
 
 // goingJSONEqual reports whether a and b hold the same JSON value, whatever the order of their
 // members: a value Postgres stored as jsonb reads back with its members in an order of its own.
@@ -526,14 +539,9 @@ func (a *AgentListener) keepPlan(ctx context.Context, request agentwire.CallRequ
 		if err != nil {
 			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
-		var approval *string
-		if row.approval != nil {
-			encoded, err := json.Marshal(row.approval)
-			if err != nil {
-				return nil, goingAgentFailed(agentwire.CallCall, err)
-			}
-			text := string(encoded)
-			approval = &text
+		approval, err := nullableJSON(row.approval)
+		if err != nil {
+			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
 		if _, err := tx.Exec(ctx, `
 			insert into going_plan_rows (run_id, plan, row, change, needs, state, shown, approval)
@@ -543,18 +551,10 @@ func (a *AgentListener) keepPlan(ctx context.Context, request agentwire.CallRequ
 		}
 	}
 	if approvedBy != nil {
-		by, err := json.Marshal(approvedBy)
-		if err != nil {
+		if err := recordGoingPlanApproval(ctx, tx, run, plan.plan, approvedBy); err != nil {
 			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
-		if _, err := tx.Exec(ctx, `update going_plans set approved_at = now(), approved_by = $3::jsonb where run_id = $1::uuid and plan = $2`,
-			run, plan.plan, string(by)); err != nil {
-			return nil, goingAgentFailed(agentwire.CallCall, err)
-		}
-		if _, err := tx.Exec(ctx, goingPlanStateSQL, run, plan.plan); err != nil {
-			return nil, goingAgentFailed(agentwire.CallCall, err)
-		}
-		if err := tx.QueryRow(ctx, `select state from going_plans where run_id = $1::uuid and plan = $2`, run, plan.plan).Scan(&plan.state); err != nil {
+		if err := tx.QueryRow(ctx, goingPlanStateSQL, run, plan.plan).Scan(&plan.state); err != nil {
 			return nil, goingAgentFailed(agentwire.CallCall, err)
 		}
 	}
@@ -894,12 +894,7 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 				return false, err
 			}
 		}
-		by, err := json.Marshal(map[string]string{"by": goingApprovedByPerson, "kind": grant.kind, "login": grant.login})
-		if err != nil {
-			return false, err
-		}
-		if _, err := tx.Exec(ctx, `update going_plans set approved_at = now(), approved_by = $3::jsonb where run_id = $1::uuid and plan = $2`,
-			run.id, plan.plan, string(by)); err != nil {
+		if err := recordGoingPlanApproval(ctx, tx, run.id, plan.plan, map[string]string{"by": goingApprovedByPerson, "kind": grant.kind, "login": grant.login}); err != nil {
 			return false, err
 		}
 		if len(approved) == 0 {
@@ -935,14 +930,9 @@ func (a goingRowAnswer) store(ctx context.Context, tx pgx.Tx, run string, plan i
 	if err != nil {
 		return err
 	}
-	var approval *string
-	if a.approval != nil {
-		encoded, err := json.Marshal(a.approval)
-		if err != nil {
-			return err
-		}
-		text := string(encoded)
-		approval = &text
+	approval, err := nullableJSON(a.approval)
+	if err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		update going_plan_rows set state = $4, change = $5::jsonb, shown = $6::jsonb, approval = $7::jsonb, result = null
@@ -1016,11 +1006,8 @@ func (s *server) answerGoingPlan(ctx context.Context, run string, plan int, writ
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, goingPlanStateSQL, run, plan); err != nil {
+	if err := tx.QueryRow(ctx, goingPlanStateSQL, run, plan).Scan(&planState); err != nil {
 		return fmt.Errorf("set the plan's state: %w", err)
-	}
-	if err := tx.QueryRow(ctx, `select state from going_plans where run_id = $1::uuid and plan = $2`, run, plan).Scan(&planState); err != nil {
-		return err
 	}
 	if ready {
 		if _, err := tx.Exec(ctx, `update going_runs set state = 'queued', finished_at = null, stop_reason = null where id = $1::uuid`, run); err != nil {

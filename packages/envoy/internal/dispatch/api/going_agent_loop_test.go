@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent"
@@ -193,14 +194,9 @@ func (rig goingAgentRig) toolResults(t *testing.T, run string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	var results []string
-	for rows.Next() {
-		var result string
-		if err := rows.Scan(&result); err != nil {
-			t.Fatal(err)
-		}
-		results = append(results, result)
+	results, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
 	}
 	return results
 }
@@ -417,11 +413,7 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 
 	history := func(t *testing.T, login string) goingConversationsPage {
 		t.Helper()
-		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-runs", nil, login)
-		if response.Code != http.StatusOK {
-			t.Fatalf("GET /api/v1/me/going-runs as %s answered %d %s", login, response.Code, response.Body.String())
-		}
-		return decodeBody[goingConversationsPage](t, response)
+		return goingHistory(t, rig.mux, login, "")
 	}
 	listed := func(page goingConversationsPage, run string) (goingRun, bool) {
 		for _, conversation := range page.Rows {
@@ -732,16 +724,17 @@ func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blocks []going.BlockData
-	for rows.Next() {
-		var data []byte
+	blocks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (going.BlockData, error) {
 		var block going.BlockData
-		if err := rows.Scan(&data); err != nil || json.Unmarshal(data, &block) != nil {
-			t.Fatalf("read a block frame: %v %s", err, data)
+		var data []byte
+		if err := row.Scan(&data); err != nil {
+			return block, err
 		}
-		blocks = append(blocks, block)
+		return block, json.Unmarshal(data, &block)
+	})
+	if err != nil {
+		t.Fatalf("read the block frames: %v", err)
 	}
-	rows.Close()
 	want := fmt.Sprintf(`[{"count":%d}]`, len(listed))
 	if len(blocks) != 1 {
 		t.Fatalf("the run's events hold %d block frames, want the one the server drew", len(blocks))
@@ -749,4 +742,48 @@ func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
 	if got, _ := json.Marshal(blocks[0].Rows); string(got) != want || blocks[0].Kind != going.BlockMetric || blocks[0].Title != "The issues of DEMO" {
 		t.Errorf("the block frame is %s %q with rows %s, want the metric with the server's count %s", blocks[0].Kind, blocks[0].Title, got, want)
 	}
+}
+
+// TestARunWhoseSavedStepNamesAToolThisBuildLacksFails: a run whose saved step names a tool this
+// build's agent does not know, as a later build that has the tool saves one, fails with
+// UNKNOWN_TOOL naming the tool, and its model is never called (R15, check c25's last row); a run
+// whose own model makes a tool name up is told so and goes on to its answer.
+func TestARunWhoseSavedStepNamesAToolThisBuildLacksFails(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	loop := newGoingLoop(t, rig)
+
+	t.Run("a step a later build saved with its own tool fails the run, naming the tool", func(t *testing.T) {
+		const words = "carry on with the dragon"
+		loop.script.set(words, func(int) agenttest.Reply { return answered("Carried on.") })
+		// Queued at a shape no build reads, so no agent claims it before its step is saved.
+		run := rig.queued(t, "alice", goingRunShape+1, words)
+		rig.exec(t, `insert into going_run_steps (run_id, step, kind, body, note) values ($1::uuid, 1, $2, $3::jsonb, 'a later build''s step')`,
+			run, agentwire.StepModel, `{"text":"","calls":[{"id":"call_1","tool":"summon_dragon","arguments":{}}],"output_tokens":1}`)
+		rig.exec(t, `update going_runs set shape = $2 where id = $1::uuid`, run, goingRunShape)
+		rig.exec(t, `select pg_notify($1, 'ready')`, GoingRunsChannel)
+		record := rig.ended(t, run, time.Minute)
+		if record.state != "failed" || !strings.HasPrefix(record.reason, agentwire.CodeUnknownTool) || !strings.Contains(record.reason, `"summon_dragon"`) {
+			t.Fatalf("the run ended %s with %q, want failed with %s naming summon_dragon", record.state, record.reason, agentwire.CodeUnknownTool)
+		}
+		if calls := len(loop.fake.Asking(words)); calls != 0 {
+			t.Errorf("the run made %d model calls, want none: the unknown tool would have been replayed to the model", calls)
+		}
+	})
+
+	t.Run("a tool the run's own model makes up is answered, and the run goes on", func(t *testing.T) {
+		const words = "summon whatever you need"
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("summon_dragon", map[string]any{})
+			}
+			return answered("Done without a dragon.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+		}
+		if calls := len(loop.fake.Asking(words)); calls != 2 {
+			t.Errorf("the run made %d model calls, want the one that made the name up and the one that answered", calls)
+		}
+	})
 }

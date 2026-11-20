@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -559,6 +560,14 @@ func goingArgumentsAsBody(_ context.Context, _ goingReader, call goingCallInput)
 // takes the one-source row (goingTranslateArchitectureSyncRepo).
 func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path}, nil
+}
+
+// goingTranslateRoster sends read_roster, which takes no argument, as GET /api/v1/agents of the
+// goingReadSessionMax sessions seen last, the most the answer run's own roster read lists
+// (going_reads.go), so the route reads the open asks and activity of those alone and loads no more
+// rows of a roster of any size than it answers.
+func goingTranslateRoster(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	return goingCall{path: call.path, query: url.Values{"limit": {strconv.Itoa(goingReadSessionMax)}}}, nil
 }
 
 // goingTranslateArchitectureSyncRepo imports one architecture source, named by its owner/name

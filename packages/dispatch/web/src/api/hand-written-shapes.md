@@ -76,7 +76,7 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   diff (`delivery_live_diff_test.go`) already holds them against the server.
 - **The Going SSE frames** of `GET /api/v1/going/requests/{id}/stream` (`GoingEvent`): the
   answer's `text`, `item`, `cut`, `changed`, `none`, `end` and `error` frames, and the four the
-  command bar's decision and blocks add - `GoingDecisionEvent` (with `GoingDecidedAction` and
+  command bar's decision and blocks add - `GoingDecisionEvent` (with `GoingLine` and
   `GoingDecidedContext`), `GoingProposalEvent` (with `GoingOffer`, `GoingInvocation` and
   `GoingMissingArgument`), `GoingBlockEvent` (with `GoingBlockKind`, `GoingBlockData`,
   `GoingBlockSource` and each kind's spec, `GoingChartSpec`, `GoingTableSpec`, `GoingMetricSpec`

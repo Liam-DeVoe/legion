@@ -1,7 +1,12 @@
 import { useSyncExternalStore } from "react";
 
 import { api, apiErrorMessage, REQUEST_DEADLINE_MS, type WriteBounds } from "../../api/client";
-import type { GoingContextInput, GoingConversation, GoingRun } from "../../api/types";
+import type {
+  GoingContextInput,
+  GoingConversation,
+  GoingRun,
+  GoingRunInput,
+} from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { type PanelEvent, type PanelKeys, type PanelPlace, panelNext } from "./panel-states";
 import { type RunFrames, STARTED_RUN, stateOfRecord, withRunFrame } from "./run-frames";
@@ -292,13 +297,15 @@ function entryOf(record: GoingRun, startedHere: boolean): RunEntry {
  * Starts a run of `words` with the page's `context`, and answers whether it started. It follows
  * up the open conversation's newest run where that run has ended (`POST /api/v1/going/runs` with
  * `continues`), and starts a conversation of its own otherwise: a run that still works or waits
- * goes on beside it.
+ * goes on beside it. A run of the `kind` `new_issue` is the line File as a new issue: a Fast run
+ * that files the words as one new issue at once, so it takes no level of its own.
  */
 export async function startRun(
   words: string,
   context: GoingContextInput,
   login: string | undefined,
-  continues?: string
+  continues?: string,
+  kind?: GoingRunInput["kind"]
 ): Promise<boolean> {
   const newest = newestRun();
   const follows = continues ?? (newest !== undefined && ended(newest) ? newest.id : undefined);
@@ -307,8 +314,8 @@ export async function startRun(
     const run = await api.createGoingRun(
       {
         context,
-        level: state.level,
         words,
+        ...(kind === undefined ? { level: state.level } : { kind }),
         ...(follows === undefined ? {} : { continues: follows }),
       },
       goingBounds(login)

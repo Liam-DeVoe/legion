@@ -2,8 +2,10 @@ package going_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/going"
 )
@@ -165,4 +167,109 @@ func TestEachTransformMakesItsNumber(t *testing.T) {
 			t.Errorf("a chain over every page drew %s, %v; want the count of all 7", got, err)
 		}
 	})
+
+	t.Run("two reads not read to their last page are refused for the same read every time", func(t *testing.T) {
+		demo, ops := issuePage(t, 2, 0, 3), issuePage(t, 4, 0, 3)
+		ops.Arguments = json.RawMessage(`{"project":"OPS","limit":3,"offset":0}`)
+		const spec = `{"kind":"metric","title":"Issues","steps":[{"step":4,"call":1},{"step":2,"call":1}],"chain":[{"op":"count"}],"field":"count"}`
+		for range 20 {
+			if _, err := draw(t, spec, demo, ops); err == nil || !strings.Contains(err.Error(), "step 2 read up to row 3 of the 7 rows") {
+				t.Fatalf("a chain over the first pages of two reads was answered %v, want it refused for step 2's, the read of DEMO, whose arguments sort first", err)
+			}
+		}
+	})
+}
+
+// runChain runs chain, written as a block spec writes it, over rows, a JSON list of objects read as
+// a saved result is, and answers the rows it leaves as JSON, or its refusal.
+func runChain(t *testing.T, chain, rows string) (string, error) {
+	t.Helper()
+	var steps going.Chain
+	if err := json.Unmarshal([]byte(chain), &steps); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(rows))
+	decoder.UseNumber()
+	var table []map[string]any
+	if err := decoder.Decode(&table); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := steps.Run(table)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded), nil
+}
+
+// TestAGroupHoldsEachRowOnce: a row is counted once in each group it belongs to, though its list
+// holds a value twice or two times of one week; a row whose list is empty is in the group none,
+// with a period as without one, so no count drops it; and a refusal that names a value cuts the
+// value where a character starts.
+func TestAGroupHoldsEachRowOnce(t *testing.T) {
+	for _, row := range []struct{ name, chain, rows, want string }{
+		{
+			name:  "a value a list holds twice",
+			chain: `[{"op":"group","field":"labels"},{"op":"count"}]`,
+			rows:  `[{"key":"A","labels":["bug","bug"]},{"key":"B","labels":["bug","ui"]},{"key":"C","labels":[]}]`,
+			want:  `[{"count":2,"labels":"bug"},{"count":1,"labels":"ui"},{"count":1,"labels":"none"}]`,
+		},
+		{
+			name:  "two times of one week, and an empty list, by week",
+			chain: `[{"op":"group","field":"closed","per":"week"},{"op":"count"}]`,
+			rows:  `[{"key":"A","closed":["2026-11-02T10:00:00Z","2026-11-03T10:00:00Z"]},{"key":"B","closed":[]},{"key":"C","closed":"2026-11-10T10:00:00Z"}]`,
+			want:  `[{"count":1,"week":"2026-11-02"},{"count":1,"week":"none"},{"count":1,"week":"2026-11-09"}]`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := runChain(t, row.chain, row.rows)
+			if err != nil || got != row.want {
+				t.Errorf("the chain answered %s, %v; want %s", got, err, row.want)
+			}
+		})
+	}
+
+	t.Run("a refusal cuts the value it names where a character starts", func(t *testing.T) {
+		// {"name":" is 9 bytes and each é 2, so the 80th byte falls inside an é.
+		_, err := runChain(t, `[{"op":"group","field":"owner"},{"op":"count"}]`, `[{"owner":{"name":"`+strings.Repeat("é", 60)+`"}}]`)
+		if err == nil || !strings.Contains(err.Error(), "which no group is made of") || !utf8.ValidString(err.Error()) {
+			t.Fatalf("a group by an object was answered %q, want it refused in valid UTF-8", err)
+		}
+	})
+}
+
+// TestARunsMetricKeepsTheLabelsItsSpecWrites: a metric of a run draws the label its spec writes for
+// its field and the one it writes for the field it is compared with, and each is the field's own
+// name where the spec writes none.
+func TestARunsMetricKeepsTheLabelsItsSpecWrites(t *testing.T) {
+	const spec = `{"kind":"metric","title":"Estimates","steps":[{"step":2,"call":1}],` +
+		`"chain":[{"op":"sum","field":"estimate","as":"total"},{"op":"max","field":"estimate","as":"largest"}],"field":"total","compare":"largest"%s}`
+	for _, row := range []struct{ name, labels, label, compareLabel string }{
+		{"written by the spec", `,"label":"Points","compare_label":"Largest issue"`, "Points", "Largest issue"},
+		{"written by none", "", "total", "largest"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			block, err := going.ParseRunBlock(json.RawMessage(fmt.Sprintf(spec, row.labels)))
+			if err != nil {
+				t.Fatalf("the spec was refused: %v", err)
+			}
+			data, err := block.Draw([]going.Result{issuePage(t, 2, 0, 50)})
+			if err != nil {
+				t.Fatalf("the block was refused: %v", err)
+			}
+			var drawn struct {
+				Label        string `json:"label"`
+				CompareLabel string `json:"compare_label"`
+			}
+			if err := json.Unmarshal(data.Spec, &drawn); err != nil {
+				t.Fatal(err)
+			}
+			if drawn.Label != row.label || drawn.CompareLabel != row.compareLabel {
+				t.Errorf("the metric draws the labels %q and %q, want %q and %q", drawn.Label, drawn.CompareLabel, row.label, row.compareLabel)
+			}
+		})
+	}
 }

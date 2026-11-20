@@ -495,14 +495,6 @@ export function getGoingCapability(options: ApiOptions = {}) {
   return get("/api/v1/going/capability", {}, options);
 }
 
-/** `POST /api/v1/going/display-fit/_test`: with `off` the running server treats its decision
- *  model as having no display fit, so no answer draws a chart its words did not ask for. Test-only
- *  endpoint (mounted when DISPATCH_TEST_HOOKS=1, see run-server.sh); it holds for the process
- *  until set back, so a row that turns it on turns it off again. */
-export function setGoingDisplayFit(off: boolean, options: ApiOptions = {}) {
-  return post("/api/v1/going/display-fit/_test", { body: { off } }, options);
-}
-
 /** `GET /api/v1/me/going-runs`: the caller's own command-bar runs, newest first, each with every
  *  part its record keeps. */
 export function listMyGoingRuns(

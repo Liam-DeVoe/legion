@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { goingConversationsQuery, whoAmIQuery } from "../../api/queries";
-import type { GoingContextInput } from "../../api/types";
+import type { GoingContextInput, GoingRunInput } from "../../api/types";
 import {
   continueRun,
   conversationWorking,
@@ -20,8 +20,9 @@ export interface Asking {
   /** Whether the open conversation's newest run waits on its plan: Enter then answers it. */
   readonly planWaits: boolean;
   /** Enter with `words` in the box: approves the waiting plan from an empty box, revises it in
-   *  words, or starts a run of the words; answers whether it did any. */
-  readonly enter: (words: string) => boolean;
+   *  words, or starts a run of the words, of `kind` where one is given (`new_issue` for the line
+   *  File as a new issue); answers whether it did any. */
+  readonly enter: (words: string, kind?: GoingRunInput["kind"]) => boolean;
   /** Esc in the box: stops the run that works where the box is empty, else moves the
    *  conversation as Esc does (`panelNext`). */
   readonly escape: (words: string) => void;
@@ -50,7 +51,7 @@ export function useAsk(context: GoingContextInput): Asking {
     });
   return {
     answering,
-    enter: (words) => {
+    enter: (words, kind) => {
       const said = words.trim();
       if (planWaits) {
         if (said === "") answering.approve();
@@ -60,7 +61,7 @@ export function useAsk(context: GoingContextInput): Asking {
       if (said === "" || goingState().starting) {
         return false;
       }
-      listed(startRun(said, context, login));
+      listed(startRun(said, context, login, undefined, kind));
       return true;
     },
     escape: (words) => {

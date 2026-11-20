@@ -24,7 +24,7 @@ type goingSettings struct {
 }
 
 // goingSettingsInput is PUT /api/v1/me/going/settings's body, a type of its own for the reason
-// goingDisplayFitInput is one: a request's required field and a response's are reflected apart.
+// newIssueSettingsInput is one: a request's required field and a response's are reflected apart.
 type goingSettingsInput struct {
 	Mode string `json:"mode" required:"true" enum:"ask,auto_review"`
 }

@@ -676,7 +676,11 @@ var goingWriteTools = map[string]goingWriteTool{
 // (going_reads.go), and a caller is offered one only where its credential may call every row it
 // names (goingReadsFor).
 var goingReadTools = map[string]goingReadTool{
-	going.ReadRoster:          {Routes: goingReadRows("GET /api/v1/agents")},
+	// A run's roster read names how many sessions it lists (goingTranslateRoster), so the agents
+	// list reads no more of a roster than it answers.
+	going.ReadRoster: {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/agents", Translate: goingTranslateRoster},
+	}},
 	going.ReadProgress:        {Routes: goingReadRows("GET /api/v1/issues", "GET /api/v1/issues/{key}")},
 	going.ReadArchitecture:    {Routes: goingReadRows("GET /api/v1/projects/{key}/architecture")},
 	going.ReadProjectActivity: {Routes: goingReadRows("GET /api/v1/projects/{key}/activity")},
@@ -886,6 +890,5 @@ var goingExcludedRoutes = map[string]string{
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": goingExcludedTestHook,
 	"POST /api/v1/writes/_test/slow":                                goingExcludedTestHook,
 	"POST /api/v1/settings/new-issue/_test":                         goingExcludedTestHook,
-	"POST /api/v1/going/display-fit/_test":                          goingExcludedTestHook,
 	"GET /api/v1/messages/_test/queued":                             goingExcludedTestHook,
 }

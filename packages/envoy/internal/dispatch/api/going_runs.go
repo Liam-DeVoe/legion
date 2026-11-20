@@ -167,23 +167,33 @@ type goingNewRun struct {
 }
 
 // insertGoingRun writes run in tx, queued at the shape this build saves (goingRunShape), as the
-// request that starts it does.
-func insertGoingRun(ctx context.Context, tx pgx.Tx, run goingNewRun) error {
-	var chip any
-	if run.chip != nil {
-		encoded, err := json.Marshal(run.chip)
-		if err != nil {
-			return err
-		}
-		chip = string(encoded)
+// request that starts it does, and answers the run as the insert wrote it.
+func insertGoingRun(ctx context.Context, tx pgx.Tx, run goingNewRun) (goingRun, error) {
+	chip, err := nullableJSON(run.chip)
+	if err != nil {
+		return goingRun{}, err
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into going_runs (id, author_login, words, context, conversation_id, continues, kind, level, mode, state, shape)
+	written, err := scanGoingRun(tx.QueryRow(ctx, `
+		insert into going_runs as r (id, author_login, words, context, conversation_id, continues, kind, level, mode, state, shape)
 		values ($1::uuid, $2, $3, $4::jsonb, $5::uuid, $6::uuid, nullif($7, ''), $8, $9, 'queued', $10)
-	`, run.id, run.login, run.words, chip, run.conversation, run.continues, run.kind, run.level, run.mode, goingRunShape); err != nil {
-		return fmt.Errorf("record the run: %w", err)
+		returning `+goingRunColumns,
+		run.id, run.login, run.words, chip, run.conversation, run.continues, run.kind, run.level, run.mode, goingRunShape))
+	if err != nil {
+		return goingRun{}, fmt.Errorf("record the run: %w", err)
 	}
-	return nil
+	return written, nil
+}
+
+// nullableJSON is value as a jsonb parameter: its JSON text, or SQL null where value is nil.
+func nullableJSON[T any](value *T) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return string(encoded), nil
 }
 
 // readGoingRun is the author's one run by id, while History lists its conversation: pgx.ErrNoRows
@@ -319,8 +329,9 @@ const goingReapBatch = 32
 // reapGoingRuns ends each run that works under no live lease and is past its working budget: its
 // lease ran out longer ago than what was left of its level's working time, so no agent took it up
 // for all the time it had left. Each is stopped with its time budget's reason, its lease freed, and
-// its end frame offers Continue, as a run its agent stopped at that bound offers it. It ends no
-// run that waits for its person, which has no deadline, nor one that is queued.
+// its end frame offers Continue, as a run its agent stopped at that bound offers it
+// (stopGoingRunIn). It ends no run that waits for its person, which has no deadline, nor one that
+// is queued.
 func reapGoingRuns(ctx context.Context, pool *store.Pool) error {
 	names := make([]string, 0, len(agent.Levels))
 	budgets := make([]int64, 0, len(agent.Levels))
@@ -357,19 +368,8 @@ func reapGoingRuns(ctx context.Context, pool *store.Pool) error {
 	for _, run := range runs {
 		reason := fmt.Sprintf("%s: this run's agent stopped, and no agent took it up within the %s a %s run may work; Continue starts a follow-up with a new budget",
 			agent.ReasonTimeBudget, agent.Levels[run.level].Time, run.level)
-		if _, err := tx.Exec(ctx, `
-			update going_runs set state = 'stopped', stop_reason = $2, lease_token = null, lease_owner = null,
-			  lease_ends_at = null, finished_at = now()
-			where id = $1::uuid
-		`, run.id, reason); err != nil {
-			return fmt.Errorf("stop run %s past its budget: %w", run.id, err)
-		}
-		frame, err := json.Marshal(agentwire.EndFrame{State: agentwire.StateStopped, Reason: reason, Offers: []string{agentwire.OfferContinue}})
-		if err != nil {
-			return err
-		}
-		if err := appendGoingRunFrames(ctx, tx, run.id, []agentwire.Frame{{Name: agentwire.FrameEnd, Data: frame}}); err != nil {
-			return fmt.Errorf("end run %s past its budget: %w", run.id, err)
+		if err := stopGoingRunIn(ctx, tx, run.id, reason, []string{agentwire.OfferContinue}); err != nil {
+			return fmt.Errorf("a run past its budget: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

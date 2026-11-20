@@ -326,9 +326,12 @@ func goingContextFrom(input *goingContextInput) (*goingContext, error) {
 // only in one of the server's slots, which it waits for within its window; and its window is
 // goingQuickTime.
 //
+// Words the fast tier answers - an issue's key, or a hit's own title or name (goingNamedHit) -
+// are answered with that hit and ask no model at all: not the decider, not the answer (R2).
+//
 // A run with a decider decides first and stores the decision frame before the answer is asked
-// anything, so the answer is told the actions the decision offered; once the answer
-// has written, the proposal frame carries their arguments, before the frame that ends the stream.
+// anything, so the answer is told the action the decision offered; once the answer has written,
+// the proposal frame carries its arguments, before the frame that ends the stream.
 // A pause's answer is no run of the bar's agent: it writes no going_runs row, so History, the
 // claim and the sweep of runs never read it (going_runs.go).
 func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart, turn *goingQuickTurn) {
@@ -359,14 +362,18 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 	defer superseded()
 
 	run := &goingRunning{s: s, request: request, start: start, storing: storing, running: running}
+	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
+	defer endAnswering()
+	if answered, err := run.fastTier(answering); answered {
+		goingRunStopped(request.ID, err)
+		return
+	}
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
 		return
 	}
-	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
-	defer endAnswering()
 	release, slotted := s.quick.slot(answering)
 	if !slotted {
 		// Its window ended while it waited for a slot, or a cancel ended it: a run past its
@@ -410,6 +417,29 @@ func (g *goingRunning) emit(event going.Event) error {
 	return err
 }
 
+// fastTier answers words the fast tier answers (goingNamedHit) with no model call: the item frame
+// of the hit they name, where the search found one, and the end. It answers whether it answered
+// them, with an error where a frame could not be stored. A search that fails answers false, and
+// the run asks the models as it would of any other words.
+func (g *goingRunning) fastTier(ctx context.Context) (bool, error) {
+	hit, named, err := g.s.goingNamedHit(ctx, g.request.Words, g.request.Project)
+	if err != nil {
+		slog.Warn("dispatch going: the fast tier's search failed, so the run asks the models", "request", g.request.ID, "error", err)
+		return false, nil
+	}
+	if !named {
+		return false, nil
+	}
+	items := 0
+	if hit != nil {
+		if err := g.emit(going.Item(*hit)); err != nil {
+			return true, err
+		}
+		items = 1
+	}
+	return true, g.emit(going.End(0, items))
+}
+
 // decide makes the run's decision and stores its frame: nil with no decision, which the answer
 // runs without, and an error where its frame could not be stored.
 func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
@@ -423,7 +453,7 @@ func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
 	return &decision, nil
 }
 
-// answer asks the answer of the run, told the actions decision offered (none for no decision),
+// answer asks the answer of the run, told the action decision offered (none for no decision),
 // with every read tool its caller may call, each made as the run's author: the block's fill makes
 // its read through the same functions, and the roster read is what the roster frame reports.
 func (g *goingRunning) answer(ctx context.Context, decision *goingDecision) error {
@@ -456,8 +486,7 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision
 		// After every text frame and before the proposal and the ending (R2): the block the
 		// structured reply wrote, filled from its read, and how fresh the roster the run read
 		// was. Neither counts against the answer's word cut.
-		chart := decision != nil && decision.Display.Chart
-		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words, chart); drawn {
+		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words); drawn {
 			if err := g.emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
 				return err
 			}

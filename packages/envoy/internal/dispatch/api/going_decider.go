@@ -23,17 +23,15 @@ const goingDecisionTime = time.Second
 var ErrDecisionModelUnreachable = errors.New("the decision model cannot be reached")
 
 // Decider is the decision model a deployment configured, with the entry the committed
-// measurement holds for it (going.DecisionRecord): the two thresholds the server reads are that
-// entry's and nobody else's. Only NewDecider builds one, and it builds none for a model the
-// record does not hold (R11), so a *Decider is always a measured model.
+// measurement holds for it (going.DecisionRecord). Only NewDecider builds one, and it builds none
+// for a model the record does not hold (R11), so a *Decider is always a measured model.
 type Decider struct {
 	model  agentloop.Model
 	record going.Record
 }
 
 // NewDecider is the decider for model, a System One model at its endpoint, and false where the
-// record holds no entry for model.ID: a model nobody measured is no decision model, and no
-// threshold is made up for it.
+// record holds no entry for model.ID: a model nobody measured is no decision model.
 func NewDecider(model agentloop.Model) (*Decider, bool) {
 	record, measured := going.DecisionRecord(model.ID)
 	if !measured {
@@ -47,8 +45,7 @@ func (d *Decider) Model() string {
 	return d.model.ID
 }
 
-// Record is the measured entry of the model: its fitted thresholds and the measurement behind
-// them.
+// Record is the measured entry of the model, and whether the record chose it.
 func (d *Decider) Record() going.Record {
 	return d.record
 }

@@ -519,7 +519,11 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 					}
 					want := make([]string, 0, len(targets))
 					for _, target := range targets {
-						want = append(want, target.(string))
+						text, isText := target.(string)
+						if !isText {
+							t.Fatalf("the row %s mentions %v, want each target a session id", name, target)
+						}
+						want = append(want, text)
 					}
 					slices.Sort(want)
 					if !slices.Equal(stored, want) {

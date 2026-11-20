@@ -48,12 +48,15 @@ func goingNewIssueProposal(proposal *agentwire.PlanProposal) *agentwire.Error {
 // goingNewIssueSettings puts what the deployment names for a new issue on a new-issue run's
 // create, arguments: its label among the create's labels, where it names one the create does not
 // carry; and answers the route the create takes, session:<id> of the session it names, "" for
-// none (configuredNewIssue).
+// none (configuredNewIssue). It runs before the tool's schema reads arguments (goingReadRow), so
+// labels that are no list, null included, are left as the model wrote them for the schema to
+// refuse CALL_REFUSED, and not replaced by the deployment's label.
 func (s *server) goingNewIssueSettings(arguments map[string]any) string {
 	set := s.configuredNewIssue()
 	if set.Label != "" {
-		labels, _ := arguments["labels"].([]any)
-		if !slices.Contains(labels, any(set.Label)) {
+		written, held := arguments["labels"]
+		labels, isList := written.([]any)
+		if (!held || isList) && !slices.Contains(labels, any(set.Label)) {
 			arguments["labels"] = append(labels, set.Label)
 		}
 	}

@@ -47,9 +47,16 @@
     },
     "/api/v1/agents": {
       "get": {
-        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.",
+        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old, newest seen first. ?limit= answers that many of the newest seen alone, reading the open asks and last activity of those alone (400 INVALID_QUERY for anything but a whole number of 1 or more); without it every session is listed.",
         "operationId": "getApiV1Agents",
         "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
           {
             "name": "session",
             "in": "query",
@@ -4917,60 +4924,9 @@
         "x-auth": "any"
       }
     },
-    "/api/v1/going/display-fit/_test": {
-      "post": {
-        "description": "Test hook: {off} (required, true or false; 400 INVALID_STATE without it) with off true makes the process the call lands on treat the configured decision model as having no display fit, so no answer run draws a chart the words did not ask for, as with a model whose record holds no chart-display threshold; off false reads the record's threshold again. Answers {off}.",
-        "operationId": "postApiV1GoingDisplayFitTest",
-        "parameters": [
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GoingDisplayFitInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GoingDisplayFit"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any",
-        "x-test-hook": true,
-        "x-write-scope": "deployment"
-      }
-    },
     "/api/v1/going/requests": {
       "post": {
-        "description": "Ask a question of what Dispatch holds {words, project, context}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. context is the item the bar's context chip names where the words were typed, {path, project, issue, block}, each empty where the page names none (400 INVALID_PROJECT for a project that is not a key, 400 GOING_INPUT for an issue that is not a key or a path or block past its bound); with a measured decision model configured the run first decides which of the actions the caller's credential may run the words ask for, and fills an action's issue or project from the chip where the words are about the page. Each invocation the proposal offers is automatic - it may run at once, on submit - only where every item it names is the chip's issue or project, where the words are about the page, or is named whole in the words themselves; any other invocation is an offer the person picks, since the answer writes its invocations from text any person or agent stored. A caller presenting a broker-issued access token under DPoP is offered no action: the run's writes are made in-process, which carries the token and no proof. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. A credential that acts as a person keeps the run as a record GET /api/v1/me/going-runs answers. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
+        "description": "Ask a question of what Dispatch holds {words, project, context}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. context is the item the bar's context chip names where the words were typed, {path, project, issue, block}, each empty where the page names none (400 INVALID_PROJECT for a project that is not a key, 400 GOING_INPUT for an issue that is not a key or a path or block past its bound); with a measured decision model configured the run first decides which of the actions the caller's credential may run the words ask for, and fills an action's issue or project from the chip where the words are about the page. Each invocation the proposal offers is automatic - it may run at once, on submit - only where every item it names is the chip's issue or project, where the words are about the page, or is named whole in the words themselves; any other invocation is an offer the person picks, since the answer writes its invocations from text any person or agent stored. A caller presenting a broker-issued access token under DPoP is offered no action: the run's writes are made in-process, which carries the token and no proof. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. This run is no run of the bar's agent: GET /api/v1/me/going-runs does not list it, and the record keeps it and its frames for 1h0m0s after it was asked. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
         "operationId": "postApiV1GoingRequests",
         "parameters": [
           {
@@ -5020,7 +4976,7 @@
     },
     "/api/v1/going/requests/{id}/cancel": {
       "post": {
-        "description": "Cancel one run its author typed past or closed: answers 200 {id, cancelled_at}, cancelled_at the first cancel's moment for a run cancelled before. From then on the run stores no frame that does not end its stream, so its answer ends at its next delta on whichever pod is writing it, and at once on the pod this call lands on; its record keeps what it reached and reads unfinished. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, as the stream answers them.",
+        "description": "Cancel one run its author typed past or closed: answers 200 {id, cancelled_at}, cancelled_at the first cancel's moment for a run cancelled before. From then on the run stores no frame that does not end its stream, so its answer ends at its next delta on whichever pod is writing it, and at once on the pod this call lands on; the frames it stored before stay for its stream to carry. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, as the stream answers them.",
         "operationId": "postApiV1GoingRequestsByIdCancel",
         "parameters": [
           {
@@ -5257,7 +5213,7 @@
     },
     "/api/v1/going/runs/{id}/plan": {
       "get": {
-        "description": "The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message}}]}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan.",
+        "description": "The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message, delivery}}]}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan.",
         "operationId": "getApiV1GoingRunsByIdPlan",
         "parameters": [
           {
@@ -12977,7 +12933,7 @@
     },
     "/api/v1/settings/new-issue": {
       "get": {
-        "description": "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.",
+        "description": "What the command bar's File as a new issue files a person's words as: {label, session}, the label that new issue carries and the session it is routed to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no route. The bar's File as a new issue starts a new_issue run (POST /api/v1/going/runs with kind new_issue), whose create carries both, and nothing is posted on the issue: a message to an agent is a change of a plan the person approves.",
         "operationId": "getApiV1SettingsNewIssue",
         "parameters": [
           {
@@ -21891,31 +21847,6 @@
           "configured",
           "model",
           "reachable"
-        ],
-        "type": "object"
-      },
-      "GoingDisplayFit": {
-        "properties": {
-          "off": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "off"
-        ],
-        "type": "object"
-      },
-      "GoingDisplayFitInput": {
-        "properties": {
-          "off": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          }
-        },
-        "required": [
-          "off"
         ],
         "type": "object"
       },

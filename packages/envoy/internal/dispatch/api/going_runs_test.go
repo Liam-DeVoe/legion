@@ -78,10 +78,16 @@ func (rig goingRunsRig) touched(t *testing.T, id, issue string) {
 	}
 }
 
-// list reads GET /api/v1/me/going-runs as login.
+// list reads GET /api/v1/me/going-runs as login (goingHistory).
 func (rig goingRunsRig) list(t *testing.T, login, query string) goingConversationsPage {
 	t.Helper()
-	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/going-runs"+query, nil, login)
+	return goingHistory(t, rig.handler, login, query)
+}
+
+// goingHistory reads History, GET /api/v1/me/going-runs with query, from handler as login.
+func goingHistory(t *testing.T, handler http.Handler, login, query string) goingConversationsPage {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/going-runs"+query, nil, login)
 	if response.Code != http.StatusOK {
 		t.Fatalf("list %s's conversations%s: status=%d body=%s", login, query, response.Code, response.Body.String())
 	}
@@ -335,14 +341,7 @@ func TestTheReaperEndsOnlyARunPastItsBudgetWithNoLease(t *testing.T) {
 		for _, block := range strings.Split(strings.TrimSpace(stream.Body.String()), "\n\n") {
 			var frame goingStreamFrame
 			for _, line := range strings.Split(block, "\n") {
-				switch {
-				case strings.HasPrefix(line, "id: "):
-					frame.id = strings.TrimPrefix(line, "id: ")
-				case strings.HasPrefix(line, "event: "):
-					frame.name = strings.TrimPrefix(line, "event: ")
-				case strings.HasPrefix(line, "data: "):
-					frame.data = strings.TrimPrefix(line, "data: ")
-				}
+				frame.take(line)
 			}
 			frames = append(frames, frame)
 		}

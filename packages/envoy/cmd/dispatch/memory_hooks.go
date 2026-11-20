@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
+	"runtime/metrics"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
@@ -74,6 +77,33 @@ func growAgentHeap(after time.Duration, stderr io.Writer) {
 					holdChunk(heldChunkBytes)
 				}
 			}()
+		}
+	}()
+}
+
+// collectAgentOnSignal is the agent's collection on demand under its test hooks
+// (DISPATCH_TEST_AGENT_HOOKS=1), which the soak of background runs reads the agent's memory by
+// (agent_soak_test.go): each SIGUSR1 collects the heap, then writes to stderr, which the server
+// logs, the number of the last collection the runtime completed, the heap it found live and the
+// goroutines running, read again until no collection completed between two reads of the number,
+// so the heap is that collection's.
+func collectAgentOnSignal(stderr io.Writer) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR1)
+	go func() {
+		samples := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}, {Name: "/gc/heap/live:bytes"}}
+		for range signals {
+			runtime.GC()
+			for {
+				metrics.Read(samples)
+				number, live := samples[0].Value.Uint64(), samples[1].Value.Uint64()
+				goroutines := runtime.NumGoroutine()
+				metrics.Read(samples[:1])
+				if samples[0].Value.Uint64() == number {
+					fmt.Fprintf(stderr, "agent: collection %d found %d bytes live and %d goroutines\n", number, live, goroutines)
+					break
+				}
+			}
 		}
 	}()
 }

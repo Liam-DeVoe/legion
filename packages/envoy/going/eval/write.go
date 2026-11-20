@@ -75,9 +75,9 @@ func WriteSeed(ctx context.Context, database *store.Store, seed *Seed) (bool, er
 	return true, nil
 }
 
-// ItemID is the uuid Dispatch stores the seed's item of kind ("ask", "comment" or "message") and
-// seed id under: the first sixteen bytes of a sha256 of the two, stamped as a version 4 uuid, so a
-// reader of the seeded store finds an item a task names by its seed id alone.
+// ItemID is the uuid Dispatch stores the seed's item of kind ("ask", "comment", "message" or
+// "artifact") and seed id under: the first sixteen bytes of a sha256 of the two, stamped as a
+// version 4 uuid, so a reader of the seeded store finds an item a task names by its seed id alone.
 func ItemID(kind, id string) string {
 	sum := sha256.Sum256([]byte("going-eval/" + kind + "/" + id))
 	sum[6] = sum[6]&0x0f | 0x40
@@ -92,10 +92,26 @@ func artifactID(owner, slug string) string {
 	return ItemID("artifact", owner+"/"+slug)
 }
 
+// RefuseOtherProjects refuses a database that holds any project the seed does not, before anything
+// is written to it, the migration included: a --database-url that names another database by
+// mistake is refused as it was found, as cmd/dispatch-seed refuses one. A database with no projects
+// table yet holds no project, and one holding the seed's projects alone passes.
+func RefuseOtherProjects(ctx context.Context, database *store.Store, seed *Seed) error {
+	var present bool
+	if err := database.Pool.QueryRow(ctx, `select to_regclass('projects') is not null`).Scan(&present); err != nil {
+		return fmt.Errorf("eval: look for the projects table: %w", err)
+	}
+	if !present {
+		return nil
+	}
+	_, err := holdsTheSeed(ctx, database.Pool, seed)
+	return err
+}
+
 // holdsTheSeed reports whether the database already holds every project of the seed, and refuses a
 // database holding any project the seed does not.
-func holdsTheSeed(ctx context.Context, tx pgx.Tx, seed *Seed) (bool, error) {
-	rows, err := tx.Query(ctx, `select key from projects order by key`)
+func holdsTheSeed(ctx context.Context, q refs.Queryer, seed *Seed) (bool, error) {
+	rows, err := q.Query(ctx, `select key from projects order by key`)
 	if err != nil {
 		return false, fmt.Errorf("eval: read the database's projects: %w", err)
 	}

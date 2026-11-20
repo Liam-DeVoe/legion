@@ -57,10 +57,11 @@ export const GOING_EVENT_END = "end";
  *  Generated into Go as `contracts.GoingEventError`. */
 export const GOING_EVENT_ERROR = "error";
 
-/** The frame carrying what the decision model chose before the answer is written: the two best
- *  actions, whether the bar runs the first at once, what the words are about, and how the answer
- *  is shown. It is the stream's first frame when a decision model is configured and answered,
- *  and the stream carries none otherwise. Generated into Go as `contracts.GoingEventDecision`. */
+/** The frame carrying what the decision model chose before the answer is written: the action of
+ *  the catalogue, the line on top that action gives, and what the words are about. It is the
+ *  stream's first frame when a decision model is configured and answered, and the stream carries
+ *  none otherwise, nor for words the fast tier answers with their hit. Generated into Go as
+ *  `contracts.GoingEventDecision`. */
 export const GOING_EVENT_DECISION = "decision";
 
 /** The frame carrying the arguments of each action the decision offered, parsed against that
@@ -180,38 +181,24 @@ export interface GoingErrorEvent {
   readonly data: { readonly code: string };
 }
 
-/** One action the decision model ranked: the catalogue action's name, or `none` for words that
- *  ask for nothing to change. `confidence` is the confidence the model reported for its choice,
- *  which is the number the action threshold is compared with, and is set on the first action
- *  alone: the model reports none for the runner-up. `probability` is the share the model gave
- *  that choice, null where it reported none. */
-export interface GoingDecidedAction {
-  readonly action: string;
-  readonly confidence: number | null;
-  readonly probability: number | null;
-}
-
 /** What the words are about, as the decision model chose: the item the bar's context chip names
  *  (`page`), items the words name themselves (`named`), or nothing in particular (`none`). The
  *  server fills an action's target from the chip on `page` alone. */
 export type GoingDecidedContext = "page" | "named" | "none";
 
-/** What the decision model chose before the answer was written. `actions` is the two best
- *  choices, the model's own first; `act` is true where the bar runs the first at once on submit:
- *  it is a catalogue action, its confidence is at or above the measured action threshold, and it
- *  is none of the writes that always ask. `display.chart` is true where the display choice is a
- *  chart at or above the measured chart-display threshold, so the answer draws one unasked. */
+/** The line on top of the bar's list, as the decision model's action gives it: `ask` for no
+ *  action, `file` (File as a new issue) for the create of an issue, `do` for any other action. */
+export type GoingLine = "ask" | "do" | "file";
+
+/** What the decision model chose before the answer was written. `action` is the catalogue
+ *  action's name, or `none` for words that ask for nothing to change; `line` is the line on top
+ *  it gives. */
 export interface GoingDecisionEvent {
   readonly event: typeof GOING_EVENT_DECISION;
   readonly data: {
-    readonly actions: readonly GoingDecidedAction[];
-    readonly act: boolean;
+    readonly action: string;
+    readonly line: GoingLine;
     readonly context: GoingDecidedContext;
-    readonly display: {
-      readonly choice: "chart" | "prose";
-      readonly confidence: number;
-      readonly chart: boolean;
-    };
   };
 }
 

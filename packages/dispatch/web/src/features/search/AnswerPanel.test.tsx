@@ -166,15 +166,7 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     // Through the pause, the next question and its first frame, which is no text, it stays.
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
-    send(streams[1], {
-      data: {
-        act: false,
-        actions: [{ action: "none", confidence: 0.9, probability: null }],
-        context: "none",
-        display: { chart: false, choice: "prose", confidence: 0.4 },
-      },
-      event: "decision",
-    });
+    send(streams[1], { data: { action: "none", context: "none", line: "ask" }, event: "decision" });
     await tick(0);
     expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "stale");
     expect(screen.getByTestId("going-answer-text").textContent).toBe("The first answer");

@@ -14,10 +14,10 @@ import type {
   GoingBlockKind,
   GoingBlockSource,
   GoingChartSpec,
-  GoingDecidedAction,
   GoingDecidedContext,
   GoingDecisionEvent,
   GoingInvocation,
+  GoingLine,
   GoingMetricSpec,
   GoingMissingArgument,
   GoingOffer,
@@ -41,18 +41,11 @@ function allOf<U extends string>() {
 }
 
 type Decision = GoingDecisionEvent["data"];
-type Display = Decision["display"];
 type Roster = GoingRosterEvent["data"];
 
-const DECISION_KEYS = allOf<keyof Decision>()(["actions", "act", "context", "display"]);
-const DECIDED_ACTION_KEYS = allOf<keyof GoingDecidedAction>()([
-  "action",
-  "confidence",
-  "probability",
-]);
-const DISPLAY_KEYS = allOf<keyof Display>()(["choice", "confidence", "chart"]);
+const DECISION_KEYS = allOf<keyof Decision>()(["action", "line", "context"]);
+const LINES = allOf<GoingLine>()(["ask", "do", "file"]);
 const CONTEXTS = allOf<GoingDecidedContext>()(["page", "named", "none"]);
-const DISPLAY_CHOICES = allOf<Display["choice"]>()(["chart", "prose"]);
 const PROPOSAL_KEYS = allOf<keyof GoingProposalEvent["data"]>()(["offers"]);
 const OFFER_KEYS = allOf<keyof GoingOffer>()(["action", "invocations", "offered", "withheld"]);
 const OFFER_OPTIONAL = ["withheld"] as const;
@@ -125,18 +118,11 @@ function expectKeys(value: object, all: readonly string[], optional: readonly st
   for (const key of all) if (!optional.includes(key)) expect(keys).toContain(key);
 }
 
-test("a decision frame carries its two best actions, whether it acts, what the words are about and how the answer is shown", () => {
+test("a decision frame carries the action chosen, the line on top it gives and what the words are about", () => {
   expect(keysOf(decision)).toEqual(sorted(DECISION_KEYS));
-  expect(decision.actions).toHaveLength(2);
-  for (const action of decision.actions)
-    expect(keysOf(action)).toEqual(sorted(DECIDED_ACTION_KEYS));
-  // The model reports a confidence for its own choice alone.
-  expect(typeof decision.actions[0]?.confidence).toBe("number");
-  expect(decision.actions[1]?.confidence).toBeNull();
-  expect(typeof decision.act).toBe("boolean");
+  expect(typeof decision.action).toBe("string");
+  expect(LINES).toContain(decision.line as GoingLine);
   expect(CONTEXTS).toContain(decision.context as GoingDecidedContext);
-  expect(keysOf(decision.display)).toEqual(sorted(DISPLAY_KEYS));
-  expect(DISPLAY_CHOICES).toContain(decision.display.choice as Display["choice"]);
 });
 
 test("a proposal frame carries each offer's invocations, each with its arguments, what it still needs, whether it runs at once and the argument naming its item", () => {

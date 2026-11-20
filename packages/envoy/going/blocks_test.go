@@ -40,20 +40,20 @@ func TestKindsNamedReadsTheTypedWords(t *testing.T) {
 	}
 }
 
-// A block is drawn when the words name its kind; a chart is also drawn when the decision settled
-// on one unasked, and no other kind is.
-func TestDrawnOnlyForTheNamedKindOrAChartTheDecisionChose(t *testing.T) {
+// A block is drawn when the words name its kind, and no other is: a chart included, which a plain
+// question never draws.
+func TestDrawnOnlyForTheNamedKind(t *testing.T) {
 	plain := "summarise this project"
 	for _, kind := range going.BlockKinds {
-		if going.Drawn(kind, plain, false) {
-			t.Errorf("Drawn(%s) for a plain question with no chart decided = true, want false", kind)
-		}
-		if want := kind == going.BlockChart; going.Drawn(kind, plain, true) != want {
-			t.Errorf("Drawn(%s) for a plain question with a chart decided = %v, want %v", kind, !want, want)
+		if going.Drawn(kind, plain) {
+			t.Errorf("Drawn(%s) for a plain question = true, want false", kind)
 		}
 	}
-	if !going.Drawn(going.BlockTable, "show the issues as a table", false) {
+	if !going.Drawn(going.BlockTable, "show the issues as a table") {
 		t.Error("Drawn(table) for words naming a table = false, want true")
+	}
+	if going.Drawn(going.BlockChart, "show the issues as a table") {
+		t.Error("Drawn(chart) for words naming a table = true, want false")
 	}
 }
 
@@ -63,14 +63,14 @@ func TestDrawnOnlyForTheNamedKindOrAChartTheDecisionChose(t *testing.T) {
 func TestNoBlockIsOfferedWithoutAReadThatFillsIt(t *testing.T) {
 	noop := func(context.Context, json.RawMessage) (going.Read, error) { return going.Read{}, nil }
 	words := "chart the agent status"
-	if got := going.OfferedKinds(words, true, nil); len(got) != 0 {
+	if got := going.OfferedKinds(words, nil); len(got) != 0 {
 		t.Errorf("OfferedKinds with no read = %v, want none", got)
 	}
-	got := going.OfferedKinds(words, false, map[string]going.ReadFunc{going.ReadProjectActivity: noop})
+	got := going.OfferedKinds(words, map[string]going.ReadFunc{going.ReadProjectActivity: noop})
 	if !reflect.DeepEqual(got, []string{going.BlockChart}) {
 		t.Errorf("OfferedKinds with the activity read alone = %v, want [chart]: no read fills agent status", got)
 	}
-	got = going.OfferedKinds(words, false, map[string]going.ReadFunc{going.ReadProjectActivity: noop, going.ReadRoster: noop})
+	got = going.OfferedKinds(words, map[string]going.ReadFunc{going.ReadProjectActivity: noop, going.ReadRoster: noop})
 	if !reflect.DeepEqual(got, []string{going.BlockChart, going.BlockAgentStatus}) {
 		t.Errorf("OfferedKinds with the roster read too = %v, want [chart agent_status]", got)
 	}

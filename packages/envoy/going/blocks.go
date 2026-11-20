@@ -13,9 +13,8 @@ import (
 	"time"
 )
 
-// A block is drawn beside the answer when the typed words name its kind, or, for a chart alone,
-// when the decision's display choice is a chart at or above the chart-display threshold (R2):
-// the words decide, and no confidence does. The model writes the block's spec - the
+// A block is drawn beside the answer when the typed words name its kind (R2): the words decide,
+// and no confidence does. The model writes the block's spec - the
 // read that fills it, that read's arguments, the table and fields it draws, never a number - and
 // the server runs that read again as the run's author and fills the block from its answer alone,
 // so every number a block shows is a value the read returned (R2, R9).
@@ -127,24 +126,16 @@ func KindsNamed(words string) []string {
 }
 
 // Drawn reports whether a block of kind may be drawn beside an answer to words: the words name
-// the kind, or it is a chart and chart says the decision settled on drawing one unasked. A block
-// the model writes for any other question is dropped.
-func Drawn(kind, words string, chart bool) bool {
-	if kind == BlockChart && chart {
-		return true
-	}
+// the kind. A block the model writes for any other question is dropped.
+func Drawn(kind, words string) bool {
 	return slices.Contains(KindsNamed(words), kind)
 }
 
-// OfferedKinds is the kinds an answer to words may draw, given whether the decision settled on a
-// chart and the reads the run has: each kind Drawn allows that one of the run's reads fills.
-func OfferedKinds(words string, chart bool, reads map[string]ReadFunc) []string {
-	named := KindsNamed(words)
+// OfferedKinds is the kinds an answer to words may draw, given the reads the run has: each kind
+// the words name that one of the run's reads fills.
+func OfferedKinds(words string, reads map[string]ReadFunc) []string {
 	var offered []string
-	for _, kind := range BlockKinds {
-		if !(kind == BlockChart && chart) && !slices.Contains(named, kind) {
-			continue
-		}
+	for _, kind := range KindsNamed(words) {
 		if slices.ContainsFunc(blockSources[kind], func(source string) bool { _, held := reads[source]; return held }) {
 			offered = append(offered, kind)
 		}
@@ -166,14 +157,11 @@ var blockGuides = map[string]string{
 // BlockGuide is what the structured call is told of the blocks it may write: none, or each kind
 // offered with its spec. A number is never part of a spec: the server fills the block from the
 // read the spec names.
-func BlockGuide(offered []string, chart bool) string {
+func BlockGuide(offered []string) string {
 	var out strings.Builder
 	if len(offered) == 0 {
 		out.WriteString("\n\nWrite block kind none: these words ask for no block.\n")
 		return out.String()
-	}
-	if chart && slices.Contains(offered, BlockChart) {
-		out.WriteString("\n\nThe answer is best shown as a chart: write a chart block beside it.\n")
 	}
 	out.WriteString("\n\nYou may write one block beside the answer, of a kind the words name. Write its spec as the JSON text of an object naming the read that fills it, ")
 	out.WriteString("exactly as you would call that tool, and the table and fields it is drawn from; never write a number in a spec, since every number is the read's. ")
@@ -581,29 +569,14 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	if err := block.Chain.check(); err != nil {
 		return RunBlock{}, err
 	}
-	switch block.Kind {
-	case BlockChart:
-		block.Mark = cmp.Or(strings.TrimSpace(block.Mark), MarkBar)
-		switch {
-		case block.Mark != MarkBar && block.Mark != MarkLine:
-			return RunBlock{}, fmt.Errorf("going: a chart is drawn as %s or %s, not %q", MarkBar, MarkLine, block.Mark)
-		case strings.TrimSpace(block.X) == "" || strings.TrimSpace(block.Y) == "":
-			return RunBlock{}, errors.New("going: a chart's spec names x and y, the columns of the chain's answer it draws")
-		}
-	case BlockTable:
-		if len(block.Columns) == 0 || slices.Contains(block.Columns, "") {
-			return RunBlock{}, errors.New("going: a table's spec names its columns, the columns of the chain's answer it draws")
-		}
-	case BlockMetric:
-		if strings.TrimSpace(block.Field) == "" {
-			return RunBlock{}, errors.New("going: a metric's spec names its field, the column of the chain's answer it draws")
-		}
-		block.Label = cmp.Or(strings.TrimSpace(block.Label), block.Field)
-		block.CompareLabel = ""
-		if block.Compare != "" {
-			block.CompareLabel = cmp.Or(strings.TrimSpace(block.CompareLabel), block.Compare)
-		}
+	// The chain's answer is the table a block of a run draws, so the spec settle checks names it;
+	// settle fills the chart's mark and the metric's labels as it does for an answer's block.
+	settled := blockSpec{Table: "the chain's answer", X: block.X, Y: block.Y, Mark: block.Mark, Columns: block.Columns,
+		Field: block.Field, Label: block.Label, Compare: block.Compare, CompareLabel: block.CompareLabel}
+	if err := settled.settle(block.Kind); err != nil {
+		return RunBlock{}, err
 	}
+	block.Mark, block.Label, block.CompareLabel = settled.Mark, settled.Label, settled.CompareLabel
 	return block, nil
 }
 

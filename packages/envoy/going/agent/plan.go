@@ -188,8 +188,10 @@ func (w *worker) runApproved(rows []agentwire.PlanRun) stepOutcome {
 // filed reports whether the run's history holds a row of its plan that ran, as runRows saves one.
 func (w *worker) filed() bool {
 	return slices.ContainsFunc(w.history, func(step agentwire.SavedStep) bool {
-		var body toolBody
-		return step.Kind == agentwire.StepTool && len(step.Body) > 0 && json.Unmarshal(step.Body, &body) == nil && body.Row != nil
+		var body struct {
+			Row *agentwire.PlanRow `json:"row"`
+		}
+		return step.Kind == agentwire.StepTool && json.Unmarshal(step.Body, &body) == nil && body.Row != nil
 	})
 }
 

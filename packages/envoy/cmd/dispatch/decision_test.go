@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -201,27 +204,42 @@ func TestDecisionModelUnmeasuredBuildsNoDecider(t *testing.T) {
 	}
 }
 
-// A measured model builds a decider carrying that model's own entry of the record: its two fitted
-// thresholds, which the boot line names.
-func TestDecisionModelMeasuredBuildsOneWithItsThresholds(t *testing.T) {
-	want, measured := going.DecisionRecord("jev-latest")
-	if !measured || want.ActionThreshold == nil {
-		t.Fatalf("the record holds jev-latest = %v with action threshold %v, want a measured entry", measured, want.ActionThreshold)
+// The committed record names one chosen model, and the setting check reads the record as it is
+// now, with no threshold in it: each model the record holds, named by DISPATCH_DECISION_MODEL,
+// builds a decider carrying that model's own entry, and the boot line names the model, the host
+// and whether the record chose it, and no credential.
+func TestTheRecordNamesItsChosenModel(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "going", "decision_models.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	cfg := resolveWith(t, decisionEnvironment(nil)).Decision
-	logged := capturedLog(t)
-	decider := newDecider(cfg)
-	if decider == nil {
-		t.Fatal("newDecider built no decider for jev-latest")
+	var records []going.Record
+	if err := json.Unmarshal(raw, &records); err != nil {
+		t.Fatalf("decision_models.json: %v", err)
 	}
-	got := decider.Record()
-	if decider.Model() != "jev-latest" || got.Model != "jev-latest" ||
-		*got.ActionThreshold != *want.ActionThreshold || (got.ChartThreshold == nil) != (want.ChartThreshold == nil) ||
-		(got.ChartThreshold != nil && *got.ChartThreshold != *want.ChartThreshold) {
-		t.Fatalf("the decider is %q with %+v, want jev-latest with the record's thresholds %+v", decider.Model(), got, want)
+	chosen := 0
+	for _, want := range records {
+		if want.Chosen {
+			chosen++
+		}
+		t.Run(want.Model, func(t *testing.T) {
+			cfg := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL": want.Model})).Decision
+			logged := capturedLog(t)
+			decider := newDecider(cfg)
+			if decider == nil {
+				t.Fatalf("newDecider built no decider for %s, which the record holds", want.Model)
+			}
+			if got := decider.Record(); decider.Model() != want.Model || !reflect.DeepEqual(got, want) {
+				t.Fatalf("the decider is %q with %+v, want %s with the record's own entry %+v", decider.Model(), got, want.Model, want)
+			}
+			line := logged.String()
+			if strings.Count(line, "\n") != 1 || !strings.Contains(line, fmt.Sprintf("model=%s host=decide.example chosen=%t", want.Model, want.Chosen)) ||
+				strings.Contains(line, cfg.TokenFile) || strings.Contains(line, "threshold") {
+				t.Fatalf("logged %q, want one line naming the model, the host and whether the record chose it, and no credential", line)
+			}
+		})
 	}
-	line := logged.String()
-	if strings.Count(line, "\n") != 1 || !strings.Contains(line, "model=jev-latest host=decide.example") || strings.Contains(line, cfg.TokenFile) {
-		t.Fatalf("logged %q, want one line naming the model and the host and no credential", line)
+	if chosen != 1 {
+		t.Fatalf("the record marks %d models chosen, want one", chosen)
 	}
 }

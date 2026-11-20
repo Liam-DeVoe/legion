@@ -67,8 +67,8 @@ const (
 	KindFind Kind = "find"
 	// KindAnswer answers a question or summarises, from what the run reads.
 	KindAnswer Kind = "answer"
-	// KindStatus says where work stands, from the records and from what the agents answer when
-	// Dispatch reads their status.
+	// KindStatus says where work stands, from the records Dispatch stores: claims, routes, asks,
+	// and what the agents wrote on their issues.
 	KindStatus Kind = "status"
 	// KindChart answers with a chart or a table whose numbers the server's chain makes.
 	KindChart Kind = "chart"
@@ -791,9 +791,9 @@ func (s *Seed) check() error {
 	return errors.Join(errs...)
 }
 
-// Files holds tasks.json and seed.json as committed.
+// Files holds tasks.json, seed.json and labels.json as committed.
 //
-//go:embed tasks.json seed.json
+//go:embed tasks.json seed.json labels.json
 var Files embed.FS
 
 // LoadTasks reads tasks.json from fsys (Files, for the committed tasks). It refuses a field that
