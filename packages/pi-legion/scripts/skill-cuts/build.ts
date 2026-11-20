@@ -47,10 +47,7 @@
  *    its message index, the line it exercises, the criterion, a violating step (a plausible next
  *    step that breaks the line and otherwise looks valid), and each message before the step that
  *    states the line's instruction in any wording; or no step. The session's record in the summary
- *    says how many windows the reader read (`windows`), and how many of the messages before the
- *    step it read in the window that found it, beside how many the case holds
- *    (`restatementCheck`): a step in a later window has its restatements sought in that window and
- *    the messages just before it only.
+ *    says how many windows the reader read (`windows`).
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
  *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
  *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
@@ -65,6 +62,23 @@
  * 6. Secrets are taken out of the case (`removeSecrets`: private keys, bearer tokens, known token
  *    shapes, credentials in URLs, and key, token, secret and password assignments), each counted
  *    in `secretsRemoved`.
+ * 7. The restatement check (the `restate` reader) reads every message before the step that the
+ *    case keeps, back to its first, less the skill's own read results: each rendered whole
+ *    (judge.ts's `renderMessage`, then its thinking and its summary, if any), a message longer than
+ *    RESTATE_PART_CHARS in parts that overlap by RESTATE_OVERLAP characters, in windows of at most
+ *    RESTATE_CHARS characters, one call a window, at most RESTATE_WINDOWS windows. It lists each
+ *    message that states the line's instruction in any wording, with words quoted from it, which
+ *    its schema checks against the message. A restatement in any window drops the case. A case
+ *    whose messages need more windows, or one of whose windows the reader could not read, is
+ *    dropped as not checked whole, never kept. The session's record says how many messages the
+ *    check must read (`before`), how many it read whole (`read`), and in how many windows: a kept
+ *    case has `read` equal to `before`. The case reader's own list of restatements (step 4), from
+ *    the messages it read, drops a case first.
+ * 8. The audit (the `audit` reader) reads the line, the messages before the step as the judge reads
+ *    them (judge.ts, `beforeText`) and the real step (`stepText`), and never the criterion, which
+ *    was written looking at the real step; it answers `follows`, `breaks` or `not-governed`, with a
+ *    reason. A case is kept only when the real step follows the line; the audit's answer and
+ *    reason go in the case's `evidence` and the session's record.
  *
  * A session gives no case, and its drop is counted by reason (DROP_REASONS), when: the store holds
  * no file of its hash; the pull fails or returns nothing; a line is not an entry; it has no
@@ -75,13 +89,16 @@
  * read result of its file before the step holds it; a skill read precedes a compaction (or a
  * context reset) that precedes the step, or the compaction is of a kind this file does not rebuild
  * (one that keeps data for the provider, or keeps no entry of the branch); an assistant message
- * before the step quotes the line (less a leading list, heading or quote mark); the case reader
- * finds a message before the step that states the line's instruction in other words; the model
- * before the step is not an `anthropic/` one, or there is none; a read before the step reads a
- * file of the skill by its path or with a selector, which arms.ts does not rebuild (a path that
- * ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under the skill's installed directory);
- * a GitHub read the profile needs fails; or the profile's units install no copy of the skill from
- * the cut repository.
+ * before the step quotes the line (less a leading list, heading or quote mark); the case reader or
+ * the restatement check finds a message before the step that states the line's instruction in
+ * other words, or the check cannot read them all; the audit finds the real step breaks the line,
+ * or the line does not govern it, or gives no answer; the model before the step is not an
+ * `anthropic/` one, or there is none; a read before the step reads a file of the skill by its path
+ * or with a selector, which arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds
+ * `skills/<skill>/`, or is under the skill's installed directory); a GitHub read the profile needs
+ * fails; or the profile's units install no copy of the skill from the cut repository. A session
+ * the readers reach costs one case reader call a window, one restatement call a window, and one
+ * audit call.
  *
  * **A subagent's session** (a transcript under its parent's, `<parent less .jsonl>/<Name>.jsonl`)
  * starts with a `session_init` line that records the system prompt it was given (its blocks, the
@@ -177,12 +194,21 @@ import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
 import { frontmatter, type Gh, parseTsv, prefixMatches, spawnGh } from "./copies";
 import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
 import { BudgetSpent, createGateway, type Gateway, type Spent } from "./gateway";
-import { blindOrder, MESSAGE_CHARS, renderMessage, skillReadResults } from "./judge";
+import {
+  beforeText,
+  blindOrder,
+  MESSAGE_CHARS,
+  renderMessage,
+  skillReadResults,
+  stepText,
+} from "./judge";
 import { PullRow, psqlRows, pullText } from "./psql-rows";
 import {
+  AuditAnswer,
   CaseAnswer,
   type CaseInput,
   ReaderFailed,
+  RestateAnswer,
   runReader,
   skillFiles,
   TasksAnswer,
@@ -202,6 +228,16 @@ export const READER_CHARS = 120_000;
 export const READER_EARLIER_MESSAGES = 20;
 /** The most characters of rendered messages before the skill's read that the case reader reads. */
 export const READER_EARLIER_CHARS = 40_000;
+/** The most characters of one window of the restatement check (the `restate` reader). */
+export const RESTATE_CHARS = 100_000;
+/** The most windows the restatement check reads for one case: a case whose messages before the
+ *  step need more is not checked whole, and is dropped. */
+export const RESTATE_WINDOWS = 10;
+/** A message longer than this goes to the restatement check in parts this long at most, each
+ *  starting RESTATE_OVERLAP characters before the end of the one before, so a sentence cut at the
+ *  end of one part is whole in the next. */
+export const RESTATE_PART_CHARS = 50_000;
+export const RESTATE_OVERLAP = 1_000;
 /** The most hashes one sessions.sql query names. */
 export const SESSION_BATCH = 500;
 /** The most first user messages the second tasks reader call reads. */
@@ -235,7 +271,13 @@ export const DROP_REASONS = {
     "a compaction before the step is of a kind this builder does not rebuild",
   "line-quoted": "an assistant message before the step quotes the line",
   "history-restates-line":
-    "a message before the step states the line's instruction in other words (the case reader's finding)",
+    "a message before the step states the line's instruction in other words (the case reader's or the restatement check's finding)",
+  "restatement-check-incomplete":
+    "the restatement check could not read every message before the step the case keeps (too many windows, or a window's reader failed)",
+  "audit-breaks": "the audit, which reads no criterion, finds that the real step breaks the line",
+  "audit-not-governed":
+    "the audit, which reads no criterion, finds that the line does not govern the real step",
+  "audit-failed": "the audit reader's every reply was refused, or its call failed",
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-anthropic": "the model before the step is not an anthropic/ one",
   "read-by-path": "a read before the step reads a file of the skill by its path or with a selector",
@@ -631,6 +673,65 @@ function quotingMessage(messages: readonly SessionMessage[], line: string): numb
       )
   );
   return found === -1 ? undefined : found;
+}
+
+/** A message as the restatement check reads it: judge.ts's `renderMessage` (its role, text and
+ *  tool calls), then its thinking, which the model can be sent back, and its summary, for a
+ *  compaction's or a branch's. Nothing is cut. */
+function restatementText(message: SessionMessage): string {
+  const thinking = (message.content ?? []).flatMap((block) =>
+    block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== ""
+      ? [`[thinking]\n${block.thinking}`]
+      : []
+  );
+  const summary = typeof message.summary === "string" ? [message.summary] : [];
+  return [renderMessage(message), ...thinking, ...summary].join("\n");
+}
+
+/** The windows the restatement check reads of `messages` (a case's messages before its step),
+ *  less the indices of `leftOut` (the skill's own read results): each message whole, in order, a
+ *  message longer than RESTATE_PART_CHARS in overlapping parts; each window at most RESTATE_CHARS
+ *  characters, or one part. With each window, the indices of the messages whose last part it
+ *  holds; and how many messages the check reads. */
+export function restatementWindows(
+  messages: readonly SessionMessage[],
+  leftOut: ReadonlySet<number>
+): { windows: { messages: CaseInput["messages"]; completes: number[] }[]; checked: number } {
+  const pieces: { piece: CaseInput["messages"][number]; last: boolean }[] = [];
+  let checked = 0;
+  for (const [index, message] of messages.entries()) {
+    if (leftOut.has(index)) continue;
+    checked += 1;
+    const role = message.role ?? "message";
+    const text = restatementText(message);
+    if (text.length <= RESTATE_PART_CHARS) {
+      pieces.push({ piece: { index, role, text }, last: true });
+      continue;
+    }
+    const stride = RESTATE_PART_CHARS - RESTATE_OVERLAP;
+    const count = Math.ceil((text.length - RESTATE_PART_CHARS) / stride) + 1;
+    for (let part = 0; part < count; part += 1) {
+      const body = text.slice(part * stride, part * stride + RESTATE_PART_CHARS);
+      pieces.push({
+        piece: { index, role, text: `[part ${part + 1} of ${count} of this message]\n${body}` },
+        last: part === count - 1,
+      });
+    }
+  }
+  const windows: { messages: CaseInput["messages"]; completes: number[] }[] = [];
+  let chars = 0;
+  for (const { piece, last } of pieces) {
+    let window = windows.at(-1);
+    if (window === undefined || chars + piece.text.length > RESTATE_CHARS) {
+      window = { messages: [], completes: [] };
+      windows.push(window);
+      chars = 0;
+    }
+    window.messages.push(piece);
+    chars += piece.text.length;
+    if (last) window.completes.push(piece.index);
+  }
+  return { windows, checked };
 }
 
 const CompactionEntry = z.looseObject({
@@ -1497,9 +1598,10 @@ interface CaseRun {
 }
 
 /** One session's record in the summary. `windows`: how many windows of the session the case
- *  reader read. `restatementCheck`, once the case's messages are known: how many of the messages
- *  before the step the case reader read, beside how many the case holds, so a check that read
- *  only some of them shows it. */
+ *  reader read. `restatementCheck`, once a step is found and the case's messages are known: how
+ *  many of the messages before the step the restatement check must read (the case's messages less
+ *  the skill's own read results), how many it read whole, and in how many windows; a case is kept
+ *  only when `read` is `before`. `audit`: the audit's verdict on the real step and its reason. */
 interface SessionRecord {
   store: string;
   hash: string;
@@ -1511,7 +1613,8 @@ interface SessionRecord {
   detail?: string;
   context?: string;
   windows?: number;
-  restatementCheck?: { read: number; before: number };
+  restatementCheck?: { read: number; before: number; windows: number };
+  audit?: { verdict: string; reason: string };
 }
 
 /** The case of one session's transcript `text`, or why it gives none. Adds what the reader spent
@@ -1621,7 +1724,6 @@ async function caseOf(
         ),
   });
   let answer: Exclude<CaseAnswer, { step: null }> | undefined;
-  let read: { earlier: number; window: CaseInput["messages"] } = { earlier: 0, window: [] };
   let noStep = "";
   let start = from;
   let windows = 0;
@@ -1680,7 +1782,6 @@ async function caseOf(
     }
     if (given.step === null) noStep = given.reason;
     else answer = given;
-    read = { earlier: earlier.length, window: windowMessages };
     start = (windowMessages.at(-1)?.index ?? start) + 1;
   }
   if (answer === undefined) {
@@ -1725,10 +1826,6 @@ async function caseOf(
   const before = messagesBefore(t, stepItem.at, firstAt);
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
-  record.restatementCheck = {
-    read: read.earlier + read.window.filter((each) => each.index < stepIndex).length,
-    before: messages.length,
-  };
   const caseReads = skillReads(messages, run.skill);
   const installedDirs = caseReads.flatMap((read) =>
     read.header?.endsWith(`/${read.file}`) ? [read.header.slice(0, -(read.file.length + 1))] : []
@@ -1832,6 +1929,81 @@ async function caseOf(
     },
     criterion: answer.criterion,
   });
+  const skillReadIndices = caseReads.map((each) => each.index);
+
+  // The whole history before the step, as the case keeps it, for a restatement of the line: every
+  // message but the skill's own read results, window by window, each window one `restate` call.
+  const leftOut = new Set([
+    ...skillReadIndices,
+    ...skillReadResults(secrets.value.messages, run.skill),
+  ]);
+  const check = restatementWindows(secrets.value.messages, leftOut);
+  const total = check.windows.length;
+  record.restatementCheck = { read: 0, before: check.checked, windows: total };
+  if (total > RESTATE_WINDOWS) {
+    return drop(
+      "restatement-check-incomplete",
+      `the ${check.checked} messages before the step need ${total} windows of the restatement check, more than ${RESTATE_WINDOWS}`
+    );
+  }
+  for (const [n, window] of check.windows.entries()) {
+    let found: RestateAnswer;
+    try {
+      const result = await runReader(
+        "restate",
+        { line: answer.line.text, messages: window.messages },
+        run.gateway
+      );
+      record.readerUsd += usdOf(result.spent);
+      found = RestateAnswer.parse(result.answer);
+    } catch (error) {
+      if (error instanceof BudgetSpent) throw error;
+      if (error instanceof ReaderFailed) record.readerUsd += usdOf(error.spent);
+      return drop(
+        "restatement-check-incomplete",
+        `window ${n + 1} of ${total} of the restatement check was not read: ${messageFor(error)}`
+      );
+    }
+    record.restatementCheck.read += window.completes.length;
+    if (found.restatements.length > 0) {
+      const indices = [...new Set(found.restatements.map((each) => each.messageIndex))];
+      const quotes = found.restatements
+        .map((each) => `${each.messageIndex}: ${JSON.stringify(cut(each.quote, 200))}`)
+        .join("; ");
+      return drop(
+        "history-restates-line",
+        `the restatement check finds the line's instruction stated in message${indices.length === 1 ? "" : "s"} ${indices.join(", ")} of the case, before the step (window ${n + 1} of ${total}): ${quotes}`
+      );
+    }
+  }
+
+  // The audit of the real step: the line and the messages before the step as the judge reads them,
+  // and no criterion.
+  let audit: AuditAnswer;
+  try {
+    const result = await runReader(
+      "audit",
+      {
+        line: answer.line.text,
+        before: beforeText({
+          messages: secrets.value.messages,
+          skill: run.skill,
+          skillReads: skillReadIndices,
+        }),
+        step: stepText(secrets.value.realStep.content ?? []),
+      },
+      run.gateway
+    );
+    record.readerUsd += usdOf(result.spent);
+    audit = AuditAnswer.parse(result.answer);
+  } catch (error) {
+    if (error instanceof BudgetSpent) throw error;
+    if (error instanceof ReaderFailed) record.readerUsd += usdOf(error.spent);
+    return drop("audit-failed", messageFor(error));
+  }
+  record.audit = audit;
+  if (audit.verdict === "breaks") return drop("audit-breaks", audit.reason);
+  if (audit.verdict === "not-governed") return drop("audit-not-governed", audit.reason);
   const built: Case = Case.parse({
     id: `${run.cut.id}-${hash.slice(0, 12)}`,
     cut: run.cut.id,
@@ -1847,14 +2019,21 @@ async function caseOf(
         ? profiled.profile
         : { ...profiled.profile, systemPrompt: secrets.value.systemPrompt, tools: init.tools },
     messages: secrets.value.messages,
-    skillReads: caseReads.map((read) => read.index),
+    skillReads: skillReadIndices,
     realStep: secrets.value.realStep,
     violatingStep: secrets.value.violatingStep,
     source: { store: store.name, pathHash: hash },
     sessionStart,
     secretsRemoved: secrets.removed,
     sessionDigest: digest ?? null,
-    evidence: [...evidence, ...profiled.evidence],
+    evidence: [
+      ...evidence,
+      ...profiled.evidence,
+      {
+        item: `audit of the real step: ${audit.verdict}`,
+        source: `the audit reader, given the line, the messages before the step as the judge reads them and the real step, and no criterion: ${audit.reason}`,
+      },
+    ],
   });
   return { case: built, step: stepIndex };
 }
@@ -1954,6 +2133,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
             readerChars: READER_CHARS,
             readerEarlierMessages: READER_EARLIER_MESSAGES,
             readerEarlierChars: READER_EARLIER_CHARS,
+            restateChars: RESTATE_CHARS,
+            restateWindows: RESTATE_WINDOWS,
+            restatePartChars: RESTATE_PART_CHARS,
+            restateOverlap: RESTATE_OVERLAP,
             messageChars: MESSAGE_CHARS,
             pullPage: PULL_PAGE,
             max: Number.isFinite(max) ? max : null,

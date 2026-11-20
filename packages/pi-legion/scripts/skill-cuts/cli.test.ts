@@ -15,6 +15,7 @@ import {
   falseLossChance,
   lossChance,
   main,
+  ompBinary,
 } from "./cli";
 import { loadConfig } from "./config";
 import { countSql } from "./countsql";
@@ -56,10 +57,13 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** Runs `bun cli.ts <args>`. */
-async function cli(args: readonly string[]): Promise<Ran> {
+/** Runs `bun cli.ts <args>` in `env`. */
+async function cli(
+  args: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = ENV
+): Promise<Ran> {
   const child = Bun.spawn([process.execPath, CLI, ...args], {
-    env: ENV,
+    env,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -981,6 +985,55 @@ describe("behaviour", () => {
     expect(result(s.out, "c04").peakRssBytes).toBe(1024 ** 3 + 1);
     expect(existsSync(caseResultFile(s.out, "c05"))).toBe(false);
   }, 120_000);
+
+  test("Oh My Pi is --omp, LEGION_OMP_PATH or the omp on PATH, as an absolute path, and behaviour and load given --models refuse by name when none names one", async () => {
+    const bin = path.join(scratch, "omp-bin");
+    mkdirSync(bin, { recursive: true });
+    const fake = path.join(bin, "omp");
+    writeFileSync(fake, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(ompBinary(undefined, { PATH: `/nowhere:${bin}` })).toBe(fake);
+    expect(ompBinary(undefined, { PATH: "/nowhere", LEGION_OMP_PATH: fake })).toBe(fake);
+    expect(ompBinary(path.relative(process.cwd(), fake), { PATH: "/nowhere" })).toBe(fake);
+    expect(ompBinary(undefined, { PATH: "/nowhere" })).toBeUndefined();
+    expect(ompBinary(path.join(bin, "missing"), { PATH: bin })).toBeUndefined();
+
+    const none = { ...ENV, PATH: "/nowhere", LEGION_OMP_PATH: "" };
+    const s = scenario("omp-missing", LOSS_SKILL(), [{ id: "c00" }]);
+    const models = path.join(s.dir, "models.yml");
+    writeFileSync(models, "providers: {}\n");
+    const screen = await cli(behaviour("screen", s, "--models", models), none);
+    expect(screen.code).toBe(2);
+    expect(screen.stderr).toContain(
+      "--models makes captures, which run Oh My Pi, and none is found: no --omp is given, LEGION_OMP_PATH is unset, and no omp is on PATH"
+    );
+    const { config, keyFile } = setup();
+    const load = await cli(
+      [
+        "load",
+        "--config",
+        config,
+        "--key-file",
+        keyFile,
+        "--skill",
+        s.old,
+        "--tasks",
+        path.join(s.dir, "tasks.jsonl"),
+        "--host",
+        "omp",
+        "--profile",
+        path.join(s.dir, "profile.json"),
+        "--out",
+        path.join(s.dir, "load"),
+        "--models",
+        models,
+        "--omp",
+        path.join(bin, "missing"),
+      ],
+      none
+    );
+    expect(load.code).toBe(2);
+    expect(load.stderr).toContain(`--omp ${path.join(bin, "missing")} names no file`);
+  }, 60_000);
 
   test("the false-loss chance is the procedure's own, exact, and old at 10 of 10 no longer gives 0", () => {
     /** The chance of each count of `runs` runs that each pass with chance `p`. */

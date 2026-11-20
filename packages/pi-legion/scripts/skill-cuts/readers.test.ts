@@ -182,6 +182,29 @@ const restated = {
   ],
 };
 
+/** A window of the restatement check: message 5 comes in two parts. */
+const restateInput = {
+  line: "2. Write each step's result on one line.",
+  messages: [
+    {
+      index: 2,
+      role: "user",
+      text: '[user]\nWrite the alpha checklist, and put every result on "one line".',
+    },
+    { index: 5, role: "toolResult", text: "[part 1 of 2 of this message]\nThe notes say:" },
+    {
+      index: 5,
+      role: "toolResult",
+      text: "[part 2 of 2 of this message]\nKeep each result to a single line.",
+    },
+  ],
+};
+const auditInput = {
+  line: "2. Write each step's result on one line.",
+  before: "[user]\nWrite the alpha checklist.",
+  step: "[assistant]\n1. ok\n2. ok",
+};
+
 const mapInput = {
   skill: "alpha",
   base: [{ path: "SKILL.md", text: SKILL_MD }],
@@ -281,6 +304,42 @@ const tasksAnswer = {
 };
 
 const ROWS: Record<ReaderName, Row> = {
+  restate: {
+    input: restateInput,
+    valid: [
+      { restatements: [] },
+      {
+        restatements: [
+          { messageIndex: 2, quote: 'put every result on "one line"' },
+          { messageIndex: 5, quote: "Keep each result to a single line." },
+        ],
+      },
+    ],
+    bad: [
+      {
+        answer: { restatements: [{ messageIndex: 3, quote: "x" }] },
+        why: "restatements.0.messageIndex: is no message index of the window",
+      },
+      {
+        answer: { restatements: [{ messageIndex: 2, quote: "Keep each result" }] },
+        why: "restatements.0.quote: is not words of message 2",
+      },
+      { answer: {}, why: "restatements" },
+    ],
+  },
+  audit: {
+    input: auditInput,
+    valid: [
+      { verdict: "follows", reason: "It writes each result on its own line." },
+      { verdict: "breaks", reason: "It puts two results on one line." },
+      { verdict: "not-governed", reason: "The step writes no result." },
+    ],
+    bad: [
+      { answer: { verdict: "pass", reason: "x" }, why: "verdict" },
+      { answer: { verdict: "follows" }, why: "reason" },
+      { answer: { verdict: "follows", reason: "x", criterion: "y" }, why: "criterion" },
+    ],
+  },
   case: {
     input: caseInput,
     valid: [
@@ -647,6 +706,22 @@ test("a reader makes one call per batch, and asks again while the answer is refu
     runReader("same-job", { skills: [skillsInput.skills[0], skillsInput.skills[0]] }, none.gateway)
   ).rejects.toThrow("gives the id s1 twice");
   expect(none.bodies).toHaveLength(0);
+});
+
+test("the audit's request holds the line, the messages before the step and the step, and its input refuses a criterion; the restatement check's holds the line and its window", () => {
+  const [audit] = UserMessage.parse(readerBody("audit", auditInput).messages);
+  expect(audit.content.map((part) => part.text)).toEqual([
+    `<line>\n${auditInput.line}\n</line>\n\n<before>\n${auditInput.before}\n</before>\n\n<step>\n${auditInput.step}\n</step>`,
+  ]);
+  expect(READERS.audit.input.safeParse({ ...auditInput, criterion: CRITERION }).success).toBe(
+    false
+  );
+  const [restate] = UserMessage.parse(readerBody("restate", restateInput).messages);
+  const text = restate.content[0]?.text ?? "";
+  expect(text.startsWith(`<line>\n${restateInput.line}\n</line>\n\n<messages>\n`)).toBe(true);
+  expect(text).toContain(
+    '<message index="5" role="toolResult">\n[part 2 of 2 of this message]\nKeep each result to a single line.\n</message>'
+  );
 });
 
 test("each prompt file pins its settings, and they reach every request made with it", async () => {

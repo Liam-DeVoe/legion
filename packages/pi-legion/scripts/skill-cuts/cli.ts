@@ -52,12 +52,14 @@
  *   session's.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
- * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, `omp` by
- * default) with `--models` (a `models.yml` whose providers the capture points at its recorder),
- * the context's repositories read with `gh` or from `--repos <dir>` (context.ts's `localSource`),
- * and the caches under `--cache-dir`; without `--models` a missing capture fails the run. The peak
- * resident memory (`VmHWM`, or the largest `VmRSS` read each second on a kernel that keeps no
- * `VmHWM`, as gVisor) is recorded at the end of each case, and the run stops above 1 GiB.
+ * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, else
+ * `$LEGION_OMP_PATH`, else the `omp` on PATH, as an absolute path: `ompBinary`; a command given
+ * `--models` when none of the three names one is refused) with `--models` (a `models.yml` whose
+ * providers the capture points at its recorder), the context's repositories read with `gh` or
+ * from `--repos <dir>` (context.ts's `localSource`), and the caches under `--cache-dir`; without
+ * `--models` a missing capture fails the run. The peak resident memory (`VmHWM`, or the largest
+ * `VmRSS` read each second on a kernel that keeps no `VmHWM`, as gVisor) is recorded at the end
+ * of each case, and the run stops above 1 GiB.
  * `--budget-usd` stops new model calls once the replies' dollars at list price reach it; the runs
  * of the round so far are saved.
  *
@@ -409,6 +411,37 @@ function required<K extends string>(
     throw new Refused(`${missing.map((name) => `--${name}`).join(", ")} required. ${usage}`);
   }
   return values as Record<K, string>;
+}
+
+/** The Oh My Pi binary a capture runs, as an absolute path: `given` (`--omp`), else
+ *  `env.LEGION_OMP_PATH`, else `omp`; a name with no `/` is looked up on `env.PATH`, since a
+ *  capture opens the binary as a file (its natives are linked from it). Undefined when the one
+ *  that applies names no file. */
+export function ompBinary(
+  given: string | undefined,
+  env: Readonly<Record<string, string | undefined>> = process.env
+): string | undefined {
+  const name =
+    given ??
+    (env.LEGION_OMP_PATH === undefined || env.LEGION_OMP_PATH === "" ? "omp" : env.LEGION_OMP_PATH);
+  if (!name.includes("/")) return Bun.which(name, { PATH: env.PATH ?? "" }) ?? undefined;
+  const full = path.resolve(name);
+  return statSync(full, { throwIfNoEntry: false })?.isFile() ? full : undefined;
+}
+
+/** `ompBinary(given)`, or a refusal naming where it looked. */
+function requiredOmp(given: string | undefined): string {
+  const found = ompBinary(given);
+  if (found !== undefined) return found;
+  const where =
+    given !== undefined
+      ? `--omp ${given} names no file`
+      : process.env.LEGION_OMP_PATH
+        ? `LEGION_OMP_PATH ${process.env.LEGION_OMP_PATH} names no file`
+        : "no --omp is given, LEGION_OMP_PATH is unset, and no omp is on PATH";
+  throw new Refused(
+    `--models makes captures, which run Oh My Pi, and none is found: ${where}. Give --omp <absolute path>, or set LEGION_OMP_PATH`
+  );
 }
 
 /** The dollars of `spent`, summed. */
@@ -1501,6 +1534,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       `gateway.ts has no list price for the cases' models ${unpriced.join(", ")}, so their dollars could not be counted: add each to PRICES from ${PRICE_SOURCE}`
     );
   }
+  // Only a command given --models can make a capture, so only it needs Oh My Pi; without it every
+  // capture is read back, and Oh My Pi does not run.
+  const omp = values.models === undefined ? undefined : requiredOmp(values.omp);
   const { gateway } = openGateway({
     config,
     keyFile: given["key-file"],
@@ -1533,7 +1569,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         );
       }
       return captureBody(c, arm, {
-        omp: values.omp ?? "omp",
+        // Undefined only without --models, where the capture is read back and Oh My Pi not run.
+        omp: omp ?? "",
         outDir,
         scratchDir: path.join(scratch, "captures"),
         cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
@@ -1612,6 +1649,8 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       `--thinking ${values.thinking} is no thinking level: ${Thinking.options.join(", ")}`
     );
   }
+  const omp =
+    host.data === "omp" && values.models !== undefined ? requiredOmp(values.omp) : undefined;
   if (values.runs !== undefined && !/^[1-9][0-9]*$/.test(values.runs)) {
     throw new Refused(`--runs ${values.runs} is not a whole number of 1 or more`);
   }
@@ -1643,7 +1682,8 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     source: values.repos === undefined ? ghSource() : localSource(values.repos),
     scratch: values.scratch ?? path.join(tmpdir(), "skill-cuts-scratch"),
     cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
-    omp: values.omp ?? "omp",
+    // Undefined only where no capture of Oh My Pi is made: every one is read back.
+    omp: omp ?? "",
     ...(values.models === undefined ? {} : { models: values.models }),
     ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
     configFiles: values["omp-config"] ?? [],

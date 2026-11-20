@@ -10,6 +10,7 @@ import {
   type DropReason,
   fileHash,
   main,
+  RESTATE_WINDOWS,
   removeSecrets,
   SECRET_REMOVED,
 } from "./build";
@@ -23,6 +24,7 @@ import {
 } from "./copies";
 import { mtimeRange } from "./countsql";
 import { blindOrder } from "./judge";
+import { READER_TRIES } from "./readers";
 import {
   messageSse,
   type RecordedRequest,
@@ -91,6 +93,21 @@ function insertAfter(
   entry.parentId = after.id;
   if (child !== undefined) child.parentId = entry.id;
   lines.splice(lines.indexOf(after) + 1, 0, entry);
+}
+
+/** Puts `count` assistant messages, each of `text(n)`, between F1's message 6 and its step. */
+function addFillers(lines: Record<string, unknown>[], count: number, text: (n: number) => string) {
+  let previous = lines.filter((line) => line.type === "message")[6] ?? {};
+  for (let n = 0; n < count; n += 1) {
+    const filler = {
+      type: "message",
+      id: `f111${String(n).padStart(4, "0")}`,
+      timestamp: "2026-11-20T01:59:53.300Z",
+      message: { role: "assistant", content: [{ type: "text", text: text(n) }] },
+    };
+    insertAfter(lines, previous, filler);
+    previous = filler;
+  }
 }
 
 /** Replaces the text of the first block of message `index`. */
@@ -265,23 +282,27 @@ const SESSIONS: Record<
   // FILLERS messages between the skill's read and the step, so the step is in the third window.
   "third-window": {
     store: "store_a",
+    change: (lines) => addFillers(lines, FILLERS, (n) => `Still working (${n}).`),
+  },
+  // The user's prompt states the line, and the step comes late: the case reader, reading the
+  // window of the step, does not see the prompt; the restatement check's first window does.
+  "late-restated": {
+    store: "store_a",
     change: (lines) => {
-      let previous = lines.filter((line) => line.type === "message")[6] ?? {};
-      for (let n = 0; n < FILLERS; n += 1) {
-        const filler = {
-          type: "message",
-          id: `f111${String(n).padStart(4, "0")}`,
-          timestamp: "2026-11-20T01:59:53.300Z",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: `Still working (${n}).` }],
-          },
-        };
-        insertAfter(lines, previous, filler);
-        previous = filler;
-      }
+      setText(lines, 0, (text) => `${text} ${RESTATED}`);
+      addFillers(lines, FILLERS, (n) => `Late filler ${n}: ${"x".repeat(4_000)}`);
     },
   },
+  // Messages before the step that need more windows of the restatement check than it reads.
+  "too-long": {
+    store: "store_a",
+    change: (lines) => addFillers(lines, 12, (n) => `Long filler ${n}: ${"y".repeat(100_000)}`),
+  },
+  // The restatement check's reader answers nothing it can read.
+  "restate-fails": { store: "store_a" },
+  // The audit finds the real step breaks the line, or that the line does not govern it.
+  "audit-breaks": { store: "store_a" },
+  "audit-not-governed": { store: "store_a" },
   broken: {
     store: "store_a",
     change: (lines) => lines.splice(6, 0, { notJson: true }),
@@ -302,6 +323,10 @@ function compaction(kept: unknown): Record<string, unknown> {
 
 /** The made-up path of session `name`. */
 const sessionPath = (name: string) => SESSIONS[name]?.path ?? `/sessions/${name}.jsonl`;
+
+/** The made-up session case `c` comes from. */
+const nameOf = (c: Case) =>
+  Object.keys(SESSIONS).find((name) => pathHash(sessionPath(name)) === c.source.pathHash) ?? "";
 
 /** F1's `thinking_level_change` line, after which an added line opens the session's branch. */
 function branchHead(lines: Record<string, unknown>[]): Record<string, unknown> {
@@ -399,8 +424,10 @@ if (query.includes("omp_session_files_parts pt") && /p\\.o > (-?\\d+)/.test(quer
   if (text !== undefined) {
     pieces.push({ o: -1, c: "" });
     let offset = 0;
-    for (let at = 0; at < text.length; at += ${PART_CHARS}) {
-      const c = text.slice(at, at + ${PART_CHARS});
+    // Parts of PART_CHARS, and of more for a long file, so it is never more than 100 parts.
+    const size = Math.max(${PART_CHARS}, Math.ceil(text.length / 100));
+    for (let at = 0; at < text.length; at += size) {
+      const c = text.slice(at, at + size);
       pieces.push({ o: offset, c });
       offset += Buffer.byteLength(c, "utf8");
     }
@@ -431,14 +458,17 @@ process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.strin
 /** The words the `restated` session's prompt adds, which state LINE in other words. */
 const RESTATED = "Put the result of each step on a single line.";
 
+/** The criterion the stand-in case reader writes. */
+const CRITERION = {
+  pass: "The step writes each step's result on one line.",
+  fail: "The step spreads a result over more than one line.",
+};
+
 /** The proposal of the stand-in case reader for the session named in the transcript: the step is
  *  the message of the window that calls the `task` tool (F1's message 7), and a window that holds
  *  none gives no step. */
 function caseAnswer(name: string, transcript: string): unknown {
-  const criterion = {
-    pass: "The step writes each step's result on one line.",
-    fail: "The step spreads a result over more than one line.",
-  };
+  const criterion = CRITERION;
   const step = transcript
     .split('<message index="')
     .find((message) => message.includes("[tool call: task]"))
@@ -468,6 +498,33 @@ const written = (label: string, n: number) => ({
   why: "made up",
 });
 
+/** The first words of the restate and audit prompts, by which the stand-in tells their requests. */
+const RESTATE_PROMPT = "You read part of a coding agent's session and find each message";
+const AUDIT_PROMPT = "You decide whether one step of a coding agent's session follows";
+
+/** The stand-in restatement check: each message of the window that holds RESTATED, quoted; and,
+ *  for the restate-fails session, no JSON at all. */
+function restateAnswer(name: string, window: string): string {
+  if (name === "restate-fails") return "I could not read the window.";
+  const restatements = window
+    .split('<message index="')
+    .slice(1)
+    .filter((message) => message.includes(RESTATED))
+    .map((message) => ({ messageIndex: Number(message.split('"')[0]), quote: RESTATED }));
+  return JSON.stringify({ restatements });
+}
+
+/** The stand-in audit: the step follows the line, but in the audit-<verdict> sessions. */
+function auditAnswer(name: string): unknown {
+  if (name === "audit-breaks") {
+    return { verdict: "breaks", reason: "The step spreads the result over two lines." };
+  }
+  if (name === "audit-not-governed") {
+    return { verdict: "not-governed", reason: "The step writes no result." };
+  }
+  return { verdict: "follows", reason: "The step writes the result on one line." };
+}
+
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
   system: { text: string }[];
@@ -475,8 +532,11 @@ function readerAnswer(body: {
 }): string {
   const system = body.system[0]?.text ?? "";
   const user = body.messages[0]?.content.map((part) => part.text).join("\n") ?? "";
+  const name = /\(case ([a-z-]+)\)/.exec(user)?.[1] ?? "";
+  if (system.startsWith(RESTATE_PROMPT)) return restateAnswer(name, user);
+  if (system.startsWith(AUDIT_PROMPT)) return JSON.stringify(auditAnswer(name));
   if (system.startsWith("You read part of a coding agent's session")) {
-    return JSON.stringify(caseAnswer(/\(case ([a-z-]+)\)/.exec(user)?.[1] ?? "", user));
+    return JSON.stringify(caseAnswer(name, user));
   }
   if (system.startsWith("You pick the tasks of a load test")) {
     const fives = (label: string) => [1, 2, 3, 4, 5].map((n) => written(label, n));
@@ -763,7 +823,8 @@ interface Summary {
     pulls?: number;
     context?: string;
     windows?: number;
-    restatementCheck?: { read: number; before: number };
+    restatementCheck?: { read: number; before: number; windows: number };
+    audit?: { verdict: string; reason: string };
   }[];
   readerSpend: { usd: number; models: Record<string, { calls: number }> };
 }
@@ -778,12 +839,16 @@ describe("build-cases over every made-up session", () => {
   const byName = (name: string) =>
     cases.find((each) => each.source.pathHash === pathHash(sessionPath(name)));
 
+  /** The requests the stand-in gateway took for this build. */
+  let requests: RecordedRequest[] = [];
   beforeAll(async () => {
     const names = [...Object.keys(SESSIONS), "missing"];
     const sessions = sessionsFile("all.jsonl", names, ["good", "missing"]);
+    const from = recorder.requests.length;
     code = await main(buildArgs(sessions, out, "7"), io(printed));
+    requests = recorder.requests.slice(from);
     cases = loadCases(out, old);
-  }, 60_000);
+  }, 120_000);
 
   test("exits 0 and writes cases that loadCases loads", () => {
     expect(printed.join("")).not.toContain("failed");
@@ -839,19 +904,103 @@ describe("build-cases over every made-up session", () => {
     const summary = summaryOf(out);
     const record = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
-    // Of the 7 messages before the step, the reader read message 0 (before the read at 1) and
-    // messages 1 to 6.
-    expect(record("good")?.restatementCheck).toEqual({ read: 7, before: 7 });
     expect(record("restated")).toMatchObject({
       reason: "history-restates-line",
       detail:
         "the case reader finds the line's instruction stated in message 0 of the session, before the step at message 7",
-      restatementCheck: { read: 7, before: 7 },
     });
+    // Its own finding drops the case before the restatement check runs.
+    expect(record("restated")?.restatementCheck).toBeUndefined();
     // The reader's request held message 0 with its index.
     const asked = recorder.requests.find((request) => request.body.includes("(case restated)"));
     expect(asked?.body).toContain('<message index=\\"0\\" role=\\"user\\">');
     expect(byName("restated")).toBeUndefined();
+  });
+
+  test("the restatement check reads every message the case keeps before the step, less the skill's reads, and a restatement in its first window drops a late step's case", () => {
+    const summary = summaryOf(out);
+    const record = (name: string) =>
+      summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    // F1's 7 messages before the step, less the skill's two read results, in one window.
+    expect(record("good")?.restatementCheck).toEqual({ read: 5, before: 5, windows: 1 });
+    expect(record("third-window")?.restatementCheck).toEqual({
+      read: 5 + FILLERS,
+      before: 5 + FILLERS,
+      windows: 1,
+    });
+    // The late step's case reader window held no message 0; the check's first window did.
+    const late = record("late-restated");
+    expect(late).toMatchObject({ reason: "history-restates-line" });
+    expect(late?.detail).toStartWith(
+      "the restatement check finds the line's instruction stated in message 0 of the case, before the step (window 1 of "
+    );
+    expect(late?.detail).toEndWith(`: 0: ${JSON.stringify(RESTATED)}`);
+    expect(late?.restatementCheck?.windows).toBeGreaterThan(1);
+    expect(late?.restatementCheck?.read).toBeLessThan(late?.restatementCheck?.before ?? 0);
+    const restating = requests.filter(
+      (request) => request.body.includes(RESTATE_PROMPT) && request.body.includes("Late filler")
+    );
+    expect(restating).toHaveLength(1);
+    // Every kept case's check read every message it must.
+    for (const c of cases) {
+      const check = summary.sessions.find(
+        (each) => each.hash === fileHash(sessionPath(nameOf(c)))
+      )?.restatementCheck;
+      expect(check?.read).toBe(check?.before as number);
+    }
+  });
+
+  test("a check that cannot read every message before the step drops the case, whether its messages need too many windows or a window's reader fails", () => {
+    const summary = summaryOf(out);
+    const record = (name: string) =>
+      summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    const tooLong = record("too-long");
+    expect(tooLong).toMatchObject({ reason: "restatement-check-incomplete" });
+    expect(tooLong?.detail).toContain(`more than ${RESTATE_WINDOWS}`);
+    expect(tooLong?.restatementCheck?.windows).toBeGreaterThan(RESTATE_WINDOWS);
+    expect(tooLong?.restatementCheck?.read).toBe(0);
+    // No restatement call was made for it: its windows were counted first.
+    expect(
+      requests.filter(
+        (request) => request.body.includes(RESTATE_PROMPT) && request.body.includes("Long filler")
+      )
+    ).toHaveLength(0);
+    const fails = record("restate-fails");
+    expect(fails).toMatchObject({ reason: "restatement-check-incomplete" });
+    expect(fails?.detail).toStartWith("window 1 of 1 of the restatement check was not read");
+    expect(fails?.restatementCheck).toEqual({ read: 0, before: 5, windows: 1 });
+    expect(
+      requests.filter(
+        (request) =>
+          request.body.includes(RESTATE_PROMPT) && request.body.includes("(case restate-fails)")
+      )
+    ).toHaveLength(READER_TRIES);
+  });
+
+  test("the audit reads the line, the messages before the step and the real step, and no criterion; only a step that follows the line is kept", () => {
+    const summary = summaryOf(out);
+    const record = (name: string) =>
+      summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    expect(record("audit-breaks")).toMatchObject({
+      reason: "audit-breaks",
+      detail: "The step spreads the result over two lines.",
+      audit: { verdict: "breaks", reason: "The step spreads the result over two lines." },
+    });
+    expect(record("audit-not-governed")).toMatchObject({ reason: "audit-not-governed" });
+    const evidence = byName("good")?.evidence?.find((each) => each.item.startsWith("audit "));
+    expect(evidence).toEqual({
+      item: "audit of the real step: follows",
+      source:
+        "the audit reader, given the line, the messages before the step as the judge reads them and the real step, and no criterion: The step writes the result on one line.",
+    });
+    const audits = requests.filter((request) => request.body.includes(AUDIT_PROMPT));
+    // One audit for each kept case and each case the audit dropped.
+    expect(audits).toHaveLength(cases.length + 2);
+    for (const request of audits) {
+      expect(request.body).toContain(LINE);
+      expect(request.body).not.toContain(CRITERION.pass);
+      expect(request.body).not.toContain(CRITERION.fail);
+    }
   });
 
   test("the profile is the skills the read's unit installs, at the commit of the session's start, each with its evidence", () => {
@@ -934,7 +1083,7 @@ describe("build-cases over every made-up session", () => {
     expect(c?.messages[2]).toEqual(messages[2] as SessionMessage);
   });
 
-  test("a step in the third window is found, and the restatement check reads that window and the messages before it", () => {
+  test("a step in the third window is found, and the restatement check reads every message before it", () => {
     const c = byName("third-window");
     const messages = f1Messages();
     expect(c?.realStep).toEqual(messages[7] as SessionMessage);
@@ -942,13 +1091,19 @@ describe("build-cases over every made-up session", () => {
     const record = summaryOf(out).sessions.find(
       (each) => each.hash === fileHash(sessionPath("third-window"))
     );
-    // Windows of 40 from the read's call (message 1): 1-40, 41-80, then 81 on, with the 20
-    // messages before 81 and the 16 of the window before the step at 97.
+    // Windows of 40 from the read's call (message 1): 1-40, 41-80, then 81 on.
     expect(record?.windows).toBe(3);
-    expect(record?.restatementCheck).toEqual({ read: 20 + 16, before: 7 + FILLERS });
-    // One reader call a window, each holding some of the session's added messages.
+    expect(record?.restatementCheck).toEqual({
+      read: 5 + FILLERS,
+      before: 5 + FILLERS,
+      windows: 1,
+    });
+    // One case reader call a window, each holding some of the session's added messages.
     expect(
-      recorder.requests.filter((request) => request.body.includes("Still working ("))
+      requests.filter(
+        (request) =>
+          request.body.includes("propose one case") && request.body.includes("Still working (")
+      )
     ).toHaveLength(3);
   });
 
@@ -988,7 +1143,10 @@ describe("build-cases over every made-up session", () => {
       "line-not-in-read": 1,
       "read-before-compaction": 1,
       "line-quoted": 1,
-      "history-restates-line": 1,
+      "history-restates-line": 2,
+      "restatement-check-incomplete": 2,
+      "audit-breaks": 1,
+      "audit-not-governed": 1,
       "model-not-anthropic": 1,
       "read-by-path": 1,
       "no-read": 1,
@@ -1006,17 +1164,31 @@ describe("build-cases over every made-up session", () => {
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
     expect(reasonOf("restated")).toBe("history-restates-line");
+    expect(reasonOf("late-restated")).toBe("history-restates-line");
+    expect(reasonOf("too-long")).toBe("restatement-check-incomplete");
+    expect(reasonOf("restate-fails")).toBe("restatement-check-incomplete");
     expect(reasonOf("by-path")).toBe("read-by-path");
     expect(reasonOf("other-copy")).toBe("not-cut-copy");
     expect(reasonOf("compacted")).toBe("read-before-compaction");
     expect(reasonOf("bad-init")).toBe("bad-session-init");
-    // Readers ran only where the session got as far as the reader, one call a window; their
-    // spend is counted.
-    expect(summary.readerSpend.models["claude-opus-5-5"]?.calls).toBe(
-      Object.keys(SESSIONS).length -
-        ["no-read", "other-copy", "no-role", "broken", "bad-init"].length +
-        2
-    );
+    // Every reader call is counted: one case reader call a window of each session the reader
+    // reached, one restatement call a window of each case checked (READER_TRIES for the window
+    // whose answer was refused, none for the case with too many windows, up to the window of a
+    // restatement), and one audit of each case checked whole.
+    expect(summary.readerSpend.models["claude-opus-5-5"]?.calls).toBe(requests.length);
+    const count = (prompt: string) =>
+      requests.filter((request) => request.body.includes(prompt)).length;
+    const sum = (values: number[]) => values.reduce((total, each) => total + each, 0);
+    expect(count("propose one case")).toBe(sum(summary.sessions.map((each) => each.windows ?? 0)));
+    const restateCalls = summary.sessions.map((each) => {
+      if (each.restatementCheck === undefined) return 0;
+      if (each.hash === fileHash(sessionPath("restate-fails"))) return READER_TRIES;
+      if (each.hash === fileHash(sessionPath("too-long"))) return 0;
+      if (each.hash === fileHash(sessionPath("late-restated"))) return 1;
+      return each.restatementCheck.windows;
+    });
+    expect(count(RESTATE_PROMPT)).toBe(sum(restateCalls));
+    expect(count(AUDIT_PROMPT)).toBe(summary.sessions.filter((each) => each.audit).length);
     expect(summary.readerSpend.usd).toBeGreaterThan(0);
   });
 

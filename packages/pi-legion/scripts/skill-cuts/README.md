@@ -48,7 +48,9 @@ skill's cases (`cases.ts`), one JSON object per line.
 written whole after each round of runs, so a run started again goes on from what was saved and
 skips each complete case. `--after-case <command>` runs `<command> <that file>` when a case's stage
 ends. Captures are kept under `<out>/captures/`; a capture that is not there yet is made with Oh My
-Pi (`--omp`) and needs `--models`. The run stops above 1 GiB of peak resident memory, and no new
+Pi and needs `--models`: `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
+absolute path; a command given `--models` when none of them names one is refused (exit 2), and
+`load` reads Oh My Pi the same way. The run stops above 1 GiB of peak resident memory, and no new
 model call starts once the replies cost `--budget-usd` at list price.
 
 ### `read`
@@ -160,7 +162,17 @@ and near-miss tasks of a load test from the first requests of real sessions. A L
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's
-listing line changed per arm. `--budget-usd` stops the build once its readers cost that much at
+listing line changed per arm. Once a step is found, two more readers decide whether the case is
+kept. The `restate` reader reads every message the case keeps before the step, back to its first
+and less the skill's own read results, whole (a long message in overlapping parts), in windows of
+at most 100,000 characters and at most 10 windows; a restatement of the line in any window drops
+the case (`history-restates-line`), and a case whose messages it could not read in full, for too
+many windows or a window it could not read, is dropped (`restatement-check-incomplete`), never kept.
+The `audit` reader reads the line, the messages before the step as the judge reads them and the
+real step, never the criterion, and answers `follows`, `breaks` or `not-governed`; only `follows`
+keeps the case (else `audit-breaks`, `audit-not-governed`), and its answer and reason go in the
+case's evidence. The summary records, per session, the check's messages read beside those it must
+read, its windows, and the audit. `--budget-usd` stops the build once its readers cost that much at
 list price (exit 3). The case file holds real session text, so it stays outside the repository.
 
 ## The request log

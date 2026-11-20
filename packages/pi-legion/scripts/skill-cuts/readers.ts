@@ -25,6 +25,13 @@
  *   the judge must fail), and each message before the step that states the line's instruction in
  *   any wording, with words quoted from it; or no step. The case builder drops a proposal whose
  *   line is not a whole line of the base text, or that names a restatement.
+ * - `restate` (R2): a case's line and one window of the messages before its step (a long message
+ *   in parts); each message that states the line's instruction in any wording, with words quoted
+ *   from it. The case builder reads every message before the step this way, window by window, and
+ *   drops a case on any.
+ * - `audit` (R2): a case's line, the messages before its step as the judge reads them, and its
+ *   real step, never its criterion; whether the step follows the line, breaks it, or is not a
+ *   step the line governs, with a reason. The case builder keeps a case only when it follows.
  * - `map` (R3): a skill's base and cut texts and the INFRA-2111 audit of the cut, if any; each rule
  *   of the base text with its line in the cut text or why it is gone, called kept, narrowed,
  *   widened or lost, with the audit's words where the audit answers it.
@@ -417,6 +424,76 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
     ].join("\n\n"),
 };
 
+// The restatement reader (R2): the whole history before a case's step, window by window.
+
+/** One window of the messages before a case's step. A message longer than a window comes in
+ *  parts, each under the message's index, its text opening with a note of which part it is. */
+export const RestateInput = z.strictObject({
+  line: OneLine,
+  messages: z.array(TranscriptMessage).min(1),
+});
+export type RestateInput = z.infer<typeof RestateInput>;
+export const RestateAnswer = z.strictObject({
+  restatements: z.array(
+    z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
+  ),
+});
+export type RestateAnswer = z.infer<typeof RestateAnswer>;
+
+const restateReader: Reader<RestateInput, RestateAnswer> = {
+  input: RestateInput,
+  answer: (input) =>
+    RestateAnswer.superRefine((answer, ctx) => {
+      // A restatement names a message of the window, and its quote is words of that message
+      // (of one of its parts).
+      for (const [index, { messageIndex, quote }] of answer.restatements.entries()) {
+        const at = ["restatements", index];
+        const parts = input.messages.filter((each) => each.index === messageIndex);
+        if (parts.length === 0) {
+          refuse(ctx, [...at, "messageIndex"], "is no message index of the window");
+        } else if (!parts.some((part) => looseText(part.text).includes(looseText(quote)))) {
+          refuse(ctx, [...at, "quote"], `is not words of message ${messageIndex}`);
+        }
+      }
+    }),
+  render: (input) =>
+    [
+      `<line>\n${input.line}\n</line>`,
+      `<messages>\n${input.messages
+        .map(
+          (message) =>
+            `<message index="${message.index}" role="${message.role}">\n${message.text}\n</message>`
+        )
+        .join("\n\n")}\n</messages>`,
+    ].join("\n\n"),
+};
+
+// The audit reader (R2): the real step against the line, without the criterion.
+
+/** A case's line, the messages before its step as the judge reads them (judge.ts, `beforeText`),
+ *  and its real step (judge.ts, `stepText`). Never the case's criterion. */
+export const AuditInput = z.strictObject({
+  line: OneLine,
+  before: z.string(),
+  step: z.string().min(1),
+});
+export type AuditInput = z.infer<typeof AuditInput>;
+export const AuditVerdict = z.enum(["follows", "breaks", "not-governed"]);
+export type AuditVerdict = z.infer<typeof AuditVerdict>;
+export const AuditAnswer = z.strictObject({ verdict: AuditVerdict, reason: z.string().min(1) });
+export type AuditAnswer = z.infer<typeof AuditAnswer>;
+
+const auditReader: Reader<AuditInput, AuditAnswer> = {
+  input: AuditInput,
+  answer: () => AuditAnswer,
+  render: (input) =>
+    [
+      `<line>\n${input.line}\n</line>`,
+      `<before>\n${input.before}\n</before>`,
+      `<step>\n${input.step}\n</step>`,
+    ].join("\n\n"),
+};
+
 // The map reader (R3).
 
 export const MapInput = z.strictObject({
@@ -793,6 +870,8 @@ const tasksReader: Reader<TasksInput, TasksAnswer> = {
 /** Every reader, by the name of its prompt file. */
 export const READERS = {
   case: caseReader,
+  restate: restateReader,
+  audit: auditReader,
   map: mapReader,
   attack: attackReader,
   "same-job": sameJobReader,
