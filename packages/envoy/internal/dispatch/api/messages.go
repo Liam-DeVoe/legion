@@ -380,7 +380,7 @@ func (s *server) createStoredMessage(
 	// row will name is handed over: it gives the document its `#id`s resolve against, its
 	// issue's spec, which no read of the row can answer yet.
 	referenceChanges, indexWrite, err := s.planPendingItem(
-		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
 	)
 	if err != nil {
 		return model.Message{}, nil, err

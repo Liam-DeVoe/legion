@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -183,13 +184,16 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 // release indexed (blockStand). The read is the write's own, in its read phase, under the
 // document's owner lock, which every writer of a document's blocks takes before it reads them, so
 // no other pass writes a revision of the row between this read and the fence's statement in the
-// write phase. Four writers of the row take no owner lock and may write it in between: the tick's
-// marking of the documents its events name (docs' markVersionedDocuments), docs' oweDocumentIndex,
-// the re-index of a scope that calls it, and RebuildAll. None of them writes a revision: each sets
-// only a null version, store_owed_at and store_owed_rule. So the plan may decide the fence on
-// this read (PlanBlocks), and the fence's statement decides its own outcome and whether it clears
-// the mark against the row as it then stands (queueStand), which is how a mark of a higher rule
-// written in between stays.
+// write phase. Four writers of the row take no owner lock and may write it in between, and none
+// of them writes a revision: docs' oweDocumentIndex, the re-index of a scope that calls it (docs'
+// reindexScope) and RebuildAll set version to null beside this build's mark, store_owed_at with
+// its rule in store_owed_rule; and the tick's marking of the documents its events name (docs'
+// markVersionedDocuments) sets that mark alone, on a row whose store_version is not its version.
+// So the plan may decide the fence on this read (PlanBlocks): a null version admits every pass,
+// and a mark bears only on a pass at the version the row already stands at (admits). The fence's
+// statement decides even that against the row as it stands when it runs (queueStand), so a pass
+// the row then refuses fails there and commits nothing, and a mark of a higher rule written in
+// between stays.
 func readBlockStand(ctx context.Context, q Queryer, artifactID string) (blockStand, error) {
 	var stand blockStand
 	if err := q.QueryRow(ctx, `
@@ -752,10 +756,11 @@ func (b BlockIndexing) Held() BlockIndex {
 // deleted block's as no text, after which the edges at it stop resolving until a version holds
 // its id again; the parent of each block it places, with its node columns; the links its blocks
 // hold; and the version recorded as indexed (document_indexed_versions). It queues no window of
-// its own. A pass that lost the fence queues nothing. Whether the stand clears the document's
-// mark is the stand's own statement's to decide (queueStand), and none of the statements after it
-// reads the mark, so a pass whose stand leaves a mark of a higher rule writes what it writes
-// otherwise and no statement of it assumes the mark gone.
+// its own. A pass that lost the fence queues nothing, and one whose row the fence's statement
+// refuses fails the batch there (queueStand). Whether the stand clears the document's mark is
+// the stand's own statement's to decide, and none of the statements after it reads the mark, so
+// a pass whose stand leaves a mark of a higher rule writes what it writes otherwise and no
+// statement of it assumes the mark gone.
 //
 // A pair (block, target) that survives keeps its created version, time and source event. A new
 // pair takes this version and versionAt, and the source event QueueStamp gives it. On the
@@ -817,6 +822,16 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 // release at the same version loses too, which is what keeps a re-index from stating a parent
 // twice, since no code may update or delete a tuple row. It is the pass's first write, so a pass
 // that waits for the row waits at that one row rather than at a projection row further in.
+//
+// The statement, not only the owner lock, holds R23's guarantee that a pass whose row did not
+// move appends no tuple, writes no projection row and commits nothing. It reads the row back in
+// the same statement (`returning 1`): where its `where` refuses the pass, because some writer
+// moved the row after the pass's read phase decided the fence, it answers no row, and its
+// callback turns that into an error naming the document and the version, which fails the batch.
+// The statements queued after it have run by then, and the caller's transaction, which that
+// error abandons, rolls them back with it. The owner lock decides the fence in the read phase of
+// every pass a writer runs today, and the four writers that take none write nothing that turns
+// it (readBlockStand), so the error is for a writer between the two that ever does.
 //
 // The row also carries two columns no other release names (migration 20261116221539), which the
 // winning pass writes beside version: store_version, the version whose blocks the store now
@@ -881,7 +896,15 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 		   or document_block_versions.version = excluded.version and document_block_versions.store_owed_at is not null
 		      and (document_block_versions.store_owed_rule <= $3 or document_block_versions.store_version is null
 		           or document_block_versions.store_version < excluded.version)
-	`, b.artifactID, b.version, b.rule)
+		returning 1
+	`, b.artifactID, b.version, b.rule).QueryRow(func(row pgx.Row) error {
+		// The one column says the row was written; nothing reads its value.
+		if err := row.Scan(nil); !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		return fmt.Errorf("the revision fence refused the block index of %s at version %d: its document_block_versions row moved after the pass read it, and the pass commits nothing",
+			b.artifactID, b.version)
+	})
 }
 
 // IndexBlocks indexes version's blocks of artifactID in tx at once: the document's index read

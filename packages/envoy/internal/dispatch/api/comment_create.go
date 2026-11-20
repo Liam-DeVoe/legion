@@ -1037,7 +1037,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if anchor != nil {
 		pending.AnchorArtifactID = &anchor.ArtifactID
 	}
-	referenceChanges, err := s.queueItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, comment.Body, pending, comment.CreatedAt, true)
+	referenceChanges, err := s.queueItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, comment.Body, pending, comment.CreatedAt, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

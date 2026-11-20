@@ -439,7 +439,7 @@ func (s *Service) reconcileAskBlocks(
 			// this very document, which holds the question blocks they name - is named by the
 			// fields that row will hold rather than read from the row, and read only if the
 			// question names a block (refs.PendingAskDocument).
-			reader := refs.NewReaderInScope(ctx, tx, "ask", ask.ID, s.serverURL, refs.PendingAskDocument(ask))
+			reader := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL, refs.PendingAskDocument(ask))
 			changes, index, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
@@ -483,7 +483,7 @@ func (s *Service) reconcileAskBlocks(
 			// back is a part again, and the event names what that moved. The parts are written
 			// after the restoring update, which this transaction has queued.
 			restoredAt := refs.AskPartsAt(ask)
-			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
+			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
 				ask, restoredAt, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
@@ -540,7 +540,7 @@ func (s *Service) reconcileAskBlocks(
 			ask.EditedAt = askTimestamp(&editedAt)
 			recordAskBlock(ctx, tx, artifactID, ask)
 			// The question and the parts through one reader (refs.NewReader).
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
+			reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL)
 			changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)

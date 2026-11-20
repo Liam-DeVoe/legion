@@ -1069,10 +1069,14 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // owed row takes no row lock. Every writer of a revision of document_block_versions - a version's
 // own index, the trigger a version insert fires, the backfill - holds the document owner's lock,
 // taken above, so no pass states a version between this read and the fence. Four writers of the
-// row take no owner lock - the tick's marking (markVersionedDocuments), oweDocumentIndex, the
-// re-index of a scope (reindexScope) and refs.RebuildAll - and each sets only a null version and a
-// mark, which the fence reads as it stands when its own statement runs (refs' queueStand): a mark
-// of a higher rule written in between stays.
+// row take no owner lock, and none of them writes a revision: oweDocumentIndex, the re-index of a
+// scope that calls it (reindexScope) and refs.RebuildAll set version to null beside this build's
+// mark, store_owed_at with its rule in store_owed_rule; and the tick's marking
+// (markVersionedDocuments) sets that mark alone. That is why the fence stays safe beside them: a
+// null version admits every pass, and a mark bears only on a pass at the version the row already
+// stands at, as this one may be, which the fence's own statement decides against the row as it
+// stands when it runs (refs' queueStand). A pass the row then refuses fails there and commits
+// nothing, and a mark of a higher rule written in between stays.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
