@@ -371,18 +371,33 @@ SH
   echo "$root"
 }
 
-# GATE_BOUND: how long one call of the gate may take before this harness calls it hung and
-# stops, naming the case that ran it. Measured on 2026-11-14 on an INFRA issue pod (2 CPUs,
-# gVisor): an unmutated harness run made 147 gate calls, median 1.5 s, 99th percentile 1.87 s,
-# slowest 1.94 s (`declaration-two-loops-below`). run_gate does not read a clock: it polls the
-# call GATE_BOUND x 10 times, 600 polls of `sleep 0.1`, which is at least 60 s and longer under
-# load, since each poll's sleep stretches with the load that slows the gate. That is at least
-# thirty times the slowest call, so it cannot fail a correct run on a slow runner, and a gate
-# that never returns fails here a minute or so in, under its case's name, rather than at the test
-# job's own key with GitHub's bare timeout line. Round 32's mutation pass found two mutants of
-# rule 8 that hang the gate (dispatch://INFRA-1545), and before this bound nothing below the job
-# key ended them.
+# GATE_BOUND: how long one call of the gate over a fixture may take before this harness calls it
+# hung and stops, naming the case that ran it. Measured on 2026-11-14 on an INFRA issue pod (2
+# CPUs, gVisor): an unmutated harness run made 147 gate calls, each over a fixture, median 1.5 s,
+# 99th percentile 1.87 s, slowest 1.94 s (`declaration-two-loops-below`). run_gate does not read a
+# clock: it polls the call GATE_BOUND x 10 times, 600 polls of `sleep 0.1`, which is at least 60 s
+# and longer under load, since each poll's sleep stretches with the load that slows the gate. That
+# is at least thirty times the slowest fixture call, so it cannot fail a correct fixture call on a
+# slow runner, and a gate that never returns fails here a minute or so in, under its case's name,
+# rather than at the test job's own key with GitHub's bare timeout line. Round 32's mutation pass
+# found two mutants of rule 8 that hang the gate (dispatch://INFRA-1545), and before this bound
+# nothing below the job key ended them. It does not hold the real-tree case, the file's last, whose
+# calls read a copy of the whole .github tree and take about thirty times a fixture's call on CI and
+# forty in the pod: that case runs under GATE_TREE_BOUND below.
 GATE_BOUND=60
+
+# GATE_TREE_BOUND: GATE_BOUND for the real-tree case, which sets it as GATE_BOUND before it starts;
+# that case is the file's last, so no fixture's call runs under it. The case calls the gate nine
+# times over a copy of this repository's whole .github tree. On CI's runner (run 44744277980, test
+# job 136315654414, 2026-11-20) each of the nine took about 16 s, the first 13:33:31Z ->
+# 13:33:47Z. On an INFRA issue pod (2 CPUs, gVisor), idle, on 2026-11-20, one took about 63 s for
+# the gate at c53b3c8d and about 66 s for this branch's; under load in that pod the same day, a full
+# harness run cut the case's `arrows` call at GATE_BOUND's 60 s ('Results: 1875 passed, 1 failed').
+# 600 s, 6000 polls of `sleep 0.1`, is over nine times the pod's idle call and over thirty-five
+# times CI's, so a correct run in a loaded pod is not cut, and a gate that hangs over the tree still
+# fails under this case's name well inside the test job's key: ci-job-test.yaml keys that job at 94
+# minutes, job 136315654414 took 23 of them, and a hang cut here adds about ten.
+GATE_TREE_BOUND=600
 
 # run_gate <stderr: out|null> <root> <args…>: runs the gate in a session of its own with its
 # output in a file, never through a pipe: a gate that hangs is bash waiting on its Python, and
@@ -15401,7 +15416,9 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # and `split` left `download-retry`, `download-retry-images`, `re-record`, `embedder` and
 # `visual` unnamed, because the derivation clause read only the comment block directly above the
 # key and those five write their derivations above the job's id (dispatch://INFRA-1545, round 35).
-# It is eight gate calls over the tree and one more for --list.
+# It is eight gate calls over the tree and one more for --list, each of which takes thirty to forty
+# times a fixture's call, so each runs under GATE_TREE_BOUND rather than GATE_BOUND (see both).
+GATE_BOUND=$GATE_TREE_BOUND
 echo "case: every retried job of this repository's own tree, its key lowered below its own sum, is refused by name"
 repository=$(cd "$script_dir/../.." && pwd)
 tree="$work/real-tree"
