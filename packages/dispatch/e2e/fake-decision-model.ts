@@ -19,10 +19,12 @@ import { harnessPorts, stackValue } from "./harness-ports";
 // choice the call did not offer is answered 422 naming the offered ones, since a model can only
 // choose among those, and a row that scripts another reads that the server never offered it.
 // `status` answers that status instead and `delayMs` waits first, past the server's one-second
-// bound where a row means to read a decision that never came.
+// bound where a row means to read a decision that never came. `hold` holds the answer until the
+// row releases it (`PUT /__fixture/release`), resets the fake, or the caller goes away, so a row
+// reads what the bar shows while its decision is out without a wait of its own.
 //
-// It counts the calls it answered and the ones refused for their bearer, and keeps the last
-// bodies it received (`GET /__fixture/calls`).
+// It counts the calls it answered, the ones it holds now and the ones refused for their bearer,
+// and keeps the last bodies it received (`GET /__fixture/calls`).
 
 /** One question's scripted answer. */
 export interface DecisionAnswer {
@@ -38,6 +40,8 @@ export interface DecisionReply {
   readonly display?: DecisionAnswer;
   readonly status?: number;
   readonly delayMs?: number;
+  /** Held until the row releases it, resets the fake, or the caller goes away. */
+  readonly hold?: boolean;
 }
 
 /** What `PUT /__fixture/script` takes: the replies, one per call in order, and the reply every
@@ -69,6 +73,8 @@ export interface FakeDecisionCalls {
   readonly calls: number;
   /** Calls refused 401 for their bearer. */
   readonly unauthorized: number;
+  /** Calls whose answer is held now, waiting for a release. */
+  readonly held: number;
   /** The last bodies received, oldest first. */
   readonly requests: readonly DecisionRequestBody[];
 }
@@ -97,6 +103,14 @@ function emptyState(): FakeDecisionState {
 }
 
 let state = emptyState();
+
+/** The calls held now (`hold`), each released by calling it. */
+const held = new Set<() => void>();
+
+/** Answers every held call. */
+function releaseHeld(): void {
+  for (const release of [...held]) release();
+}
 
 const serving = fakeModelServing(
   stackValue(process.env, modelsDirVariable),
@@ -170,6 +184,16 @@ async function decide(request: Request): Promise<Response> {
   state.requests = [...state.requests, body].slice(-keptRequests);
   const reply = state.queue.shift() ?? state.fallback;
   if (reply?.delayMs !== undefined && reply.delayMs > 0) await Bun.sleep(reply.delayMs);
+  if (reply?.hold === true) {
+    const released = Promise.withResolvers<void>();
+    const release = () => {
+      held.delete(release);
+      released.resolve();
+    };
+    held.add(release);
+    request.signal.addEventListener("abort", release, { once: true });
+    await released.promise;
+  }
   if (reply?.status !== undefined) {
     return Response.json(
       { error: "the decision service refused this call" },
@@ -202,6 +226,7 @@ const server = Bun.serve({
     if (request.method === "GET" && url.pathname === "/__fixture/calls") {
       const calls: FakeDecisionCalls = {
         calls: state.calls,
+        held: held.size,
         requests: state.requests,
         unauthorized: state.unauthorized,
       };
@@ -212,7 +237,13 @@ const server = Bun.serve({
       state = { ...state, fallback: script.default, queue: [...(script.replies ?? [])] };
       return Response.json({ ok: true });
     }
+    if (request.method === "PUT" && url.pathname === "/__fixture/release") {
+      const released = held.size;
+      releaseHeld();
+      return Response.json({ released });
+    }
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {
+      releaseHeld();
       state = emptyState();
       return Response.json({ ok: true });
     }

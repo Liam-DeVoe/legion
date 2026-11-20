@@ -132,6 +132,8 @@ export const realStackReasons: Record<string, string> = {
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
+  "going-agent-smoke.e2e.ts":
+    "the run is the server's agent process calling the fake writing model, and its read is the server's route answered as the person",
   "going-answer-cancel.e2e.ts":
     "its claim is the cancel the server makes of a run its author typed past, counted as the abandoned reply of the fake writing model the server streams from",
   "going-answer-safety.e2e.ts":

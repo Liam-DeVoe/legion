@@ -38,6 +38,9 @@ export interface HarnessListener {
   readonly bootMs: number;
   /** Whether a deployed run (`PLAYWRIGHT_BASE_URL`) starts it. */
   readonly deployed: boolean;
+  /** Set on a Dispatch server's row (run-server.sh), before the first of which a stack with the
+   *  real models writes the eval's seed into its database (e2e/harness-eval-seed.ts). */
+  readonly server?: true;
 }
 
 const script = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.url));
@@ -55,6 +58,7 @@ const dispatchServer = {
   deployed: false,
   health: "/healthz",
   report: /msg="dispatch: listening" addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
+  server: true,
 } as const;
 
 // Two-process mode (e2e/harness-processes.ts): the round-robin proxy on DISPATCH_E2E_PORT, which

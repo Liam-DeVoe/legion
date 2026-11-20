@@ -261,6 +261,54 @@ PY
     DISPATCH_DECISION_MODEL_TOKEN_FILE="$DISPATCH_E2E_MODELS_DIR/decision-token"
     SSL_CERT_FILE="$DISPATCH_E2E_MODELS_DIR/cert.pem"
   )
+elif [ "${DISPATCH_E2E_MODELS:-}" = "real" ]; then
+  # The real models, read before the sweep below: DISPATCH_E2E_MODELS=real is a server a person
+  # uses the command bar on with the models of a deployment, as a preview of a commit serves it,
+  # on the eval's seed (e2e/harness-eval-seed.ts) beside the fake Envoy and the fake GitHub. The
+  # chat model and the decision model are the ones the caller's own settings name, under the
+  # server's own names, since the caller is configuring the server as a deployment does:
+  # DISPATCH_ANSWERER with the settings its place reads (DISPATCH_AZURE_CHAT_* and the keyless
+  # Azure sign-in for azure, DISPATCH_CHAT_* for endpoint; cmd/dispatch/answerer.go), and the
+  # decision model DISPATCH_DECISION_MODEL with its endpoint and token file
+  # (cmd/dispatch/decision.go). Each setting the run needs and lacks is named at once and nothing
+  # starts: a server with no model would answer nothing, which is not what the caller asked for.
+  # A file setting named by a relative path is made absolute against the caller's directory,
+  # since this script changes to packages/envoy before it runs the server. GOMEMLIMIT is 3 GiB:
+  # a preview's container holds Postgres and the build beside the server, and the server keeps a
+  # GOMEMLIMIT its environment sets in place of the one its container limit gives.
+  missing=()
+  case "${DISPATCH_ANSWERER:-}" in
+    azure)
+      needed=(DISPATCH_AZURE_CHAT_ENDPOINT DISPATCH_AZURE_CHAT_DEPLOYMENT DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE
+        DISPATCH_AZURE_TENANT_ID DISPATCH_AZURE_CLIENT_ID DISPATCH_AZURE_FEDERATED_TOKEN_FILE)
+      ;;
+    endpoint) needed=(DISPATCH_CHAT_ENDPOINT DISPATCH_CHAT_MODEL DISPATCH_CHAT_TOKEN_FILE) ;;
+    *)
+      missing+=("DISPATCH_ANSWERER (azure, with the DISPATCH_AZURE_CHAT_* settings and the Azure sign-in, or endpoint, with the DISPATCH_CHAT_* settings)")
+      needed=()
+      ;;
+  esac
+  needed+=(DISPATCH_DECISION_MODEL DISPATCH_DECISION_MODEL_ENDPOINT DISPATCH_DECISION_MODEL_TOKEN_FILE)
+  for name in "${needed[@]}"; do
+    [ -n "${!name:-}" ] || missing+=("$name")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    joined="$(printf '%s; ' "${missing[@]}")"
+    echo "run-server.sh: DISPATCH_E2E_MODELS=real serves the real chat model and decision model, and these settings of theirs are missing: ${joined%; }" >&2
+    exit 2
+  fi
+  mapfile -t model_settings < <(compgen -e)
+  for name in "${model_settings[@]}"; do
+    case "$name" in
+      DISPATCH_ANSWERER | DISPATCH_AZURE_CHAT_* | DISPATCH_AZURE_TENANT_ID | DISPATCH_AZURE_CLIENT_ID | \
+        DISPATCH_AZURE_FEDERATED_TOKEN_FILE | DISPATCH_CHAT_* | DISPATCH_DECISION_MODEL*)
+        setting="${!name}"
+        if [[ "$name" == *_FILE && "$setting" != /* ]]; then setting="$PWD/$setting"; fi
+        models_env+=("$name=$setting")
+        ;;
+    esac
+  done
+  models_env+=(GOMEMLIMIT=3GiB)
 fi
 
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt

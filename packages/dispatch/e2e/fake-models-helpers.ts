@@ -4,7 +4,13 @@ import { fileURLToPath } from "node:url";
 
 import { test } from "@playwright/test";
 
-import type { ChatScript, FakeChatCalls } from "./fake-chat-model";
+import type {
+  ChatCallRecord,
+  ChatScript,
+  ChatToolCall,
+  ChatTurn,
+  FakeChatCalls,
+} from "./fake-chat-model";
 import type { DecisionScript, FakeDecisionCalls } from "./fake-decision-model";
 import { modelsDirVariable, modelsFilesIn, usesFakeModels } from "./harness-models";
 import { type HarnessListenerKey, harnessPorts, stackValue } from "./harness-ports";
@@ -131,6 +137,64 @@ export async function decisionCalls(): Promise<FakeDecisionCalls> {
   return JSON.parse(
     await fixture("fakeDecisionModel", "GET", "/__fixture/calls")
   ) as FakeDecisionCalls;
+}
+
+/** Answers every decision the fake holds (`hold`), each as its reply scripts it. */
+export async function releaseDecisions(): Promise<void> {
+  await fixture("fakeDecisionModel", "PUT", "/__fixture/release", {});
+}
+
+/** Every call the agent's run of `words` made to the fake writing model since the last reset,
+ *  oldest first: when it came, the page the run carries, the tool results it gave the model and
+ *  the turn that answered it (`e2e/fake-chat-model.ts`). */
+export async function runCalls(words: string): Promise<ChatCallRecord[]> {
+  return (await chatCalls()).received.filter((call) => call.words === words);
+}
+
+// The turns of an agent run's script (`ChatScript.runs`), one per model call, each written as the
+// agent's five tools take their arguments (packages/envoy/going/agent/tools.go).
+
+/** A turn of prose and no tool call, which ends the run's turn with that answer. */
+export function say(text: string): ChatTurn {
+  return { text };
+}
+
+/** One tool call, after the prose `text` where one is given. */
+function calling(call: ChatToolCall, text?: string): ChatTurn {
+  return text === undefined ? { toolCalls: [call] } : { text, toolCalls: [call] };
+}
+
+/** find_tools for `need`. */
+export function findTools(need: string): ChatTurn {
+  return calling({ arguments: { need }, name: "find_tools" });
+}
+
+/** call_tool of the tool of Dispatch named `tool` (a read, or draw_block), with its arguments. */
+export function callTool(tool: string, args: Readonly<Record<string, unknown>>): ChatTurn {
+  return calling({ arguments: { arguments: args, tool }, name: "call_tool" });
+}
+
+/** One change of a proposed plan: a write tool of Dispatch, its arguments, and the indexes of the
+ *  changes it needs first. */
+export interface PlannedChange {
+  readonly tool: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+  readonly needs?: readonly number[];
+}
+
+/** propose_plan of `changes`, which ends the run's turn with the plan waiting for the person. */
+export function proposePlan(summary: string, changes: readonly PlannedChange[]): ChatTurn {
+  return calling({ arguments: { changes, summary }, name: "propose_plan" });
+}
+
+/** A stream that never ends, until the run's caller goes away. */
+export function endlessStream(): ChatTurn {
+  return { endless: true };
+}
+
+/** The service's refusal with `status`, as a quota answers 429 with its Retry-After. */
+export function refusedWith(status: number, retryAfter?: string): ChatTurn {
+  return retryAfter === undefined ? { status } : { retryAfter, status };
 }
 
 /** Clears both fakes between rows (`e2e/seed.ts`), so one row's script and counts reach none of

@@ -13,6 +13,11 @@
  *  before the first row starts until the harness stops, its port is in the environment of every
  *  row, and the server serves on it through the keeper's socket.
  *
+ *  With the real models (`DISPATCH_E2E_MODELS=real`, e2e/harness-models.ts) the eval's seed is
+ *  written into the stack's database after the fakes serve and before the first Dispatch server
+ *  starts (e2e/harness-eval-seed.ts), so the server boots on the seeded database and the fake
+ *  Envoy holds the seed's sessions.
+ *
  *  This is the harness's one starter: `e2e/harness-pool.ts` (Playwright's own runner, through
  *  `e2e/global-setup.ts`), `e2e/local-instance.ts` (`bun run dispatch:local`) and the docs media
  *  harness (`docs/site/media/harness.ts`) call it, then set the ports it returns in the
@@ -42,8 +47,14 @@ import { text } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { seedEval } from "./harness-eval-seed";
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
-import { makeModelsMaterial, modelsDirVariable, usesFakeModels } from "./harness-models";
+import {
+  makeModelsMaterial,
+  modelsDirVariable,
+  usesFakeModels,
+  usesRealModels,
+} from "./harness-models";
 import { harnessPorts, harnessVariables } from "./harness-ports";
 import { type PipedRunning, Supervisor } from "./local-instance-support";
 
@@ -285,7 +296,14 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       kept.set(listener, held);
       env[harnessVariables[listener.key]] = String(held.port);
     }
+    // A stack with the real models serves the eval's seed: it is written once the fakes serve,
+    // the fake Envoy taking its sessions, and before the first Dispatch server starts on it.
+    let seeded = !usesRealModels;
     for (const listener of listeners) {
+      if (!seeded && listener.server === true) {
+        await seedEval({ ...environment, ...env }, options.signal);
+        seeded = true;
+      }
       const held = kept.get(listener);
       const heldInputs =
         listener.heldAhead === undefined
