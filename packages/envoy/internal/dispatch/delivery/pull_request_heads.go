@@ -1,10 +1,12 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,11 +32,14 @@ import (
 //
 // Three writers keep it: the `pull_request` envelope (intake.go, every action), the read-through
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
-// result, and by the read of an issue's results for a `before_merge` result's commit, at most
-// once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
+// result, and by a writer's read of an issue's results for a `before_merge` result's commit, at
+// most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer than five minutes ago and every merged row the rule
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads).
+// ListStalePullRequestHeads). A read-only caller's read of an issue's results reads GitHub the
+// same way and writes nothing: it keeps GitHub's answer in memory (ReadCommitPulls,
+// CommitPullAnswers) and reads these rows as they would stand had it been stored
+// (HeadsAttributedToWith, BaseBranchMergedForWith).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -204,7 +209,7 @@ func markHeadNotStored(err error) error {
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
-	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
+	seedsBranch := head.seedsBranch()
 	records := broker != nil && head.AttributionComplete
 	if !seedsBranch && !records {
 		_, err := upsertHeadRow(ctx, pool, head)
@@ -253,6 +258,14 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 		broker.Publish(event)
 	}
 	return nil
+}
+
+// seedsBranch is whether writing head records its merge commit as on its base branch, for good:
+// the one rule UpsertPullRequestHead's doc comment argues, kept here so a read-only read that
+// stores nothing reads the same yes a writer's store of the same head would have written
+// (mergeLearnedOnBranch).
+func (head PullRequestHead) seedsBranch() bool {
+	return head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 }
 
 // AttributionEventType is the event a head write appends when a pull request's issue changes:
@@ -998,11 +1011,15 @@ func repositoryUnreadable(err error) bool {
 // ReadThroughCommitPulls teaches Dispatch the pull requests GitHub names for one commit
 // (`GET /repos/{o}/{r}/commits/{sha}/pulls`) and writes each one's head row, so a result
 // recorded at the head of a pull request no event has reached Dispatch for stands at it at once.
-// It answers how many rows it wrote and whether any pull request it saw has sha as its head
-// (atHead). A repository the App cannot read writes nothing and comes back as the App's own
-// error, which each caller logs at Info and carries on from (api/results.go's
+// It is its two halves in turn: ReadCommitPulls asks GitHub and answers the rows, and
+// StoreCommitPulls writes them. It answers how many rows it wrote and whether any pull request
+// it saw has sha as its head (atHead). A repository the App cannot read writes nothing and comes
+// back as the App's own error, which each caller logs at Info and carries on from (api/results.go's
 // readThroughPullRequests, api/results_comparison.go's readThroughHead): the answer about that
 // result stands as its stored rows leave it.
+//
+// A writer's read calls this. A read-only caller's read of an issue's results stores nothing, so
+// it calls ReadCommitPulls alone and keeps the answer in memory (CommitPullAnswers).
 //
 // atHead is the difference between the two answers GitHub gives about a commit no pull request
 // of Dispatch's heads. GitHub naming nothing leaves the question wide open — the pull request
@@ -1014,26 +1031,11 @@ func repositoryUnreadable(err error) bool {
 // written say nothing of it on their own: the row of a pull request whose head has moved on is
 // written at the head it has now, not at the commit that was asked about.
 //
-// Each row is attributed through all five sources, the commit messages included (attributeHead),
-// exactly as the envelope writer attributes one. Attributing from fewer and calling it complete
-// would delete an attribution this read-through cannot make: the write carries the pull
-// request's own updated_at, so it lands on a row a `pull_request` event or the reconcile
-// attributed by its commit messages and would overwrite that issue with none — for a merged row
-// permanently, since the reconcile's merged arm takes a merged row only until the current rule
-// has judged it, and a complete write judges it.
-// A row whose commit messages could not be read is written incomplete and unstamped instead: it
-// keeps the attribution the row holds (UpsertPullRequestHead), and the reconcile reads it again
-// rather than this read-through standing as the last word.
-//
-// repoFull comes from outside — the repository the check's issue resolves to — so it is
-// canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
-// is ever written under a name a repository was renamed away from. The read-time caller has
-// canonicalised that name already, and so has the record-time caller, which resolves through
-// the same helper (api/results_comparison.go, server.checkIssueRepository); the rule reaches the
-// canonical name in one step, so this read changes nothing for either. It is here because this
-// function's key is its argument's, not its caller's, and a caller that hands over a name it
-// has not canonicalised must still write no row under a name a repository was renamed away
-// from.
+// An attribution that fails part-way leaves the rows attributed before it written, as it always
+// has, and answers its error. A write that fails stops the store and answers its error; by then
+// every pull request GitHub named has been attributed, since the read comes first, so that
+// failure can cost the commit-message reads of the pull requests after the failed row, which
+// change nothing stored.
 //
 // broker is the caller's own event broker, which a row this read re-attributes records its move
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
@@ -1042,36 +1044,322 @@ func ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
+	pulls, readErr := ReadCommitPulls(ctx, pool, client, repoFull, sha, now)
+	written, err = StoreCommitPulls(ctx, pool, broker, pulls)
+	if err == nil {
+		err = readErr
+	}
+	return written, pulls.AtHead, err
+}
+
+// CommitPulls is what one read of GitHub found for one commit (ReadCommitPulls): the head row each
+// pull request GitHub named would be written as, in the order GitHub named them, and whether any
+// of them has the commit as its head (AtHead). A writer's read stores it (StoreCommitPulls). A
+// read-only caller's read keeps it in memory instead (CommitPullAnswers) and reads the stored
+// rows as they would stand had it been stored (HeadsAttributedToWith, BaseBranchMergedForWith,
+// Branches.ReadCommitOnBranch), so both reads answer alike.
+type CommitPulls struct {
+	Heads  []PullRequestHead
+	AtHead bool
+	// storedUnder is the name of the repository the read was asked under, which may be one the
+	// repository was renamed away from: the store drops the row a pull request is kept under by
+	// that name where it is not the canonical one the heads are keyed by
+	// (upsertHeadUnderCanonicalName).
+	storedUnder string
+}
+
+// ReadCommitPulls is the read half of ReadThroughCommitPulls, and writes nothing: it asks GitHub
+// for the pull requests of one commit (`GET /repos/{o}/{r}/commits/{sha}/pulls`) and answers the
+// head row each one would be written as. An attribution that fails answers the rows attributed
+// before it with its error, so a writer's read still stores those.
+//
+// Each row is attributed through all five sources, the commit messages included (attributeHead),
+// exactly as the envelope writer attributes one. Attributing from fewer and calling it complete
+// would delete an attribution this read-through cannot make: the write carries the pull
+// request's own updated_at, so it lands on a row a `pull_request` event or the reconcile
+// attributed by its commit messages and would overwrite that issue with none — for a merged row
+// permanently, since the reconcile's merged arm takes a merged row only until the current rule
+// has judged it, and a complete write judges it.
+// A row whose commit messages could not be read is answered incomplete and unstamped instead: it
+// keeps the attribution the row holds (UpsertPullRequestHead), and the reconcile reads it again
+// rather than this read-through standing as the last word. A complete row is stamped read at now.
+//
+// repoFull comes from outside — the repository the check's issue resolves to — so it is
+// canonicalised before anything is asked of GitHub (refs.CanonicalRepo), and no row is ever
+// keyed under a name a repository was renamed away from. The read-time caller has canonicalised
+// that name already, and so has the record-time caller, which resolves through the same helper
+// (api/results_comparison.go, server.checkIssueRepository); the rule reaches the canonical name
+// in one step, so this read changes nothing for either. It is here because this function's key
+// is its argument's, not its caller's, and a caller that hands over a name it has not
+// canonicalised must still have no row keyed under a name a repository was renamed away from.
+func ReadCommitPulls(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client, repoFull, sha string, now time.Time,
+) (CommitPulls, error) {
 	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
 	if err != nil {
-		return 0, false, err
+		return CommitPulls{}, err
 	}
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
-		return 0, false, err
+		return CommitPulls{}, err
 	}
-	pulls, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
+	payloads, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
 	if err != nil {
-		return 0, false, err
+		return CommitPulls{}, err
 	}
-	for _, pull := range pulls {
-		if pull.Head.SHA == sha {
-			atHead = true
+	pulls := CommitPulls{storedUnder: repoFull}
+	for _, payload := range payloads {
+		if payload.Head.SHA == sha {
+			pulls.AtHead = true
 		}
-		attributed, err := attributePayload(ctx, pool, client, token, canonical, pull)
+		attributed, err := attributePayload(ctx, pool, client, token, canonical, payload)
 		if err != nil {
-			return written, atHead, err
+			return pulls, err
 		}
 		var checkedAt *time.Time
 		if attributed.complete {
 			checkedAt = &now
 		}
-		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
-			return written, atHead, err
+		pulls.Heads = append(pulls.Heads, headRow(canonical, payload, attributed, checkedAt))
+	}
+	return pulls, nil
+}
+
+// StoreCommitPulls is the store half of ReadThroughCommitPulls: it writes each head row pulls
+// holds, in order, under the canonical name its read keyed it by, dropping the row the same pull
+// request is kept under by the name the read was asked under where that is another
+// (upsertHeadUnderCanonicalName). Each write records its attribution move through broker and a
+// merge's branch answer with it (UpsertPullRequestHead). It answers how many rows it wrote, and
+// stops at the first write that fails.
+func StoreCommitPulls(ctx context.Context, pool *store.Pool, broker *events.Broker, pulls CommitPulls) (int, error) {
+	written := 0
+	for _, head := range pulls.Heads {
+		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, head, pulls.storedUnder); err != nil {
+			return written, err
 		}
 		written++
 	}
-	return written, atHead, nil
+	return written, nil
+}
+
+// HeadsAttributedToWith is HeadsAttributedTo as it would answer had StoreCommitPulls stored each
+// answer of learned, in turn, and nothing else changed: what a read-only caller's results read
+// compares a `before_merge` check with once its own read-throughs have learned pull requests it
+// stores nowhere (api/results_comparison.go, comparisonReader.headBases). With nothing learned it
+// is HeadsAttributedTo itself.
+func HeadsAttributedToWith(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) ([]AttributedHead, error) {
+	if !anyLearnedHead(learned) {
+		return HeadsAttributedTo(ctx, pool, issueKey)
+	}
+	rows, err := learnedHeadRows(ctx, pool, issueKey, learned)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+	}
+	rows = slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.state != "open" && row.state != "merged" })
+	// HeadsAttributedTo's order: greatest(checked_at, event_at) desc nulls last, number desc.
+	slices.SortStableFunc(rows, func(a, b learnedHeadRow) int {
+		if order := laterFirst(latestOf(a.checkedAt, a.eventAt), latestOf(b.checkedAt, b.eventAt)); order != 0 {
+			return order
+		}
+		return cmp.Compare(b.number, a.number)
+	})
+	var heads []AttributedHead
+	for _, row := range rows {
+		heads = append(heads, AttributedHead{Number: row.number, HeadSHA: row.headSHA, CheckedAt: row.checkedAt, EventAt: row.eventAt})
+	}
+	return heads, nil
+}
+
+// BaseBranchMergedForWith is BaseBranchMergedFor as it would answer had StoreCommitPulls stored
+// each answer of learned, in turn: the branch a read-only caller's results read measures an
+// `after_merge` check against once its own read-throughs have learned a merge it stores nowhere
+// (api/results_comparison.go, comparisonReader.baseBranchMergedFor). With nothing learned it is
+// BaseBranchMergedFor itself.
+func BaseBranchMergedForWith(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) (string, error) {
+	if !anyLearnedHead(learned) {
+		return BaseBranchMergedFor(ctx, pool, issueKey)
+	}
+	rows, err := learnedHeadRows(ctx, pool, issueKey, learned)
+	if err != nil {
+		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
+	}
+	rows = slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.state != "merged" })
+	if len(rows) == 0 {
+		return "", nil
+	}
+	// BaseBranchMergedFor's order: event_at desc nulls last, number desc, the first row.
+	newest := slices.MinFunc(rows, func(a, b learnedHeadRow) int {
+		if order := laterFirst(a.eventAt, b.eventAt); order != 0 {
+			return order
+		}
+		return cmp.Compare(b.number, a.number)
+	})
+	return newest.baseRef, nil
+}
+
+// mergeLearnedOnBranch is whether StoreCommitPulls, storing learned, would record sha as on branch
+// of repoFull: the yes UpsertPullRequestHead writes for a merged pull request's merge commit on
+// its base branch (seedsBranch), compared as branch_commits keys it, the repository without case
+// and the branch and the commit exactly (readBranchCommit).
+func mergeLearnedOnBranch(learned []CommitPulls, repoFull, branch, sha string) bool {
+	for _, pulls := range learned {
+		for _, head := range pulls.Heads {
+			if head.seedsBranch() && strings.EqualFold(head.Repo, repoFull) && head.BaseRef == branch && head.MergeCommitSHA == sha {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// anyLearnedHead is whether learned holds a head row at all: answers that named no pull request
+// would store nothing, and leave every read as the stored rows answer it.
+func anyLearnedHead(learned []CommitPulls) bool {
+	return slices.ContainsFunc(learned, func(pulls CommitPulls) bool { return len(pulls.Heads) > 0 })
+}
+
+// learnedHeadRow is the columns of one pull_request_heads row that HeadsAttributedTo and
+// BaseBranchMergedFor read, as learnedHeadRows folds a learned head into it.
+type learnedHeadRow struct {
+	repo      string
+	number    int
+	headSHA   string
+	baseRef   string
+	state     string
+	issueKey  *string
+	checkedAt *time.Time
+	eventAt   *time.Time
+}
+
+// learnedHeadKey is a row's primary key, (repo, number), the repository compared exactly as the
+// upsert's conflict target compares it.
+type learnedHeadKey struct {
+	repo   string
+	number int
+}
+
+// learnedHeadRows is the rows attributed to issueKey as they would stand had StoreCommitPulls
+// stored each answer of learned, in turn. It reads, in one statement, every row attributed to
+// issueKey and every row a learned head would write or drop, then folds each learned head into
+// the row it lands on as the write would (foldLearnedHead), drops what the write would drop, and
+// keeps the rows attributed to issueKey. Nothing is written.
+func learnedHeadRows(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) ([]learnedHeadRow, error) {
+	var repos []string
+	var numbers []int32
+	for _, pulls := range learned {
+		for _, head := range pulls.Heads {
+			repos, numbers = append(repos, head.Repo), append(numbers, int32(head.Number))
+			if !strings.EqualFold(pulls.storedUnder, head.Repo) {
+				repos, numbers = append(repos, pulls.storedUnder), append(numbers, int32(head.Number))
+			}
+		}
+	}
+	query, err := pool.Query(ctx, `
+		select repo, number, head_sha, base_ref, state, issue_key, checked_at, event_at
+		from pull_request_heads
+		where issue_key = $1 or (repo, number) in (select * from unnest($2::text[], $3::integer[]))
+	`, issueKey, repos, numbers)
+	if err != nil {
+		return nil, err
+	}
+	defer query.Close()
+	stored := map[learnedHeadKey]learnedHeadRow{}
+	for query.Next() {
+		var row learnedHeadRow
+		if err := query.Scan(&row.repo, &row.number, &row.headSHA, &row.baseRef, &row.state,
+			&row.issueKey, &row.checkedAt, &row.eventAt); err != nil {
+			return nil, err
+		}
+		stored[learnedHeadKey{repo: row.repo, number: row.number}] = row
+	}
+	if err := query.Err(); err != nil {
+		return nil, err
+	}
+	for _, pulls := range learned {
+		for _, head := range pulls.Heads {
+			key := learnedHeadKey{repo: head.Repo, number: head.Number}
+			row, found := stored[key]
+			stored[key] = foldLearnedHead(row, found, head)
+			if !strings.EqualFold(pulls.storedUnder, head.Repo) {
+				delete(stored, learnedHeadKey{repo: pulls.storedUnder, number: head.Number})
+			}
+		}
+	}
+	var rows []learnedHeadRow
+	for _, row := range stored {
+		if row.issueKey != nil && *row.issueKey == issueKey {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
+// foldLearnedHead is upsertHeadRow's statement made in memory: the row head's write leaves behind,
+// given the row it lands on (found false where none is stored). An insert writes the head as it
+// is. An update is refused where the head carries an event time older than the row's; otherwise
+// it writes the head's commit, branches and state, replaces the issue only where the head's
+// attribution is complete, and keeps the row's event and read times where the head carries none.
+// Each time is the one a write and a read of the column give back (asStored).
+func foldLearnedHead(row learnedHeadRow, found bool, head PullRequestHead) learnedHeadRow {
+	eventAt, checkedAt := asStored(head.EventAt), asStored(head.CheckedAt)
+	if !found {
+		return learnedHeadRow{
+			repo: head.Repo, number: head.Number, headSHA: head.HeadSHA, baseRef: head.BaseRef,
+			state: head.State, issueKey: head.IssueKey, checkedAt: checkedAt, eventAt: eventAt,
+		}
+	}
+	if eventAt != nil && row.eventAt != nil && eventAt.Before(*row.eventAt) {
+		return row
+	}
+	row.headSHA, row.baseRef, row.state = head.HeadSHA, head.BaseRef, head.State
+	if head.AttributionComplete {
+		row.issueKey = head.IssueKey
+	}
+	if eventAt != nil {
+		row.eventAt = eventAt
+	}
+	if checkedAt != nil {
+		row.checkedAt = checkedAt
+	}
+	return row
+}
+
+// asStored is t as a timestamptz column gives it back once written: cut to the whole microsecond
+// pgx sends, and in UTC, the zone every connection of the store scans in (store.Open).
+func asStored(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	stored := time.Unix(t.Unix(), int64(t.Nanosecond())/1000*1000).UTC()
+	return &stored
+}
+
+// latestOf is SQL's greatest over two times: the later of the two, where a missing one is
+// ignored, and nil where both are missing.
+func latestOf(a, b *time.Time) *time.Time {
+	switch {
+	case a == nil:
+		return b
+	case b == nil || !b.After(*a):
+		return a
+	default:
+		return b
+	}
+}
+
+// laterFirst orders two times as SQL's `desc nulls last` does: the later first, a missing one
+// after every present one, and 0 for two equal or two missing.
+func laterFirst(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	default:
+		return b.Compare(*a)
+	}
 }
 
 // recordPullRequestHead writes the head row one `pull_request` envelope reports, whatever its

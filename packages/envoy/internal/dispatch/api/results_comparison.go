@@ -19,6 +19,13 @@ import (
 // delivery.ReadThroughCommitPulls). What lives here is the choice of bases (comparedWith,
 // measuredBranches) and one memo per read, so a tab listing twenty results against a handful
 // of commits costs a handful of round trips.
+//
+// A read-only caller's read (model.Credential.ReadOnly) asks GitHub what a writer's read asks and
+// answers what a writer's read answers on the same stored rows, and stores nothing: no
+// pull_request_heads or branch_commits row and no event. What its read-throughs learn feeds the
+// rest of its read as the stored rows would (comparisonReader.learned), and what GitHub answered
+// is kept in this process's memory, under claims of its own and for a bounded span, so a
+// read-only read inside that span asks GitHub no more (learnCommitPulls, onBranch).
 
 // comparisonReader answers one read of one issue's results: for each check the bases its
 // results are compared with, and for each result where its commit stands among them.
@@ -83,7 +90,9 @@ import (
 // questions, with two answers, that one key for both would collapse into whichever was asked
 // first. Across reads, a repository's default branch, a commit's place on a branch and the
 // last read-through of a commit's pull requests are held by delivery (server.branches,
-// branch_commits and server.commitPulls).
+// branch_commits and server.commitPulls). A read-only caller's read writes no branch_commits row
+// and no head row, so it keeps those answers in memory instead (server.branches' own memory and
+// server.readOnlyCommitPulls).
 type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
@@ -95,6 +104,16 @@ type comparisonReader struct {
 	readThroughs map[[2]string]struct{}
 	storedHeads  map[[2]string]bool
 	commits      map[[3]string]delivery.BranchAnswer
+	// learned is what a read-only caller's read-throughs found in this read, in the order they
+	// found it, and stored nowhere: every later read of the stored heads and of the merged branch
+	// reads them as they would stand had a writer's read stored it (delivery.HeadsAttributedToWith,
+	// delivery.BaseBranchMergedForWith, delivery.Branches.ReadCommitOnBranch). A writer's read
+	// stores what it finds and leaves this empty.
+	learned []delivery.CommitPulls
+	// learnedPulls is each repository-and-commit pair a read-only caller's read has read through
+	// in this read: a second result at the same commit is answered as a writer's read answers it,
+	// whose claim of that pair this read already holds (learnCommitPulls).
+	learnedPulls map[[2]string]struct{}
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -157,7 +176,8 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]delivery.BranchAnswer{},
+		commits:      map[[3]string]delivery.BranchAnswer{},
+		learnedPulls: map[[2]string]struct{}{},
 	}
 }
 
@@ -234,8 +254,12 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // The heads answer whether or not Dispatch can read the repository. A head Dispatch holds is a
 // fact about the work whatever the App can see today, so a result at one stands at it, and
 // only a result at no head of the list needs the repository read at all (commitStands).
+//
+// A read-only caller's read reads the stored heads as they would stand had it stored what its
+// own read-throughs learned (learned), which is what a writer's read reads once it has stored
+// them. A writer's read has learned nothing, and reads the stored heads alone.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
+	heads, err := delivery.HeadsAttributedToWith(ctx, c.server.deps.Store.Pool, issueKey, c.learned)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
@@ -359,7 +383,9 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 
 // learn teaches Dispatch the pull requests GitHub names for every result commit of the
 // document that heads none of the pull requests it already holds, and reads the heads again
-// where GitHub named one: that head is now a row, and so a basis.
+// where GitHub named one: that head is now a row, and so a basis. A read-only caller's read
+// stores no row: it reads the heads again as they would stand had it stored what GitHub named
+// (learnCommitPulls, headBases), so the same head is its basis too.
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
@@ -646,9 +672,12 @@ func (c *comparisonReader) measuredBranches(
 	return branches, true
 }
 
-// readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit
-// (delivery.ReadThroughCommitPulls) and reports whether GitHub named one whose head is that
-// commit, which is the only answer worth reading the stored heads again for.
+// readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit and
+// reports whether GitHub named one whose head is that commit, which is the only answer worth
+// reading the stored heads again for. A writer's read stores what GitHub named, under
+// server.commitPulls' claim (delivery.ReadThroughCommitPulls). A read-only caller's read stores
+// nothing, under a claim of its own, and its answer feeds the rest of the read as the stored rows
+// would (learnCommitPulls).
 //
 // It asks GitHub only where GitHub's answer can repair the result, since listCheckResults
 // places every result of every check and the Verification tab reads them all again on every
@@ -701,6 +730,9 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return false
 	}
 	now := time.Now()
+	if readOnlyCaller(ctx) {
+		return c.learnCommitPulls(ctx, *repo, result.CommitSHA, now)
+	}
 	if !c.server.commitPulls.Claim(*repo, result.CommitSHA, now) {
 		return false
 	}
@@ -716,6 +748,49 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		c.server.commitPulls.Settle(*repo, result.CommitSHA, now)
 	}
 	return atHead
+}
+
+// learnCommitPulls is readThroughHead's read-through for a read-only caller, which stores nothing.
+// It asks GitHub what a writer's read asks (delivery.ReadCommitPulls) and adds the answer to
+// learned, so every later read of this read reads the stored heads, the merged branch and the
+// merge's own branch answer as they would stand had a writer's read stored it, and answers what
+// that writer's read answers. It writes no pull_request_heads or branch_commits row and records
+// no event.
+//
+// The claim is server.readOnlyCommitPulls, never server.commitPulls, so a writer's read of the
+// same commit after it still reads through and stores as it would have. It bounds a read-only
+// read as commitPulls bounds a writer's: GitHub's answer is kept in memory for
+// delivery.CommitPullReadStaleAfter, or delivery.CommitPullSettledFor where it named pull
+// requests none of which heads the commit, and a read-only read inside that span takes the
+// answer from there and asks GitHub nothing. A claim another read-only read holds and has kept
+// no answer for, because it is still asking or its read failed, leaves the bases as the stored
+// rows say, as a refused claim leaves a writer's. So does a read that fails, which keeps no
+// answer.
+//
+// A pair this read has already read through is answered false, as a writer's read is answered
+// by the claim it took for that pair earlier in the same read.
+func (c *comparisonReader) learnCommitPulls(ctx context.Context, repo, sha string, now time.Time) bool {
+	pair := [2]string{repo, sha}
+	if _, learned := c.learnedPulls[pair]; learned {
+		return false
+	}
+	c.learnedPulls[pair] = struct{}{}
+	pulls, recall := c.server.readOnlyCommitPulls.Claim(repo, sha, now)
+	switch recall {
+	case delivery.CommitPullHeld:
+		return false
+	case delivery.CommitPullAsk:
+		read, err := delivery.ReadCommitPulls(ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, sha, now)
+		if err != nil {
+			slog.Info("dispatch: GitHub named no pull request for a result's commit",
+				"repo", repo, "commit", sha, "error", err)
+			return false
+		}
+		c.server.readOnlyCommitPulls.Keep(repo, sha, read, now)
+		pulls = read
+	}
+	c.learned = append(c.learned, pulls)
+	return pulls.AtHead
 }
 
 // headStoredAt is whether Dispatch holds an open or merged pull request whose head is that
@@ -835,7 +910,9 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 // baseBranchMergedFor is the branch the check's issue's newest merged pull request merged into
 // (delivery.BaseBranchMergedFor), read once per read of the results, and whether the read
 // answered at all. An issue Dispatch holds no merge of answers noMergedBranch, which
-// measuredBranches reads as no branch but the repository's default one to ask about.
+// measuredBranches reads as no branch but the repository's default one to ask about. A
+// read-only caller's read reads it as it would stand had it stored what its read-throughs
+// learned (learned), as headBases does.
 //
 // The memo keeps a failed read as it keeps an answered one, so a second result of the same
 // issue neither reads again nor is quietly compared with the default branch because the first
@@ -845,7 +922,7 @@ func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey str
 	if answer, memoized := c.baseBranches[issueKey]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	branch, err := delivery.BaseBranchMergedForWith(ctx, c.server.deps.Store.Pool, issueKey, c.learned)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
 	}
@@ -864,13 +941,36 @@ func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey str
 // The memo holds the answer's own kind, so a branch the App cannot see and a read that failed
 // reach the walk as the different things they are: one is "not on that branch", the other is
 // no answer at all (onNamedBranch).
+//
+// A writer's read writes what a compare read answers to branch_commits
+// (delivery.Branches.CommitOnBranch). A read-only caller's read writes nothing: it reads a merge
+// its own read-throughs learned as the yes its store would have written, and keeps a compare
+// read's answer in this process's memory for delivery.BranchCommitStaleAfter instead of the row,
+// so a read-only read inside that span asks GitHub nothing and a writer's read after it still
+// asks and writes the row (delivery.Branches.ReadCommitOnBranch).
 func (c *comparisonReader) onBranch(ctx context.Context, repo, branch, sha string) delivery.BranchAnswer {
 	memo := [3]string{repo, branch, sha}
 	if answer, memoized := c.commits[memo]; memoized {
 		return answer
 	}
-	answer := c.server.branches.CommitOnBranch(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, time.Now())
+	var answer delivery.BranchAnswer
+	if readOnlyCaller(ctx) {
+		answer = c.server.branches.ReadCommitOnBranch(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.learned, repo, branch, sha, time.Now())
+	} else {
+		answer = c.server.branches.CommitOnBranch(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, time.Now())
+	}
 	c.commits[memo] = answer
 	return answer
+}
+
+// readOnlyCaller is whether the request ctx belongs to was made with a read-only credential
+// (model.Credential.ReadOnly). It reads the caller the read-only gate read before the handler ran
+// (refuseReadOnlyToken): the gate puts every caller that can be read-only on the context, a
+// broker-issued token and a personal token alike, and a cookie, the shared token and a
+// service-account token never are. optionalActor answers the handler the same caller.
+func readOnlyCaller(ctx context.Context) bool {
+	caller, decided := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
+	return decided && caller.err == nil && caller.actor.Credential != nil && caller.actor.Credential.ReadOnly
 }
