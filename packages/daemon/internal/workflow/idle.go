@@ -107,7 +107,9 @@ const (
 	IdleHoldUnownedClaimProcess
 	// IdleHoldUnownedOperatorSuspended: an operator's own suspension holds a claim of the pod
 	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
-	// operator's resume brings that role back into this pod.
+	// operator's resume brings that role back into this pod. The teardown of this rule's release
+	// records it too, for a suspension an operator made once the release was marked
+	// (store.ReleaseCauseOperatorSuspended).
 	IdleHoldUnownedOperatorSuspended
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
@@ -394,7 +396,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     operator who suspended the role may want the workspace as its roles left it. Such a pod
 //     stands for as long as the operator leaves it standing: they end it by resuming the claim,
 //     which starts the role in the pod that is still there, or by stopping it, which retires the
-//     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
+//     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended). The teardown
+//     reads it again, in the transaction the runtime takes the pod on, so a suspension an
+//     operator makes once the release is marked keeps the pod too
+//     (store.ReleaseCauseOperatorSuspended);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a

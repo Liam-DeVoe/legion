@@ -6344,6 +6344,10 @@ Nothing takes a released issue out of the list the pass decides, because this re
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
+The pass reads that suspension when it queues the release, and the teardown reads it again, the last time under the runtime's pod lock just before the pod is deleted (`store.IssueRelease`).
+So an operator who suspends a claim of the issue after the release is queued still keeps the pod: the teardown cancels the release and records the hold as `unowned_operator_suspended`.
+A role start or resume after the queue cancels the release too, and records `overtaken`.
+A pause after the queue does not cancel it ([Pausing a project](#pausing-a-project)).
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
 
@@ -6647,6 +6651,7 @@ These rules pass over it:
 An idle release that was under way when the pause began is decided at its save step (`store.IssueReleaseSave`).
 A release that had not saved its workspace by then is cancelled and keeps its pod, whatever had reached its roles first.
 A release that saved before the pause finishes as it does while the project runs, and its pod goes.
+The release of a pod no claim owns has no save step, so a pause never cancels it: a release queued before the pause finishes as it does while the project runs, and its pod goes.
 A wake that cancels a release while the project is paused queues no resume: the daemon records each role that the release had stopped as stopped by the pause.
 
 A hold ends in one of three ways, and its record says which (`project_pause_pod_holds.ended_why`):

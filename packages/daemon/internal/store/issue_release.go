@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -78,6 +79,14 @@ const (
 	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
 	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
 	ReleaseCausePaused
+	// ReleaseCauseOperatorSuspended: an operator's own suspension holds a claim of the issue at
+	// the teardown of a release that suspends no role (IssueRelease). The pass that marked that
+	// release read none, and an operator's suspend of a claim already suspended takes that
+	// suspension over after the mark (supervise's suspendedAgain). It is the one suspension no
+	// daemon rule ends, and the operator's resume brings the role back into this pod, so the
+	// release is cancelled and the pod stays (pods.IdleClaim.OperatorSuspended,
+	// workflow.IdleHoldUnownedOperatorSuspended).
+	ReleaseCauseOperatorSuspended
 )
 
 // String is the cause's name in a log line or a test's message. The hold the daemon records for
@@ -90,6 +99,8 @@ func (c ReleaseCause) String() string {
 		return "unauthorized"
 	case ReleaseCausePaused:
 		return "paused"
+	case ReleaseCauseOperatorSuspended:
+		return "operator_suspended"
 	}
 	return "none"
 }
@@ -364,6 +375,14 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // claims the release suspended, which are the roles a finished release records and the claims a
 // cancel resumes.
 //
+// A release that suspends no role (ReleaseDecision.SuspendsNoRole) is cancelled too while an
+// operator's own suspension holds a claim of its issue (ReleaseCauseOperatorSuspended). The rule
+// that marked it holds such a pod for as long as the operator leaves it standing
+// (workflow.UnownedPodRelease), and the operator can suspend a claim after the mark, so the
+// teardown reads that suspension again here, in the transaction the runtime takes the pod on.
+// The idle release reads no such suspension: its rule marks a pod whatever its stopped claims
+// are, and a claim it suspended itself that an operator takes over is already overtaken.
+//
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
 // still in the workflow and its tree is live. The two order against each other because each
@@ -428,6 +447,22 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if overtaken {
 			decision.Cause = ReleaseCauseOvertaken
 			return nil
+		}
+		// An operator's suspension of a claim of the issue, made after the mark of a release that
+		// suspends no role, keeps the pod. It is read with the two values the rule read when it
+		// marked the release (pods.IdleClaim.OperatorSuspended), and it is a cancel, so it comes
+		// before the waits below, as every cancel does.
+		if mark.suspendsNoRole() {
+			var operatorHeld bool
+			if err := tx.QueryRow(ctx, `select exists (
+				select 1 from claims where project = $1 and issue = $2 and state = $3 and suspended_by = $4)`,
+				project, release.Issue, string(supervise.StateSuspended), string(supervise.SuspendedByOperator)).Scan(&operatorHeld); err != nil {
+				return err
+			}
+			if operatorHeld {
+				decision.Cause = ReleaseCauseOperatorSuspended
+				return nil
+			}
 		}
 		may, err := issueStopFences(ctx, tx, project, release.Issue, release.Tree, "release", release.Row, release.IssueGeneration)
 		if err != nil {

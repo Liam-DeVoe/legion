@@ -2560,9 +2560,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				r.log.Info("outbox boot rule-resume finished: its claim spent the launch budget", "row", row.ID, "issue", issue.Key, "role", payload.Role)
 				return nil
 			}
-			// A start that asks for a new session has the retry forget the recorded one, inside
-			// that one decision: the operator's `legion claims retry --fresh-session`, which is
-			// refused by whatever refuses this row rather than having discarded the session first.
+			// A start that asks for a new session has the retry forget whatever session the claim
+			// still records, inside that one decision. The operator's `legion claims retry
+			// --fresh-session` and the controller's fresh_session ask for it, and both have
+			// already forgotten the recorded session before they applied the fact that queued
+			// this row (api's freshSession), so a refusal of this row finds it gone.
 			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
@@ -3142,14 +3144,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // naming the Sandbox it deleted and the state every claim of the issue stood in; each of those
 // is explained where it is done.
 //
-// A release the store no longer authorizes — one whose issue has left the workflow since, or one
-// whose pod has been given work again — is cancelled: the pod stays, the claims the release
-// suspended are resumed and the bundle the save stored goes with it. The authorization the
-// teardown acts on is the one the runtime took under its pod lock, not the one this row read
-// before it: a notice or a hook prompt runs on a lane of its own, and the wake it makes
-// can resume a role between the two reads. So the inner answer is what is carried out — a
-// cancel there cancels, and a release that is over by then does nothing — and a pod that still
-// stands is never recorded as released, nor given a backstop, nor stripped of its backstops.
+// A release the store no longer authorizes — one whose issue has left the workflow since, one
+// whose pod has been given work again, or a release that suspends no role a claim of which an
+// operator has suspended since (store.ReleaseCauseOperatorSuspended) — is cancelled: the pod
+// stays, the claims the release suspended are resumed and the bundle the save stored goes with
+// it. The authorization the teardown acts on is the one the runtime took under its pod lock, not
+// the one this row read before it: a notice or a hook prompt runs on a lane of its own, and the
+// wake it makes can resume a role between the two reads, as an operator's suspension can be
+// made. So the inner answer is what is carried out — a cancel there cancels, and a release that
+// is over by then does nothing — and a pod that still stands is never recorded as released, nor
+// given a backstop, nor stripped of its backstops.
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
