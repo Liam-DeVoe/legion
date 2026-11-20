@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -71,7 +72,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // that both writes stand: the refresh clears the orphan flag, the backfill pins the block, and
 // the row carries both at the end.
 func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
-	const holdKey = int64(4815162342)
+	const holdKey = anchorRefreshHoldKey
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n\nOther passage.\n")
@@ -203,6 +204,10 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	}
 }
 
+// anchorRefreshHoldKey is the advisory key TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner's
+// trigger waits on, which holds a settlement inside its anchor refresh while the test holds it.
+const anchorRefreshHoldKey int64 = 4815162342
+
 // waitForHeldAnchorRefresh returns once the settlement is inside its anchor refresh, waiting on
 // the advisory lock the test holds. The lock's own wait queue is the settlement's observable
 // position; nothing here assumes how long a step takes.
@@ -210,15 +215,7 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted
-				and ((classid::bigint << 32) | objid::bigint) = $1
-		`, key).Scan(&waiting); err != nil {
-			t.Fatalf("read the anchor refresh hold: %v", err)
-		}
-		if waiting > 0 {
+		if anchorRefreshWaiters(t, service.store, key) > 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -235,21 +232,66 @@ func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted and objsubid = 2
-				and classid = ($2::bigint & 4294967295)::oid
-				and objid = (hashtext($1)::bigint & 4294967295)::oid
-		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
-			t.Fatalf("read the waiters on %s %s's owner lock: %v", owner.Kind, owner.Key, err)
-		}
-		if waiting > 0 {
+		if ownerLockWaiters(t, service.store, owner) > 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("no transaction waited on %s %s's owner lock", owner.Kind, owner.Key)
+}
+
+// anchorRefreshWaiters counts the backends of the test's database that wait on the advisory lock
+// of key, as waitForHeldAnchorRefresh polls it, and ownerLockWaiters those that wait on owner's
+// lock, as waitForHeldOwnerLock polls it. Each reads its own database alone (storetest.Waiting):
+// every test's database is a clone of one template on a server other tests share, and the same
+// key names the same lock in each, so a waiter in another test's database would count.
+func anchorRefreshWaiters(t *testing.T, database *store.Store, key int64) int {
+	t.Helper()
+	return waitersOn(t, database, storetest.AdvisoryLock(key))
+}
+
+func ownerLockWaiters(t *testing.T, database *store.Store, owner store.Owner) int {
+	t.Helper()
+	return waitersOn(t, database, storetest.OwnerLock(owner))
+}
+
+// waitersOn is storetest.Waiting, failing t on a failed read.
+func waitersOn(t *testing.T, database *store.Store, lock storetest.Lock) int {
+	t.Helper()
+	waiting, err := storetest.Waiting(context.Background(), database.Pool, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waiting
+}
+
+// Both lock-wait probes above count their own database's waiters alone: a waiter on the lock in
+// another database of the server counts for nothing, and one in its own counts once, the control
+// that shows the probe sees a waiter at all. The owner is any issue's: the probe reads the lock of
+// the owner it is given.
+func TestTheAnchorWaitsCountTheirOwnDatabasesWaitersAlone(t *testing.T) {
+	owner := store.IssueOwner("probe")
+	for _, probe := range []struct {
+		lock  storetest.Lock
+		count func(*testing.T, *store.Store) int
+	}{
+		{storetest.AdvisoryLock(anchorRefreshHoldKey), func(t *testing.T, database *store.Store) int {
+			return anchorRefreshWaiters(t, database, anchorRefreshHoldKey)
+		}},
+		{storetest.OwnerLock(owner), func(t *testing.T, database *store.Store) int { return ownerLockWaiters(t, database, owner) }},
+	} {
+		t.Run(probe.lock.String(), func(t *testing.T) {
+			database := storetest.Open(t)
+			elsewhere := storetest.Queue(t, storetest.Open(t), probe.lock)
+			if waiting := probe.count(t, database); waiting != 0 {
+				t.Fatalf("the probe counted %d waiters on %s with none in its own database and backend %d waiting in another, want 0", waiting, probe.lock, elsewhere)
+			}
+			here := storetest.Queue(t, database, probe.lock)
+			if waiting := probe.count(t, database); waiting != 1 {
+				t.Fatalf("the probe counted %d waiters on %s with backend %d waiting in its own database, want 1", waiting, probe.lock, here)
+			}
+		})
+	}
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
