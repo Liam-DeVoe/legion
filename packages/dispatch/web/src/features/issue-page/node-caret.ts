@@ -268,9 +268,10 @@ const TAB_STOPS = [
 ].join(", ");
 
 /** The class of the action bar the editor draws for its selection (`@legion/proof-editor`'s
- *  `dispatch-action-bar.ts`): one element, put beside the editable, inside the editor's box, and
- *  hidden with an inline `display: none` while the selection holds no text. */
-const ACTION_BAR = ".dispatch-action-bar";
+ *  `dispatch-action-bar.ts`): one element, put beside the editable as the editor makes it -
+ *  inside the editor's box, or on the page's body where the editable stands in no element then -
+ *  and hidden with an inline `display: none` while the selection holds no text. */
+export const ACTION_BAR = ".dispatch-action-bar";
 
 /** The mark of the button a document draws for each block with comments or asks on it, which
  *  names that block's id (`doc/ProofDocument.tsx`'s "Block references"): the buttons stand in an

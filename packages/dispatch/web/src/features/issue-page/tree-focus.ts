@@ -14,6 +14,12 @@ export function rowSelectorOf(rowKey: string): string {
   return `[data-node-row][data-row-key="${CSS.escape(rowKey)}"]`;
 }
 
+/** Every row of the outline that draws the node `id`, as a selector: a node has one row, or a
+ *  row for each place it is drawn at. */
+export function nodeRowSelectorOf(id: string): string {
+  return `[data-node-row][data-node-id="${CSS.escape(id)}"]`;
+}
+
 /** Whether nothing holds the focus that the tree is to keep from it: it is on nothing, on the
  *  page itself, or on an element that holds `tree` - the app's main element, which the app
  *  focuses at each page change but the first (`app.tsx`), so a page opened by a link starts with

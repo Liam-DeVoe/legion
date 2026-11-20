@@ -28,9 +28,9 @@ import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
-import { PRESS_ENDS, usePressFocus } from "./press-focus";
+import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
-import { focusIsLoose, rowSelectorOf } from "./tree-focus";
+import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import {
   DRAWN_LEVELS,
   NARROW_LEVELS,
@@ -537,9 +537,7 @@ export function IssueTree({
    *  unfolds the path to it and, where the tree is read one node at a time, zooms to it. */
   const reach = useCallback(
     (id: string) => {
-      const row = body.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(id)}"]`
-      );
+      const row = body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(id));
       if (row === null || row === undefined) goToNode(id);
       else row.focus();
     },
@@ -549,9 +547,7 @@ export function IssueTree({
   useEffect(() => {
     if (wanted === undefined) return;
     setWanted(undefined);
-    body.current
-      ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(wanted)}"]`)
-      ?.focus();
+    body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(wanted))?.focus();
   }, [wanted]);
 
   // A zoom draws the crumb line above the rows it roots the tree at, and the line is the way
@@ -633,6 +629,7 @@ export function IssueTree({
   );
   useTreeKeymap({
     container: body,
+    editing: editing !== undefined,
     holdsEscape,
     // `t h` takes the reader to the children's first row itself, each time it is pressed and
     // from any zoom (`reach`), and opens their own address too. The address alone moved the
@@ -730,7 +727,7 @@ export function IssueTree({
           ? undefined
           : rowSelectorOf(tabStop)
         : rows.some((row) => row.kind === "node" && row.node.id === targetId)
-          ? `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
+          ? nodeRowSelectorOf(targetId)
           : undefined;
     const row = selector === undefined ? null : body.current?.querySelector<HTMLElement>(selector);
     if (row === null || row === undefined) return;
@@ -822,9 +819,7 @@ export function IssueTree({
     const questionRow =
       question === undefined
         ? undefined
-        : body.current?.querySelector<HTMLElement>(
-            `[data-node-row][data-node-id="${CSS.escape(question)}"]`
-          );
+        : body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(question));
     const active = document.activeElement;
     // The question's row holds the focus the opening gave it, by its landing or in the render
     // that unfolded the path to it (`unfoldTo`): it is the row the opening focused.
@@ -1075,11 +1070,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {above.id === root.id
-                ? above.id
-                : firstLineOf(lineWords(above)).line === ""
-                  ? NODE_TYPE_NAMES[above.type]
-                  : drawnLine(firstLineOf(lineWords(above)))}
+              {crumbName(above, root.id)}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1148,6 +1139,14 @@ const NO_FOLDS: ReadonlySet<string> = new Set();
 /** `ids` without the ids of `drop`. */
 function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): ReadonlySet<string> {
   return new Set([...ids].filter((id) => !drop.includes(id)));
+}
+
+/** What a crumb above a zoom says of `node`: the issue's key for the issue, the node's first line
+ *  for any other (`firstLineOf`), and its kind's word where it has no words. */
+function crumbName(node: TreeNode, issueId: string): string {
+  if (node.id === issueId) return node.id;
+  const first = firstLineOf(lineWords(node));
+  return first.line === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(first);
 }
 
 /**
@@ -1315,15 +1314,15 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * control below the row rose by the body's height, and the click that ends the press landed on
  * something else or on nothing, so the control never fired. A press that leaves the focus on no
  * control is such a leave too: Safari focuses no button a press lands on. The press ends as the
- * tree's own press does (`press-focus.ts`'s `PRESS_ENDS`). Escape anywhere on the page lets go
+ * tree's own press does (`press-focus.ts`'s `trackPress`). Escape anywhere on the page lets go
  * of the row at once while a press keeps it, and the focus back in the tree by the time the
  * press has ended keeps it.
  *
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
  * tree. The editing ending with the focus out of the tree all the same - the reader moved on by
- * Tab or a press elsewhere before the editor had drawn the node's block (`useNodeEditing.ts`) -
- * is them gone, and lets go of the row then, as a blur to where the focus is would have.
+ * Tab, or by a press outside the editor's box once it is over (`useNodeEditing.ts`) - is them
+ * gone, and lets go of the row then, as a blur to where the focus is would have.
  *
  * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
  * Details, or the control that opens it: Details is where a reader reads the node's facts, and
@@ -1351,12 +1350,10 @@ export function useReleaseFocus({
   // editing ending with the focus out of that tree lets go of its row (`letGo`).
   const leftEditing = useRef<HTMLElement | null>(null);
   // Whether a press is under way, from its mousedown - whose default is what moves the focus,
-  // for a mouse and for a tap's mouse events alike - until the task after it ends, as the tree's
-  // own press is held (`usePressFocus`). The blur it causes reads it to tell a press from Tab or
-  // a script's blur.
-  const press = useRef<{ ending?: number; pressing: boolean }>({ pressing: false });
+  // for a mouse and for a tap's mouse events alike - until the task after it ends
+  // (`trackPress`). The blur it causes reads it to tell a press from Tab or a script's blur.
+  const press = useRef<Press | undefined>(undefined);
   useEffect(() => {
-    const held = press.current;
     // Lets go of the row a press kept, unless the focus has come back to its tree, whose row
     // that took it is the focused one now.
     const release = () => {
@@ -1368,33 +1365,16 @@ export function useReleaseFocus({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") release();
     };
-    const pressed = () => {
-      window.clearTimeout(held.ending);
-      held.pressing = true;
-    };
-    const ended = () => {
-      if (!held.pressing) return;
-      window.clearTimeout(held.ending);
-      held.ending = window.setTimeout(() => {
-        held.pressing = false;
-        release();
-      }, 0);
-    };
     const listening = new AbortController();
-    const options = { capture: true, signal: listening.signal };
-    window.addEventListener("keydown", closeOnEscape, options);
-    window.addEventListener("mousedown", pressed, options);
-    for (const type of PRESS_ENDS) window.addEventListener(type, ended, options);
-    return () => {
-      listening.abort();
-      window.clearTimeout(held.ending);
-    };
+    window.addEventListener("keydown", closeOnEscape, { capture: true, signal: listening.signal });
+    press.current = trackPress({ onEnd: release, signal: listening.signal, starts: ["mousedown"] });
+    return () => listening.abort();
   }, []);
   // Lets go of the row of `tree`, which the focus left for `to`, by the rule above.
   const letGo = useCallback(
     (tree: HTMLElement, to: EventTarget | null) => {
       if (to instanceof Node && tree.contains(to)) return;
-      if (!press.current.pressing) {
+      if (press.current?.pressing !== true) {
         left.current = null;
         onLeave();
       } else {
