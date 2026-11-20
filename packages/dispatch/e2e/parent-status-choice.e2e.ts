@@ -9,6 +9,7 @@ import {
   listIssues,
   patchIssue,
 } from "./api";
+import { mouseDrag } from "./board-drag";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -136,60 +137,6 @@ async function expectQuestion(
     answers[option] = changed;
   }
   return answers;
-}
-
-/** Waits until no card of the board is mid-flight, as `boardAtRest` in board.e2e.ts does: a press
- *  during dnd-kit's 200 ms landing lifts whichever card is passing the point. */
-async function boardAtRest(page: Page): Promise<void> {
-  await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {
-    for (;;) {
-      const running = board.getAnimations({ subtree: true });
-      if (running.length === 0) return;
-      await Promise.allSettled(running.map((animation) => animation.finished));
-    }
-  });
-}
-
-/** Waits until a click reaches its target again, as `clicksDelivered` in board.e2e.ts does:
- *  dnd-kit stops every click from the lift until a 50 ms timer after the drop, so the question's
- *  choice clicked straight after a drop would be ignored. */
-async function clicksDelivered(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const probe = document.body.appendChild(document.createElement("div"));
-    let delivered = false;
-    probe.addEventListener("click", () => {
-      delivered = true;
-    });
-    try {
-      for (;;) {
-        delivered = false;
-        probe.dispatchEvent(new MouseEvent("click"));
-        if (delivered) return;
-        const turn = Promise.withResolvers<void>();
-        setTimeout(turn.resolve, 0);
-        await turn.promise;
-      }
-    } finally {
-      probe.remove();
-    }
-  });
-}
-
-/** Drags `card` with the mouse to the middle of `target`, a column or a collapsed rail, as
- *  `mouseDrag` in board.e2e.ts does. */
-async function dragCard(page: Page, card: Locator, target: Locator): Promise<void> {
-  await boardAtRest(page);
-  await card.hover();
-  const from = await card.boundingBox();
-  if (from === null) throw new Error("the dragged card is not visible");
-  await page.mouse.down();
-  await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2);
-  await target.scrollIntoViewIfNeeded();
-  const to = await target.boundingBox();
-  if (to === null) throw new Error("the drop target is not visible");
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 24 });
-  await page.mouse.up();
-  await clicksDelivered(page);
 }
 
 // R24 (INFRA-4731, k40): a status write that Dispatch's rule would refuse asks first, on the issue
@@ -346,7 +293,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     const inProgress = page.getByRole("region", { name: "In progress", exact: true });
     const p2 = second.parent.key;
     const p2Card = inProgress.getByRole("article", { name: `${p2} ${second.parent.title}` });
-    await dragCard(page, p2Card, page.getByRole("region", { name: "Done (collapsed)" }));
+    await mouseDrag(page, p2Card, page.getByRole("region", { name: "Done (collapsed)" }));
     const p2Closing = question(page, p2, "done");
     await expectQuestion(
       p2Closing,
@@ -372,7 +319,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
 
     // P3's card dragged to Backlog, and Unlink them: P3's open children are roots.
     const p3 = third.parent.key;
-    await dragCard(
+    await mouseDrag(
       page,
       inProgress.getByRole("article", { name: `${p3} ${third.parent.title}` }),
       page.getByRole("region", { name: "Backlog", exact: true })
