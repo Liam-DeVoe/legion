@@ -2876,10 +2876,10 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:411 (the URL at :407-410)"),
         *[(f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-           "packages/contracts/src/dispatch-issue-events.test.ts:642 (the URL at :641, each file of EXAMPLES, :29)")
+           "packages/contracts/src/dispatch-issue-events.test.ts:607 (the URL at :606, each file of EXAMPLES, :29)")
           for name in SHARED_ISSUE_ENVELOPES],
         (f"{DAEMON}/internal/intake/testdata/dispatch/daemon-verdicts.json",
-         "packages/contracts/src/dispatch-issue-events.test.ts:694 (the URL at :690-693): the daemon's decoder's "
+         "packages/contracts/src/dispatch-issue-events.test.ts:664 (the URL at :660-663): the daemon's decoder's "
          "verdicts, which the walk holds each schema to"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
