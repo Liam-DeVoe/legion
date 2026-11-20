@@ -51,8 +51,8 @@ func InboxPrefix(identity string) string {
 // lower case, spelled as InboxPrefix spells an identity, so the name is one token whatever the
 // repository holds. It lower-cases first because the daemon keeps a repository in GitHub's
 // spelling (Acme/Widgets) and Dispatch, whose list the grant is built from, in lower case, and
-// both must name one consumer. t-c-10's daemon is to name its consumer with it and WithinProjects
-// grants it, so the two cannot drift apart.
+// both must name one consumer. A daemon's consumer create is to take its name from here, as
+// WithinProjects' grant does, so the two cannot drift apart.
 //
 // The name fits nats-server's limit for every repository GitHub serves. Where the spelled name
 // would pass maxConsumerNameLen (an owner and name of escaped bytes, '_' and '.', reach 446 bytes
@@ -92,14 +92,14 @@ const (
 // GitHubPrefix is what every subject Envoy's listener publishes repository's GitHub events under
 // begins with: notifications.github.<owner>.<name>, each segment spelled by
 // contracts.SanitizeSubjectSegment (a dot written "_") in the case it is given. repository is
-// "owner/name". Lower-casing the subject is t-c-21's, at that one source.
+// "owner/name". Lower-casing the subject belongs at that one source.
 func GitHubPrefix(repository string) string {
 	owner, name, _ := strings.Cut(repository, "/")
 	return contracts.GithubRepositoryPrefix(owner, name)
 }
 
 // GitHubFilter is the filter of repository's GitHub consumer (GitHubConsumerName): its prefix
-// (GitHubPrefix) and ".>". t-c-10's daemon is to name it in its consumer create, as
+// (GitHubPrefix) and ".>". A daemon's consumer create is to name it, as
 // WithinProjects' grant does, and nats-server refuses a create whose body's filter is not the one
 // its subject names, so the two must be built by this one function.
 func GitHubFilter(repository string) string {
@@ -183,13 +183,13 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     one wake lane every daemon shares, bus.LegionWakeTopic) and, for each repository of the
 //     scope, its GitHub consumer (GitHubConsumerName) on that repository's lane (GitHubFilter).
 //     The shared lane is a project's own only once the listener publishes its role and agent wake
-//     reports on each project's lane (t-c-10, contracts.LegionWakeSubject) and keeps only
-//     listener_ready there: until then it carries every project's role names and session ids,
-//     and no daemon may take this grant before t-c-10, whose consumers it describes;
+//     reports on each project's lane (contracts.LegionWakeSubject) and keeps only listener_ready
+//     there: until then it carries every project's role names and session ids, and no daemon may
+//     take this grant before it opens these consumers;
 //   - the notification stream's info and stored-message get are dropped: the info lists every
-//     stored subject with its count, the get reads any stored message, and t-c-10's daemon reads
-//     its consumers' info instead (today's daemon opens the stream and reads stored messages, so
-//     it cannot run under this grant).
+//     stored subject with its count, the get reads any stored message, and a daemon held to its
+//     projects reads its consumers' info instead (today's daemon opens the stream and reads
+//     stored messages, so it cannot run under this grant).
 //
 // Refused: a stored-message read of any other stream and a direct get of this one; a consumer
 // create whose subject cannot name a filter; any call on a KV bucket; notifications.>; and every
