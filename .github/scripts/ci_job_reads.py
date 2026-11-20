@@ -969,10 +969,13 @@ RULES = {
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
     f"{ENVOY}/internal/textcheck/lock_reads_test.go": reads(
-        (f"{ENVOY}/**/*.go", "internal/textcheck/lock_reads_test.go:203 walks ../.. (lockReadRoots, :22), infra included, and :225 parses each .go file's imports, :341 and :393 the whole of each test file that names a lock view and of its package's other files"),
-        (f"{ENVOY}/**/go.mod", "internal/textcheck/lock_reads_test.go:215 reads each go.mod its walk of ../.. (lockReadRoots, :22) meets, for the module path a package's import path starts with"),
-        (f"{DAEMON}/**/*.go", "internal/textcheck/lock_reads_test.go:203 walks ../../../daemon (lockReadRoots, :22), and :225 parses each .go file's imports, :341 and :393 the whole of each test file that names a lock view and of its package's other files"),
-        (f"{DAEMON}/**/go.mod", "internal/textcheck/lock_reads_test.go:215 reads each go.mod its walk of ../../../daemon (lockReadRoots, :22) meets, for the module path a package's import path starts with")),
+        (f"{ENVOY}/**/*.go", "internal/textcheck/lock_reads_test.go: lockStateNamesOutsideLockread reads and parses the whole of each .go file of test code that testCode finds under ../.. (lockReadRoots), infra included"),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/lock_reads_test.go: lockStateNamesOutsideLockread reads and parses the whole of each .go file of test code that testCode finds under ../../../daemon (lockReadRoots)")),
+    f"{ENVOY}/internal/textcheck/test_code_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/test_code_test.go: testCode walks ../.. (lockReadRoots in lock_reads_test.go), infra included, and parses each .go file's imports"),
+        (f"{ENVOY}/**/go.mod", "internal/textcheck/test_code_test.go: testCode reads each go.mod its walk of ../.. meets, for the module path a package's import path starts with"),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/test_code_test.go: testCode walks ../../../daemon (lockReadRoots in lock_reads_test.go) and parses each .go file's imports"),
+        (f"{DAEMON}/**/go.mod", "internal/textcheck/test_code_test.go: testCode reads each go.mod its walk of ../../../daemon meets, for the module path a package's import path starts with")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     f"{ENVOY}/internal/textcheck/refusal_codes_test.go": reads(
