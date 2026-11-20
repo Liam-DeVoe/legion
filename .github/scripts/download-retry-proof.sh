@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The fault rig of ci.yaml's download-retry and download-retry-images jobs: it starts
+# The fault rig of the download-retry and download-retry-images jobs of ci-job-download-retry.yaml: it starts
 # .github/scripts/ci-fault-proxy.py in front of one step, reads the proxy's log after that step,
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #

@@ -1,96 +1,13 @@
 # CI budgets, and the notes behind them
 
-These notes were moved out of `.github/workflows/ci.yaml`.
-A workflow file larger than 500 KB triggers no run at all:
-GitHub's limit is 500 KB per workflow file, and over it the only signal is a run named by the file's path that concludes `failure` at once with no job in it, so a file that grows past the limit stops testing anything.
-The comments that had grown it there were the background ones:
-the rules every budget is written to, the histories behind them, and the measurement campaigns they came from.
-Each step's and each job's own arithmetic stays beside the step in that file, where a reader judging that budget sees it, and each run of prose that moved left a line there naming the section of this note that now holds it.
+The arithmetic every retried step and job of this repository's CI is budgeted by, and the derivations behind the budgets whose figures are this branch's (dispatch://INFRA-1545).
+These notes were moved out of `.github/workflows/ci.yaml` when that file neared GitHub's 500 KB cap; since main's #3675 the derivations and histories of each workflow's own jobs and steps are in `.github/ci-notes/<workflow>.md` (`.github/ci-notes/README.md` says how), the router's own notes - how it selects jobs, what it caches and which runner a job takes - among them in `.github/ci-notes/ci.md`.
+What stays here is what many files cite: the Retries note and the Budgets note, and the budgets whose arithmetic is derived once for several steps or jobs.
+Each step's and each job's own arithmetic stays on its line in the workflow file, where a reader judging that budget sees it.
 
 In these notes `this file` and `this workflow` mean `.github/workflows/ci.yaml`, where this text was written, and so does a bare `below` or `above` wherever the thing it points at is a step, a job or a comment of that workflow.
 A job's steps now sit in the reusable workflow `.github/workflows/ci-job-<id>.yaml` that ci.yaml's job of that id calls (main's #2945), so a step or a step's comment such a pointer names is in that job's own file.
 A pointer that means a passage of this note says so in its own words - `of this note`, `this section`, `further down` - rather than relying on this paragraph, because a legend read by a hundred pointers is only as true as its least checked one, and this one has been wrong in both directions already.
-
-## The router
-
-The router: every check a pull request or the merge queue runs, in one workflow.
-Its first job, `changes`, reads the paths the change touched and selects, through one dorny/paths-filter filter per job, the jobs that read those paths;
-each job runs only when its filter matches (lint runs on every change, and typecheck, test, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also run when `changes` itself failed).
-ci-ok condenses every job's result into one check: it fails when a job `changes` selected did not succeed.
-Main's ruleset requires ci-ok and pr-title.
-ci-ok is the `ci-ok` job at the end of this file, which needs every job of it but itself and those CI_OK_EXEMPT names, and fails when .github/scripts/ci-ok.sh's verdict over their results is failure, so the verdict rides on that job's own check run
-— a job's check run is in its run's own check suite, where a check run posted with `POST /repos/.../check-runs` joins the Actions App's first suite at that commit, which is another workflow's as often as not (.github/scripts/post-check-run.sh's header holds the measurement).
-Every job but `changes` and those CI_OK_EXEMPT names still ends with the ci-ok-report step (.github/actions/ci-ok-report), which posts a failing ci-ok at once when that job's own result decides a merge-group run, so the queue drops a doomed group at the first failure rather than at the end of the run;
-the ci-ok job's last step then sets every ci-ok check run on the head that is not its own to its own conclusion, so one verdict stands at the end of every attempt.
-pr-title, the other check that ruleset requires, is the `pr-title` job at the end of this file, in the same shape and for the same reason:
-it runs check-pr-text.sh on a pull request that is not a draft and on the merge queue's group, the two events this workflow runs that carry a pull request's text, and its own check run is the report, so it posts nothing.
-pr-title.yaml carries that same check when the pull request is edited, the event this workflow does not run on, as its own job's check run too;
-its header says why it runs on nothing else.
-The docs site's build on a push to main, and its GitHub Pages deploy, are docs-pages.yaml's, a workflow of its own whose header says why.
-Its paths are held to the docs filter below.
-
-A new job joins the router in eight places:
-a filter in `changes` that names every file the job reads, an output of `changes` for that filter, the job's `needs: changes` and an `if:` on that output carrying the term that skips it on a re-run attempt of a merge-group run (the comment above `changes` says why every job needs its own), the job's steps in a reusable workflow of its own, .github/workflows/ci-job-<id>.yaml, which the job here calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own (a calling job that declares none hands the called workflow the default GITHUB_TOKEN permissions rather than this file's block, and the report step's ci-ok needs `checks: write`), an entry in CI_OK_SELECTED_BY (this file's env) mapping the job to that output (and in CI_OK_PULL_REQUEST_ONLY when its `if:` admits only pull_request), the ci-ok-report step as the job's last step (a job that calls a workflow passes `ci-ok-changes` to it, and that workflow's job ends with the step, as docs-site.yaml's and worker-image.yaml's do), the job's id in the ci-ok job's `needs:`, without which the verdict is reached before that job ends and says nothing about it, and a gate in .github/scripts/ci_job_reads.py.
-An output an event must force is written in `changes`' outputs rather than left to its filter, as every output's workflow_dispatch case is, and so is one an event must hold back, as the ten slow suites' pull-request case is (the comment on them below).
-The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate, CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and `pr-title`:
-each of those two is named for a check main's ruleset requires, where a skip is a passing required check, so each refuses such an attempt in a step of its own instead.
-docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
-
-## Caches
-
-Caches: one step of the jobs this workflow calls saves an Actions cache entry itself, dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps the build of the previous commit that job compares against;
-two actions its jobs call can, architecture-check and spec-check, and in a dispatched run alone;
-setup-bun saves only on a push to main, which is no event of this workflow (all three at this section's end).
-setup-go caches nothing here (`cache: false` on every step, the two check actions' included).
-The jobs that cache Go restore, in steps of their own, one of six Go families with actions/cache/restore:
-go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which build the same listener and natsd, listener-server-change and envoy-go-checks, which build the listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds the API's of that set, and the binaries, multiprocess and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real broker's commands out of that same set), go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step).
-Every family but go-docs is filled by .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
-go-docs stays with docs-pages.yaml, which saves it on that same push.
-Each Go family keeps one entry per runner architecture, keyed on the runner's architecture and on the Go version its job's setup-go installed:
-a build cache holds the objects of the architecture that compiled them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and none of its objects, so each family is filled on every runner one of its jobs runs on.
-go-notices puts the architecture before the OS in its key and the other families put it after:
-its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did).
-An entry is refreshed only when Go is bumped.
-A go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a stale entry costs a run only what changed;
-a key on the go.sum files left a whole entry, up to a gigabyte, per change for seven days.
-go-envoy-infra is the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the same vet for darwin took with nothing cached, so its key carries the hash of its module files too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how).
-The fallback by prefix, when the exact key misses, now applies on every run, a dispatched one on main included:
-it was held off main so that the entry a run saved after a Go bump held nothing the older Go built, and no step of this workflow saves a family any more (the two check actions below fall back only to an entry of their own Go version, so an entry one saves holds nothing an older Go built).
-There is no browser cache beside the Go families any more:
-dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a ~/.cache/ms-playwright restore would carry nothing they do not already have, and ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores (dispatch://INFRA-1443).
-A seventh family, bun, holds ~/.bun/bin:
-.github/actions/setup-bun restores it on every ref, keyed on the version .bun-version pins and with no restore-keys (a Bun binary of another version is one setup-bun rejects after paying for the restore, where a near-miss Go entry is still most of a module cache), and passes no-cache:
-true on every ref, so setup-bun takes the restored binary as an existing installation and downloads the 51,794,595-byte release asset on a miss alone.
-The action saves that family itself, on a push to main alone, which is no event of this workflow, and no job here writes a bun entry at all.
-The browsers job called that action on every one of those pushes until it went, so what writes the entry now is the three workflows left that run on a push to main and call it
-— docs-pages.yaml through docs-site.yaml, release.yaml and release-envoy-listener.yaml
-— each on a push its own `paths:` selects, where the browsers job took every push to main.
-The restore is made in every job but tool-fallback and tool-fallback-arm:
-that action reads the id of the job that called it and holds its restore back for those two on every ref, so a restored Bun cannot stand in for the install each of their cases is a reading of.
-An eighth family, architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action .github/actions/architecture-check's own, and a ninth, spec-check-<os>-<arch>-go<version>-<hash>, is .github/actions/spec-check's; envoy-go-checks runs both.
-Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry of that Go version), and the ci-caches.yaml job of the action's name fills it on main.
-Each action saves only in a push, schedule or workflow_dispatch run, so within this workflow, which runs on no push and no schedule, only a dispatched run can save it (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched on.
-check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a composite action's, so this section is the one record of the two actions' restores and saves.
-
-## Runners
-
-Runners: a job of ci.yaml, or of a workflow it calls, runs on ubuntu-24.04-arm unless it needs an x86_64 machine, and runs on ubuntu-24.04 then.
-The two pools queue apart, and both queue.
-On 2026-11-16 a job of this repository waited 456 s for an ubuntu-24.04 runner at the median and 678 s at the 90th percentile, and the jobs every run waits on twice (`changes` at the start, and `ci-ok` after the last job ends) paid that x86_64 wait both times.
-On the run that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm64 jobs waited 217 s at the median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s:
-an arm64 job that starts with twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s, `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s).
-What keeps a job on ubuntu-24.04, each a reason of its own machine and not of the job's code:
-
-- a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback).
-  A tool that has one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise and jj (pi-shared) and elan (airlock-lean) are;
-- the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone: daemon-go, plugin-pack, pi-envoy and pi-legion;
-- a browser: dispatch-browser (its container is an image built for linux/amd64 alone), dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
-- an image of this repository built for linux/amd64: worker-image, browser-image, and envoy-smoke;
-- envoy-go-checks, whose pack step builds the release's listener archives with no CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04:
-  Go's default turns cgo on for a native build and off for a cross build, so only an x86_64 runner builds the release's own pair (ci-job-envoy-go-checks.yaml says what the arm64 runner built instead);
-- tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64 half.
-
-Every Go cache family carries the runner's architecture in its key, as this note's Caches section says, so a job moved from one runner to the other reads a cold entry until .github/workflows/ci-caches.yaml fills its family on the runner it moved to.
 
 ## The Retries note
 
@@ -128,27 +45,28 @@ The index read carries `-o APT::Update::Error-Mode=any`, which makes a failed in
 without it retry_fetch has nothing to retry.
 .github/scripts/check-download-retry.sh's rule 5 is the whole reason.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
-each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families this note's Caches section lists, carries the same rule at every download of its own.
+each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families the Caches paragraph of .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
-Two jobs below prove all of it against the fault it answers, rather than by reading:
+Two lanes prove all of it against the fault it answers, rather than by reading, the two jobs of .github/workflows/ci-job-download-retry.yaml, which ci.yaml's one download-retry job calls:
 download-retry runs each of those sites — a curl of a release asset, `mise install`, `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
 — behind .github/scripts/ci-fault-proxy.py, once with the proxy refusing for 60 s and then serving, where every site must recover, and once with it accepting the connection and sending nothing, where every site must end at its own bound instead of hanging;
 download-retry-images does the same for the inline retries of the four Dockerfiles.
+The two are one ci.yaml job, gated on the download_retry filter, which is both lanes' filters together, and each lane is gated in that file on an input its caller fills from its own filter's output, download_retry_sites or download_retry_images, so each lane runs on exactly the changes its own filter selects:
+ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it, and a call of a file of each lane's own would be one more.
 Their filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose own downloads run under that fault, and nothing those downloads read:
-a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither job.
-So the download_retry filter holds no bun_install and no go_workspace anchor, no pin and no worker Dockerfile:
+a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither lane.
+So the download_retry_sites filter holds no bun_install and no go_workspace anchor, no pin and no worker Dockerfile:
 each of those is what an ordinary change touches, and a filter holding them would select a job of about two hours on every dependency bump.
 The job that proves a version is the one that builds with it.
-Both filters also name this file, because the two jobs' own steps, bounds and budgets are written here:
+Both filters also name ci.yaml, because the lanes' own steps, bounds and budgets are reached from it:
 a change that touches ci.yaml at all selects both of them, and that pull request's run waits for the lane, about two hours of it, however small the edit.
 That cost is taken on purpose, so that a change to a bound or a budget is proved against the fault by the run that makes it.
-Neither job runs in a merge group, whatever the change touches
-— the `changes` job's two outputs for them are 'false' there.
+Neither lane runs in a merge group, whatever the change touches
+— the `changes` job's three outputs for them are 'false' there.
 download-retry took 116.5 minutes at this branch's head, and a queue that waited for download-retry's two hours would hold every group behind it that long;
 the pull request's own run proves the machinery, on the same files the group merges.
-The event test is in those two outputs rather than in either job's `if:` because an `if:` that declines a merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh:122 fails a selected job whose result is not success
-— :99 reads that skip as a disagreement between the filter and the `if:` the author must fix.
-Only :124 admits a skip, and only for a job `changes` did not select, which is what 'false' there makes these two.
+The event test is in those outputs rather than in the job's `if:` because an `if:` that declines a merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh fails a selected job whose result is not success, reading that skip as a disagreement between the filter and the `if:` the author must fix;
+it admits a skip only for a job `changes` did not select, which is what 'false' there makes this one.
 
 ## The Budgets note
 
@@ -229,27 +147,6 @@ A budget is still a ceiling, not a spend:
 a job reaches it only where its slowest retried step meets a host that accepts the connection and then sends nothing for the whole of every attempt.
 What the job costs when nothing stalls is the measured maximum its first term names.
 A step budget at or under that step's own arithmetic would cancel it in the middle of the retry the budget exists to allow, or in the same instant as its last attempt's own error.
-
-## The browser_image filter's omissions
-
-.github/ci-images.yaml is deliberately not named.
-The build does read that file: its `row` step reads the registry and the digest of the row built from that Dockerfile out of it at run time, and its publish decision is that digest and the label the image at it carries.
-But .github/scripts/check-image-trigger-paths.sh reads what a build reads from its context and its Dockerfile alone, and it refuses a path matched by a filter that decides nothing but an image build and that no build reads by that reading:
-"browser_image matches .github/ci-images.yaml, which no image build reads, so a pull request touching only that builds an image for nothing; narrow the filter".
-worker_image above leaves .github/scripts/repo-paths.sh out for that same reason, though its build job runs that script.
-That refusal does not reach this filter today: the steps of browser-image.yaml's build job are in no BUILD_PLUMBING_STEPS entry of that check and its `attest` job is in none either, so the check reads the browser-image job as doing more than build an image and leaves this filter's breadth unjudged ("not checked for files no image build reads").
-The file stays out all the same: the argument below is why, and a filter narrowed by hand needs no refusal to keep it narrow.
-Nothing is lost by leaving it out.
-A change to the row alone builds nothing, and the digest a row names is one the package already holds:
-the ci-images job, whose filter does name that file, is what reads whether it does (.github/scripts/check-ci-images.sh package), and the push that writes the row needs no build of its own:
-the image that row names was built and pushed by the earlier push, the one that changed the Dockerfile under .github/docker, which this filter does name.
-The `container:` jobs that run the image are in .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
-That check also fails the build when this list misses a file the image build reads;
-it reads this filter only as a flat list, so the one anchor it names is ci_router, which stands for a single glob and leaves the list flat.
-.github/scripts/ci_images.py is named, and is the one file here the build does not read as a file:
-the build's `labels:` is `legion.browser-image.source-sha256=<the row step's source output>`, and that step computes the output with that file's recipe_sha256, so the file's own bytes decide a label of the image this build pushes.
-Without it a change to the rule that defines the hash selected the ci-images job, whose rule 10 then refused the published image for carrying a hash this tree no longer computes, while no build ran and no row could move.
-check-image-trigger-paths.sh reads it as an input of this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the argument down, and that entry is what refuses this filter if it stops naming it.
 
 ## The ci-images job's ceiling and the tool copy
 
@@ -343,55 +240,6 @@ the bound fails the job, the steps after it are skipped, and the job uploads its
 The job's own limit reaches an install first only when the steps before it took more than that limit less the install's own budget: 162 - 65 = 97 minutes before an install-jj step, 162 - 57 = 105 before a setup-bun step and 162 - 29 = 133 before any other install.
 The slowest run that still passes is 97 minutes in all, so the steps before any install take less than that, and the 76 s measured above says they take far less.
 The reading either way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give and why their clock exists.
-
-## The dispatch-browser job's two lanes
-
-Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml holds:
-the binaries job that builds the Go commands the lanes run, the shard legs, the three `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both lanes, the containerised visual review, and the merge job that joins the shard and alone reports into one and posts this job's ci-ok report.
-
-Two lanes, and which run pays for which.
-A pull request without the label `full-ci` runs `pull-request`, the two projects a change is held to (chromium and iphone), so such a run proves those two rows and no more - it is not the run that proves the suite before main.
-Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci` - runs `full`:
-every project, the three `-alone` ones and the two-process job.
-So the merge group is where a change meets the whole suite before it lands, and the nightly (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full lane, from main) runs it again on main's tip.
-
-One input decides that: the called workflow reads `lane` for the projects each job runs, so nothing here chooses them a second time.
-It picks no browser to install any more:
-the shard and alone jobs run in the image this repository builds, which carries all three engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
-
-The matrix is in the called workflow and cannot be here.
-Every leg of a matrix shares one job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from the job whose own result decides that run, as that job's last step:
-legs written here would each be `dispatch-browser`, so a decided group would take one such post per leg that failed, each posting under a job id several legs answer to.
-A called workflow's legs are jobs of that workflow, and one job of it - the merge job, which needs every other - posts the single report this job id gets.
-
-## The race lane
-
-The race lane: delivery (its intake handler reads the routing settings the poll loop publishes, from NATS's delivery goroutine), the Dispatch store (the pool's one-connection guard, and the hold mark of its own each concurrent read takes), the bus (two connects on one SOCKS5 dialer record each dial's error in one record and read it back, TestConnectsSharingADialerRecordItsLastError), the listener, where the role claim watcher, the session and interest watchers and the request handlers meet, with the role claim view, its lock and its epoch in the registry store and the watchers' completeness and rescans in kvwatch (INFRA-141), the session cache, whose reads take its shared lock beside watcher writes and the expiry timer's callback as kvwatch's resume point is read while a replaced watcher still applies, natscred, whose service keeper probes with the connection's options while internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race build compiles, so this lane is its one run), the NATS auth service (internal/broker/natscallout), which starts a goroutine per request from nats.go's delivery callback, counts those waiting for a decision slot and waits them out at Close, and the Dispatch API and the document service - all under the race detector.
-A read that walks a live document without its lock races the room's peers, which no ordinary run shows:
-envoy-go's unit-test step runs without -race (LEGION-499).
-The lane sits beside envoy-go because -race runs these packages several times slower, and each job carries a package deadline of its own, since go test's ten-minute default is a whole package's.
-envoy-go runs none of these packages plain any more (INFRA-1408):
-its unit step leaves out exactly what the lane runs, and the one plain run it keeps of them is the step named "Test what the race build cannot run at all or at full size", which runs the handful of assertions the detector makes impossible or shrinks and nothing else.
-
-The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener, the registry store, the session cache, kvwatch, natscred and the NATS auth service), envoy-go-race-api and envoy-go-race-docs, whose own comment below says why the document service runs alone.
-
-api sits apart because isolation is what made it fast:
-sharing a runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s.
-The packages left in envoy-go-race are cheap enough to share one:
-the two heaviest of those measured there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so a runner each would buy nothing and cost about 8,000 replayed runner minutes.
-Running a heavy package apart also reads its seconds as its own job's, and leaves the others' numbers standing when one is red.
-
-pmdoc is not in this lane: its tests run plain only, in envoy-go's unit-test step (INFRA-1408).
-It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not a race in production code - cost three review rounds when nothing ran the package under -race before a PR claimed it.
-Its product code is still race-instrumented wherever a race job compiles it, since envoy-go-race-docs imports pmdoc;
-what went is the second, race-built run of pmdoc's own tests.
-
-No job of this lane installs Bun: pmdoc's tests, which shell out to the generated TypeScript fixtures under internal/dispatch/pmdoc/gen and refuse to run without bun in CI (render_readback_test.go), were the only ones here that needed it, and they run in envoy-go's unit step now, while the "Check pmdoc fixtures are up to date" step that keeps those fixtures current is envoy-go-checks'.
-delivery's, the bus's, natscred's and the auth service's NATS runs in the test process (internal/testnats), so no job here needs a container runtime of its own.
-
-Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache, kvwatch, natscred and the NATS auth service share this runner.
-The Dispatch store's tests (store_test.go:28) and delivery's take their databases from storetest.Open (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the job carries the lane's Postgres service;
-the registry store itself is the NATS KV view, and natscred's and the auth service's tests open no store, so they need none.
 
 ## The download-retry job's rig
 
@@ -586,82 +434,6 @@ This branch restores ~/.bun/bin from a key of its own on every ref, so a pull re
 dispatch://INFRA-2125 shortens the suite and is the fix; the job's key is the stopgap.
 The two terms that key carries are derived in the comment above it in `.github/workflows/ci.yaml`.
 
-## The merge queue's cancel act
-
-The merge queue's cancel act.
-Main's queue builds each group on top of the group below it, so when a group fails, every group built on it can no longer merge:
-the queue takes that pull request out and rebuilds the groups above it.
-That removal is a dequeue, so .github/workflows/dequeued.yaml force-cancels the removed group's own run, and the groups built on the failed one keep their runners until the queue rebuilds them.
-
-`cancel-started` runs at the start of every merge-group run, with no `needs:` so that it starts at once, and it has one act:
-it cancels the groups of the same pull request the queue has replaced, which test a tree that will not land.
-Its own queue branch names that pull request (`gh-readonly-queue/<base>/pr-<n>-<parent sha>`), and .github/scripts/merge-group-cancels.sh decides from it and the run list which runs those are:
-the script makes no GitHub call and prints one `cancel <run id>` line per run to force-cancel, in the order to act on them; its header says what it reads and why.
-
-Each cancel is `POST /repos/{owner}/{repo}/actions/runs/{id}/force-cancel`, acted on in that order.
-A force-cancel bypasses `if: always()` — the step of a running job is left skipped, not run, measured on a probe run of this repository
-— so a force-cancelled run posts no ci-ok, and its ci-ok job, which waits for every job of the run, is left unstarted or cancelled rather than concluding one.
-That is what this act wants: a failing ci-ok on a group the queue still holds could take an innocent pull request out of the queue.
-The run of a group whose own job failed posts that group's failing ci-ok from that job itself, through the merge-group branch of .github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the groups above it without waiting for the rest of that run.
-
-The job follows these rules:
-
-- it runs only on `merge_group` and only on attempt 1 (the comment above `changes` says why a re-run attempt does nothing);
-
-- `permissions:` is `actions: write` and nothing else.
-  `gh run list` and the force-cancel need it (a scope granted `write` grants its read);
-  the checkout needs no `contents: read`, because this repository is public and GitHub serves a public repository's git data to any valid token
-  — measured here with `git ls-remote` over https against a public repository the token holds no grant on at all, which succeeded;
-
-- it carries no ci-ok-report step and reports nothing to ci-ok, so its id is in CI_OK_EXEMPT in this file's env, outside ci-ok's accounting;
-
-- it runs this repository's own .github/scripts/merge-group-cancels.sh out of the run's own checkout and nothing else:
-  no bun, no go, no node, no installed dependency, no npm or bunx tool.
-  A merge-group run checks out the queued tree, so the script it runs is the queued change's copy, which that change's review has read;
-
-- its step's token is ${{ github.token }}, and its time limit is short: the act is a handful of API calls.
-
-A force-cancel that fails leaves a warning rather than a red job:
-the run it names may have completed between the list and the call, and an act that reclaims nothing is no failure of the run it runs in.
-
-## The ci-ok job's shape
-
-The verdict, and one of the two checks main's ruleset requires of this router.
-It needs every job of this file but itself, `cancel-started` and `pr-title` (the CI_OK_EXEMPT comment above says why those three are outside ci-ok's accounting), runs under `always()` so that a failed, skipped or cancelled job still reaches a verdict, and fails when .github/scripts/ci-ok.sh's verdict over `toJSON(needs)` is failure.
-ci-ok is therefore this job's own check run, which GitHub puts in this run's own check suite, where a check run created with `POST /repos/.../check-runs` under GITHUB_TOKEN joins the Actions App's first suite at that commit instead, which is another workflow's as often as not (.github/scripts/post-check-run.sh's header holds that measurement).
-
-A job of its own waits for a runner, and that wait is the cost of this shape:
-it is created with the run but starts only once the last of its needs has ended, when the pool is busiest with the next wave.
-docs/solutions/github/join-a-job-to-the-ci-router.md holds every reading of it.
-This job runs on ubuntu-24.04-arm because it needs nothing of an x86_64 machine, and that pool queues apart from the x86_64 one and is idle by the time the last need ends:
-on the run this note's "Runners" section measures, it started 14 s after it was created.
-The shape is kept because a late verdict is right while one in another workflow's suite blocks the head until a person re-runs it.
-What this job cannot do, and the ci-ok-report step every other job ends with still does, is post the failing ci-ok of a merge-group run one job's result has already decided:
-this job waits for every job of the run, and a group that can no longer merge should leave the queue at the first failure rather than at the last job's end.
-
-This job's `if:` is `always()` and nothing else.
-Every other job of this file is skipped on a draft pull request:
-`changes` carries `!github.event.pull_request.draft`, the jobs its outputs gate skip with it, and lint, typecheck, test, daemon-go, plugin-pack, private-names-port, sessions-script, text-checks and `pr-title`, whose `if:`s do not wait on `changes`, carry that term themselves.
-Every job but `pr-title` and this one is skipped on a re-run attempt of a merge-group run by `github.run_attempt == '1'` (the comment above `changes` says what both terms do for them); this job carries neither.
-A job an `if:` holds back is skipped, and a skipped job's check run is a passing required check, so either term would leave the head a ci-ok nothing judged:
-a merge group would merge on it, and a draft would carry it as a pass.
-An `if:` can only take the job away, while what both cases must get is a verdict, so the job runs on both and a step of it concludes the failure:
-the two refusal steps below, one for a draft pull request and one for an attempt above the first.
-`pr-title`, the other job named for a check that ruleset requires, holds no attempt term for the same reason and refuses such an attempt in a step of its own too.
-
-So on a draft this job is the whole run:
-every other job is skipped, there is nothing to judge, and the failure of its draft refusal is what keeps a draft from carrying a passing ci-ok.
-That failure names the remedy — marking the pull request ready for review starts a run that selects by the same diff and concludes a real verdict over it.
-
-`checks: write` and nothing else: the verdict step reads this run's check runs and their annotations, to tell a job a runner shutdown killed from one the change broke (ci-ok.sh:135, runner-shutdown.sh), which `checks: read` covers and the `checks: write` here carries, and the step after it reads this head's ci-ok check runs and PATCHes them with that scope.
-The checkout needs no `contents: read`, as `cancel-started`'s does not
-— this repository is public, and GitHub serves a public repository's git data to any valid token.
-
-The budget of the step after the verdict, which sets every other ci-ok on the head to this job's conclusion, matters more than most.
-ci-ok-reconcile.sh's own header says a refused PATCH only warns, because failing that step would turn a passing verdict red;
-a step the runner cuts does exactly that, since a cut step fails this job and ci-ok is the check main's ruleset requires.
-So that step's figure is written for the head it can meet rather than for the one it usually meets.
-
 ## The size a workflow file may be
 
 GitHub starts no run of a workflow file above a size, and the failure says nothing:
@@ -672,56 +444,6 @@ a run STARTED at 501,500 bytes (run 42710088044) and STARTED NOTHING at 525,100 
 So the gate sits below a size GitHub was seen to tolerate, deliberately, and the margin between 500,000 and 501,500 is not somewhere to spend.
 `ci.yaml` reached 500,593 bytes merged with main during dispatch://INFRA-1545 and took three of its own jobs red with it, which is why the background behind that file's budgets lives in this note:
 a step's own priced sentence stays beside its key, where the reader of that step and rule 8 both need it, and the measurements, run ids and reasoning behind it are here.
-
-## Why the tool-fallback job exists, and what it drives
-
-The live proof of the second source every tool install of this repository now has:
-it faults the host the first source is on, installs all eight tools through the source .github/ci-tools.yaml names for each, and then serves sixteen corrupted payloads and reads the refusal of every one of them.
-It is permanent rather than a scaffold: a second source nothing exercises rots
-— a copy nothing fills, a seam a refactor dropped, a digest nobody reads
-— and the hour of 504s this work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873).
-
-Once the fault is up, no step of this job needs a GitHub release host to answer.
-Every install that must succeed reads a source the fault does not hold
-— the ghcr copy, npm, PyPI or get.pulumi.com
-— or, for the Pulumi CLI, whose primary is get.pulumi.com and whose second source is the release asset, the origin serving that release's own staged bytes;
-the corrupted cases' bytes were staged before the fault;
-and the one case about a binary a third party installed seeds mise's install directory from that staged payload.
-That is what keeps ci-ok green during the very outage this job proves survivable:
-this job is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's Dockerfile, the manifest and the helper beside it, and the eight actions, so a step of it that waited on a release host would turn every pull request touching one of those files red on exactly the day the fallback is doing its work. .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
-the test job runs its ladder-report verb as well, over logs of its own.
-It needs ci-images for order, since that job fills the copy this proof reads, and carries `!cancelled()` so a run that selected this job and not that one still runs:
-the ci_images filter names what the ci-images job reads and nothing more, so it is no superset of this job's, and a skipped need would otherwise skip a job ci-ok has as selected.
-The file that can bring a new row in, .github/ci-tools.yaml, is in both filters, so the fill runs before this proof on every change that adds one.
-
-WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
-Everything a case is read on is driven here:
-the fault, the origin that stands in for all four sources, the corrupted payloads, and the removals each case makes before it.
-One thing is not.
-oven-sh/setup-bun, which .github/actions/setup-bun's second step pins, restores a cached Bun inside a step of its own, from hosts this fault does not hold, and .bun-version holds an exact version, so that action asks no host which version to take.
-Taking a bun away before that step is therefore no answer to the cache.
-What keeps every case a reading of an install is the wrapper's own `no-cache`, true for every job whose id starts with `tool-fallback` (`github.job` in a composite action is the calling job's id), so no call of that action here can be served by the Actions cache, on any event or ref
-— read from the wrapper's expression rather than from a run, since a run told not to read the cache cannot measure what the cache would have served.
-The removals the cases do make are about this job's own state:
-a case that must read the second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what it reads is not the bun an earlier case left.
-
-READING THIS JOB WHEN IT IS RED AND HAS NO LOG AT ALL.
-A job whose log GitHub answers `HTTP 404` with `<Code>BlobNotFound</Code>` for did not hang and was not cancelled: it lost its runner.
-The log is written when the runner finalises it, and a runner the service stops hearing from never finalises, while a job that was cancelled keeps its log.
-What outlives the log is the check run's annotation, which the service writes:
-gh api repos/<owner>/<repo>/check-runs/<job id>/annotations On 2026-11-10 that answered, for this job: "The hosted runner lost communication with the server.
-Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
-Read the job record beside it: a lost runner leaves one step `in_progress` and every step after it `pending`, and the job ends before its own `timeout-minutes` would have fired.
-Three wrong causes were offered for that one job before anyone ran that command (dispatch://INFRA-2605).
-`docs/testing.md` says the same for any job of this repository.
-
-BEFORE YOU PUT A BOUND ON A STEP OF THIS JOB: A BOUND BELONGS ONLY WHERE FIRING IT IS LOUD.
-A step the runner ends at its `timeout-minutes` leaves the same `outcome` behind it as a step that failed on its own, and GitHub gives a later step nothing that tells the two apart.
-That is measured and not assumed: on this change's own run a step with `continue-on-error` and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the step after it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an assertion reads while the job's own result says nothing happened.
-So on a step with no `continue-on-error` a bound is loud: it fails the job.
-This job's steps are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-four installs there whose control passes a step whose `outcome` is `failure`, a bound is silent:
-a hang would satisfy that control and leave the job green, where the job's own ceiling would have cancelled it and failed ci-ok.
-That is why each of those installs is timed as well as read - the eight with nowhere to go by the control step beside them, the sixteen corrupted cases by `report` itself - and why a new bound on a step some later assertion accepts the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
 
 ## The tool-fallback job's budget, part by part
 
@@ -817,28 +539,4 @@ The ladder-report step refuses the job for exactly that reading
 — a fetch that was shortened and then served the bytes — which is what holds this step at this position.
 The remedy is the position and not a guard in the stand-in on a state file the fault writes:
 a position cannot drift out of the truth it states, while such a guard can.
-
-## The eight installs with nowhere to go
-
-The negative control, under the same fault:
-eight installs with nowhere to go — the merge base's seven, each given a dead port where its second source would be read (a ghcr base, an npm base, a URL base or a proxy), and the docker provider plugin, which the merge base has no action for, as the head's own action with its second source on a dead port.
-Every one of them must fail here.
-What it asserts is a property of this change rather than a fact about history:
-an install whose primary meets the fault and whose second source cannot be reached fails, which is what makes the passes below a reading of the second source rather than of a cache, a tool the runner image carries, or a proxy that let the asset through.
-The merge base's seven fail for two reasons, by whether that install already read the helper there:
-its crane, changie, jj and Bun do, so their primary meets the fault and the ghcr and npm seams send them to a dead port;
-its elan, uv and Pulumi CLI read no seam at all, each a `curl` of its own, so elan's and uv's one source is the release asset this fault holds and the CLI's is get.pulumi.com, which it does not hold, so that step carries a dead proxy of its own.
-Once this change is on main the base is this tree and all eight fail for the dead ports alone.
-A control that leaned on the merge base having one source each would expire the day this change lands on main:
-the base would then be this tree, each primary would meet the fault, each second source would reach the real ghcr
-— whose blobs redirect to pkg-containers.githubusercontent.com, which this fault leaves alone on purpose
-— or the real npm, PyPI or get.pulumi.com, every one of them would succeed, and this step would fail every pull request and merge group that selects this job.
-On a workflow_dispatch the ref below falls through to github.sha, the head itself, so that control is wrong already.
-A dead port rather than a manifest with its `second_source` rows deleted:
-a row with no second source makes ci_tools__second_source refuse the empty field, so the install would fail for the wrong reason
-— it would prove the helper rejects an empty field, not that the install had nowhere to go, and a negative control must fail for the reason the check names.
-A base that does not have the helper ignores both variables and fails as it always did.
-The merge-base checkout stays.
-It is this repository's only caller of the rule .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second checkout of this same repository, and that check's own comment names this job for it.
-After this change is on main the checkout is redundant to the dead ports below, which drive the control by themselves, so a later reader who deletes the merge base's seven steps is deleting that caller too and should move the rule's exercise rather than lose it.
 

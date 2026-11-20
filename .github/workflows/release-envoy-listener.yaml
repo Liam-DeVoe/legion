@@ -132,11 +132,8 @@ jobs:
   # tripwire last, as in build, docker and release_build.
   targets:
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    # why: .github/ci-notes/release-envoy-listener.md#the-jobs-budgets
+    # 600 + 2700 = 3300 s -> 56 min.
     timeout-minutes: 56
     permissions:
       contents: read
@@ -166,10 +163,7 @@ jobs:
   build:
     needs: targets
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
-    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
-    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # why: .github/ci-notes/release-envoy-listener.md#the-jobs-budgets
     # 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
     # Checks out and uploads; nothing here writes to the repository or a registry.
@@ -183,17 +177,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1708 = 3416 s (the Budgets note of .github/ci-budgets.md) -> 57 min.
+      # 2 x 1708 = 3416 s, setup-bun's two `ci_tools_fetch` calls -> 57 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 57
-      # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
-      # starting 150 s after the first. 180 s per attempt, the bound every Bun install of this
-      # repository's CI carries (dispatch://INFRA-1545): this install measured 20.70 s cold on a
-      # pod, against at most 11 s over 180 observations in the 20 most recent successful ci.yaml
-      # push runs on main.
+      # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Install dependencies
-        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
@@ -201,19 +190,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
-      # The modules the build below compiles, downloaded once and retried, so the build itself
-      # reads the module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the
-      # retried unit is the download, never the build).
-      #
-      # 180 s per attempt: a cold `go mod download` of packages/envoy — an empty module cache,
-      # this repository at this commit — measured 77 s on 2026-11-07, and the slowest cold run
-      # measured anywhere in this repository is packages/envoy/infra's 113 s, so the bound is
-      # 1.6 times that slowest measurement. It can be that tight where a tarball fetch's could
-      # not: an attempt the bound kills leaves what it fetched in the module cache, and the next
-      # attempt resumes from there.
+      # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Download the Go modules the build compiles
-        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
-        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
@@ -259,25 +238,8 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    # Budget (the Budgets note of .github/ci-budgets.md): 4800 s, the 80 minutes
-    # this job carried, which holds its builds (over both legs of this workflow's 15 runs from
-    # run 43834530574 to run 43983059481 the smoke build took 134 to 234 s and the publish
-    # build 7 to 11 s), plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 2 x 1708 = 3416 s. That is above the smoke image's build, priced at the longest
-    # single ladder of the Dockerfile it builds, since a build runs its fetches one after
-    # another and pays a fault window once, through the first fetch that meets it
-    # (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the `go mod
-    # download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each. The
-    # publish build after it reuses that build's layers from the same builder, so its RUN lines
-    # fetch nothing again. It is above `Check this job
-    # holds no credential (tripwire)` too, which runs .github/scripts/release-push.sh and so
-    # holds that script's leak-guard fetch at every one of its call sites, 6 call sites of one
-    # 450 s fetch = 2700 s, as the `build` job of this file words it, and above the Go module
-    # download and the workspace install at 5 x 180 + 150 = 1050 s each.
+    # why: .github/ci-notes/release-envoy-listener.md#the-jobs-budgets
     # 4800 + 3416 = 8216 s -> 137 min.
-    # THE REVIEWER'S EIGHT DID NOT HOLD THIS ONE: rule 8's job-derivation clause found it,
-    # because it reads the step arithmetic this check computes rather than the figures a
-    # comment names (dispatch://INFRA-1545, round 28).
     timeout-minutes: 137
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
     permissions:
@@ -312,14 +274,12 @@ jobs:
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
-      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1708 = 3416 s (the Budgets note of .github/ci-budgets.md) -> 57 min.
+      # 2 x 1708 = 3416 s, setup-bun's two `ci_tools_fetch` calls -> 57 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 57
-      # Retried as the build job's install is, and bounded as it is: 180 s per attempt, against
-      # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.
+      # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Install dependencies
-        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
@@ -327,13 +287,9 @@ jobs:
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
-      # The modules the smoke test below compiles, downloaded once and retried, as in the build
-      # job and bounded as there: 180 s, 1.6 times the 113 s of the slowest cold run measured in
-      # this repository (packages/envoy/infra; packages/envoy 77 s on 2026-11-07). The arm64 leg
-      # restores no module cache, so this leg's download is the cold one.
+      # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Download the Go modules the smoke test compiles
-        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
-        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
@@ -564,11 +520,8 @@ jobs:
   release_build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    # why: .github/ci-notes/release-envoy-listener.md#the-jobs-budgets
+    # 600 + 2700 = 3300 s -> 56 min.
     timeout-minutes: 56
     permissions:
       contents: read
@@ -594,8 +547,7 @@ jobs:
           .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
-        # (the Budgets note of .github/ci-budgets.md) -> 29 min.
+        # 1708 s, install-changie's one `ci_tools_fetch` -> 29 min.
         timeout-minutes: 29
       # This release's own changelog entries, which release_publish writes into the GitHub
       # release's body. A fragment stays under packages/envoy/.changes/unreleased/ after the
@@ -626,25 +578,10 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
-      # The module the builds below compile, downloaded once and retried before the first of
-      # them (the Retries note of .github/ci-budgets.md; the retried unit is the
-      # download, never the build). On the same condition as those builds. One call:
-      # every binary this job ships is a command of packages/envoy, and the cross-builds read
-      # that one module graph whatever GOOS and GOARCH they set. This job holds `contents: read`
-      # and no secret, so it is a build job like any other and the retry belongs in it;
-      # .github/scripts/check-release-credentials.sh pins the command set of the credentialed
-      # release_publish below, not of this one.
-      #
-      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
-      # packages/envoy/infra, against 77 s for packages/envoy, each on an empty module cache on
-      # 2026-11-07, so the bound is 1.6 times the slowest of them; an attempt it kills leaves
-      # what it fetched in the module cache for the next one to resume from, which a tarball
-      # fetch cannot do. This job restores no module cache, so the cold figure is the one every
-      # run pays.
+      # why: .github/ci-notes/release-envoy-listener.md#the-retried-install-and-module-downloads
       - name: Download the Go modules this job builds
         if: steps.version.outputs.skip != 'true'
-        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
-        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
@@ -775,11 +712,8 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
-    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    # why: .github/ci-notes/release-envoy-listener.md#the-jobs-budgets
+    # 600 + 5400 = 6000 s -> 101 min.
     timeout-minutes: 101
     # packages: write moves the `latest` tag to the newest already-published image (`docker
     # buildx imagetools create`, below); contents: write creates and uploads the GitHub release

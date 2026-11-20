@@ -104,8 +104,10 @@ jobs:
       - name: Pre-pull the NATS image the credential tests run
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
 YAML
-  cat > "$root/.github/workflows/ci-job-download-retry-images.yaml" <<YAML
-name: CI job download-retry-images
+  # The download-retry-images job, which since the merge of main's #3675 is the second job of
+  # ci.yaml's download-retry call (ci-job-download-retry.yaml), where the exception names it.
+  cat > "$root/.github/workflows/ci-job-download-retry.yaml" <<YAML
+name: CI job download-retry
 on:
   workflow_call:
 jobs:
@@ -205,21 +207,33 @@ YAML
   # exceptions: a declaration matching no such loop fails the check, so a tree without them
   # fails for a reason no case is about. Each is the shape that list is for — a loop over the
   # work the run found, whose pass count the check cannot read off the loop — and each passes
-  # every other rule, so a case that adds one bad site still proves that site alone. Each
-  # carries the budget rule 8 asks of a step holding a retried call, 6 minutes above the 300 s
-  # its declaration writes, so none of them is a budget a case has to reckon with.
+  # every other rule, so a case that adds one bad site still proves that site alone. Each that a
+  # workflow step holds carries the budget rule 8 asks of a step holding a retried call, 6
+  # minutes above the 300 s its declaration writes, so none of them is a budget a case has to
+  # reckon with. The merge queue's cancel act is a script of its own since main's #3675 moved
+  # ci.yaml's cancel-started body into .github/scripts/cancel-started-act.sh, and its entry names
+  # that script, so the fixture carries the script and a ci.yaml job that runs it by its path.
+  cat > "$root/.github/scripts/cancel-started-act.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r act id; do
+  retry_fetch "the force-cancel of run $id" 30 -- \
+    gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel"
+done <<<"$acts"
+SH
   cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
   cancel-started:
     runs-on: ubuntu-24.04
     steps:
       - name: Force-cancel the runs of the groups the queue removed
+        # ci.yaml's cancel-started job runs the script by its path, as this one does, and the
+        # loop in that script is this step's one retried call: 300 s, which DECLARED_LOOPS
+        # declares for .github/scripts/cancel-started-act.sh, under a key of 6 minutes, 360 s.
+        # The job keeps the eleven lines it held while that body was inline, so every case that
+        # appends a job to this file still numbers its lines from line 27.
         timeout-minutes: 6
-        run: |
-          . .github/scripts/ci-retry.sh
-          while read -r act id; do
-            retry_fetch "the force-cancel of run $id" 30 -- \
-              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel"
-          done <<<"$acts"
+        run: .github/scripts/cancel-started-act.sh
 YAML
   cat > "$root/.github/workflows/dequeued.yaml" <<'YAML'
 name: CI (dequeued pull request)

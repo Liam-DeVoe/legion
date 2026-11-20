@@ -4210,7 +4210,7 @@ EXEMPTIONS = [
               ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci-job-envoy-client.yaml", "envoy-client",
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
-    Exemption(".github/workflows/ci-job-download-retry-images.yaml", "download-retry-images",
+    Exemption(".github/workflows/ci-job-download-retry.yaml", "download-retry-images",
               "Pull every base image the four builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
@@ -4321,13 +4321,14 @@ class DeclaredArithmetic:
 # One such entry's figure is one figure for every caller of the site, which is the limit of
 # this mechanism and is said out loud in the `why` that has to live with it.
 DECLARED_LOOPS: list[DeclaredArithmetic] = [
-    DeclaredArithmetic(".github/workflows/ci.yaml",
-                       "Force-cancel the runs of the groups the queue removed", "gh api", 300,
+    # The loop ci.yaml's cancel-started step ran inline until main's #3675 moved its body into a
+    # script of its own, so the entry names that script with no step.
+    DeclaredArithmetic(".github/scripts/cancel-started-act.sh", None, "gh api", 300,
                        "one force-cancel per group the queue removed, and the budget is "
                        "written for the one a common run removes: 1 x (5 x 30 + 150) = 300 s. "
-                       "That step's own comment derives its budget from that one ladder beside "
-                       "about 3 s a call over the at most 21 calls the 20 groups the queue "
-                       "builds at once can need"),
+                       "The budget of the ci.yaml step that runs this script derives itself "
+                       "from that one ladder beside about 3 s a call over the at most 21 calls "
+                       "the 20 groups the queue builds at once can need"),
     DeclaredArithmetic(".github/workflows/dequeued.yaml",
                        "Cancel the removed group's ci.yaml run", "gh api", 300,
                        "one force-cancel per ci.yaml merge-group run still going at the "
@@ -8961,8 +8962,8 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
 #     budget, part by part" states the construction, `114 was the 104 this construction gives
 #     with ten minutes added` and, at the staging step's 114 minutes, 114 + 18 = 132 and 142 with
-#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:36-42)
-#     also writes the Budgets note's sum, `1722 + 6832 = 8554 s -> 143 min`, which this clause
+#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:17-18,
+#     since the merge of main's #3675) also writes the Budgets note's sum, `1722 + 6832 = 8554 s -> 143 min`, which this clause
 #     reads and which the key's 8580 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
 # of them is one a reader sees in the harness rather than in the tree.
