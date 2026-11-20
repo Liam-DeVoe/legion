@@ -6502,6 +6502,9 @@ A round that waits for its roles before its bound is told to nobody, since the b
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.
 Where that disk is a kept volume that is still there, the message says that this work is still on the volume, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+On a round that a corrected repository opened, that work is in the old repository's workspace, and the next pod makes a new workspace of the new repository beside it, where every role works.
+So that message names both repositories and the old workspace's path, and tells each role to read the work there in the next pod, put it on the issue branch and push that branch.
+On such a round, whatever the disk, the new pod's origin is the new repository, so the message also says that the work each role pushed before the pod went is on the old repository's issue branch, and that a role reads that branch to see it.
 Three readings say the pod went:
 the runtime answering that the pod the claims record is not there; the claims recording another pod in its place; and, while no claim of the issue records a pod at all, the runtime answering that the issue's Sandbox holds another pod or none.
 Whichever of them a sweep reaches first ends the round, and every sweep asks it before the round waits on a turn, because each such wait is a wait on the pod.

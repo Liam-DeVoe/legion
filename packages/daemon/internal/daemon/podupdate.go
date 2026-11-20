@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // reconcilePodUpdates carries every update round of this project one step, over the claims the
@@ -1296,7 +1299,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 		s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	}
-	written, err := s.plan.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost, kept)})
+	written, err := s.plan.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(issue, round, reasons, lost, kept)})
 	switch {
 	case err != nil:
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
@@ -1773,7 +1776,43 @@ func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) st
 	if !s.plan.repositories.left(pod, recorded) {
 		return ""
 	}
-	return "repository " + pod + ", now " + recorded
+	return repositoryReason(pod, recorded)
+}
+
+// The words of the reason repositoryDrift adds, which repositoryReason writes and
+// roundRepositories reads back, so the writer and the reader of that text cannot drift apart.
+const (
+	repositoryReasonStart = "repository "
+	repositoryReasonNow   = ", now "
+)
+
+// repositoryReason is the reason repositoryDrift adds to a round: the repository the pod was
+// built from, then the one the issue's record holds now.
+func repositoryReason(pod, recorded string) string {
+	return repositoryReasonStart + pod + repositoryReasonNow + recorded
+}
+
+// roundRepositories is the two repositories of repositoryReason, read back out of the reasons a
+// round recorded (roundReasons), and false for a round that no corrected repository opened. A
+// gone pod's message reads them to name the old repository's workspace and issue branch
+// (podWentMessage). The reason is the last one groupDrift adds, so it is at the end of the
+// reasons, alone or after a ", ". Text that does not read as two repositories there is no
+// repository round: an unknown is never a statement that the issue moved.
+func roundRepositories(reasons string) (pod, recorded ghrepo.Repository, ok bool) {
+	at := strings.LastIndex(reasons, repositoryReasonStart)
+	if at < 0 || (at > 0 && !strings.HasSuffix(reasons[:at], ", ")) {
+		return ghrepo.Repository{}, ghrepo.Repository{}, false
+	}
+	from, now, found := strings.Cut(reasons[at+len(repositoryReasonStart):], repositoryReasonNow)
+	if !found {
+		return ghrepo.Repository{}, ghrepo.Repository{}, false
+	}
+	pod, podErr := ghrepo.Parse("the pod's repository", from)
+	recorded, recordedErr := ghrepo.Parse("the recorded repository", now)
+	if podErr != nil || recordedErr != nil {
+		return ghrepo.Repository{}, ghrepo.Repository{}, false
+	}
+	return pod, recorded, true
 }
 
 // recordedRepositoryOf is the reader the plan takes (plan.recordedRepository), built
@@ -2161,19 +2200,63 @@ func roleStates(claims []supervise.Claim) string {
 // was replaced where it stood for a failure of its own. Its disk went with it, or, where kept is
 // true, its disk is a kept volume that is still there and holds what the roles did not push. The
 // issue's spec requires this message. Another agent reads it, so it follows ASD-STE100.
-func podWentMessage(round, reasons string, lost []supervise.Claim, kept bool) string {
+//
+// On a round that a corrected repository opened (roundRepositories), "its issue branch at origin"
+// would send a role to the wrong place, whatever the disk: every push a role made before the pod
+// went is on the issue branch of the old repository, and the new pod's origin is the new one. So
+// the last sentence names both repositories and sends a role to the old one's issue branch.
+func podWentMessage(issue, round, reasons string, lost []supervise.Claim, kept bool) string {
 	opened := "The daemon did not record why."
 	if reasons != "" {
 		opened = "The reasons were: " + reasons + "."
 	}
+	from, now, moved := roundRepositories(reasons)
 	disk := "The pod's disk went with the pod. Work that these roles did not push is lost."
 	if kept {
-		disk = "The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. The next pod of this issue mounts the volume."
+		disk = keptDiskMessage(issue, from, now, moved)
+	}
+	pushed := "Each role must read its issue branch at origin to see the work that it pushed."
+	if moved {
+		pushed = fmt.Sprintf("Work that each role pushed before the pod went "+
+			"is on the issue branch of the repository `%[1]s`. "+
+			"In the new pod, origin is the repository `%[2]s`. "+
+			"To see that work, each role must read the issue branch of the repository `%[1]s`.",
+			from, now)
 	}
 	return fmt.Sprintf(`The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (%s). %s The pod went before the round was over.
 
 These roles did not answer the update ask before the pod went: %s. %s
 
-The daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed.`,
-		round, opened, roleStates(lost), disk)
+The daemon starts each role again, in the same session, on a new pod. %s`,
+		round, opened, roleStates(lost), disk, pushed)
+}
+
+// keptDiskMessage is what podWentMessage says of a kept volume that holds the unpushed work. On a
+// round that a corrected repository opened (moved, from the repository from to now), "the next
+// pod mounts the volume" alone would mislead: the work is in the old repository's workspace, and
+// the next pod makes a workspace of the new repository beside it, where every role works, and no
+// role works in the old one again. So the message names that workspace's path and how a role
+// keeps the work. The path is the one the Sandbox runtime's pod gives the workspace
+// (workspace.Location under sandbox.TreeRoot), as that runtime is the one that keeps a volume
+// (runtime.IssueVolumeReader).
+func keptDiskMessage(issue string, from, now ghrepo.Repository, moved bool) string {
+	const kept = "The pod's disk is a kept volume, and the volume is still there. "
+	if moved {
+		if old, err := workspace.Location(sandbox.TreeRoot, from, issue); err == nil {
+			return kept + fmt.Sprintf("This issue moved from the repository `%[1]s` "+
+				"to the repository `%[2]s`. "+
+				"Work that these roles did not push is on that volume, "+
+				"in the workspace of `%[1]s` at `%[3]s`. "+
+				"The next pod of this issue mounts the volume. "+
+				"That pod makes a new workspace of `%[2]s`. "+
+				"Every role works in that new workspace. "+
+				"No role works in the workspace of `%[1]s` again. "+
+				"To keep that work, read it at `%[3]s` in the next pod. "+
+				"Put that work on the issue branch in the new workspace. "+
+				"Then push the issue branch.",
+				from, now, old.Dir)
+		}
+	}
+	return kept + "Work that these roles did not push is on that volume. " +
+		"The next pod of this issue mounts the volume."
 }
