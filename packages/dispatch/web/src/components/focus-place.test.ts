@@ -2,10 +2,10 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
-import { PANEL_ATTRIBUTE, takesText, useKeymap } from "../features/shell/keymap";
+import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { inRow, useFocusRescue } from "./focus-place";
+import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -66,25 +66,56 @@ async function withRescue(body: () => Promise<void>): Promise<void> {
   }
 }
 
-// (a) A control taken away hands the focus to the control now at its place.
-test("a control taken away hands the focus to the control now at its place", async () => {
-  await withRescue(async () => {
-    const [first, second, third] = mainOf("First", "Second", "Third").buttons;
-    second?.focus();
-    lose(second as HTMLElement);
-    expect(document.activeElement).toBe(document.body);
-    await waitFor(() => expect(third).toHaveFocus());
-    expect(first).not.toHaveFocus();
+/** Runs `body` with every `scrollIntoView` watched, and expects none of them to have run. */
+async function scrollingNothing(body: () => Promise<void>): Promise<void> {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await body();
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+}
+
+/** A modal dialog at the end of the body, as `useDialog`'s dialogs are portalled, holding one
+ *  button per label. */
+function modalOf(...labels: string[]): { buttons: HTMLButtonElement[]; dialog: HTMLElement } {
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  document.body.append(dialog);
+  return { buttons: labels.map((label) => buttonIn(dialog, label)), dialog };
+}
+
+// (a) A control an update takes away, with no press of the reader's, leaves the focus on the page,
+// as it did before the page had a rescue: the control now at its place is the page's choice, not
+// the reader's, and nothing scrolls.
+test("a control taken away with no press leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [first, second, third] = mainOf("First", "Second", "Third").buttons;
+      second?.focus();
+      lose(second as HTMLElement);
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(third).not.toHaveFocus();
+      expect(first).not.toHaveFocus();
+    });
   });
 });
 
-// (b) With no control after it, the focus goes to the one before it.
-test("the last control taken away hands the focus to the one before it", async () => {
-  await withRescue(async () => {
-    const [, second, third] = mainOf("First", "Second", "Third").buttons;
-    third?.focus();
-    lose(third as HTMLElement);
-    await waitFor(() => expect(second).toHaveFocus());
+// (b) So for the last control taken away with no press: the one before it is no more the reader's
+// pick than one after it would be, and the focus stays on the page.
+test("the last control taken away with no press leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [, second, third] = mainOf("First", "Second", "Third").buttons;
+      third?.focus();
+      lose(third as HTMLElement);
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(second).not.toHaveFocus();
+    });
   });
 });
 
@@ -180,47 +211,112 @@ test("a control disabled for longer than 10 s still gets the focus back when it 
   }
 });
 
-// (d) A dialog that closes over an opener its own press disabled hands the focus to the
-// opener's place in the main content, the region under the dialog.
-test("a control in a dialog that closes hands the focus to the opener's place under it", async () => {
+// (bq) A control an update disabled, with no press of the reader's, gets the focus back when it is
+// enabled again within the wait (c) - the one loss the reader did not cause that the focus leaves
+// the page for outside a modal - but only while the focus is still on the page. A reader who has
+// moved the focus on before the control comes back - here their Tab from the page to the control
+// before it - keeps it where they put it.
+test("a control an update disabled gets no focus back once the reader has moved the focus on", async () => {
   await withRescue(async () => {
-    const [, opener, after] = mainOf("Before", "Decline", "After").buttons;
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    const confirm = document.createElement("button");
-    confirm.type = "button";
-    confirm.textContent = "Confirm";
-    dialog.append(confirm);
-    document.body.append(dialog);
-    opener?.focus();
-    confirm.focus();
-    // The confirm disables the opener while its write is out and closes the dialog, whose
-    // return of the focus to that opener takes nothing.
-    (opener as HTMLButtonElement).disabled = true;
-    lose(confirm, () => dialog.remove());
-    opener?.focus();
+    const [before, saving] = mainOf("Before", "Save", "After").buttons;
+    const button = saving as HTMLButtonElement;
+    button.focus();
+    button.blur();
+    button.disabled = true;
+    await settled();
     expect(document.activeElement).toBe(document.body);
-    await waitFor(() => expect(after).toHaveFocus());
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+    before?.focus();
+    button.disabled = false;
+    await settled();
+    await settled();
+    expect(before).toHaveFocus();
+    expect(button).not.toHaveFocus();
   });
 });
 
-// (m) A panel that is no modal - a menu's, drawn outside the main content - closed by a press on
-// the page outside it, hands the focus back to the trigger that opened it, not to the last
-// control of the document.
-test("a panel that is no modal, closed by a press outside the main content, hands the focus to its trigger", async () => {
-  await withRescue(async () => {
-    const [trigger] = mainOf("Filters", "Other", "Last").buttons;
-    const panel = document.createElement("div");
-    panel.setAttribute("role", "dialog");
-    const box = document.createElement("input");
-    panel.append(box);
-    document.body.append(panel);
-    trigger?.focus();
-    box.focus();
-    box.blur();
-    panel.remove();
-    await waitFor(() => expect(trigger).toHaveFocus());
+// (br) Nor does that control get the focus back once the wait has run out: still disabled at the
+// write deadline (`RESCUE_WAIT_MS`), it is handed on as a control that went, which leaves the focus
+// on the page, and enabled again after that it takes nothing back, as (l) does inside the wait.
+test("a control an update disabled gets no focus back when it is enabled after the wait ran out", async () => {
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const [, saving, after] = mainOf("Before", "Save", "After").buttons;
+      const button = saving as HTMLButtonElement;
+      button.focus();
+      button.blur();
+      button.disabled = true;
+      // The check, a frame and a task after the loss, begins the wait.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The wait runs out with the control still disabled, and settles a frame and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(document.activeElement).toBe(document.body);
+      button.disabled = false;
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(document.activeElement).toBe(document.body);
+      expect(button).not.toHaveFocus();
+      expect(after).not.toHaveFocus();
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// (d) A modal dialog an update closes, with no press of the reader's, over an opener held disabled
+// leaves the focus on the page: neither the opener's place in the main content under the dialog
+// nor any control there is the reader's pick, and no other modal is open to take it.
+test("a control in a dialog that closes with no press leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [, opener, after] = mainOf("Before", "Decline", "After").buttons;
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      const confirm = document.createElement("button");
+      confirm.type = "button";
+      confirm.textContent = "Confirm";
+      dialog.append(confirm);
+      document.body.append(dialog);
+      opener?.focus();
+      confirm.focus();
+      // The update disables the opener and closes the dialog, whose return of the focus to that
+      // opener takes nothing.
+      (opener as HTMLButtonElement).disabled = true;
+      lose(confirm, () => dialog.remove());
+      opener?.focus();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(after).not.toHaveFocus();
+    });
+  });
+});
+
+// (m) A panel that is no modal - a menu's, drawn outside the main content - taken away with no
+// press of the reader's inside it leaves the focus on the page: a loss the reader did not cause
+// goes back to no trigger, and only an open modal dialog would take it.
+test("a panel that is no modal, closed with no press inside it, leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [trigger] = mainOf("Filters", "Other", "Last").buttons;
+      const panel = document.createElement("div");
+      panel.setAttribute("role", "dialog");
+      const box = document.createElement("input");
+      panel.append(box);
+      document.body.append(panel);
+      trigger?.focus();
+      box.focus();
+      box.blur();
+      panel.remove();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(trigger).not.toHaveFocus();
+    });
   });
 });
 
@@ -328,15 +424,22 @@ test("a list opened from inside a filter panel, taken away by a pick, hands the 
 });
 
 // (r) WebKit can hold a page's animation frames back for seconds while nothing is drawn: the
-// check goes on without its frame rather than leaving the reader on the page that long.
+// check goes on without its frame rather than leaving the reader on the page that long. A control
+// an update takes from a modal dialog, with no press of the reader's, is answered at the dialog's
+// own stop, with no scroll.
 test("a loss is answered even while the page's animation frames are held back", async () => {
   const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
   try {
-    await withRescue(async () => {
-      const [, second, third] = mainOf("First", "Second", "Third").buttons;
-      second?.focus();
-      lose(second as HTMLElement);
-      await waitFor(() => expect(third).toHaveFocus());
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        mainOf("Before");
+        const { buttons, dialog } = modalOf("First", "Second", "Third");
+        const [, second, third] = buttons;
+        second?.focus();
+        lose(second as HTMLElement);
+        await waitFor(() => expect(dialog).toHaveFocus());
+        expect(third).not.toHaveFocus();
+      });
     });
   } finally {
     frames.mockRestore();
@@ -401,67 +504,90 @@ test("a modal dialog opened with the focus on the page closes and leaves the foc
 });
 
 // (i) Firefox and WebKit fire no `focusout` for a focused control taken away: the rescue sees it
-// go by watching the page, and hands the focus on all the same.
-test("a control taken away with no focusout, as Firefox does, hands the focus to the control now at its place", async () => {
-  await withRescue(async () => {
-    const [, second, third] = mainOf("First", "Second", "Third").buttons;
-    second?.focus();
-    second?.remove();
-    await waitFor(() => expect(third).toHaveFocus());
-  });
-});
-
-// (j) So for a control whose parent is taken away: its place is where the parent stood.
-test("a control whose parent is taken away with no focusout hands the focus to the control after the parent", async () => {
-  await withRescue(async () => {
-    const { buttons, main } = mainOf("First", "Last");
-    const [first, last] = buttons;
-    const group = document.createElement("div");
-    const inner = ["Inner one", "Inner two"].map((label) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      group.append(button);
-      return button;
+// go by watching the page. With no press of the reader's, the focus stays on the page there too.
+test("a control taken away with no focusout, as Firefox does, and no press leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [, second, third] = mainOf("First", "Second", "Third").buttons;
+      second?.focus();
+      second?.remove();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(third).not.toHaveFocus();
     });
-    main.insertBefore(group, last ?? null);
-    inner[1]?.focus();
-    group.remove();
-    await waitFor(() => expect(last).toHaveFocus());
-    expect(first).not.toHaveFocus();
   });
 });
 
-// (e) A focus the reader put on the page stays there; the same control taken away would have
-// been rescued.
-test("a deliberate blur onto the page moves nothing", async () => {
-  await withRescue(async () => {
-    const [first, second] = mainOf("First", "Second").buttons;
-    first?.focus();
-    first?.blur();
-    await settled();
-    expect(document.activeElement).toBe(document.body);
+// (j) So for a control whose parent is taken away with no press: neither the control after the
+// parent nor the one before it takes the focus.
+test("a control whose parent is taken away with no focusout and no press leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const { buttons, main } = mainOf("First", "Last");
+      const [first, last] = buttons;
+      const group = document.createElement("div");
+      const inner = ["Inner one", "Inner two"].map((label) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        group.append(button);
+        return button;
+      });
+      main.insertBefore(group, last ?? null);
+      inner[1]?.focus();
+      group.remove();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(last).not.toHaveFocus();
+      expect(first).not.toHaveFocus();
+    });
+  });
+});
 
-    second?.focus();
-    lose(second as HTMLElement);
-    await waitFor(() => expect(first).toHaveFocus());
+// (e) A focus the reader put on the page stays there, even out of a modal dialog; the same
+// dialog's control taken away by an update, with no press of the reader's, is answered at the
+// dialog's own stop.
+test("a deliberate blur onto the page moves nothing", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      mainOf("Before");
+      const { buttons, dialog } = modalOf("First", "Second");
+      const [first, second] = buttons;
+      first?.focus();
+      first?.blur();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+
+      second?.focus();
+      lose(second as HTMLElement);
+      await settled();
+      expect(dialog).toHaveFocus();
+      expect(first).not.toHaveFocus();
+    });
   });
 });
 
 // (f) A loss on a page the reader has since left moves nothing: the new page owns its focus. The
-// same loss on the page it happened on is rescued.
+// same loss on the page it happened on, an update's in a modal dialog with no press of the
+// reader's, is answered at the dialog's own stop.
 test("a loss followed by a change of page moves nothing", async () => {
-  await withRescue(async () => {
-    const [first, second, third] = mainOf("First", "Second", "Third").buttons;
-    second?.focus();
-    lose(second as HTMLElement);
-    window.history.pushState(null, "", "/elsewhere");
-    await settled();
-    expect(document.activeElement).toBe(document.body);
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      mainOf("Before");
+      const { buttons, dialog } = modalOf("First", "Second", "Third");
+      const [first, second, third] = buttons;
+      second?.focus();
+      lose(second as HTMLElement);
+      window.history.pushState(null, "", "/elsewhere");
+      await settled();
+      expect(document.activeElement).toBe(document.body);
 
-    first?.focus();
-    lose(first as HTMLElement);
-    await waitFor(() => expect(third).toHaveFocus());
+      first?.focus();
+      lose(first as HTMLElement);
+      await settled();
+      expect(dialog).toHaveFocus();
+      expect(third).not.toHaveFocus();
+    });
   });
 });
 
@@ -481,30 +607,38 @@ test("a control taken away after the address changed moves nothing", async () =>
 
 // (g) A component's own hand-off runs first - here in the frame after the loss, moving the focus
 // only while it is still on the page - and the rescue then leaves it where it landed. Without a
-// hand-off the same loss is rescued.
+// hand-off the same loss, an update's in a modal dialog with no press of the reader's, is
+// answered at the dialog's own stop.
 test("a component that already moved the focus is left alone", async () => {
-  await withRescue(async () => {
-    const [first, second, third] = mainOf("First", "Second", "Third").buttons;
-    first?.focus();
-    lose(first as HTMLElement);
-    requestAnimationFrame(() => {
-      if (document.activeElement === document.body) third?.focus();
-    });
-    await settled();
-    expect(third).toHaveFocus();
-    expect(second).not.toHaveFocus();
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      mainOf("Before");
+      const { buttons, dialog } = modalOf("First", "Second", "Third");
+      const [first, second, third] = buttons;
+      first?.focus();
+      lose(first as HTMLElement);
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) third?.focus();
+      });
+      await settled();
+      expect(third).toHaveFocus();
+      expect(second).not.toHaveFocus();
 
-    lose(third as HTMLElement);
-    await waitFor(() => expect(second).toHaveFocus());
+      lose(third as HTMLElement);
+      await settled();
+      expect(dialog).toHaveFocus();
+      expect(second).not.toHaveFocus();
+    });
   });
 });
 
-// (s) A loss inside a dialog that stays open is answered inside that dialog. The reader is in a
-// modal the page behind it cannot be reached from, so a place the dialog no longer draws - two
-// of its controls went with the press, as the search bar's Retry takes its own failure block
-// away - hands the focus to the dialog's own last control, and never to the page's search box
-// behind it, whose next keystroke would be typed into it. Measured in Firefox, INFRA-3135 round
-// 7: the search bar's Retry put the focus outside the open palette in 2 of 12 runs.
+// (s) A loss inside a modal dialog that stays open is answered inside that dialog. The reader is
+// in a modal the page behind it cannot be reached from, so a place the dialog no longer draws -
+// two of its controls taken away together, as the search bar's Retry takes its own failure block
+// away, here with no press of the reader's - leaves the focus on the dialog's own stop, and never
+// on the page's search box behind it, whose next keystroke would be typed into it. Measured in
+// Firefox, INFRA-3135 round 7: the search bar's Retry put the focus outside the open palette in 2
+// of 12 runs.
 test("a loss in a dialog that stays open hands the focus inside it, never to the page behind", async () => {
   await withRescue(async () => {
     const { main } = mainOf("Before");
@@ -560,31 +694,37 @@ function pageSearchIn(main: HTMLElement): HTMLInputElement {
 }
 
 // (t) A panel that is no modal - a menu's, drawn outside the main content - whose last two
-// controls go with the press keeps the focus inside it: its own first control, never the page's
-// search box.
-test("a panel that is no modal, losing its last controls, keeps the focus inside it", async () => {
-  await withRescue(async () => {
-    const pageSearch = pageSearchIn(mainOf("Before").main);
-    const panel = document.createElement("div");
-    panel.setAttribute("role", "dialog");
-    document.body.append(panel);
-    const [first, second, third] = ["Todo", "Done", "Clear"].map((label) => buttonIn(panel, label));
-    third?.focus();
-    lose(third as HTMLElement, () => {
-      third?.remove();
-      second?.remove();
+// controls an update takes away, with no press of the reader's, leaves the focus on the page:
+// neither its own first control nor the page's search box takes it, since only an open modal
+// dialog keeps a loss the reader did not cause.
+test("a panel that is no modal, losing its last controls with no press, leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const pageSearch = pageSearchIn(mainOf("Before").main);
+      const panel = document.createElement("div");
+      panel.setAttribute("role", "dialog");
+      document.body.append(panel);
+      const [first, second, third] = ["Todo", "Done", "Clear"].map((label) =>
+        buttonIn(panel, label)
+      );
+      third?.focus();
+      lose(third as HTMLElement, () => {
+        third?.remove();
+        second?.remove();
+      });
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(first).not.toHaveFocus();
+      expect(panel).not.toHaveFocus();
+      expect(pageSearch).not.toHaveFocus();
     });
-    await settled();
-    expect(first).toHaveFocus();
-    expect(pageSearch).not.toHaveFocus();
   });
 });
 
-// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows taken together by an
-// update, with no press of the reader's, the focus stays in the drawer. Each `<li>` is a row by its
-// element alone (`row-marker.ts`'s `ROW_SELECTOR`), so the first row's control, the nearest one
-// before them, is no landing for a loss the reader did not cause (ag): the box the rows are drawn
-// in takes the focus instead, which here, with no box inside it that clips, is the drawer itself.
+// (u) The Inbox drawer, a modal dialog of rows, keeps the focus: its last two rows taken together
+// by an update, with no press of the reader's, the drawer takes the focus itself, as its own stop
+// - not the first row's control, the nearest one before them, nor the page's search box behind
+// it - since a focus that leaves an open modal reaches the page behind it.
 test("the Inbox drawer, losing its last rows, keeps the focus inside it", async () => {
   await withRescue(async () => {
     const pageSearch = pageSearchIn(mainOf("Before").main);
@@ -611,50 +751,43 @@ test("the Inbox drawer, losing its last rows, keeps the focus inside it", async 
   });
 });
 
-// (v) The main content, losing a block of controls at its end, hands the focus to the nearest
-// control before the block, however many went together - here its filter trigger, then, past its
-// search box, which takes typed text and so is no landing for a loss the reader did not cause, its
-// first control as each is taken in turn - and to itself once it draws none, never to a control
-// outside it, the sidebar's here. Changed by the tree's architect in round 9
-// (2026-11-15T08:03Z): this case once expected the search box first, which only Chromium's path
-// gave; the nearest earlier control is the one landing every engine agrees on, and the one a
-// keyboard reader expects, where the block was rather than at the top of the page.
-test("the main content losing a block at its end goes to the nearest control before it, then itself", async () => {
+// (v) The main content losing a block of controls at its end, with no press of the reader's,
+// leaves the focus on the page however many went together: neither the nearest control before
+// the block - its filter trigger here - nor its search box nor its first control takes it, nor a
+// control outside it, the sidebar's here, and nothing scrolls. Once the main content draws no
+// other control, the last one taken away leaves the focus on the page too, not on the main
+// content itself.
+test("the main content losing a block at its end with no press leaves the focus on the page", async () => {
   const aside = document.createElement("aside");
   const sidebar = buttonIn(aside, "Sidebar");
   document.body.prepend(aside);
   try {
-    await withRescue(async () => {
-      const [first] = mainOf("First").buttons;
-      const main = mainRef.current as HTMLElement;
-      const search = pageSearchIn(main);
-      const trigger = buttonIn(main, "Filters");
-      trigger.setAttribute("data-control", CONTROL.panelTrigger);
-      /** Three controls at the end of the main content, the last focused and all three taken. */
-      const loseThree = async () => {
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const [first] = mainOf("First").buttons;
+        const main = mainRef.current as HTMLElement;
+        const search = pageSearchIn(main);
+        const trigger = buttonIn(main, "Filters");
+        trigger.setAttribute("data-control", CONTROL.panelTrigger);
         const three = ["One", "Two", "Three"].map((label) => buttonIn(main, label));
         three[2]?.focus();
         lose(three[2] as HTMLElement, () => {
           for (const each of three) each.remove();
         });
         await settled();
-      };
-      await loseThree();
-      expect(trigger).toHaveFocus();
-      trigger.remove();
-      await loseThree();
-      expect(first).toHaveFocus();
-      expect(search).not.toHaveFocus();
-      search.remove();
-      await loseThree();
-      expect(first).toHaveFocus();
-      first?.remove();
-      const last = buttonIn(main, "Last");
-      last.focus();
-      lose(last);
-      await settled();
-      expect(main).toHaveFocus();
-      expect(sidebar).not.toHaveFocus();
+        expect(document.activeElement).toBe(document.body);
+        for (const control of [trigger, search, first, sidebar]) {
+          expect(control).not.toHaveFocus();
+        }
+        for (const each of [trigger, search, first]) each?.remove();
+        const last = buttonIn(main, "Last");
+        last.focus();
+        lose(last);
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        expect(main).not.toHaveFocus();
+        expect(sidebar).not.toHaveFocus();
+      });
     });
   } finally {
     aside.remove();
@@ -662,10 +795,10 @@ test("the main content losing a block at its end goes to the nearest control bef
 });
 
 // (be) The edge of (v): a loss the reader did not cause, where every control before the lost
-// place takes typed text - the page's search box and a note field - lands on none of them, nor
-// on the body: the main content itself takes the focus, as its tabindex="-1" stop, and nothing
-// scrolls, so the page's single keys answer from there. With Chromium's `focusout` and without.
-test("an uncaused loss whose every earlier control takes text lands on the main content itself", async () => {
+// place takes typed text - the page's search box and a note field - leaves the focus on the page,
+// as every such loss does: not on either field, nor on the main content itself, and nothing
+// scrolls, so the page's single keys answer from the page. With Chromium's `focusout` and without.
+test("an uncaused loss whose every earlier control takes text leaves the focus on the page", async () => {
   for (const withFocusout of [true, false]) {
     const scrolls = spyOn(Element.prototype, "scrollIntoView");
     try {
@@ -680,10 +813,10 @@ test("an uncaused loss whose every earlier control takes text lands on the main 
         if (withFocusout) lose(gone);
         else gone.remove();
         await settled();
-        expect(main).toHaveFocus();
+        expect(document.activeElement).toBe(document.body);
+        expect(main).not.toHaveFocus();
         expect(search).not.toHaveFocus();
         expect(note).not.toHaveFocus();
-        expect(document.activeElement).not.toBe(document.body);
       });
       expect(scrolls).not.toHaveBeenCalled();
     } finally {
@@ -692,20 +825,24 @@ test("an uncaused loss whose every earlier control takes text lands on the main 
   }
 });
 
-// (w) A control outside the main content - the sidebar's - whose place has gone hands the focus
-// to the sidebar's control before it, and never into the main content or onto the body.
-test("a control outside the main content whose place has gone stays outside it, on the control before it", async () => {
+// (w) A control outside the main content - the sidebar's - whose place an update takes away, with
+// no press of the reader's, leaves the focus on the page: neither the sidebar's control before it
+// nor one in the main content takes it.
+test("a control outside the main content whose place has gone with no press leaves the focus on the page", async () => {
   const aside = document.createElement("aside");
   const [, middle, last] = ["Inbox", "Projects", "Agents"].map((label) => buttonIn(aside, label));
   document.body.prepend(aside);
   try {
-    await withRescue(async () => {
-      const [inMain] = mainOf("In the main content").buttons;
-      last?.focus();
-      lose(last as HTMLElement);
-      await settled();
-      expect(middle).toHaveFocus();
-      expect(inMain).not.toHaveFocus();
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const [inMain] = mainOf("In the main content").buttons;
+        last?.focus();
+        lose(last as HTMLElement);
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        expect(middle).not.toHaveFocus();
+        expect(inMain).not.toHaveFocus();
+      });
     });
   } finally {
     aside.remove();
@@ -732,33 +869,39 @@ test("a modal dialog that loses every control takes the focus itself", async () 
 });
 
 // (y) A dialog hidden while it stays mounted - the phone thread kept for a reply - has gone as
-// much as one taken away: a loss in it goes back to the control that opened it, still in the
-// page, rather than to the hidden dialog itself.
-test("a dialog hidden while it stays mounted hands the focus back to its opener", async () => {
-  await withRescue(async () => {
-    const [, opener] = mainOf("Before", "Open thread", "After").buttons;
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    document.body.append(dialog);
-    const reply = buttonIn(dialog, "Reply");
-    opener?.focus();
-    reply.focus();
-    // Back hides the dialog under the focus, and its `focusout` comes once it is hidden.
-    dialog.hidden = true;
-    reply.blur();
-    await settled();
-    expect(opener).toHaveFocus();
+// much as one taken away. Hidden by an update, with no press of the reader's, it leaves the focus
+// on the page: not on the control that opened it, nor on the hidden dialog itself, which is no
+// modal open any more.
+test("a dialog hidden with no press while it stays mounted leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const [, opener] = mainOf("Before", "Open thread", "After").buttons;
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      document.body.append(dialog);
+      const reply = buttonIn(dialog, "Reply");
+      opener?.focus();
+      reply.focus();
+      // The update hides the dialog under the focus, and its `focusout` comes once it is hidden.
+      dialog.hidden = true;
+      reply.blur();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(opener).not.toHaveFocus();
+      expect(dialog).not.toHaveFocus();
+    });
   });
 });
 
 // (z) The same loss lands on the same control in every engine. Two controls at the end of a
-// region go in one commit, the last holding the focus. Chromium fires a `focusout` while both
-// are still counted, Firefox and WebKit fire none and the rescue reads the removal; the reader
-// pressed the same thing either way. Measured by hand on dispatch:local at c3373441, INFRA-3135
-// round 8: with the project List's last two pager controls taken away, Firefox and WebKit land
-// on "‹ Previous", the control before them, and Chromium on the page's search box; in the Inbox
-// drawer, Firefox and WebKit on "Decline to answer" and Chromium on Close at the drawer's top.
+// region go in the commit of the reader's Enter on the last, which holds the focus. Chromium fires
+// a `focusout` while both are still counted, Firefox and WebKit fire none and the rescue reads the
+// removal; the reader pressed the same thing either way. Measured by hand on dispatch:local at
+// c3373441, INFRA-3135 round 8: with the project List's last two pager controls taken away,
+// Firefox and WebKit land on "‹ Previous", the control before them, and Chromium on the page's
+// search box; in the Inbox drawer, Firefox and WebKit on "Decline to answer" and Chromium on Close
+// at the drawer's top.
 test("two controls taken away together at a region's end land the focus on one control, focusout or none", async () => {
   /** Builds the region, takes its last two controls away while the last holds the focus, and
    *  answers the label of the control the rescue landed on. */
@@ -774,6 +917,7 @@ test("two controls taken away together at a region's end land the focus on one c
       );
       const [, , , fourth, fifth] = controls;
       fifth?.focus();
+      fifth?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
       const leave = () => {
         fifth?.remove();
         fourth?.remove();
@@ -866,9 +1010,10 @@ test("a loss of an element scrolled out of sight moves nothing and scrolls nothi
   }
 });
 
-// (ab) A loss the reader can still see is answered as before: an element its box scrolled but
-// kept in sight, and one scrolled out of sight and back into it before it went, hand the focus
-// to the control now at their place. Only the scroll that leaves nothing of it in sight counts.
+// (ab) A loss the reader caused and can still see is answered as before: an element its box
+// scrolled but kept in sight, and one scrolled out of sight and back into it before it went, each
+// taken away by the reader's Enter on it, hand the focus to the control now at their place. Only
+// the scroll that leaves nothing of it in sight counts.
 test("a loss of an element still in sight is answered, however it was scrolled", async () => {
   await withRescue(async () => {
     const { box, buttons } = scrollBoxIn(mainOf("Before").main, "One", "Two", "Three");
@@ -877,6 +1022,7 @@ test("a loss of an element still in sight is answered, however it was scrolled",
     // Half of it above the box's top edge: the reader still sees the other half.
     placeAt(second as HTMLElement, 80);
     box.dispatchEvent(new Event("scroll"));
+    second?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
     lose(second as HTMLElement);
     await waitFor(() => expect(third).toHaveFocus());
   });
@@ -887,6 +1033,7 @@ test("a loss of an element still in sight is answered, however it was scrolled",
     document.dispatchEvent(new Event("scroll"));
     placeAt(second as HTMLElement, 300);
     document.dispatchEvent(new Event("scroll"));
+    second?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
     second?.remove();
     await waitFor(() => expect(third).toHaveFocus());
   });
@@ -954,7 +1101,8 @@ test("a control scrolled out of sight while its write is out is left alone when 
 // virtual list may then stop drawing that row. The resize reads the sight again, against every
 // box around the element that clips what overflows it - this box has never scrolled - so the
 // row's removal after it moves nothing and scrolls nothing. A resize that leaves the row in its
-// box changes nothing: its removal is answered as before. INFRA-3135's review round 1, R10.
+// box changes nothing: the removal the reader's Enter on it makes is answered as before.
+// INFRA-3135's review round 1, R10.
 test("a resize that puts the focused row out of its box, then the row's removal, moves nothing", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
@@ -982,6 +1130,7 @@ test("a resize that puts the focused row out of its box, then the row's removal,
     second?.focus();
     placeAt(second as HTMLElement, 300);
     window.dispatchEvent(new Event("resize"));
+    second?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
     second?.remove();
     await waitFor(() => expect(third).toHaveFocus());
   });
@@ -1048,10 +1197,10 @@ function rowBoxIn(
 }
 
 // (ag) A row a live update takes away while the reader can see it, with no press of theirs before
-// it, is a loss they did not cause: the focus goes into no other row and nothing scrolls. It lands
-// on the box the rows are drawn in instead, given a Tab stop for it, so the reader's next key acts
-// on no row they did not pick. INFRA-3135's review round 1, follow-up F4.
-test("a row removed by a live update with no press hands the focus to the box, in no row, scrolling nothing", async () => {
+// it, is a loss they did not cause: the focus stays on the page, as it did before the page had a
+// rescue - in no other row, not on the box the rows are drawn in - and nothing scrolls, so the
+// reader's next key acts on no row they did not pick. INFRA-3135's review round 1, follow-up F4.
+test("a row removed by a live update with no press leaves the focus on the page, in no row, scrolling nothing", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
     await withRescue(async () => {
@@ -1063,8 +1212,9 @@ test("a row removed by a live update with no press hands the focus to the box, i
       box.dispatchEvent(new Event("scroll"));
       second.row.remove();
       await settled();
-      expect(box).toHaveFocus();
-      expect(box).toHaveAttribute("tabindex", "-1");
+      expect(document.activeElement).toBe(document.body);
+      expect(box).not.toHaveFocus();
+      expect(box).not.toHaveAttribute("tabindex");
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1092,8 +1242,9 @@ test("the same row removed right after the reader's press on it keeps today's ha
 
 // (aq) A press is the cause only of the update that answers it. The same removal as (ah), once the
 // reader's press on that row has been answered - a frame and a task after it, its control held by
-// no write - is a live update's, not theirs: the focus goes into no other row and nothing scrolls,
-// as with no press at all (ag). The reader's next Space or `x` then marks no row they did not pick.
+// no write - is a live update's, not theirs: the focus stays on the page, in no row, and nothing
+// scrolls, as with no press at all (ag). The reader's next Space or `x` then marks no row they did
+// not pick.
 test("a row removed by a live update after the reader's press on it was answered hands the focus to no row", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
@@ -1107,7 +1258,7 @@ test("a row removed by a live update after the reader's press on it was answered
       await settled();
       second.row.remove();
       await settled();
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1146,7 +1297,8 @@ test("a row removed in the commit that ends its pressed control's hold keeps tod
 
 // (as) Once that hold ends with the row still there - the write answered and the row kept - the
 // press has been answered a frame and a task later, and a live update taking the row away after
-// that is no doing of the reader's: the focus goes into no other row and nothing scrolls (ag).
+// that is no doing of the reader's: the focus stays on the page, in no row, and nothing scrolls
+// (ag).
 test("a row removed after its pressed control's hold ended hands the focus to no row", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
@@ -1163,7 +1315,7 @@ test("a row removed after its pressed control's hold ended hands the focus to no
       await settled();
       second.row.remove();
       await settled();
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1176,7 +1328,7 @@ test("a row removed after its pressed control's hold ended hands the focus to no
 // (ax) The hold ends at the write deadline (`RESCUE_WAIT_MS`), as the rescue's own wait does: a
 // control its press's write holds that stays held past it - a write that never answers - keeps
 // its press live no longer, so a live update taking its row away after that is no doing of the
-// reader's: the focus goes into no other row and nothing scrolls (ag).
+// reader's: the focus stays on the page, in no row, and nothing scrolls (ag).
 test("a row removed after its pressed control stayed held past the write deadline hands the focus to no row", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   jest.useFakeTimers();
@@ -1203,7 +1355,7 @@ test("a row removed after its pressed control stayed held past the write deadlin
       await frame();
       await frame();
       jest.advanceTimersByTime(0);
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1218,8 +1370,8 @@ test("a row removed after its pressed control stayed held past the write deadlin
 // select or a trigger held while an earlier write is out - is refused and leads to no write, so
 // that hold is no doing of the press: the press is live a frame and a task after it and its
 // release, as a press on a control held by nothing is (aq), and no longer. A live update taking
-// the row away after that is no doing of the reader's: the focus goes into no other row and
-// nothing scrolls (ag).
+// the row away after that is no doing of the reader's: the focus stays on the page, in no row,
+// and nothing scrolls (ag).
 test("a row removed after a press on its control held before the press hands the focus to no row", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
@@ -1238,7 +1390,7 @@ test("a row removed after a press on its control held before the press hands the
       expect(dismiss).toHaveFocus();
       second.row.remove();
       await settled();
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1274,7 +1426,7 @@ test("a second press on a control its first press holds keeps the first press th
 // first press's write deadline where it was: counted from the first press's release, as in (ax),
 // so the reader pressing the held control again 20 s on keeps the first press live no longer. A
 // live update taking the row away a little over 30 s after the first release is no doing of the
-// reader's: the focus goes into no other row and nothing scrolls (ag).
+// reader's: the focus stays on the page, in no row, and nothing scrolls (ag).
 test("a second press on a control its first press holds leaves the write deadline counted from the first release", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   jest.useFakeTimers();
@@ -1308,7 +1460,7 @@ test("a second press on a control its first press holds leaves the write deadlin
       await frame();
       await frame();
       jest.advanceTimersByTime(0);
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1383,7 +1535,7 @@ test("a row its list's pick holds, taken away in the commit that ends the hold, 
 
 // (aw) So for (as): once the trigger's hold ends with the row still there, the pick has been
 // answered a frame and a task later, and a live update taking the row away after that is no doing
-// of the reader's: the focus goes into no other row and nothing scrolls (ag).
+// of the reader's: the focus stays on the page, in no row, and nothing scrolls (ag).
 test("a row its list's pick held, taken away after the hold ended, hands the focus to no row", async () => {
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
@@ -1397,7 +1549,7 @@ test("a row its list's pick held, taken away after the hold ended, hands the foc
       await settled();
       second.row.remove();
       await settled();
-      expect(box).toHaveFocus();
+      expect(document.activeElement).toBe(document.body);
       expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
       expect(rows[2]?.mark).not.toHaveFocus();
     });
@@ -1707,6 +1859,108 @@ test("a row the reader's press takes away hands the focus to the same control in
   expect(landed).toEqual(belongs);
 });
 
+/** The Inbox's rows, each holding an ask card, in a list at the end of `parent`: one `<li>` per
+ *  name, holding an `<article>`, a row too by its element alone, with a link named for the ask
+ *  and then its `Answer <name>` button. */
+function askCardRowsIn(
+  parent: Element,
+  names: readonly string[]
+): { answer: HTMLButtonElement; row: HTMLLIElement }[] {
+  const list = document.createElement("ul");
+  parent.append(list);
+  return names.map((name) => {
+    const row = document.createElement("li");
+    const card = document.createElement("article");
+    const link = document.createElement("a");
+    link.href = `/asks/${name}`;
+    link.textContent = name;
+    card.append(link);
+    row.append(card);
+    list.append(row);
+    return { answer: buttonIn(card, `Answer ${name}`), row };
+  });
+}
+
+// (bs) Rows nest: an ask card, an `<article>`, in an Inbox row, an `<li>`. The rescue reads every
+// row around the lost control, nearest first. The reader's press on the second card's Answer that
+// takes the whole second `<li>` away takes the card with it, and the row that left is the `<li>`:
+// the third `<li>` moves up, and the focus lands on the same control in it, the third card's
+// Answer, in every engine, as (bn) does for rows that do not nest. A press on a control the `<li>`
+// draws outside its card, Expand, is a press in that row, so a loss inside the card is the
+// reader's too: where the press puts the focus on the card's Answer and its commit takes that
+// Answer away, the focus walks to the control now at Answer's place, Expand; where the commit
+// takes the whole `<li>` away, the focus lands on the third card's Answer. Firefox and WebKit
+// report a control taken away alone once it has left the page, when no row stands around it any
+// more, so that case is read with Chromium's `focusout` alone. By a pointer press and by Enter,
+// with Chromium's `focusout` and without.
+test("a row inside a row: the outer row a press takes away hands the focus to the same control in the row that moves up, and a press in the outer row causes a loss in the inner one", async () => {
+  const presses: Record<string, (control: HTMLElement) => void> = {
+    Enter: (control) => {
+      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    },
+    pointer: pointerPress,
+  };
+  const cases: {
+    landing: string;
+    name: string;
+    /** Whether the press is on the row's own Expand, outside its card, rather than on the
+     *  card's Answer. */
+    onRow: boolean;
+    /** What the press's commit takes away: the whole row, or the card's Answer alone. */
+    takes: "answer" | "row";
+  }[] = [
+    {
+      landing: "Answer Gamma",
+      name: "Answer Beta takes its row away",
+      onRow: false,
+      takes: "row",
+    },
+    {
+      landing: "Expand Beta",
+      name: "Expand Beta takes the card's Answer away",
+      onRow: true,
+      takes: "answer",
+    },
+    {
+      landing: "Answer Gamma",
+      name: "Expand Beta takes its row away",
+      onRow: true,
+      takes: "row",
+    },
+  ];
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const { landing, name, onRow, takes } of cases) {
+    for (const [by, press] of Object.entries(presses)) {
+      for (const withFocusout of takes === "answer" ? [true] : [true, false]) {
+        const named = `${name}, by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          const rows = askCardRowsIn(mainOf().main, ["Alpha", "Beta", "Gamma"]);
+          const { answer, row } = rows[1] as { answer: HTMLButtonElement; row: HTMLLIElement };
+          if (onRow) {
+            const expand = buttonIn(row, "Expand Beta");
+            expand.focus();
+            press(expand);
+            // The press puts the focus on the card's Answer.
+            answer.focus();
+          } else {
+            answer.focus();
+            press(answer);
+          }
+          const leave = () => (takes === "row" ? row : answer).remove();
+          if (withFocusout) lose(answer, leave);
+          else leave();
+          await settled();
+          landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+        });
+        belongs[named] = landing;
+      }
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
 // (am) One batch of the page's records can hold a commit that moves the pressed control - a live
 // update reordering what it stands among - and the press's own commit that takes it away and
 // draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the
@@ -1844,11 +2098,12 @@ function drawerRows(): {
 // without a write - it moves the focus off the trigger, to the next row's mark. A live update
 // that takes that row away while the write is still out is no doing of the reader's: the pick's
 // answer is its own row's, not another row's going. So, as in (aw) once the hold has ended, the
-// focus goes into no other row and nothing scrolls, by Chromium's `focusout` as by none. At
-// 90fa8211 the Tab is passed over (`notePress`, `onHeldControl`), the pick stays the cause, and a
-// press's place in a dialog is the whole dialog (`pressPlaces`): on Chromium's path the focus is
-// walked into row Three and scrolled to it; with no `focusout` the detached mark reaches no
-// dialog, so it lands on the box, and the two engines disagree.
+// focus goes into no other row and nothing scrolls: in the modal drawer it lands on the drawer's
+// own stop, by Chromium's `focusout` as by none. At 90fa8211 the Tab is passed over (`notePress`,
+// `onHeldControl`), the pick stays the cause, and a press's place in a dialog is the whole dialog
+// (`pressPlaces`): on Chromium's path the focus is walked into row Three and scrolled to it; with
+// no `focusout` the detached mark reaches no dialog, so it lands on the box, and the two engines
+// disagree.
 test("Tab off a control a pick's write holds ends the pick as the cause of another row's going", async () => {
   for (const withFocusout of [true, false]) {
     const scrolls = spyOn(Element.prototype, "scrollIntoView");
@@ -1870,7 +2125,7 @@ test("Tab off a control a pick's write holds ends the pick as the cause of anoth
         if (withFocusout) lose(second.mark, () => second.row.remove());
         else second.row.remove();
         await settled();
-        expect(box).toHaveFocus();
+        expect(box.closest('[role="dialog"]')).toHaveFocus();
         expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
         expect(rows[2]?.mark).not.toHaveFocus();
       });
@@ -1881,14 +2136,14 @@ test("Tab off a control a pick's write holds ends the pick as the cause of anoth
   }
 });
 
-// (bd) A loss the reader did not cause takes the walk back alone, whatever the page drew in the
+// (bd) A loss the reader did not cause leaves the focus on the page, whatever the page drew in the
 // lost control's place. A live update withdraws the question whose answer form holds the focus and
 // draws a Reply form where that card stood, its text box first. The focus lands on no control of
 // that form - not its text box, where the reader's next key would be typed and a Reply could be
-// sent, nor its Send - but on the control before the place, where the walk lands, in no row and
-// with no scroll, by Chromium's `focusout` as by none. The page's keys answer there: `j` runs the
-// page's binding.
-test("an uncaused loss whose place now holds a form leaves the focus out of its text box", async () => {
+// sent, nor its Send - nor on the control before the place: it stays on the page, with no scroll,
+// by Chromium's `focusout` as by none. The page's keys answer there, as they did before the page
+// had a rescue: `j` pressed on the page runs the page's binding.
+test("an uncaused loss whose place now holds a form leaves the focus on the page, out of its text box", async () => {
   for (const withFocusout of [true, false]) {
     const scrolls = spyOn(Element.prototype, "scrollIntoView");
     try {
@@ -1926,10 +2181,9 @@ test("an uncaused loss whose place now holds a form leaves the focus out of its 
           await settled();
           expect(box).not.toHaveFocus();
           expect(reply.contains(document.activeElement)).toBe(false);
-          expect(pin).toHaveFocus();
+          expect(pin).not.toHaveFocus();
+          expect(document.activeElement).toBe(document.body);
           const landed = document.activeElement as HTMLElement;
-          expect(takesText(landed)).toBe(false);
-          expect(inRow(landed)).toBe(false);
           landed.dispatchEvent(
             new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "j" })
           );
@@ -1993,13 +2247,13 @@ test("an agent's row taken away by its session's end hands the focus to no other
 // reader's (`isPress`), and nor is the `change` the field fires as it goes, its commit on blur,
 // which Chromium fires as an update takes the focused field away. So a live update that takes a
 // field away from under the reader's typing, in the task of that `change`, is a loss they did not
-// cause (ag): the focus lands in no row and on no field that takes typed text - not on the Reply
-// text box the update draws in the row's place - and nothing scrolls. Measured in Chromium with
-// the `change` read as the reader's pick: the loss read as caused, and the focus landed on that
-// Reply text box, where the reader's next key was typed. A `<textarea>` with a character key and
-// then Enter, which inserts a line there, and an `<input>` with a character key, each by
-// Chromium's `focusout` and by none. The issue title's Enter, which commits its `<input>`, is
-// still a press (ap).
+// cause (ag): the focus stays on the page - in no row and on no field that takes typed text, not
+// on the Reply text box the update draws in the row's place - and nothing scrolls. Measured in
+// Chromium with the `change` read as the reader's pick: the loss read as caused, and the focus
+// landed on that Reply text box, where the reader's next key was typed. A `<textarea>` with a
+// character key and then Enter, which inserts a line there, and an `<input>` with a character
+// key, each by Chromium's `focusout` and by none. The issue title's Enter, which commits its
+// `<input>`, is still a press (ap).
 test("a keystroke in a text field, or the change its removal fires, makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
   const fields = [
     {
@@ -2049,10 +2303,7 @@ test("a keystroke in a text field, or the change its removal fires, makes no pre
           if (withFocusout) lose(field, replace);
           else replace();
           await settled();
-          const landed = document.activeElement as HTMLElement;
-          expect(box).toHaveFocus();
-          expect(inRow(landed)).toBe(false);
-          expect(takesText(landed)).toBe(false);
+          expect(document.activeElement).toBe(document.body);
           expect(replyBox).not.toHaveFocus();
         });
         expect(scrolls).not.toHaveBeenCalled();
@@ -2067,7 +2318,7 @@ test("a keystroke in a text field, or the change its removal fires, makes no pre
 // (`isPress`): AltGr, which Windows reports as Ctrl and Alt together with `AltGraph` held, types
 // `@` on a German layout, and macOS's Option, Alt held alone, types `@` on many layouts. So the
 // update of (bi), after either character in a `<textarea>` or an `<input>`, is a loss the reader
-// did not cause: the focus lands on the row box, in no row and on no field that takes typed text,
+// did not cause: the focus stays on the page, in no row and on no field that takes typed text,
 // and nothing scrolls. Each keydown answers `getModifierState` from the modifiers it holds, as a
 // browser does, since happy-dom reads `AltGraph` off `altKey` and would take Option for AltGr.
 test("a character typed with AltGr or Option in a text field makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
@@ -2121,10 +2372,7 @@ test("a character typed with AltGr or Option in a text field makes no press, so 
             if (withFocusout) lose(field, replace);
             else replace();
             await settled();
-            const landed = document.activeElement as HTMLElement;
-            expect(box).toHaveFocus();
-            expect(inRow(landed)).toBe(false);
-            expect(takesText(landed)).toBe(false);
+            expect(document.activeElement).toBe(document.body);
             expect(replyBox).not.toHaveFocus();
           });
           expect(scrolls).not.toHaveBeenCalled();
@@ -2227,6 +2475,57 @@ test("a date box dropped at its input, before any change, is the reader's press 
   }
 });
 
+/** The kinds of field whose value is typed text alone: an `<input>` of each text-entry type, a
+ *  `<textarea>` and a content-editable element (`controlOf`). */
+const TEXT_ENTRY_KINDS = [
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "textarea",
+  "content-editable",
+];
+
+// (bp) An `input` on a field that takes typed text is typing, and no press of the reader's
+// (`isPress`), as a character typed there is none (bi): an `<input>` of type text, search, email,
+// url, tel, password or number, a `<textarea>`, a content-editable element. So in the Filter panel
+// of (bk), the field an update takes away at its `input`, before any `change`, is a loss the reader
+// did not cause: the focus stays on the page, as it did before the page had a rescue, and nothing
+// scrolls - where the date box of (bo), whose `input` is a pick, walks back to the Author box.
+// With Chromium's `focusout` and with none.
+test("an input on a field that takes typed text is no press, so the field taken away at it leaves the focus on the page", async () => {
+  // Where the loss left the focus for each kind: on the page or not, and whether anything scrolled.
+  const landed: Record<string, object> = {};
+  const quiet: Record<string, object> = {};
+  for (const kind of TEXT_ENTRY_KINDS) {
+    for (const withFocusout of [true, false]) {
+      const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
+      const scrolls = spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await withRescue(async () => {
+          const field = controlOf(kind);
+          focusInFilterPanel(field);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          if (withFocusout) lose(field);
+          else field.remove();
+          await settled();
+          landed[named] = {
+            onPage: document.activeElement === document.body,
+            scrolled: scrolls.mock.calls.length > 0,
+          };
+        });
+      } finally {
+        scrolls.mockRestore();
+      }
+      quiet[named] = { onPage: true, scrolled: false };
+    }
+  }
+  expect(landed).toEqual(quiet);
+});
+
 /** A control of `kind`: a `<select>`, a `<textarea>`, a content-editable `<div>`, else an
  *  `<input>` of that type. */
 function controlOf(kind: string): HTMLElement {
@@ -2310,26 +2609,15 @@ test("a change on a control that fires it at the reader's pick is their press, s
 // email, url, tel, password or number, a `<textarea>`, a content-editable element - is the
 // field's commit on blur, which Chromium fires as an update takes the focused field away, and no
 // press of the reader's (`isPress`), as in (bi). So in the Filter panel of (bk), the field's
-// removal in the task of that `change` is a loss the reader did not cause: the focus passes over
-// the Author box, which takes typed text, and lands on the Status trigger, in no row, and nothing
-// scrolls.
+// removal in the task of that `change` is a loss the reader did not cause: the focus stays on the
+// page - not on the Author box, which takes typed text, nor on the Status trigger before it, in a
+// panel that is no modal - and nothing scrolls.
 test("a change on a field whose value is typed text is no press, so the field's removal takes the uncaused path", async () => {
-  const kinds = [
-    "text",
-    "search",
-    "email",
-    "url",
-    "tel",
-    "password",
-    "number",
-    "textarea",
-    "content-editable",
-  ];
-  // Where the loss landed for each kind, with Chromium's `focusout` and with none: the element
-  // holding the focus, whether it is in a row or takes typed text, and whether anything scrolled.
+  // Where the loss left the focus for each kind, with Chromium's `focusout` and with none: on the
+  // page or not, and whether anything scrolled.
   const landed: Record<string, object> = {};
   const quiet: Record<string, object> = {};
-  for (const kind of kinds) {
+  for (const kind of TEXT_ENTRY_KINDS) {
     for (const withFocusout of [true, false]) {
       const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
       const scrolls = spyOn(Element.prototype, "scrollIntoView");
@@ -2343,18 +2631,15 @@ test("a change on a field whose value is typed text is no press, so the field's 
           if (withFocusout) lose(field);
           else field.remove();
           await settled();
-          const focused = document.activeElement as HTMLElement;
           landed[named] = {
-            focus: focusedName(),
-            inRow: inRow(focused),
+            onPage: document.activeElement === document.body,
             scrolled: scrolls.mock.calls.length > 0,
-            takesText: takesText(focused),
           };
         });
       } finally {
         scrolls.mockRestore();
       }
-      quiet[named] = { focus: "Status", inRow: false, scrolled: false, takesText: false };
+      quiet[named] = { onPage: true, scrolled: false };
     }
   }
   expect(landed).toEqual(quiet);

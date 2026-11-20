@@ -355,6 +355,7 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const externalLinks = issue.external_links ?? [];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
   // title always takes its own row (basis-full) and the state controls and details line share
   // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
@@ -687,11 +688,18 @@ export function IssueHeader({
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {(issue.external_links ?? []).map((link) => (
-            <div className="flex shrink-0 items-center" key={link.url}>
-              <GitHubLink link={link} />
-            </div>
-          ))}
+          {externalLinks.length === 0 ? null : (
+            // The issue's external links as a list, a link to an item. The list keeps the rail's
+            // gap between its items, so each link stands where it would as an item of the rail,
+            // and it is drawn only while there is a link, so it adds no gap at the rail's end.
+            <ul aria-label="External links" className="flex shrink-0 items-center gap-2">
+              {externalLinks.map((link) => (
+                <li className="flex shrink-0 items-center" key={link.url}>
+                  <GitHubLink link={link} />
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         {referencesOpen ? (
           <ReferencedBy

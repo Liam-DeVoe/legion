@@ -32,7 +32,6 @@ import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
-import { ROW_MARKER } from "../../components/row-marker";
 import { SearchBox } from "../../components/SearchBox";
 import { Tooltip, useTooltip } from "../../components/Tooltip";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -336,7 +335,6 @@ const BoardCard = memo(function BoardCard({
       style={style}
       {...attributes}
       {...listeners}
-      {...ROW_MARKER}
     >
       <CardBody item={item} phaseTime={phaseTime} place={place} unread={unread} />
     </article>
