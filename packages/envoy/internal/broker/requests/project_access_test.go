@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -288,8 +290,9 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 }
 
 // TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest: anyone may approve PRIV_HUMAN by owner and
-// tier, but a person outside PRIV is refused record.ErrNotApprover, approving or denying it, and
-// the request stays pending; a person on PRIV's list approves it.
+// tier, but a person outside PRIV is refused record.ErrNotApprover, approving or denying it, with
+// pgx.ErrNoRows beside it, the answer every read of the record gives them, and the request stays
+// pending; a person on PRIV's list approves it.
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
@@ -298,8 +301,8 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
 	for _, approve := range []bool{true, false} {
-		if _, err := m.ApplyDecision(t.Context(), *request.RecordID, approve, outsider); !errors.Is(err, record.ErrNotApprover) {
-			t.Fatalf("a decision (approve %v) by %s, outside PRIV = %v; want record.ErrNotApprover", approve, outsider, err)
+		if _, err := m.ApplyDecision(t.Context(), *request.RecordID, approve, outsider); !errors.Is(err, record.ErrNotApprover) || !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("a decision (approve %v) by %s, outside PRIV = %v; want record.ErrNotApprover and pgx.ErrNoRows", approve, outsider, err)
 		}
 		if got, err := m.Get(t.Context(), request.ID); err != nil || got.State != "pending" {
 			t.Fatalf("after the outsider's decision (approve %v) the request is %+v, %v; want pending", approve, got, err)
@@ -307,6 +310,33 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	}
 	if decision, err := m.ApplyDecision(t.Context(), *request.RecordID, true, insider); err != nil || decision.GrantID == "" {
 		t.Fatalf("an approval by %s, on PRIV's list = %+v, %v; want a grant", insider, decision, err)
+	}
+}
+
+// TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest: PRIV_HUMAN's request is expired,
+// and its approver is anyone. A person outside PRIV who names its record is answered
+// pgx.ErrNoRows, the answer an id no record has, and nothing is dismissed: the request stays on
+// the expired list of the fixture's operator, the person responsible for it, who is on PRIV's
+// list. A person on PRIV's list then dismisses it. An id no record has answers the same (control).
+func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	nameProjects(t, m, enr, privProject)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	if err != nil || request.RecordID == nil {
+		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
+	}
+	pastDeadline(t, m, request.ID)
+	if _, err := m.Dismiss(t.Context(), *request.RecordID, outsider); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("a dismissal by %s, outside PRIV = %v; want pgx.ErrNoRows, as for an id no record has", outsider, err)
+	}
+	if _, err := m.Dismiss(t.Context(), "0000000000000000000000000000000000000000000000000000000000000000", outsider); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("a dismissal of an id no record has = %v; want pgx.ErrNoRows (control)", err)
+	}
+	if _, listed := listedRow(t, m, fixtureOperator, PendingStates{Expired: true}, *request.RecordID); !listed {
+		t.Fatalf("%s's expired list lacks %s after the outsider's dismissal; want it still there", fixtureOperator, *request.RecordID)
+	}
+	if d, err := m.Dismiss(t.Context(), *request.RecordID, insider); err != nil || !d.Wrote {
+		t.Fatalf("a dismissal by %s, on PRIV's list = %+v, %v; want it written", insider, d, err)
 	}
 }
 

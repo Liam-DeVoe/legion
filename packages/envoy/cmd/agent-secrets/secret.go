@@ -949,22 +949,15 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 
 // reread is rereadAfter's reread: it asks the broker, prints its answer, and answers it, with ok
 // false when the answer contradicts the write or the broker could not be asked, which it printed.
+// It is for a write known to have landed: a write whose outcome is open is reread by rereadOpen,
+// which claims nothing of it.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but %s could not be asked to reread %s, so it serves the change only from its next reload: %v\n", form, s.storeName(), s.src.brokerAt(), name, err)
 		return r, false
 	}
-	switch {
-	case r.Served && r.Type != "":
-		fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), r.Type)
-	case r.Served:
-		fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
-	case !wantServed && r.Reason == policy.ReasonAbsent:
-		fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
-	default:
-		fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), r.Reason)
-	}
+	printReread(s, stdout, name, r, !wantServed, restorable)
 	switch {
 	case wantServed && !r.Served:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), r.Reason)
@@ -974,6 +967,53 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantS
 		return r, false
 	}
 	return r, true
+}
+
+// printReread prints the broker's answer to a reread of name: served (with its type), deleted
+// (after a delete, which deleted is; restorable is when it stops being restorable), or refused
+// with its reason.
+func printReread(s *secretSession, stdout io.Writer, name string, r Reread, deleted bool, restorable *time.Time) {
+	switch {
+	case r.Served && r.Type != "":
+		fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), r.Type)
+	case r.Served:
+		fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
+	case deleted && r.Reason == policy.ReasonAbsent:
+		fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
+	default:
+		fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), r.Reason)
+	}
+}
+
+// rereadOpen asks the broker to reread name after a write whose answer left open whether it
+// landed (writeUnknown), and prints the broker's answer without judging it, since either outcome
+// is possible. When the broker cannot be asked, it says so and names the reread to ask for once
+// the store holds what the person wants, and nothing of when the broker would serve a change on
+// its own: that depends on the write, which may not have landed.
+func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
+	r, err := s.broker.RereadSecret(s.ctx, name)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s: %v. Once the store holds what you want, ask for the reread with `%s`\n", form, s.src.brokerAt(), name, err, rereadCommand(name))
+		return
+	}
+	printReread(s, stdout, name, r, false, nil)
+}
+
+// rereadCommand is the shell command that asks the broker to reread name: POST
+// /v1/secrets/{name}/reread at the address brokerURLVar holds, without the slashes it ends in, as
+// brokerBaseURL reads it (the broker's mux answers a path with a doubled slash with a redirect,
+// which curl would not follow and -f would not fail on). It stops naming the config file where
+// the shell has no such variable, since this CLI may have read the address from that file, and
+// curl exits non-zero naming the status of a broker's refusal (-sSf). The CLI prints no broker
+// address itself, and name has passed policy.NameToSlug, so it holds no shell metacharacter.
+func rereadCommand(name string) string {
+	return fmt.Sprintf(`u=${%s:?set it to the broker address in ~/.config/agent-secrets/config} && curl -sSf -X POST "${u%%"${u##*[!/]}"}/v1/secrets/%s/reread"`, brokerURLVar, name)
+}
+
+// secretShowCommand is the `secret show` that reads name's tags and versions under the sign-in
+// this session used: the command every line names that sends a person to read what a write left.
+func secretShowCommand(s *secretSession, name string) string {
+	return pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
 }
 
 // secretView is what list and show print of one secret: never its value.

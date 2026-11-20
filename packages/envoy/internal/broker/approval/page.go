@@ -634,11 +634,12 @@ const (
 // who pressed approve reads which secret refused it and why rather than one fixed sentence. A
 // record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
 // decided by nobody, and the POST's other records are decided as ever: the page it lands on says
-// that one is unavailable. A refusal record.ErrNotApprover carries for a record whose approver
-// line names someone else is said by the page it lands on in its own words ("not yours to
-// decide"), and carries no code; one for a record login may still see and decide is the current
-// policy's — its owner, a max-grant or a withheld name moved since the page was printed — since a
-// private project's refusal hides the record.
+// that one is unavailable. A record of a private project login may not see is "no such record",
+// as for an id no record has (the machine's refusal carries pgx.ErrNoRows), so the POST tells them
+// nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line names
+// someone else is said by the page it lands on in its own words ("not yours to decide"), and
+// carries no code; one for a record login may still see and decide is the current policy's — its
+// owner, a max-grant or a withheld name moved since the page was printed.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -656,6 +657,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "denied: " + decision.Detail, "", true
 	case err == nil:
 		return decision.State, "", true
+	case errors.Is(err, pgx.ErrNoRows):
+		return "no such record", "", false
 	case errors.Is(err, requests.ErrExpired):
 		return "expired", "", false
 	case errors.Is(err, requests.ErrTerminal):

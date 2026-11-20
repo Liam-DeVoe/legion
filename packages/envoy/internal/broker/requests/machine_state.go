@@ -1450,13 +1450,20 @@ type Dismissal struct {
 // with a new request. A record is dismissed once, for every list that holds it, so a shared
 // request one person dismisses leaves everybody's list.
 //
-// Its refusals are pgx.ErrNoRows for an id that names no record; record.ErrNotApprover when the
-// record's approver is neither record.CanonicalLogin(login) nor record.AnyoneApprover, which is
-// the list's own rule for whose list holds a record, and for an empty login or one that is
-// record.AnyoneApprover itself, which name nobody; ErrNotExpired for a record nobody has decided
-// whose deadline has not passed; and ErrTerminal for every other record, one approved, denied or
-// revoked, and a secret request cancelled before its deadline. A secret request cancelled after
-// its deadline is expired, and is dismissed like any other.
+// Its refusals are pgx.ErrNoRows for an id that names no record, and for a secret request login
+// may not see (MaySee: one of a private project they are not on), which is the answer every other
+// read of the record gives them, so a person outside a private project learns nothing of its
+// records from a dismissal that names one; ErrProjectAccessUnavailable where Dispatch could not
+// say whether login may see it; record.ErrNotApprover when the record's approver is neither
+// record.CanonicalLogin(login) nor record.AnyoneApprover, which is the list's own rule for whose
+// list holds a record, and for an empty login or one that is record.AnyoneApprover itself, which
+// name nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
+// ErrTerminal for every other record, one approved, denied or revoked, and a secret request
+// cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
+// dismissed like any other.
+//
+// The person rule is read on the pool before the transaction (refuseUnseen), since it may ask
+// Dispatch, and no call to Dispatch runs in a transaction that holds locks.
 //
 // It is one transaction, and it reads the record's state under a share lock taken before the read:
 // on the requests row for a secret request, which waits for ApplyDecision's `for update` of that
@@ -1474,6 +1481,9 @@ type Dismissal struct {
 // the first's insert returns the row it wrote, and the second inserts nothing and reads the first
 // one's row back.
 func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {
+	if err := m.refuseUnseen(ctx, recordID, login); err != nil {
+		return Dismissal{}, err
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Dismissal{}, err
@@ -1522,6 +1532,26 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	}
 	slog.Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
 	return d, nil
+}
+
+// refuseUnseen answers pgx.ErrNoRows for a secret request login may not see (MaySee), as for an id
+// no record has, and nil for one they may see and for a machine login, which belongs to no
+// project. A record Dispatch could not answer for is ErrProjectAccessUnavailable, and an id that
+// names no record pgx.ErrNoRows. It reads the record and asks Dispatch on the pool, so a write
+// that names a record calls it before its transaction.
+func (m *Machine) refuseUnseen(ctx context.Context, recordID, login string) error {
+	d, err := m.ReadRecord(ctx, recordID)
+	if err != nil || d.Kind != record.KindAgentSecret {
+		return err
+	}
+	may, err := m.MaySee(ctx, record.CanonicalLogin(login), d)
+	switch {
+	case err != nil:
+		return err
+	case !may:
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 // ExpirePending expires every pending request past its deadline, writing the state transition,

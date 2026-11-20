@@ -1,10 +1,13 @@
 package requests
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,7 +87,7 @@ func (f failForPerson) States(ctx context.Context, projects []string) (map[strin
 
 // strandedRow is the fixture operator's request naming TEAM-7, made while TEAM is public; TEAM is
 // then private with insider alone on its list, so the operator, its responsible person, may no
-// longer see it, and the fallback lists it for insider (listedFor).
+// longer see it, and the fallback lists it for insider (listedInStead).
 func strandedRow(t *testing.T) (*Machine, string) {
 	t.Helper()
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
@@ -96,14 +99,26 @@ func strandedRow(t *testing.T) (*Machine, string) {
 	return m, *req.RecordID
 }
 
-// TestTheFallbackFailsClosed: listedFor lists a row whose responsible person may not see it only
-// for a reader whose own read answered that they may, and whose read of that person answered
-// that they may not. A read that fails leaves the row off, whichever read it is:
+// capturedLog is every line the package's slog writes at WARN or above while the test runs.
+func capturedLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
+}
+
+// TestTheFallbackFailsClosed: listedInStead lists a row whose responsible person may not see it
+// only for a reader whose own read answered that they may, and whose read of that person
+// answered that they may not. A read that fails leaves the row off, whichever read it is:
 //   - control: the stranded row is on insider's list and off outsider's;
 //   - outsider's own read fails: the row stays off outsider's list, though the responsible
 //     person's read would answer;
 //   - the responsible person's read fails: the row stays off insider's list;
-//   - an outage: the stranded row is off, and insider's own row touching no project is listed.
+//   - an outage: the stranded row is off insider's list, and the row it left off is logged,
+//     naming the record and its responsible person, so a request an outage leaves on nobody's
+//     list says so.
 func TestTheFallbackFailsClosed(t *testing.T) {
 	t.Run("control", func(t *testing.T) {
 		m, stranded := strandedRow(t)
@@ -121,17 +136,13 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 	})
 	t.Run("an outage", func(t *testing.T) {
 		m, stranded := strandedRow(t)
-		mine, mineKey := newEnrollment(t, m.Store, "session", "box-plain-own", new(insider), nil)
-		plain, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "no issue named", "SHARED_KEY"), "", nil)
-		if err != nil || plain.RecordID == nil {
-			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", plain, err)
-		}
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
 		dispatch.SetDown(true)
+		logged := capturedLog(t)
 		wantListed(t, m, stranded, []string{insider}, nil)
-		wantListed(t, m, *plain.RecordID, []string{insider}, []string{insider})
-		if dispatch.Calls() == 0 {
-			t.Fatal("Dispatch was never asked, so the outage was never seen")
+		line := logged.String()
+		if !strings.Contains(line, rowUnansweredMessage) || !strings.Contains(line, stranded) || !strings.Contains(line, "responsible="+fixtureOperator) {
+			t.Fatalf("the list logged %q; want one line saying it left off %s, naming its responsible person %s", line, stranded, fixtureOperator)
 		}
 	})
 }
@@ -198,7 +209,7 @@ func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
 // is listed for the person responsible for the agent that made it (responsiblePerson), and a
 // private project's request for nobody outside the project (MaySee). Where the responsible person
 // is outside the project, the request is listed for everyone who may see it instead
-// (listedFor), so it waits where somebody sees it:
+// (listedInStead), so it waits where somebody sees it:
 //   - an outsider's own session asks with a reason naming a PRIV issue: the two people on PRIV's
 //     list, the insider and the fixture's operator, list it, and the outsider does not;
 //   - the operator's request names a TEAM issue while TEAM is public, and is the operator's alone;

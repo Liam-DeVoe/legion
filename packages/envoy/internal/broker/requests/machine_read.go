@@ -1397,8 +1397,9 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // and past its deadline it reads expired, as every request does.
 //
 // An agent_secret record waiting on $2, record.AnyoneApprover, is read with the person its notify
-// column names (responsiblePerson), and PendingForApprover chooses whose list holds it (listedFor).
-// A launcher_credential record carries no notify, so it is listed for everyone.
+// column names (responsiblePerson), and PendingForApprover chooses whose list holds it
+// (listedInStead for a row whose responsible person is another). A launcher_credential record
+// carries no notify, so it is listed for everyone.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
 		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
@@ -1482,7 +1483,7 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
 // for the agent that made it, or names no such person (credential_requests.notify, Create's
 // responsiblePerson), so it waits where everyone sees it, or names a person who may not see it
-// (listedFor); and every service's machine login, whose approver is record.AnyoneApprover too. A
+// (listedInStead); and every service's machine login, whose approver is record.AnyoneApprover too. A
 // private project's request is on no list of a person outside the project (MaySee). Who may
 // decide is not this list's to say: anyone signed in decides a shared secret's request from its
 // page whether or not it is listed for them (record.MayDecide), within the person rule. A
@@ -1523,8 +1524,10 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	}
 	defer rows.Close()
 	var out []PendingSummary
-	// seen is what MaySee reads of each agent-secret row, kept beside out and read only once the
-	// rows are closed, so no call to Dispatch holds the pooled connection the read does.
+	// seen is what each agent-secret row's listing reads beside it: MaySee's credential projects
+	// and reason, and the person the record names as responsible (notify). It is kept beside out
+	// and read only once the rows are closed, so no call to Dispatch holds the pooled connection
+	// the read does.
 	type seen struct {
 		sessionProjects []string
 		reason          string
@@ -1558,29 +1561,36 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		return nil, err
 	}
 	rows.Close()
-	// Each agent-secret row is on the lists listedFor chooses: a private project's request is left
-	// off the list of everyone outside the project, since its names and its reason are that
-	// project's (MaySee), and a request is listed for the person responsible for it unless that
-	// person may not see it. A request Dispatch cannot answer for is left off too, failing closed
-	// for that row alone, and the rest of the list is answered: an outage of Dispatch hides only the
-	// rows that ask it something (logRowUnanswered). The rows that name another person as
-	// responsible may start their reads only within listFallbackBound of here, so that however many
-	// people's rows touch a project, and however slowly Dispatch answers, they cannot keep the list
-	// from its caller.
+	// Each agent-secret row is listed for the person responsible for it, and for everyone where it
+	// names none (responsiblePerson), and in either case only for a reader who may see it: a
+	// private project's request is left off the list of everyone outside the project, since its
+	// names and its reason are that project's (MaySee). A request Dispatch cannot answer for is
+	// left off too, failing closed for that row alone and logged (logRowUnanswered), and the rest
+	// of the list is answered. A row whose responsible person is someone else is listed only where
+	// that person may not see it (listedInStead), within the list's one clock, listFallbackBound
+	// from here, so that however many people's rows touch a project, and however slowly Dispatch
+	// answers, they cannot keep the list from its caller.
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
-			ok, err := m.listedFor(ctx, fallback, p, approver, reads[i].notify, reads[i].sessionProjects, reads[i].reason)
-			switch {
-			case errors.Is(err, ErrProjectAccessUnavailable):
-				m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
-				continue
-			case err != nil:
-				return nil, err
-			case !ok:
-				continue
+			notify := reads[i].notify
+			if notify != "" && notify != record.CanonicalLogin(approver) {
+				if !m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason) {
+					continue
+				}
+			} else {
+				ok, err := m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+				switch {
+				case errors.Is(err, ErrProjectAccessUnavailable):
+					m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
+					continue
+				case err != nil:
+					return nil, err
+				case !ok:
+					continue
+				}
 			}
 		}
 		visible = append(visible, p)
@@ -1589,41 +1599,48 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 }
 
 // listFallbackBound is how long after a pending list's rows are read its fallback reads, for the
-// rows that name another person as responsible (listedFor), may still start or run. It is a clock
-// from that moment, not a budget of their own: the reader's own rows, read on the list's context
-// before or between them, spend it too, so the fallback rows never take the list past it,
-// whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
+// rows that name another person as responsible (listedInStead), may still start or run. It is a
+// clock from that moment, not a budget of their own: the reader's own rows, read on the list's
+// context before or between them, spend it too, so the fallback rows never take the list past
+// it, whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
 // (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
 // project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
-// before the fallback existed.
+// before the fallback existed, and logged.
 const listFallbackBound = 2 * time.Second
 
-// listedFor answers whether reader's list holds the agent-secret row p, whose record names notify
-// as the person responsible for the agent that made it ("" for none, and for a record naming
-// reader itself as its approver). The row is listed for that person, as responsiblePerson chose,
-// and for everyone where it names none, so a person who has nothing to do with the agent is not
-// asked; either way only for a reader who may see it (MaySee), read on ctx as every list row was.
-// Where the person it names may not see the row (it belongs to a private project they are not
-// on, from when it was made or since), it is listed for every other reader who may see it, so a
-// request no longer waits where nobody sees it. Those reads run on fallback, the list's one
-// clock (listFallbackBound), the reader's first, so a row the reader may not see costs no read of
-// the other person's; a read that fails or runs out of the clock leaves the row off, as it was
-// before the fallback, and so does an outage. A row touching no project asks Dispatch nothing.
-func (m *Machine) listedFor(ctx, fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
+// listedInStead answers whether reader's list holds the agent-secret row p, whose record names
+// notify, another person, as responsible for the agent that made it. Such a row is that person's
+// (responsiblePerson), so a person who has nothing to do with the agent is not asked. Where that
+// person may not see it (it belongs to a private project they are not on, from when it was made
+// or since), it is listed for every other reader who may see it (MaySee), so a request no longer
+// waits where nobody sees it. Both reads run on fallback, the list's one clock
+// (listFallbackBound), the reader's first, so a row the reader may not see costs no read of the
+// other person's. A read that fails, or runs out of the clock, leaves the row off, as it was
+// before the fallback, failing closed, and is logged for the row (logRowUnanswered), so a request
+// an outage or the clock leaves on nobody's list says so. A row touching no project asks
+// Dispatch nothing.
+func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) bool {
 	row := "record " + p.RecordID
-	if notify == "" || notify == record.CanonicalLogin(reader) {
-		return m.maySeeRecord(ctx, row, reader, p.Identifiers, sessionProjects, reason)
+	leftOff := func(err error) bool {
+		m.logRowUnanswered("fallback "+p.RecordID, err, "list", "pending", "record", p.RecordID, "responsible", notify)
+		return false
 	}
-	if fallback.Err() != nil {
-		return false, nil
+	if err := fallback.Err(); err != nil {
+		return leftOff(err)
 	}
 	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
-	if err != nil || !mine {
-		return false, nil
+	switch {
+	case err != nil:
+		return leftOff(err)
+	case !mine:
+		return false
 	}
 	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
-	return err == nil && !theirs, nil
+	if err != nil {
+		return leftOff(err)
+	}
+	return !theirs
 }
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the

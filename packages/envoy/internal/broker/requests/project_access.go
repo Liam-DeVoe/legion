@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -370,8 +372,10 @@ func (m *Machine) logChannelsMissing(project string) {
 }
 
 // rowUnansweredMessage is the log line for a row an approver's list leaves out because the
-// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable): the
-// row is hidden from that list alone, failing closed, and the rest of the list is answered.
+// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable), or,
+// for a row whose responsible person is someone else (listedInStead), because a read failed or
+// the list's clock ran out: the row is hidden from that list alone, failing closed, and the rest
+// of the list is answered.
 const rowUnansweredMessage = "an approver's list leaves out a row whose project Dispatch could not be asked about; it is listed again once Dispatch answers"
 
 // logRowUnanswered writes rowUnansweredMessage for the one row key names, with attrs and err,
@@ -686,7 +690,9 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
 // well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
 // since. The facts and the rule's own reads are one decision, held to atDecision's bound together.
-// A refusal is record.ErrNotApprover.
+// A refusal is record.ErrNotApprover; a person's, for a record they may not see, is
+// pgx.ErrNoRows as well, since every read of the record answers them that way and the page that
+// decides tells them "no such record" (approval.Page.decide).
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
@@ -724,7 +730,7 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	case who.isJudge():
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
-	return projectFacts{}, fmt.Errorf("%w: the request belongs to a private project %s may not see", record.ErrNotApprover, record.CanonicalLogin(who.login))
+	return projectFacts{}, fmt.Errorf("%w: no such record: %w", record.ErrNotApprover, pgx.ErrNoRows)
 }
 
 // maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the

@@ -91,8 +91,7 @@ func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
 // TestAProjectsListThatIsNoListIsNotEchoed: --projects is the flag form of AGENT_SECRETS_PROJECTS,
 // and a value it cannot hold is where a credential pasted in the wrong place shows up, so enroll
 // --helper and register refuse it naming the flag and the rule, and never the value, as
-// brokerclient.TradeProjects does for the variable. Control: the variable's refusal names the
-// variable the same way.
+// brokerclient.TradeProjects does for the variable (whose own test holds that).
 func TestAProjectsListThatIsNoListIsNotEchoed(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2pw-projects-9b3e"
@@ -103,7 +102,6 @@ func TestAProjectsListThatIsNoListIsNotEchoed(t *testing.T) {
 	}{
 		{"enroll --helper --projects", "--projects", nil, []string{"enroll", "--helper", "--runtime-id", "r1", "--thumbprint", "tp1", "--projects", secret}},
 		{"register --projects", "--projects", nil, []string{"register", "--projects", secret}},
-		{"control: AGENT_SECRETS_PROJECTS", "AGENT_SECRETS_PROJECTS", []string{"AGENT_SECRETS_PROJECTS=" + secret}, []string{"register"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			env := append([]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=" + t.TempDir()}, row.env...)

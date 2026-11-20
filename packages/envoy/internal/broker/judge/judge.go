@@ -16,14 +16,15 @@
 // follow: the policy now denies a key, or a key is withheld from the session. Every other failure
 // hands the request over. The judge never grants a private project's request, since its own token
 // names no person and may see no private project: the project check hands such a request to its
-// person, and the grant asks again (requests.Machine.decisionFacts). A refusal reads nothing of
-// Dispatch, and stands whatever project the request belongs to. A run whose checks pass reads
-// what the reason points at in Dispatch — the issue it names and the ask it cites — as data, and,
-// if the machine still shows the request pending (Runner.stillPending), puts it to one model
-// through packages/envoy/agentloop, with the guidance of each key it decides as the instruction to
-// follow and everything an agent wrote as data to judge (D15). Grant is written with the approval
-// itself, in one transaction, and deny with the refusal itself; a model that gives no verdict
-// hands the request over.
+// person, and the grant asks again (requests.Machine.decisionFacts). The refusal's own write asks
+// Dispatch nothing, so it stands whatever project the request belongs to; the checks that lead to
+// a refusal read Dispatch as every check does. A run whose checks pass reads what the reason
+// points at in Dispatch — the issue it names and the ask it cites — as data, and, if the machine
+// still shows the request pending (Runner.stillPending), puts it to one model through
+// packages/envoy/agentloop, with the guidance of each key it decides as the instruction to follow
+// and everything an agent wrote as data to judge (D15). Grant is written with the approval itself,
+// in one transaction, and deny with the refusal itself; a model that gives no verdict hands the
+// request over.
 //
 // Nothing a run does is on a caller's path. A run that goes past its budget, and a broker that
 // stops serving under one, write nothing at all, and the hold then runs out, which hands the

@@ -355,6 +355,9 @@ func startSDKServer(t *testing.T, local *secrets.Local, script sdkScript) (*secr
 			fail(400, "ValidationException", "a tag is invalid")
 		case "ise":
 			fail(500, "InternalServiceError", "an error occurred on the server side")
+		case "limit":
+			// A quota refusal, which the SDK's standard retryer retries as a throttle.
+			fail(400, "LimitExceededException", "the request would exceed a quota")
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -418,6 +421,12 @@ func TestAnAWSTagWriteIsJudgedByItsAttempts(t *testing.T) {
 			script: sdkScript{"TagResource": {"ise"}}, tagN: 3,
 			want: []string{"InternalServiceError", "leaves open whether this write landed"}, notWant: open,
 			rereads: 1, tier: policy.TierAgent, maxGrantKept: true,
+		},
+		{
+			name: "set: LimitExceededException every attempt (a throttle the SDK retried)", owner: policy.OwnerShared, args: []string{"--tier", "human"},
+			script: sdkScript{"TagResource": {"limit"}}, tagN: 3,
+			want: []string{"LimitExceededException"}, notWant: []string{"leaves open"},
+			tier: policy.TierAgent, maxGrantKept: true,
 		},
 		{
 			name: "set: a shared secret's write applied, answer lost, retry denied", owner: policy.OwnerShared, args: []string{"--tier", "human"},
@@ -614,15 +623,21 @@ func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 //     write was not made; a removal that needs no second write says to retag again if the tags do
 //     not hold its change.
 //   - A set retag's one write answers it, on AWS and on GCP, and says the same.
+//   - The removal's answer and the set's answer are lost and the broker then refuses the reread,
+//     as a dropped network does to both: the retag says the broker could not be asked and names
+//     the reread to ask for, and never that the write stands or that the broker refuses the secret
+//     after it, which a person may read as "nothing more to check".
 func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 	rewrite := guarded("ada@example.com")
 	notGuessed := []string{"does not hold " + policy.RequestersRollbackGuard + " yet", "still holds " + policy.RequestersRollbackGuard, "the removal landed, so", "and API_KEY's requesters were written as"}
 	const show = "secret show API_KEY`"
 	const retagIfNot = "read the tags as they now stand with `agent-secrets secret show API_KEY`, and run this retag again if they do not hold its change"
+	const notAsked = "could not be asked to reread API_KEY"
 	for _, c := range []struct {
 		name             string
 		lose             string
 		unlisted         bool
+		rereadFails      bool
 		args, want       []string
 		requesters, tier string
 		removed          bool
@@ -647,6 +662,16 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 			want:       []string{"leaves open whether this write landed", retagIfNot},
 			requesters: rewrite, tier: policy.TierAgent, removed: false,
 		},
+		{
+			name: "the removal's answer was lost and the reread refused", lose: "untag", rereadFails: true, args: []string{"--max-grant", "none"},
+			want:       []string{"leaves open whether this write landed", "whether the removal landed is unknown", notAsked},
+			requesters: "ada@example.com", tier: policy.TierHuman, removed: true,
+		},
+		{
+			name: "a set retag's answer was lost and the reread refused", lose: "tag", rereadFails: true, args: []string{"--tier", policy.TierAgent},
+			want:       []string{"leaves open whether this write landed", retagIfNot, notAsked},
+			requesters: rewrite, tier: policy.TierAgent, removed: false,
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			secret := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
@@ -657,6 +682,9 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 			secret.Tags[policy.TagMaxGrant] = "1h"
 			local := secrets.NewLocal(secret)
 			broker := startSecretBroker(t, servedBy(local))
+			if c.rereadFails {
+				broker.failRereads(http.StatusServiceUnavailable)
+			}
 			useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: c.lose}, testAccount, adaSignIn)
 			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, c.args...)...)
 			if code != 1 {
@@ -672,6 +700,13 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 					t.Fatalf("%s: stderr %q claims %q, which the retag cannot know", c.name, stderr, claim)
 				}
 			}
+			if c.rereadFails {
+				for _, claim := range []string{"stands", "after the write"} {
+					if strings.Contains(stderr, claim) {
+						t.Fatalf("%s: stderr %q says %q of a write whose outcome is unknown", c.name, stderr, claim)
+					}
+				}
+			}
 			if n := strings.Count(stderr, show); n != 1 {
 				t.Fatalf("%s: stderr %q names %q %d times; want once", c.name, stderr, show, n)
 			}
@@ -679,7 +714,7 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 			if _, kept := tags[policy.TagMaxGrant]; kept == c.removed || tags[policy.TagRequesters] != c.requesters || tags[policy.TagTier] != c.tier {
 				t.Fatalf("tags after %s = %v; want the store's own (applied) result: max-grant removed %v, requesters %q, tier %q", c.name, tags, c.removed, c.requesters, c.tier)
 			}
-			if rereads, _ := broker.recorded(); len(rereads) != 1 || rereads[0] != "API_KEY" {
+			if rereads, _ := broker.recorded(); !c.rereadFails && (len(rereads) != 1 || rereads[0] != "API_KEY") {
 				t.Fatalf("%s: rereads %v; want one of API_KEY, since the write may have changed the tags", c.name, rereads)
 			}
 		})

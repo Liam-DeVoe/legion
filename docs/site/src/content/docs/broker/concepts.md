@@ -698,9 +698,10 @@ it. The model judge grants no private project's request
 approval asks Dispatch again, afresh and not from the 30 seconds of answers the broker keeps,
 before it is written, so a project that turned private while the judge was reading, or a session
 that took the request over and names a private project, leaves the request to a person. Its
-refusal asks Dispatch nothing, and is final whatever project the request belongs to. A sign-in
-started from a private project's request names no
-approver to the provider, since the approver is part of what the page hides.
+refusal's write asks Dispatch nothing, so a refusal is final whatever project the request belongs
+to; the checks that lead to it read Dispatch as every check does. A sign-in started from a
+private project's request names no approver to the provider, since the approver is part of what
+the page hides.
 
 ### A person's pod
 
@@ -1443,7 +1444,8 @@ Every run ends the request one of three ways:
   from the session. The request is denied under the judge's actor, and the agent reads
   `the model judge refused this request: <reason>. This request will not be granted. Tell whoever
   gave you this work.`; `agent-secrets` exits 77. Nothing tells the agent to try again. A refusal
-  grants nothing, so it asks Dispatch nothing, and stands while Dispatch cannot answer.
+  grants nothing, so its write asks Dispatch nothing, and a refusal the checks reached stands
+  while Dispatch cannot answer.
 - **Hand-over**, when the judge cannot decide: any other check fails, the model cannot be reached,
   gives no verdict or does not answer within the 20 seconds, or a Dispatch read fails. The request
   goes to its person once, as an ordinary card on the broker page. A run the broker lost, when it

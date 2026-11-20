@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -617,16 +616,16 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projec
 // enrollment route reads them: each element one project key, named once, in any order, held
 // sorted (oauthwire.ValidProjects), nil for none. An element is never split, so "PRIV CORE" is
 // refused as no project key rather than read as two projects. A refusal, which the helper sends
-// back to its caller, names the rule and never the value (brokerclient.TradeProjects), since
-// ValidProjects quotes the key it refuses.
+// back to its caller, says what every other reader of a projects setting says
+// (brokerclient.ProjectsRefusal), naming the rule and never the value, since ValidProjects quotes
+// the key it refuses.
 func sessionProjects(projects []string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
 	sorted := slices.Sorted(slices.Values(projects))
 	if err := oauthwire.ValidProjects(sorted); err != nil {
-		return nil, fmt.Errorf("projects is not a list of project keys: at most %d keys, each named once and each %s",
-			oauthwire.MaxProjects, contracts.ProjectKeyRule)
+		return nil, brokerclient.ProjectsRefusal("projects")
 	}
 	return sorted, nil
 }

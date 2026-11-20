@@ -27,14 +27,8 @@ type heldTags struct {
 // write was made against. GCP refuses the write (an etag that no longer matches), so nothing is
 // written; AWS, whose tag calls take no condition, finds the race by reading the tags back
 // (awsBackend.raceCheck), where its own write has already landed beside the other writer's, and
-// wraps errTagsRaced too.
+// marks it so (tagsLanded).
 var errTagsChanged = errors.New("another write changed the secret after this retag read it")
-
-// errTagsRaced is the part of an AWS errTagsChanged that says this retag's write landed and
-// nothing was put back, so the secret now holds both writes and the broker must be asked to
-// reread it. Nothing is restored: the tags this retag read are no more current than the other
-// writer's, and restoring them would take that writer's retag away.
-var errTagsRaced = errors.New("this retag's write landed beside another writer's, and nothing was restored")
 
 // tagsLanded is a tag write's error that came after the write itself landed: an AWS tag call takes
 // no condition, so the write is made first and read back after (awsBackend.raceCheck), and a race
@@ -45,7 +39,7 @@ type tagsLanded struct{ err error }
 
 func (e tagsLanded) Error() string { return e.err.Error() }
 
-// Unwrap is the error, so errors.Is still finds errTagsChanged and errTagsRaced through it.
+// Unwrap is the error, so errors.Is still finds errTagsChanged through it.
 func (e tagsLanded) Unwrap() error { return e.err }
 
 // writeLanded reports whether err, a tag write's error, came after the write landed (tagsLanded).
@@ -56,8 +50,8 @@ func writeLanded(err error) bool {
 
 // tagsUnknown is a tag write's error that leaves open whether the write landed: the store answered
 // with no definite refusal, a service fault, an outage or a lost connection, which may follow a
-// call it carried out (an AWS call is a definite refusal only when it made one attempt whose code
-// awsDefiniteRefusals lists, awsAttempts.definiteRefusal; a GCP update only for a code
+// call it carried out (an AWS call is a definite refusal only when every attempt it made ended in
+// a code awsDefiniteRefusals lists, awsAttempts.definiteRefusal; a GCP update only for a code
 // gcpDefiniteRefusal names). Its text is the store's error with that said after it. It marks the
 // error so a message says the outcome is unknown (writeUnknown) rather than describe the tags as
 // they were before the write. It has no Unwrap: the store's error is in its text alone, so no reader
@@ -280,21 +274,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
-			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
-			if rewrite != "" && (writeLanded(err) || writeUnknown(err)) {
-				// The removal landed, or may have: another writer changed the tags beside it, they
-				// could not be read back, or the store's answer was lost. So the retag writes
-				// nothing more on them: the requesters rewrite would send this retag's owner and
-				// tier over whatever the store now holds.
-				outcome := "the removal landed"
-				if writeUnknown(err) {
-					outcome = "whether the removal landed is unknown"
-				}
-				fmt.Fprintf(stderr, "agent-secrets %s: %s, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
-					form, outcome, name, rewrite, pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
-			} else if writeUnknown(err) {
-				printUnknownRetag(s, stderr, form, name)
-			}
+			reportRemovalFailure(s, stderr, form, name, rewrite, err)
 			rereadIfLanded(s, stdout, stderr, form, name, err)
 			return 1
 		}
@@ -304,37 +284,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		}
 		if rewrite != "" {
 			if err := writeGuardRewrite(s, slug, after, rewrite); err != nil {
-				show := fmt.Sprintf("looked in %s. Read the tags as they now stand with `%s`", s.storeName(), pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
-				switch {
-				case writeLanded(err):
-					// AWS: the rewrite landed, and its read-back then found another writer's
-					// retag beside it, or could not be read (awsBackend.raceCheck). The requesters
-					// tag holds what this retag wrote.
-					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, and %s's requesters were written as %q, but %v; %s\n", form, name, rewrite, s.refusedAs(err), show)
-				case writeUnknown(err):
-					// The store's answer to the rewrite leaves open whether it landed: the
-					// requesters tag holds what this retag wrote or what it held before, and only
-					// reading it tells which.
-					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but whether %s's requesters were written as %q is unknown: %v; %s\n", form, name, rewrite, err, show)
-				case errors.Is(err, errTagsChanged):
-					// GCP: the store refused the rewrite before acting, because another writer
-					// changed the secret after the removal. The requesters tag holds what that
-					// writer left, which only reading it tells.
-					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but another writer changed %s's tags after it, so its requesters were not written as %q: %v; %s\n", form, name, rewrite, s.refusedAs(err), show)
-				default:
-					// The store refused the rewrite before acting on it, or the read made before
-					// it failed and nothing was sent, so what the requesters tag holds now is what
-					// it held before this retag: the removal did not touch it. The guard was
-					// either leaving it (harmless to leave) or joining it (the secret keeps a
-					// project tag with no guard, which a broker from before the project tags would
-					// serve), and the two need different words.
-					_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
-					state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
-					if !guarded {
-						state = fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard)
-					}
-					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but writing %s's requesters as %q failed: %v; looked in %s. %s; run this retag again to write it\n", form, name, rewrite, s.refusedAs(err), s.storeName(), state)
-				}
+				reportRewriteFailure(s, stderr, form, name, rewrite, held, err)
 				// The removal landed, so the broker is asked to reread whatever the rewrite did.
 				rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
 				return 1
@@ -345,24 +295,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	set[policy.TagOwner], set[policy.TagTier] = owner, tier
 	if err := s.backend.setTags(s.ctx, slug, held, set); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
-		if unchecked != "" && writeLanded(err) {
-			// The write landed, so its value went unchecked as surely as after a write with no
-			// error.
-			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
-		}
-		if writeUnknown(err) {
-			printUnknownRetag(s, stderr, form, name)
-		}
-		// AWS: IAM conditioned on the request tags leaves a shared secret's owner and tier to
-		// administrators specifically. GCP has no per-secret condition on secretmanager.secrets.update,
-		// so a deployment instead grants that permission at all only to administrators for the
-		// secrets it protects this way. The line is for a definite refusal alone: a write that
-		// landed was not refused, whatever its read-back answered, and isAccessDenied does not read
-		// a write whose outcome is open (tagsUnknown) as one.
-		if s.backend.isAccessDenied(err) && !writeLanded(err) && (held.tags[policy.TagOwner] == policy.OwnerShared || owner == policy.OwnerShared) {
-			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, sharedRetagRefused)
-		}
+		reportSetFailure(s, stderr, form, name, unchecked, owner, held, err)
 		rereadIfLanded(s, stdout, stderr, form, name, err)
 		return 1
 	}
@@ -473,17 +406,100 @@ func checkRetagValue(s *secretSession, name, slug string, held heldTags, after m
 // it then reads.
 func printUnknownRetag(s *secretSession, stderr io.Writer, form, name string) {
 	fmt.Fprintf(stderr, "agent-secrets %s: read the tags as they now stand with `%s`, and run this retag again if they do not hold its change\n",
-		form, pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
+		form, secretShowCommand(s, name))
 }
 
-// rereadIfLanded asks the broker to reread name after a tag write that landed with an error
-// (writeLanded, AWS: a race beside another writer's, or a read-back that failed) or whose answer
-// leaves open whether it landed (writeUnknown). The secret's tags changed, or may have, so the
-// broker is asked to serve them as they now stand. A write the store refused before acting wrote
-// nothing (GCP's errTagsChanged alone, or a definite refusal), and needs no reread.
+// rereadIfLanded asks the broker to reread name after a tag write whose tags changed, or may
+// have. One that landed with an error (writeLanded, AWS: a race beside another writer's, or a
+// read-back that failed) is reread as a landed write is (rereadAfter), which says the write
+// stands. One whose answer leaves open whether it landed (writeUnknown) is reread by rereadOpen,
+// which prints the broker's answer and claims nothing of the write: it may not have landed, and a
+// person told it stands may skip the `secret show` that would find it did not. A write the store
+// refused before acting wrote nothing (GCP's errTagsChanged alone, or a definite refusal), and
+// needs no reread.
 func rereadIfLanded(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
-	if writeLanded(err) || writeUnknown(err) {
+	switch {
+	case writeLanded(err):
 		rereadAfter(s, stdout, stderr, form, name, true, nil)
+	case writeUnknown(err):
+		rereadOpen(s, stdout, stderr, form, name)
+	}
+}
+
+// reportRemovalFailure prints what a removal retag's removal that failed leaves: the store's
+// error, and where the removal landed or may have (another writer changed the tags beside it,
+// they could not be read back, or the store's answer was lost), that the requesters rewrite, its
+// second write, was not made, since it would send this retag's owner and tier over whatever the
+// store now holds. A removal that needs no rewrite and whose outcome is open names the
+// `secret show` that reads the tags (printUnknownRetag).
+func reportRemovalFailure(s *secretSession, stderr io.Writer, form, name, rewrite string, err error) {
+	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
+	switch {
+	case rewrite != "" && (writeLanded(err) || writeUnknown(err)):
+		outcome := "the removal landed"
+		if writeUnknown(err) {
+			outcome = "whether the removal landed is unknown"
+		}
+		fmt.Fprintf(stderr, "agent-secrets %s: %s, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
+			form, outcome, name, rewrite, secretShowCommand(s, name))
+	case writeUnknown(err):
+		printUnknownRetag(s, stderr, form, name)
+	}
+}
+
+// reportRewriteFailure prints what a requesters rewrite that failed after its removal landed
+// leaves, by what the store answered the rewrite.
+func reportRewriteFailure(s *secretSession, stderr io.Writer, form, name, rewrite string, held heldTags, err error) {
+	show := fmt.Sprintf("looked in %s. Read the tags as they now stand with `%s`", s.storeName(), secretShowCommand(s, name))
+	switch {
+	case writeLanded(err):
+		// AWS: the rewrite landed, and its read-back then found another writer's retag beside
+		// it, or could not be read (awsBackend.raceCheck). The requesters tag holds what this
+		// retag wrote.
+		fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, and %s's requesters were written as %q, but %v; %s\n", form, name, rewrite, s.refusedAs(err), show)
+	case writeUnknown(err):
+		// The store's answer to the rewrite leaves open whether it landed: the requesters tag
+		// holds what this retag wrote or what it held before, and only reading it tells which.
+		fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but whether %s's requesters were written as %q is unknown: %v; %s\n", form, name, rewrite, err, show)
+	case errors.Is(err, errTagsChanged):
+		// GCP: the store refused the rewrite before acting, because another writer changed the
+		// secret after the removal. The requesters tag holds what that writer left, which only
+		// reading it tells.
+		fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but another writer changed %s's tags after it, so its requesters were not written as %q: %v; %s\n", form, name, rewrite, s.refusedAs(err), show)
+	default:
+		// The store refused the rewrite before acting on it, or the read made before it failed
+		// and nothing was sent, so what the requesters tag holds now is what it held before this
+		// retag: the removal did not touch it. The guard was either leaving it (harmless to
+		// leave) or joining it (the secret keeps a project tag with no guard, which a broker from
+		// before the project tags would serve), and the two need different words.
+		_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
+		state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
+		if !guarded {
+			state = fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard)
+		}
+		fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but writing %s's requesters as %q failed: %v; looked in %s. %s; run this retag again to write it\n", form, name, rewrite, s.refusedAs(err), s.storeName(), state)
+	}
+}
+
+// reportSetFailure prints what a retag that sets tags leaves when its write failed: the store's
+// error; the unchecked-value line where the write landed, since its value then went unchecked as
+// surely as after a write with no error; the `secret show` to read where its outcome is open; and
+// the shared-secret line for a definite refusal of a shared secret's write. AWS: IAM conditioned
+// on the request tags leaves a shared secret's owner and tier to administrators specifically. GCP
+// has no per-secret condition on secretmanager.secrets.update, so a deployment instead grants that
+// permission at all only to administrators for the secrets it protects this way. A write that
+// landed was not refused, whatever its read-back answered, and isAccessDenied does not read a
+// write whose outcome is open (tagsUnknown) as one.
+func reportSetFailure(s *secretSession, stderr io.Writer, form, name, unchecked, owner string, held heldTags, err error) {
+	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
+	if unchecked != "" && writeLanded(err) {
+		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
+	}
+	if writeUnknown(err) {
+		printUnknownRetag(s, stderr, form, name)
+	}
+	if s.backend.isAccessDenied(err) && !writeLanded(err) && (held.tags[policy.TagOwner] == policy.OwnerShared || owner == policy.OwnerShared) {
+		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, sharedRetagRefused)
 	}
 }
 

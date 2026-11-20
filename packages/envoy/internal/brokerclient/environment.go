@@ -88,21 +88,32 @@ func TradeSession(getenv func(string) string, own string) string {
 	return strings.TrimSpace(getenv(SessionVar))
 }
 
-// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
-// grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
-// A value that is no list is an error naming the variable and the rule, never a list quietly cut
-// short, and never the value: a value the variable cannot hold is where a credential pasted into
-// the wrong variable shows up, and ParseProjects quotes the key it refuses. It is the declaration
-// a Go trade naming its projects reads them through; no Go trade of this release calls it. The
-// TypeScript client reads the same variable the same way (packages/broker-client/src/
-// environment.ts, tradeProjects).
+// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, read by
+// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through;
+// no Go trade of this release calls it. The TypeScript client reads the same variable the same
+// way (packages/broker-client/src/environment.ts, tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
-	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))
+	return ParseProjectsSetting(ProjectsVar, getenv(ProjectsVar))
+}
+
+// ParseProjectsSetting is the projects raw names, in the grammar the broker reads
+// (oauthwire.ParseProjects), sorted and each once; nil when it is blank. setting is where raw came
+// from (ProjectsVar, or a flag such as --projects), which a refusal names (ProjectsRefusal).
+func ParseProjectsSetting(setting, raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
-			ProjectsVar, oauthwire.MaxProjects, contracts.ProjectKeyRule)
+		return nil, ProjectsRefusal(setting)
 	}
 	return projects, nil
+}
+
+// ProjectsRefusal is the error for a projects setting that is no list: it names the setting and
+// the rule, never the value, and is never a list quietly cut short. A value the setting cannot
+// hold is where a credential pasted into the wrong place shows up, and oauthwire's own errors
+// quote the key they refuse. The helper's check of a register's projects says the same words.
+func ProjectsRefusal(setting string) error {
+	return fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
+		setting, oauthwire.MaxProjects, contracts.ProjectKeyRule)
 }
 
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a

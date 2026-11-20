@@ -392,12 +392,13 @@ and names the credential after it, `(as …)`, so where gcloud cannot be pointed
 metadata server, the well-known credentials file) you know whose sign-in to use.
 
 On AWS, Secrets Manager takes the value with the tags, so the secret is made in one call once the
-value is read. A `CreateSecret` the AWS SDK tried once and that was refused with an answer Secrets
-Manager gives before it acts - a name taken, access denied, a request, a parameter or a limit
-refused - says nothing was stored. Any other failure says that the store may hold the secret, with
-its value, or not, and names `agent-secrets secret show NAME` to tell which: a deadline, an outage,
-and any create the SDK tried more than once, since an attempt it retried may have made the secret,
-which the store then answers the retry with as a name already taken. Each exits 1. The broker serves
+value is read. A `CreateSecret` whose every attempt was refused with an answer Secrets Manager
+gives before it acts - a name taken, access denied, a request, a parameter or a limit refused, the
+last of which the AWS SDK retries as a throttle - says nothing was stored. Any other failure says
+that the store may hold the secret, with its value, or not, and names `agent-secrets secret show
+NAME` to tell which: a deadline, an outage, and any create one of whose attempts ended another
+way before the SDK retried it, since that attempt may have made the secret, which the store then
+answers the retry with as a name already taken. Each exits 1. The broker serves
 the secret from the next request. Secrets Manager refuses a name that is already taken, including
 one scheduled for deletion: [restore](#delete-and-restore) that one instead.
 
