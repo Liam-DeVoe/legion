@@ -442,7 +442,11 @@ func TestPromptJobHelper(t *testing.T) {
 	// AGENT_SECRETS_JOB_INTERRUPT_WATCH interrupts every wait for the signal watcher's event that
 	// could block (pollWatch's EINTR), each after 5 ms with no event, as a stream of signals would:
 	// an event already there still ends the wait, so a signal sent to the helper still acts. It
-	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED.
+	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED. With a
+	// deadline, the helper's own run fails where the prompt answered that the deadline had passed
+	// before it had on the prompt's clock: a prompt that gives up before its first wait, or at an
+	// interrupted wait, rather than at the deadline (the parent reads that run's end,
+	// helperFailure).
 	interruptWatch, watchInterrupted := os.Getenv("AGENT_SECRETS_JOB_INTERRUPT_WATCH") != "", 0
 	// firstWait is the moment the prompt first waited: its first read (readTerminal), or its first
 	// wait for the watcher's event that could block (pollWatch with a bound other than zero and no
@@ -646,6 +650,11 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 	}
 	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", deadline, label)
+	if interruptWatch && window != 0 && errors.Is(err, errValueTimedOut) {
+		if left := deadline.Sub(promptNow()); left > 0 {
+			t.Errorf("the prompt answered that its value deadline had passed %s before it did on the prompt's clock, after %d interrupted waits", left, watchInterrupted)
+		}
+	}
 	if interruptWatch {
 		fmt.Printf("WATCH_INTERRUPTED=%d\n", watchInterrupted)
 	}

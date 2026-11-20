@@ -637,21 +637,23 @@ func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) 
 // often signals interrupt its waits for the watcher's event (AGENT_SECRETS_JOB_INTERRUPT_WATCH):
 // the wait for the foreground hands each of them the deadline (waitForeground), so one interrupted
 // once the deadline has passed ends, where a wait handed no deadline was tried again for as long as
-// the signals kept coming, and the prompt never answered. The helper's count of the waits it
-// interrupted shows the signals reached them. The deadline's clock starts at the first of them,
-// so however long the machine holds the helper before the prompt's first wait, the deadline
-// passes only while the prompt waits.
+// the signals kept coming, and the prompt never answered. The deadline's clock stands still until
+// the prompt's first wait, so however long the machine holds the helper before that wait, the
+// deadline passes only while the prompt waits; the helper's own run fails where the prompt
+// answered the deadline before it passed on that clock, as one that gives up before its first
+// wait or at an interrupted one does, and the test reads that run's end (helperFailure). The
+// count of the waits the helper interrupted, which shows the signals reached them, is logged.
 func TestPromptJobValueDeadlineEndsAForegroundWaitSignalsKeepInterrupting(t *testing.T) {
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s AGENT_SECRETS_JOB_INTERRUPT_WATCH=1 "
 	s.start(false, true)
 	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
 	s.wait("LABEL_HELD=false")
+	if failure := s.helperFailure(); failure != "" {
+		t.Fatalf("the helper's own run failed: %q", failure)
+	}
 	_, rest, _ := strings.Cut(s.out.String(), "WATCH_INTERRUPTED=")
 	interrupted, _ := strconv.Atoi(rest[:len(rest)-len(strings.TrimLeft(rest, "0123456789"))])
-	if interrupted == 0 {
-		t.Fatalf("no wait for the watcher's event was interrupted: %q", s.out.String())
-	}
 	t.Logf("the helper interrupted %d waits for the watcher's event", interrupted)
 }
 
