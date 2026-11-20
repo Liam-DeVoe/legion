@@ -263,9 +263,9 @@ export function personDecision(id: string, partial: Partial<Decision> = {}): Dec
 }
 
 /** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
- *  agent's decision by the spec's block node that holds it, a person's by the ask's own node,
- *  and each member the node holds none of null. */
-function entryOf(row: Decision): DecisionEntry {
+ *  agent's decision by the spec's block node that holds it, with the asks its `from_ask`
+ *  settles, a person's by the ask's own node, and each member the node holds none of null. */
+export function entryOf(row: Decision): DecisionEntry {
   const person = row.kind === "person";
   const block = `${SPEC_DOCUMENT.ref_key}#${row.block_id}`;
   return {
@@ -286,6 +286,7 @@ function entryOf(row: Decision): DecisionEntry {
           block_id: row.block_id,
           ref: `dispatch://${KEY}/spec`,
         },
+    from_ask: person ? [] : (row.asks ?? []),
     kept: row.kept,
     kept_by: row.kept?.kept_by ?? null,
     kept_text_sum: row.kept === null ? null : row.text_sha256,
@@ -311,12 +312,13 @@ function entryOf(row: Decision): DecisionEntry {
 }
 
 /** The decisions read over `made`, as this build's server answers it (`api/decisions.go`): an
- *  entry for each, the same decisions in the old shape, and no decisions document, which is
- *  retired. A Change's anchor names the spec by its id, which the issue's documents tie to the
- *  decision's address (`decisionDocumentId`). */
+ *  entry for each, which is all a reader of this build reads of it, so the old `decisions` member
+ *  holds none of them, and no decisions document, which is retired. A Change's anchor names the
+ *  spec by its id, which the issue's documents tie to the decision's address
+ *  (`decisionDocumentId`). */
 export function decisionsRead(made: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...made],
+    decisions: [],
     document: null,
     entries: made.map(entryOf),
     open_questions: [],

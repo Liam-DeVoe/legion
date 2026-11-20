@@ -242,7 +242,10 @@ type decisionEntry struct {
 	ChangedVersion int                  `json:"changed_version"`
 	ChangedAt      *time.Time           `json:"changed_at"`
 	Shaped         []model.DecisionLink `json:"shaped"`
-	Readings       []decisionReading    `json:"readings"`
+	// FromAsk is, for a decision node, the id of each ask its from_ask tuples reach (the questions
+	// it settles, decisionread's Decision.Asks), and [] for an ask's own entry.
+	FromAsk  []string          `json:"from_ask"`
+	Readings []decisionReading `json:"readings"`
 
 	// openedAt is the ask row's created_at, which orders the open asks among themselves.
 	openedAt time.Time
@@ -539,6 +542,10 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 			entry.KeptBy, entry.KeptTextSum = &keptBy, &keptSum
 		}
 		entry.ChangedVersion, entry.ChangedAt, entry.Shaped = decision.ChangedVersion, decision.ChangedAt, decision.Links
+		entry.FromAsk = []string{}
+		if entry.Node.Kind != graphstore.KindAsk {
+			entry.FromAsk = append(entry.FromAsk, decision.Asks...)
+		}
 		read = append(read, entry)
 	}
 	entries = read

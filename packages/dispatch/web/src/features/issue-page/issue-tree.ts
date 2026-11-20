@@ -39,13 +39,13 @@ import {
  * ## The spine
  *
  * The `from` edge is the single placement authority: a decision sits under the question it
- * settles (`Decision.asks`), a reading under the ask or the decision it reads (its `part_of`), a
- * requirement under the node its `from` names, a check and a plan task under each requirement
- * their `serves` names (edited under the first, transcluded under the rest), and a result under
- * its check. A decision's `shaped` edge - the decisions read's links
- * (`Decision.links`) - is that decision's chip and places nothing; where a requirement's `from`
- * names one node and a decision that is not that node says it shaped the requirement, the two
- * disagree, the node is placed by `from` and the disagreement is drawn as a gap. A node whose
+ * settles (its entry's `from_ask`), a reading under the ask or the decision it reads (its
+ * `part_of`), a requirement under the node its `from` names, a check and a plan task under each
+ * requirement their `serves` names (edited under the first, transcluded under the rest), and a
+ * result under its check. A decision's `shaped` edge - the decisions read's links
+ * (`DecisionEntry.shaped`) - is that decision's chip and places nothing; where a requirement's
+ * `from` names one node and a decision that is not that node says it shaped the requirement, the
+ * two disagree, the node is placed by `from` and the disagreement is drawn as a gap. A node whose
  * spine parent is absent sits under the issue, as a node like any other and never as an error:
  * no gap says so, because under today's reads every node of its kind lacks one, and a lack every
  * sibling shares tells none of them apart (R10). Every edge that is not the spine is a chip
@@ -243,8 +243,8 @@ export interface TreeNode {
   readonly statement?: true;
   /** The node's words as the read that carried them holds them, which is not the same for every
    *  kind: the issue's key and title; a child issue's title; an ask's question, a comment's and a
-   *  message's body, and a decision's own words, its `decision` block's content (`Decision.text`
-   *  with the lines that open and close the block left out), each as stored; a result's
+   *  message's body, and a decision's own words, its `decision` block's content (its entry's
+   *  `text` with the lines that open and close the block left out), each as stored; a result's
    *  `observed`, as recorded; a statement's the coverage read's plain words of its block, and a
    *  check's the results read's, each block's text runs joined by single spaces with
    *  the words of every link and every `dispatch://` reference left out (`blockWords`,
@@ -256,10 +256,10 @@ export interface TreeNode {
   readonly text: string;
   /** The server's reading of the node's words, where the read that carried them sends one. For
    *  an ask, a comment, a message and a decision it is the reading of `text` itself: the question
-   *  (`question_tree`), the body (`body_tree`), the decision's own content (`Decision.text_tree`
-   *  with its block's content at the top level). For a block it is the reading of the block's
-   *  whole stored text and never of `text`, which for a block is an excerpt or plain words with
-   *  its references left out: a statement's on the coverage read and a check's on the results
+   *  (`question_tree`), the body (`body_tree`), the decision's own content (its entry's
+   *  `text_tree` with its block's content at the top level). For a block it is the reading of the
+   *  block's whole stored text and never of `text`, which for a block is an excerpt or plain words
+   *  with its references left out: a statement's on the coverage read and a check's on the results
    *  read (`text_tree`), else the one its block carried, and every other
    *  block's on the batched reference read (`ReferenceTarget.text_tree`). The row draws the node's
    *  words from it, so stored markdown is drawn as what it says and the browser parses none of it
@@ -326,13 +326,12 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  /** The decisions read. The tree reads its `decisions` member, which this build's server
-   *  answers from the store: each agent's decision, a `decision` block of any document of the
-   *  issue, and each answered ask, which is a person's decision (`tree-drafts.ts`'s
-   *  `addDecisions`); and of its `entries` who decided each agent's decision (`decided_by`),
-   *  which that member does not carry and which is the decision's author (`addDecisions`), and
-   *  the readings each one lists, which place a reading under the node its `part_of` reaches
-   *  (`addReadingParents`). It reads no `document`, which names no decision. */
+  /** The decisions read. The tree reads its `entries` and nothing else of it: each agent's
+   *  decision, a `decision` block of any document of the issue, and each answered ask, which is a
+   *  person's decision (`tree-drafts.ts`'s `addDecisions`, `isDecisionEntry`), with who decided
+   *  each agent's decision (`decided_by`), which is the decision's author, and the questions it
+   *  settles (`from_ask`); and the readings every entry lists, which place a reading under the
+   *  node its `part_of` reaches (`addReadingParents`). */
   readonly decisions?: IssueDecisions;
   /** The issue's comments, each a node of the tree (`addTurns`), with each body's reading. */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
