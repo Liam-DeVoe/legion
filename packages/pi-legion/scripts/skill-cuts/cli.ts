@@ -32,9 +32,12 @@
  * <command>` runs `<command> <that file>` through `sh` when a case's stage ends.
  *
  * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
- *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway's Anthropic
- *   Messages route does not serve is dropped; the three judge controls (judge.ts's CONTROLS) run,
- *   and a case that fails any is dropped, its drop naming each control it failed; then a capture
+ *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway does not serve
+ *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
+ *   dropped as `model-not-served`, and a case on a served model runs as that served
+ *   `provider/model`, on the gateway route of its capture's body (gateway.ts); the three judge
+ *   controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop naming
+ *   each control it failed; then a capture
  *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
  *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
@@ -110,7 +113,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
-import { main as attributeMain } from "./attribute";
+import { main as attributeMain, modelId } from "./attribute";
 import { main as buildMain } from "./build";
 import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
@@ -122,9 +125,9 @@ import {
   BudgetSpent,
   createGateway,
   type Gateway,
-  type MessagesBody,
   PRICE_SOURCE,
   PRICES,
+  type RequestBody,
   type Spent,
 } from "./gateway";
 import {
@@ -292,15 +295,16 @@ function field(value: unknown, key: string): unknown {
 }
 
 /** The settings of a request body that the request log records: its model, thinking type and
- *  budget, max_tokens, temperature, effort, and whether it streams. Nothing else of the body. */
-export function requestSettings(body: MessagesBody): Record<string, unknown> {
+ *  budget, max_tokens (a Responses body's `max_output_tokens`), temperature, effort (a Responses
+ *  body's `reasoning.effort`), and whether it streams. Nothing else of the body. */
+export function requestSettings(body: RequestBody): Record<string, unknown> {
   return {
     model: body.model,
     thinking: field(body.thinking, "type") ?? null,
     thinking_budget: field(body.thinking, "budget_tokens") ?? null,
-    max_tokens: body.max_tokens ?? null,
+    max_tokens: body.max_tokens ?? body.max_output_tokens ?? null,
     temperature: body.temperature ?? null,
-    effort: field(body.output_config, "effort") ?? null,
+    effort: field(body.output_config, "effort") ?? field(body.reasoning, "effort") ?? null,
     stream: body.stream === true,
   };
 }
@@ -662,6 +666,7 @@ const SpentRecord = z.strictObject({
   output: z.number(),
   cacheRead: z.number(),
   cacheWrite: z.number(),
+  reasoning: z.number().optional(),
   usd: z.number(),
 });
 
@@ -853,7 +858,7 @@ interface Behaviour {
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
- *  send through it, each logged. */
+ *  send through it, each logged. `servedModels` are the configuration's. */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -861,6 +866,7 @@ interface Runner extends Behaviour {
   readonly gateway: Gateway;
   readonly replays: Gateway;
   readonly judge: Gateway;
+  readonly servedModels: readonly string[];
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
@@ -954,12 +960,14 @@ function noVerdict(score: SkillScore): string | undefined {
   return undefined;
 }
 
-/** The provider and the model id of a case's model (`anthropic/<id>`, or `<id>` alone). */
-function modelOf(model: string): { provider: string; id: string } {
-  const slash = model.indexOf("/");
-  return slash < 0
-    ? { provider: "anthropic", id: model }
-    : { provider: model.slice(0, slash), id: model.slice(slash + 1) };
+/** The drop of a case whose model the gateway does not serve, as its drop begins and the report
+ *  counts it. */
+const MODEL_NOT_SERVED = "model-not-served";
+
+/** The model of `servedModels` (the configuration's, each `provider/model`) that serves `model`:
+ *  the one whose id, its text after its last `/`, is `model`'s; or undefined when none is. */
+function servedModel(model: string, servedModels: readonly string[]): string | undefined {
+  return servedModels.find((served) => modelId(served) === modelId(model));
 }
 
 /** A fresh result of case `c`. */
@@ -1235,8 +1243,8 @@ async function screenCommand(r: Runner): Promise<void> {
         return;
       }
       result = newResult(c);
-      if (modelOf(c.model).provider !== "anthropic") {
-        const dropped = `its model ${c.model} is not served on the gateway's Anthropic Messages route`;
+      if (servedModel(c.model, r.servedModels) === undefined) {
+        const dropped = `${MODEL_NOT_SERVED}: its model ${c.model} is none the gateway serves (the configuration's servedModels: ${r.servedModels.join(", ") || "none"})`;
         await finishCase(r, { ...result, dropped }, "screen");
         continue;
       }
@@ -1386,11 +1394,12 @@ function reportCommand(b: Behaviour): void {
 
   const dropped = [...results.values()].filter((result) => result.dropped !== null);
   const byControls = dropped.filter((result) => result.controls !== null).length;
+  const notServed = dropped.filter((result) => result.dropped?.startsWith(MODEL_NOT_SERVED)).length;
   const unscreened = score.cases.filter((each) => each.screen.state === "unscreened").length;
   const flagged = score.cases.filter((each) => each.flagged).length;
   const losses = score.cases.filter((each) => each.loss).length;
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${dropped.length - byControls} for their model), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
   );
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
@@ -1523,10 +1532,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   }
   const unpriced = [
     ...new Set(
-      cases
-        .map((c) => modelOf(c.model))
-        .filter((model) => model.provider === "anthropic" && PRICES[model.id] === undefined)
-        .map((model) => model.id)
+      cases.flatMap((c) => {
+        const served = servedModel(c.model, config.servedModels);
+        return served !== undefined && PRICES[modelId(served)] === undefined
+          ? [modelId(served)]
+          : [];
+      })
     ),
   ];
   if (unpriced.length > 0) {
@@ -1560,6 +1571,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     gateway,
     replays: loggedGateway(gateway, log, "replay"),
     judge: loggedGateway(gateway, log, "judge"),
+    servedModels: config.servedModels,
     capture: (c, arm) => {
       const outDir = armCaptureDir(given.out, arm);
       const files = capturePaths(outDir, c.id, arm.name);
@@ -1568,7 +1580,10 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
           `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
         );
       }
-      return captureBody(c, arm, {
+      // A case runs on the served model that serves it: an Anthropic model behind another
+      // gateway prefix as the served `anthropic/<id>`, so the capture finds its provider.
+      const model = servedModel(c.model, config.servedModels) ?? c.model;
+      return captureBody({ ...c, model }, arm, {
         // Undefined only without --models, where the capture is read back and Oh My Pi not run.
         omp: omp ?? "",
         outDir,

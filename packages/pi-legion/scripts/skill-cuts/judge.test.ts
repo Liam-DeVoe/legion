@@ -12,7 +12,15 @@ import {
 } from "../skill-scenarios/transcript";
 import { type Arm, type ArmName, buildArm } from "./arms";
 import { type Case, pathHash } from "./cases";
-import { createGateway, type MessagesBody, ReplyMessage, streamedMessage } from "./gateway";
+import {
+  type ContentBlock,
+  createGateway,
+  type MessagesBody,
+  ReplyMessage,
+  responseMessage,
+  streamedMessage,
+  streamedResponse,
+} from "./gateway";
 import {
   type ArmReply,
   BEFORE_MESSAGES,
@@ -29,16 +37,18 @@ import {
 } from "./judge";
 import { PROMPTS_DIR, parsePrompt } from "./readers";
 
-// The blind judge, on F1, F2 and F5 (testdata/, captured as testdata/CAPTURE.md says). F1 is an Oh
-// My Pi 18.18.6 session of a scratch profile with the made-up skills alpha and beta
+// The blind judge, on F1, F2, F5 and F9 (testdata/, captured as testdata/CAPTURE.md says). F1 is
+// an Oh My Pi 18.18.6 session of a scratch profile with the made-up skills alpha and beta
 // (`HOME=<scratch> omp -p --session-dir <scratch>/sessions --model anthropic/claude-sonnet-5-5
 // "<prompt>"`): 0 the user's prompt, 1 a read of skill://alpha, 2 its result, 3 a read of
 // skill://alpha/references/x.md, 4 its result, 5 a read of the missing skill://gamma, 6 its
 // result, 7 a `task` call. F5 holds the gateway's replies to bodies made from F2's replayed
 // history (`bun $TMPDIR/infra4676/send.ts <body.json> > F5-<shape>.sse`); F5-judge is its reply to
-// the judge's own body (`judgeBody`) for a case made from that history and F5-text's reply. The
-// gateway's fetch is a fake that answers with them, or with a synthetic judgement: no test here
-// reaches a network.
+// the judge's own body (`judgeBody`) for a case made from that history and F5-text's reply. F9
+// holds the gateway's Responses API replies (openai/gpt-6.1-sol's) to bodies made from F8, the
+// F2-like history Oh My Pi sent for that model (`bun send-openai.ts <body.json> >
+// F9-<shape>.sse`). The gateway's fetch is a fake that answers with them, or with a synthetic
+// judgement: no test here reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(
@@ -161,6 +171,35 @@ function f5Message(shape: string): ReplyMessage {
   return ReplyMessage.parse(
     streamedMessage(readFileSync(path.join(TESTDATA, `F5-${shape}.sse`), "utf8"))
   );
+}
+
+/** The content of F9's Responses reply `shape`, as the gateway reads it: its output items. */
+function f9Content(shape: string): ContentBlock[] {
+  return responseMessage(
+    streamedResponse(readFileSync(path.join(TESTDATA, `F9-${shape}.sse`), "utf8"))
+  ).content;
+}
+
+/** The Messages API reply that matches a Responses reply's `content`: each message part a text
+ *  block, each function call a `tool_use` block of its name and parsed arguments, each reasoning
+ *  item a thinking block. */
+function asMessagesReply(content: readonly ContentBlock[]): ContentBlock[] {
+  return content.flatMap((item): ContentBlock[] => {
+    if (item.type === "message" && Array.isArray(item.content)) {
+      return item.content.map((part: { text: string }) => ({ type: "text", text: part.text }));
+    }
+    if (item.type === "function_call") {
+      return [
+        {
+          type: "tool_use",
+          id: item.call_id,
+          name: item.name,
+          input: JSON.parse(String(item.arguments)),
+        },
+      ];
+    }
+    return [{ type: "thinking", thinking: "made-up thinking", signature: "made-up-signature" }];
+  });
 }
 
 /** A streamed reply whose one text block is `text`, in the shape the gateway streams (F5). */
@@ -564,4 +603,49 @@ test("on F5: the gateway's judge reply gives its verdict and reason", async () =
   ]);
   // The fixture's reply holds a thinking block before its answer: the answer is the text alone.
   expect(f5Message("judge").content.map((block) => block.type)).toEqual(["thinking", "text"]);
+});
+
+test("an OpenAI reply renders as the matching Messages reply does, so the judge's request has one shape whichever model answered (F9)", async () => {
+  const shapes = ["text", "skill-read", "skill-read-and-other"];
+  for (const shape of shapes) {
+    const content = f9Content(shape);
+    expect(stepText(content)).toBe(stepText(asMessagesReply(content)));
+  }
+  // The text reply's reasoning is left out, as thinking is, and its message is its text.
+  expect(stepText(f9Content("text"))).toBe(
+    "1. Read `references/x.md`.\n2. Write each step’s result on one line.\n3. Stop after the third step."
+  );
+  expect(stepText(f9Content("skill-read"))).toBe(
+    '[tool call: read] {"i":"Reading alpha checklist reference","path":"skill://alpha/references/x.md"}'
+  );
+  // A call with no arguments reads as a tool_use with no input; arguments that do not parse as
+  // they were sent.
+  expect(stepText([{ type: "function_call", name: "ls", arguments: "", call_id: "call_1" }])).toBe(
+    stepText([{ type: "tool_use", name: "ls", id: "toolu_1", input: {} }])
+  );
+  expect(stepText([{ type: "function_call", name: "ls", arguments: "{not json" }])).toBe(
+    "[tool call: ls] {not json"
+  );
+
+  // The judge's requests for an OpenAI reply and for its matching Messages reply are the same:
+  // the judge's pinned model and prompt, naming no model, route or arm of the replay.
+  const { gateway, bodies } = world(() => sse(PASS));
+  const replies: ArmReply[] = shapes.flatMap((shape, run) => [
+    { arm: "old", run, content: f9Content(shape) },
+    { arm: "new", run, content: asMessagesReply(f9Content(shape)) },
+  ]);
+  const { judged } = await judgeBlind(f1Case, replies, gateway, "seed-routes");
+  expect(judged.map((each) => each.verdict)).toEqual(replies.map(() => "pass"));
+  for (const run of shapes.keys()) {
+    const bodyOf = (arm: ArmName) =>
+      bodies[judged.findIndex((each) => each.arm === arm && each.run === run)];
+    expect(bodyOf("old")).toEqual(bodyOf("new") as MessagesBody);
+  }
+  const sent = JSON.stringify(bodies);
+  expect(bodies.every((body) => body.model === "claude-opus-5-5")).toBe(true);
+  for (const said of ["gpt-6.1-sol", "openai", "/v1/responses", "function_call", "reasoning"]) {
+    expect(sent).not.toContain(said);
+  }
+  const reasoning = f9Content("text").find((item) => item.type === "reasoning");
+  expect(sent).not.toContain(String(reasoning?.encrypted_content).slice(0, 40));
 });

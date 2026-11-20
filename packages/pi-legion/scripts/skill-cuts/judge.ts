@@ -17,8 +17,11 @@
  *   last user message when it is older, each message cut to MESSAGE_CHARS characters (its start and
  *   its end kept); a note says how many messages or characters each cut left out.
  * - `stepText` renders a reply's text and tool calls, the same way for an Oh My Pi message (the
- *   real step) and a Messages API reply (a replayed one). Thinking is left out: the step is what
- *   the agent did, and its thinking can quote the arm's skill text.
+ *   real step), a Messages API reply and a Responses API reply (a replayed one): a Responses
+ *   `message` item as the text of its parts and a `function_call` item as a Messages `tool_use`
+ *   block of the same name and input, so the request has one shape whichever model answered.
+ *   Thinking and reasoning are left out: the step is what the agent did, and its thinking can
+ *   quote the arm's skill text.
  *
  * A judgement is the JSON object `{"verdict": "pass" | "fail", "reason": ...}`. One that does not
  * parse is asked for again, JUDGE_TRIES times in all, and then gives the verdict null, never fail
@@ -42,7 +45,7 @@ import {
 } from "../skill-scenarios/transcript";
 import type { ArmName } from "./arms";
 import type { Case } from "./cases";
-import { BudgetSpent, type Gateway, type MessagesBody, type Spent } from "./gateway";
+import { BudgetSpent, type Gateway, type MessagesBody, type Spent, toolCalls } from "./gateway";
 import { answerJson, ask, loadPrompt, parsedAnswer, promptBody } from "./readers";
 
 /** How many times one reply is judged before its verdict is null. */
@@ -71,22 +74,50 @@ export const Judgement = z.strictObject({
   reason: z.string().min(1),
 });
 
-/** One block of a message: a session message's (`text`, `thinking`, `toolCall` with `arguments`) or
- *  a Messages API reply's (`text`, `thinking`, `redacted_thinking`, `tool_use` with `input`). */
+/** One block of a message: a session message's (`text`, `thinking`, `toolCall` with `arguments`),
+ *  a Messages API reply's (`text`, `thinking`, `redacted_thinking`, `tool_use` with `input`) or a
+ *  Responses API reply's output item (`message` with its `output_text` and `refusal` parts,
+ *  `reasoning`, `function_call` with `arguments` as JSON text). */
 type Block = { readonly type: string; readonly [field: string]: unknown };
 
-/** What the judge reads of one block, or undefined for thinking, which it never reads. */
+/** A tool call as the judge reads it: its tool's name, then its input as JSON. */
+function callText(name: unknown, input: unknown): string {
+  return `[tool call: ${String(name)}] ${JSON.stringify(input ?? {})}`;
+}
+
+/** What the judge reads of one part of a Responses `message` item: its text or refusal. */
+function partText(part: unknown): string {
+  const text = typeof part === "object" && part !== null ? Reflect.get(part, "text") : undefined;
+  const refusal =
+    typeof part === "object" && part !== null ? Reflect.get(part, "refusal") : undefined;
+  if (typeof text === "string") return text;
+  if (typeof refusal === "string") return refusal;
+  return `[a part of type ${String(Reflect.get(Object(part), "type"))}]`;
+}
+
+/** What the judge reads of one block, or undefined for thinking and reasoning, which it never
+ *  reads. A Responses `function_call` reads as the `tool_use` block of its name and parsed
+ *  arguments would, and arguments that do not parse as they were sent. */
 function blockText(block: Block): string | undefined {
   switch (block.type) {
     case "text":
       return typeof block.text === "string" ? block.text : "";
     case "toolCall":
-      return `[tool call: ${String(block.name)}] ${JSON.stringify(block.arguments ?? {})}`;
+      return callText(block.name, block.arguments);
     case "tool_use":
     case "server_tool_use":
-      return `[tool call: ${String(block.name)}] ${JSON.stringify(block.input ?? {})}`;
+      return callText(block.name, block.input);
+    case "message":
+      return (Array.isArray(block.content) ? block.content : []).map(partText).join("\n");
+    case "function_call": {
+      const input = toolCalls([block])[0]?.input;
+      return input === undefined
+        ? `[tool call: ${String(block.name)}] ${String(block.arguments)}`
+        : callText(block.name, input);
+    }
     case "thinking":
     case "redacted_thinking":
+    case "reasoning":
       return undefined;
     case "image":
       return "[an image]";

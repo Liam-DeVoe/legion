@@ -15,6 +15,17 @@
  * My Pi sent it byte for byte, and its record are saved under `outDir`, and a capture already
  * saved there is read back rather than made again.
  *
+ * **The two routes.** A case's model is served on the gateway's Anthropic Messages route (a
+ * provider of `api: anthropic-messages` in `--models`) or on its OpenAI Responses route (Oh My
+ * Pi's built-in `openai` provider, whose `api` a models.yml leaves out, or `api:
+ * openai-responses`; the model listed under `models` or `modelOverrides`). Each provider kept is
+ * pointed at the recorder with the path of its own `baseUrl` (`/v1` for the `openai` one, where Oh
+ * My Pi posts `/v1/responses`). The recorder answers a Messages turn with the Messages API's end
+ * of turn and a Responses turn with the Responses API's (`END_TURN_RESPONSE`), so the body of
+ * either is captured the same way (F8: Oh My Pi 18.18.6 sends `openai/gpt-6.1-sol`'s turn to
+ * `/v1/responses`, its system prompt as `instructions` and its history as `input` items, with no
+ * `anthropic-*` header). Hints come from the hint model, which must be on the Messages route.
+ *
  * **The skill listing.** Oh My Pi lists each installed skill in its system prompt under a hint,
  * not under the skill's `description`: a line of at most 160 characters that it asks its `smol`
  * model to write from the name and the description (packages/coding-agent/src/extensibility/
@@ -49,8 +60,10 @@
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
  * (packages/coding-agent/src/session/session-tools.ts, `systemPromptDigest`): a wyhash chain over
  * the system prompt's blocks, seeded with their count, in hex. Oh My Pi hashes its prompt blocks
- * before it sends them; the body's `system` blocks are those blocks less any that is blank or
- * holds a credential it redacts, so the two agree whenever no block is either.
+ * before it sends them; a Messages body's `system` blocks are those blocks less any that is blank
+ * or holds a credential it redacts, so the two agree whenever no block is either. A Responses body
+ * holds the blocks joined into one `instructions` text, a blank line between, so its digest is
+ * of that one text, and differs from the session's whenever the prompt has more than one block.
  */
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
@@ -70,7 +83,7 @@ import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import type { Arm, ArmName } from "./arms";
 import type { Case } from "./cases";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
-import type { Gateway, MessagesBody } from "./gateway";
+import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
 import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE, SYSTEM_PROMPT_VARIABLE } from "./replay-hook";
 
@@ -100,7 +113,7 @@ const CAPTURE_TRIES = 3;
 class RunEnded extends Error {}
 
 /** The names of the tools a body defines, in order. */
-function bodyToolNames(body: MessagesBody): string[] {
+function bodyToolNames(body: RequestBody): string[] {
   return Array.isArray(body.tools)
     ? body.tools.flatMap((tool: unknown) => {
         const name = typeof tool === "object" && tool !== null ? Reflect.get(tool, "name") : null;
@@ -112,7 +125,7 @@ function bodyToolNames(body: MessagesBody): string[] {
 /** The tools a body defines and the `xd://` devices its system prompt lists, the Legion and
  *  Envoy plugins' among them, and each plugin tool left out with why. */
 function pluginTools(
-  body: MessagesBody,
+  body: RequestBody,
   context: ContextRecord,
   pane: boolean,
   role: { readonly role: string } | undefined,
@@ -238,7 +251,7 @@ export interface CaptureRecord {
   readonly hintModel: string;
   readonly configFiles: readonly string[];
   /** The `anthropic-*` headers Oh My Pi sent with the turn's request, which a replay of the body
-   *  sends too. */
+   *  sends too: none for a Responses body. */
   readonly requestHeaders: Readonly<Record<string, string>>;
   /** The session's digest, from the case, and the capture's own (`promptDigest`). */
   readonly sessionDigest: string | null;
@@ -325,7 +338,7 @@ export interface CaptureRecord {
 
 /** A saved capture: the body, its record, and their files. */
 export interface Capture {
-  readonly body: MessagesBody;
+  readonly body: RequestBody;
   readonly record: CaptureRecord;
   readonly bodyFile: string;
   readonly recordFile: string;
@@ -352,15 +365,33 @@ export function capturePaths(
   return { body: `${stem}.body.json`, record: `${stem}.capture.json` };
 }
 
-/** The texts of a body's `system` blocks, in order. */
+/** The texts of a body's system prompt, in order: a Messages body's `system` blocks; a Responses
+ *  body's `instructions` (the one text Oh My Pi joins its prompt's blocks into), then the text of
+ *  each `developer` or `system` message of its `input`. */
 function systemTexts(body: unknown): string[] {
-  const system = typeof body === "object" && body !== null ? Reflect.get(body, "system") : null;
-  if (typeof system === "string") return [system];
-  if (!Array.isArray(system)) return [];
-  return system.flatMap((block: unknown) => {
-    const text = typeof block === "object" && block !== null ? Reflect.get(block, "text") : null;
-    return typeof text === "string" ? [text] : [];
-  });
+  const field = (name: string): unknown =>
+    typeof body === "object" && body !== null ? Reflect.get(body, name) : undefined;
+  const texts = (content: unknown): string[] => {
+    if (typeof content === "string") return [content];
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((block: unknown) => {
+      const text = typeof block === "object" && block !== null ? Reflect.get(block, "text") : null;
+      return typeof text === "string" ? [text] : [];
+    });
+  };
+  const system = field("system");
+  if (system !== undefined) return texts(system);
+  const instructions = field("instructions");
+  const input = field("input");
+  return [
+    ...(typeof instructions === "string" ? [instructions] : []),
+    ...(Array.isArray(input) ? input : []).flatMap((item: unknown) => {
+      const role = typeof item === "object" && item !== null ? Reflect.get(item, "role") : null;
+      return role === "developer" || role === "system"
+        ? texts(Reflect.get(Object(item), "content"))
+        : [];
+    }),
+  ];
 }
 
 /** Oh My Pi's `system-prompt-digest` of the prompt a body's `system` blocks carry. */
@@ -462,8 +493,23 @@ function ompVersion(binary: string): Promise<string> {
   return version;
 }
 
+/** The route a models.yml provider serves its models on, or undefined for neither of the
+ *  gateway's: `messages` for `api: anthropic-messages`; `responses` for `api: openai-responses`,
+ *  and for the `openai` provider with no `api`, Oh My Pi's built-in one of that API. */
+function providerRoute(provider: string, entry: unknown): "messages" | "responses" | undefined {
+  const api: unknown = Reflect.get(Object(entry), "api");
+  if (api === "anthropic-messages") return "messages";
+  if (api === "openai-responses" || (api === undefined && provider === "openai")) {
+    return "responses";
+  }
+  return undefined;
+}
+
 /** The scratch profile's `models.yml` and `config.yml` (each JSON, which YAML reads): the
- *  providers of `models` that serve `wanted`, pointed at `url`, and the model roles. */
+ *  providers of `models` that serve the case's model and the hint model, each pointed at `url`
+ *  with the path of its own base URL, and the model roles. Throws when `models` lists no such
+ *  model, when the case's model is on neither route, and when the hint model is not on the
+ *  Messages route. */
 function writeProfile(
   agentDir: string,
   options: {
@@ -481,21 +527,38 @@ function writeProfile(
     throw new Error(`${options.models} holds no providers`);
   }
   const kept: Record<string, unknown> = {};
-  for (const wanted of [options.model, options.hintModel]) {
-    const [provider = "", id] = wanted.split(/\/(.*)/s);
+  for (const [wanted, hint] of [
+    [options.model, false],
+    [options.hintModel, true],
+  ] as const) {
+    const [provider = "", id = ""] = wanted.split(/\/(.*)/s);
     const entry: unknown = Reflect.get(providers, provider);
-    const models: unknown =
-      typeof entry === "object" && entry !== null ? Reflect.get(entry, "models") : undefined;
+    const models: unknown = Reflect.get(Object(entry), "models");
+    const overrides: unknown = Reflect.get(Object(entry), "modelOverrides");
     const listed =
-      Array.isArray(models) && models.some((model) => Reflect.get(Object(model), "id") === id);
+      (Array.isArray(models) && models.some((model) => Reflect.get(Object(model), "id") === id)) ||
+      (typeof overrides === "object" && overrides !== null && Object.hasOwn(overrides, id));
     if (!listed) throw new Error(`${options.models} defines no model ${wanted}`);
-    if (Reflect.get(Object(entry), "api") !== "anthropic-messages") {
-      throw new Error(`the model ${wanted} is not served on the Anthropic Messages route`);
+    const route = providerRoute(provider, entry);
+    if (route === undefined) {
+      throw new Error(
+        `the model ${wanted} is served on neither the Anthropic Messages route nor the OpenAI Responses route`
+      );
+    }
+    if (hint && route !== "messages") {
+      throw new Error(
+        `the hint model ${wanted} is not served on the Anthropic Messages route, where hints are written: give a hint model that is (--hint-model anthropic/<id>)`
+      );
     }
     const { headers: _headers, ...rest } = entry as Record<string, unknown>;
+    const base: unknown = rest.baseUrl;
+    const sub =
+      typeof base === "string" && URL.canParse(base)
+        ? new URL(base).pathname.replace(/\/+$/, "")
+        : "";
     kept[provider] = {
       ...rest,
-      baseUrl: options.url,
+      baseUrl: `${options.url}${sub}`,
       auth: "apiKey",
       apiKey: RECORDER_CREDENTIAL,
     };
@@ -556,7 +619,7 @@ export async function captureBody(
   const files = capturePaths(options.outDir, c.id, arm.name);
   if (existsSync(files.body) && existsSync(files.record)) {
     return {
-      body: JSON.parse(readFileSync(files.body, "utf8")) as MessagesBody,
+      body: JSON.parse(readFileSync(files.body, "utf8")) as RequestBody,
       record: JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord,
       bodyFile: files.body,
       recordFile: files.record,
@@ -647,12 +710,18 @@ export async function captureBody(
     ) {
       return new Response(null, { status: 204 });
     }
-    if (request.method !== "POST" || !request.path.startsWith("/v1/messages")) {
+    const endpoint = request.path.split("?")[0];
+    if (
+      request.method !== "POST" ||
+      (endpoint !== "/v1/messages" && endpoint !== "/v1/responses")
+    ) {
       return new Response("refused by the capture's stand-in", { status: 503 });
     }
+    // A Messages or a Responses body: the turn is one of either API, and a hint request (no
+    // system prompt, no tools) is a Messages one, the hint model being on that route.
     const body = JSON.parse(request.body) as MessagesBody;
     const skill = hintSkill(body);
-    if (body.tools !== undefined || body.system !== undefined) {
+    if (body.tools !== undefined || body.system !== undefined || body.instructions !== undefined) {
       if (!hintRun) {
         turns.push({ body: request.body, headers: anthropicHeaders(request.headers) });
         return undefined;
@@ -887,20 +956,22 @@ export async function captureBody(
     if (turn === undefined) {
       throw new Error(`case ${c.id} arm ${arm.name}: Oh My Pi sent no model request for the turn`);
     }
-    const body = JSON.parse(turn.body) as MessagesBody;
+    const body = JSON.parse(turn.body) as RequestBody;
 
-    // A recorded prompt must be sent as the arm's blocks, byte for byte. Otherwise the listing
-    // must be the installed skills Oh My Pi lists, each under its hint.
+    // A recorded prompt must be sent as the arm's blocks, byte for byte (in a Responses body, as
+    // Oh My Pi joins them into its `instructions`: the blocks not blank, a blank line between).
+    // Otherwise the listing must be the installed skills Oh My Pi lists, each under its hint.
     const listing = skillListing(body);
     const faults: string[] = [];
     if (recorded !== undefined) {
       const sent = systemTexts(body);
-      if (sent.length !== recorded.blocks.length) {
-        faults.push(
-          `it sends ${sent.length} system blocks, not the ${recorded.blocks.length} recorded`
-        );
+      const wanted = isResponsesBody(body)
+        ? [recorded.blocks.filter((block) => block.trim() !== "").join("\n\n")]
+        : recorded.blocks;
+      if (sent.length !== wanted.length) {
+        faults.push(`it sends ${sent.length} system blocks, not the ${wanted.length} recorded`);
       }
-      for (const [index, block] of recorded.blocks.entries()) {
+      for (const [index, block] of wanted.entries()) {
         if (sent[index] !== undefined && sent[index] !== block) {
           faults.push(`its system block ${index} is not the arm's recorded block`);
         }

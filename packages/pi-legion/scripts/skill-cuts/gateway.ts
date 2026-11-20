@@ -1,28 +1,35 @@
 /**
- * The runner's one way to the model gateway (plan, R5 `gateway.ts`). `createGateway` posts an
- * Anthropic Messages API body to `<baseUrl>/v1/messages` through `skill-scenarios/messages-api.ts`
- * (`postMessages`), the route and retry that `label-comments.ts` uses too:
+ * The runner's one way to the model gateway (plan, R5 `gateway.ts`). `createGateway` posts a body
+ * through `skill-scenarios/messages-api.ts` (`postMessages`), the route and retry that
+ * `label-comments.ts` uses too, to the gateway route of the body's API (`isResponsesBody`): an
+ * Anthropic Messages API body to `<baseUrl>/v1/messages` with the key in `x-api-key`, and an OpenAI
+ * Responses API body (one of `input` items, as Oh My Pi 18.18.6 sends for `openai/gpt-6.1-sol`,
+ * F8) to `<baseUrl>/v1/responses` with the key as `authorization: Bearer <key>`:
  *
  * - The key is the text of `keyFile`, read inside this process for each try and held
  *   (`@legion/contracts/held-secrets`), so it is never printed, logged or written: every error
  *   `send` throws has the key, and each run of 10 or more of its characters, taken out of its
  *   message, its stack and its fields, whatever echoed it (a refusal that quotes the key it got).
- * - `send(body, {headers})` sends `headers` with the body on every try: the `anthropic-*` headers
- *   Oh My Pi sent beside it (its `anthropic-beta` names the betas that the body's fields need, and
- *   the gateway answers 400 to such a body without it). Only `anthropic-*` names are taken, and a
- *   name that can carry a key (`x-api-key`, `authorization`, any name holding `key`, `token`,
- *   `secret`, `auth`, `cookie`, `credential` or `password`) is refused by name before any call.
+ * - `send(body, {headers})` sends `headers` with a Messages body on every try: the `anthropic-*`
+ *   headers Oh My Pi sent beside it (its `anthropic-beta` names the betas that the body's fields
+ *   need, and the gateway answers 400 to such a body without it). Only `anthropic-*` names are
+ *   taken, and a name that can carry a key (`x-api-key`, `authorization`, any name holding `key`,
+ *   `token`, `secret`, `auth`, `cookie`, `credential` or `password`) is refused by name before any
+ *   call. A Responses body goes with no header of the caller's: one given is refused by name.
  * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
- *   ended) and a reply that does not read as a Messages API message are tried again, after the
+ *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
  *   `retry-after` wait or the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES tries in all. Any
  *   other status, a 400 among them, throws at once.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent.
- * - A body that sets `stream` gets a streamed (SSE) reply, read whole (`streamedMessage`) before
- *   it counts; any other gets one JSON message.
- * - `spend()` sums each reply's usage (input, output, cache read, cache write) per model, and its
- *   dollars at list price (PRICES, or `prices` for a model the table lacks). A body whose model has
- *   no price is refused before any call, since its dollars could not be counted. A try that failed
- *   is not counted: no usage came back for it.
+ * - A body that sets `stream` gets a streamed (SSE) reply, read whole before it counts
+ *   (`streamedMessage`; `streamedResponse` for a Responses reply, F9); any other gets one JSON
+ *   message. A Responses reply comes back in ReplyMessage's frame (`responseMessage`): its output
+ *   items are its `content`, so every reader of a reply takes either API's (`toolCalls`).
+ * - `spend()` sums each reply's usage (input not read from the cache, output, cache read, cache
+ *   write, and a Responses reply's reasoning tokens) per model, and its dollars at list price
+ *   (PRICES, or `prices` for a model the table lacks). A body whose model has no price is refused
+ *   before any call, since its dollars could not be counted. A try that failed is not counted: no
+ *   usage came back for it.
  * - Once the dollars reach `budgetUsd`, no new call starts: `send` rejects with `BudgetSpent`, which
  *   says so. A call already in flight finishes and is counted, so the spend can pass the budget by
  *   at most the calls in flight.
@@ -36,12 +43,14 @@ import type { Fetch, Sleep } from "../skill-scenarios/production-dispatch";
 export const GATEWAY_TRIES = 6;
 
 /** What a model charges, in USD per million tokens: prompt tokens not read from the cache, reply
- *  tokens (thinking included), a cache write of 5 minutes and of 1 hour, and a cache read. */
+ *  tokens (thinking and reasoning included), a cache write of the shorter lifetime and of the
+ *  longer one (Anthropic's 5 minutes and 1 hour, OpenAI's 30 minutes and 12 hours), and a cache
+ *  read. */
 export interface Rates {
   readonly input: number;
   readonly output: number;
-  readonly cacheWrite5m: number;
-  readonly cacheWrite1h: number;
+  readonly cacheWriteShort: number;
+  readonly cacheWriteLong: number;
   readonly cacheRead: number;
 }
 
@@ -53,37 +62,106 @@ export interface Price extends Rates {
 
 /** Where PRICES come from. */
 export const PRICE_SOURCE =
-  "https://platform.claude.com/docs/en/about-claude/pricing, read 2026-11-20 (standard speed, global inference)";
+  "https://platform.claude.com/docs/en/about-claude/pricing (standard speed, global inference) and https://developers.openai.com/api/docs/pricing (Standard), both read 2026-11-20";
 
-/** Anthropic's list prices by Claude API model id, from PRICE_SOURCE's "Model pricing" table. A
- *  reply of fast mode or of US-only inference costs more than this counts: the bodies Oh My Pi
- *  18.18.6 sends (F2) set neither `speed` nor `inference_geo`, and each F5 reply's usage says
- *  `"speed": "standard"` and `"inference_geo": "global"`. */
+/** The list prices by model id: Anthropic's Claude models from PRICE_SOURCE's "Model pricing"
+ *  table, and OpenAI's models from its "Standard" table. A reply of fast mode or of US-only
+ *  inference costs more than this counts: the bodies Oh My Pi 18.18.6 sends (F2) set neither
+ *  `speed` nor `inference_geo`, and each F5 reply's usage says `"speed": "standard"` and
+ *  `"inference_geo": "global"`. So does a reply of another OpenAI tier (Fast, Ultrafast, Flex, a
+ *  regional endpoint): the bodies Oh My Pi sends (F8) set no `service_tier`, each F9 reply says
+ *  `"service_tier": "default"`, and the gateway's own `usage.cost` of each is these rates' count.
+ *  OpenAI's long context is a prompt of more than 272,000 input tokens. */
 export const PRICES: Readonly<Record<string, Price>> = {
-  "claude-fable-5-2": { input: 8, output: 40, cacheWrite5m: 10, cacheWrite1h: 16, cacheRead: 0.2 },
-  "claude-opus-5-5": { input: 4, output: 20, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2 },
-  "claude-opus-5": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
-  "claude-opus-4-8": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
-  "claude-opus-4-7": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
-  "claude-opus-4-6": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheWrite5m: 2.5, cacheWrite1h: 4, cacheRead: 0.1 },
-  "claude-sonnet-5": { input: 2, output: 10, cacheWrite5m: 2.5, cacheWrite1h: 4, cacheRead: 0.2 },
+  "claude-fable-5-2": {
+    input: 8,
+    output: 40,
+    cacheWriteShort: 10,
+    cacheWriteLong: 16,
+    cacheRead: 0.2,
+  },
+  "claude-opus-5-5": {
+    input: 4,
+    output: 20,
+    cacheWriteShort: 5,
+    cacheWriteLong: 8,
+    cacheRead: 0.2,
+  },
+  "claude-opus-5": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-8": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-7": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-6": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-sonnet-5-5": {
+    input: 2,
+    output: 10,
+    cacheWriteShort: 2.5,
+    cacheWriteLong: 4,
+    cacheRead: 0.1,
+  },
+  "claude-sonnet-5": {
+    input: 2,
+    output: 10,
+    cacheWriteShort: 2.5,
+    cacheWriteLong: 4,
+    cacheRead: 0.2,
+  },
   "claude-sonnet-4-6": {
     input: 3,
     output: 15,
-    cacheWrite5m: 3.75,
-    cacheWrite1h: 6,
+    cacheWriteShort: 3.75,
+    cacheWriteLong: 6,
     cacheRead: 0.3,
   },
   "claude-haiku-5-5": {
     input: 0.1,
     output: 0.5,
-    cacheWrite5m: 0.125,
-    cacheWrite1h: 0.2,
+    cacheWriteShort: 0.125,
+    cacheWriteLong: 0.2,
     cacheRead: 0.01,
     longPrompt: {
       over: 100_000,
-      rates: { input: 0.5, output: 2.5, cacheWrite5m: 0.625, cacheWrite1h: 1, cacheRead: 0.05 },
+      rates: {
+        input: 0.5,
+        output: 2.5,
+        cacheWriteShort: 0.625,
+        cacheWriteLong: 1,
+        cacheRead: 0.05,
+      },
+    },
+  },
+  "gpt-6.1-sol": {
+    input: 2,
+    output: 10,
+    cacheWriteShort: 2.5,
+    cacheWriteLong: 5,
+    cacheRead: 0.1,
+    longPrompt: {
+      over: 272_000,
+      rates: { input: 4, output: 15, cacheWriteShort: 5, cacheWriteLong: 10, cacheRead: 0.2 },
     },
   },
 };
@@ -107,12 +185,36 @@ export const Usage = z.looseObject({
 });
 export type Usage = z.infer<typeof Usage>;
 
-/** One block of a reply's content: `text`, `thinking`, `tool_use` and others, kept whole so that a
- *  reply can be sent back as the assistant's message (a thinking block's signature included). */
+/** A reply's `usage`, as OpenAI's Responses API reports it (F9): `input_tokens` counts every prompt
+ *  token, the cache's reads (`cached_tokens`) and writes (`cache_write_tokens`, split by lifetime)
+ *  among them, and `output_tokens` counts the reasoning tokens among it. Fields it does not name
+ *  are kept (the gateway's own `cost` among them). */
+export const ResponsesUsage = z.looseObject({
+  input_tokens: Count,
+  output_tokens: Count,
+  input_tokens_details: z
+    .looseObject({
+      cached_tokens: Count.nullish(),
+      cache_write_tokens: Count.nullish(),
+      cache_write_tokens_details: z
+        .looseObject({ ttl_30m_tokens: Count.nullish(), ttl_12h_tokens: Count.nullish() })
+        .nullish(),
+    })
+    .nullish(),
+  output_tokens_details: z.looseObject({ reasoning_tokens: Count.nullish() }).nullish(),
+});
+export type ResponsesUsage = z.infer<typeof ResponsesUsage>;
+
+/** One block of a reply's content, kept whole so that a reply can be sent back as it came: a
+ *  Messages reply's `text`, `thinking` (its signature included), `tool_use` and others, or a
+ *  Responses reply's output items, `message`, `reasoning` (its `encrypted_content` included) and
+ *  `function_call`. */
 export const ContentBlock = z.looseObject({ type: z.string() });
 export type ContentBlock = z.infer<typeof ContentBlock>;
 
-/** A Messages API reply message. Fields it does not name (`id`, `stop_sequence`, ...) are kept. */
+/** A reply message: a Messages API message, whose fields it does not name (`id`,
+ *  `stop_sequence`, ...) are kept; or a Responses API response in the same frame
+ *  (`responseMessage`). */
 export const ReplyMessage = z.looseObject({
   model: z.string().min(1),
   content: z.array(ContentBlock),
@@ -130,13 +232,63 @@ export interface MessagesBody {
   readonly [field: string]: unknown;
 }
 
-/** What one reply used: the model that answered, its tokens, and their dollars at list price. */
+/** An OpenAI Responses API request body: its model and input items, and every other field as the
+ *  caller set it (`instructions`, `tools`, `reasoning`, `include`, `store`, `stream`; F8). */
+export interface ResponsesBody {
+  readonly model: string;
+  readonly input: readonly unknown[];
+  readonly stream?: boolean;
+  readonly [field: string]: unknown;
+}
+
+/** A request body of either API. */
+export type RequestBody = MessagesBody | ResponsesBody;
+
+/** True for a Responses API body: one of `input` items, with no `messages`. */
+export function isResponsesBody(body: RequestBody): body is ResponsesBody {
+  return Array.isArray(body.input) && body.messages === undefined;
+}
+
+/** One tool call of a reply: its id, its tool's name and its input, as either API writes one (a
+ *  Messages `tool_use` block, its `id` and its `input` object; a Responses `function_call` item,
+ *  its `call_id` and its `arguments`, JSON text parsed here). A call whose arguments do not parse
+ *  has the input undefined. */
+export interface ToolCall {
+  readonly id: string | undefined;
+  readonly name: string | undefined;
+  readonly input: unknown;
+}
+
+/** The tool calls of a reply's content, in order. */
+export function toolCalls(content: readonly ContentBlock[]): ToolCall[] {
+  return content.flatMap((block): ToolCall[] => {
+    const name = typeof block.name === "string" ? block.name : undefined;
+    if (block.type === "tool_use") {
+      return [
+        { id: typeof block.id === "string" ? block.id : undefined, name, input: block.input },
+      ];
+    }
+    if (block.type !== "function_call") return [];
+    let input: unknown;
+    try {
+      input = block.arguments === "" ? {} : JSON.parse(String(block.arguments));
+    } catch {
+      input = undefined;
+    }
+    return [{ id: typeof block.call_id === "string" ? block.call_id : undefined, name, input }];
+  });
+}
+
+/** What one reply used: the model that answered, its tokens, and their dollars at list price. A
+ *  Responses reply also says how many of its output tokens were reasoning (`reasoning`); a
+ *  Messages reply counts its thinking in `output` and says no more. */
 export interface Spent {
   readonly model: string;
   readonly input: number;
   readonly output: number;
   readonly cacheRead: number;
   readonly cacheWrite: number;
+  readonly reasoning?: number;
   readonly usd: number;
 }
 
@@ -149,13 +301,15 @@ export interface Reply {
   readonly spent: Spent;
 }
 
-/** One model's total: the replies counted, their tokens and their dollars at list price. */
+/** One model's total: the replies counted, their tokens (the reasoning tokens among their output
+ *  as the Responses API counts them, 0 for the Messages API) and their dollars at list price. */
 export interface ModelSpend {
   readonly calls: number;
   readonly input: number;
   readonly output: number;
   readonly cacheRead: number;
   readonly cacheWrite: number;
+  readonly reasoning: number;
   readonly usd: number;
 }
 
@@ -166,7 +320,7 @@ export interface Spend {
 }
 
 export interface GatewayOptions {
-  /** The gateway's base URL: calls go to `<baseUrl>/v1/messages`. */
+  /** The gateway's base URL: calls go to `<baseUrl>/v1/messages` and `<baseUrl>/v1/responses`. */
   readonly baseUrl: string;
   /** The file that holds the gateway key. */
   readonly keyFile: string;
@@ -184,15 +338,16 @@ export interface GatewayOptions {
 
 /** What one `send` takes beside its body. */
 export interface SendOptions {
-  /** Headers sent with the body, such as the `anthropic-beta` Oh My Pi sent beside it, which the
-   *  body's fields need (adaptive thinking's `block_binding`, `context_management`,
-   *  `output_config.effort`). Only `anthropic-*` names; a name that can carry a key is refused. */
+  /** Headers sent with a Messages body, such as the `anthropic-beta` Oh My Pi sent beside it,
+   *  which the body's fields need (adaptive thinking's `block_binding`, `context_management`,
+   *  `output_config.effort`). Only `anthropic-*` names; a name that can carry a key is refused,
+   *  and so is any header beside a Responses body. */
   readonly headers?: Readonly<Record<string, string>>;
 }
 
 export interface Gateway {
   /** The reply to `body`. Rejects with `BudgetSpent` once the budget is reached. */
-  send(body: MessagesBody, options?: SendOptions): Promise<Reply>;
+  send(body: RequestBody, options?: SendOptions): Promise<Reply>;
   /** Every reply counted so far, as a copy. */
   spend(): Spend;
 }
@@ -231,7 +386,8 @@ export class BudgetSpent extends Error {
   }
 }
 
-/** A reply's tokens: input not read from the cache, output, cache reads and cache writes. */
+/** A Messages reply's tokens: input not read from the cache, output, cache reads and cache
+ *  writes. */
 export function tokensOf(usage: Usage): Omit<Spent, "model" | "usd"> {
   return {
     input: usage.input_tokens,
@@ -241,28 +397,55 @@ export function tokensOf(usage: Usage): Omit<Spent, "model" | "usd"> {
   };
 }
 
-/** A reply's dollars at `price`. A cache write the usage does not say is of 5 minutes is priced as
- *  one of 1 hour, the dearer, so that the count never falls short of the bill. */
-export function costUsd(usage: Usage, price: Price): number {
-  const tokens = tokensOf(usage);
+/** A Responses reply's tokens, as tokensOf gives a Messages reply's: its input less the cache's
+ *  reads and writes, its output (reasoning included), the reads and the writes; and the reasoning
+ *  tokens among the output. */
+export function responsesTokensOf(usage: ResponsesUsage): Omit<Spent, "model" | "usd"> {
+  const cacheRead = usage.input_tokens_details?.cached_tokens ?? 0;
+  const cacheWrite = usage.input_tokens_details?.cache_write_tokens ?? 0;
+  return {
+    input: usage.input_tokens - cacheRead - cacheWrite,
+    output: usage.output_tokens,
+    cacheRead,
+    cacheWrite,
+    reasoning: usage.output_tokens_details?.reasoning_tokens ?? 0,
+  };
+}
+
+/** The dollars of `tokens` at `price`, `writeShort` of its cache write at the shorter lifetime's
+ *  rate and the rest at the longer one's. */
+function priced(tokens: Omit<Spent, "model" | "usd">, writeShort: number, price: Price): number {
   const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite;
   const rates =
     price.longPrompt !== undefined && prompt > price.longPrompt.over
       ? price.longPrompt.rates
       : price;
-  const write5m = Math.min(tokens.cacheWrite, usage.cache_creation?.ephemeral_5m_input_tokens ?? 0);
-  const write1h = tokens.cacheWrite - write5m;
+  const short = Math.min(tokens.cacheWrite, writeShort);
   return (
     (tokens.input * rates.input +
       tokens.output * rates.output +
       tokens.cacheRead * rates.cacheRead +
-      write5m * rates.cacheWrite5m +
-      write1h * rates.cacheWrite1h) /
+      short * rates.cacheWriteShort +
+      (tokens.cacheWrite - short) * rates.cacheWriteLong) /
     1e6
   );
 }
 
-/** Each event of an SSE stream, in order: the JSON of its `data` lines. */
+/** A Messages reply's dollars at `price`. A cache write the usage does not say is of 5 minutes is
+ *  priced as one of 1 hour, the dearer, so that the count never falls short of the bill. */
+export function costUsd(usage: Usage, price: Price): number {
+  return priced(tokensOf(usage), usage.cache_creation?.ephemeral_5m_input_tokens ?? 0, price);
+}
+
+/** A Responses reply's dollars at `price`. A cache write the usage does not say is of 30 minutes
+ *  is priced as one of 12 hours, the dearer, for the same reason. */
+export function responsesCostUsd(usage: ResponsesUsage, price: Price): number {
+  const short = usage.input_tokens_details?.cache_write_tokens_details?.ttl_30m_tokens ?? 0;
+  return priced(responsesTokensOf(usage), short, price);
+}
+
+/** Each event of an SSE stream, in order: the JSON of its `data` lines. The `[DONE]` that closes
+ *  a Responses stream (F9) is no event. */
 function sseEvents(text: string): unknown[] {
   const events: unknown[] = [];
   for (const chunk of text.split(/\r?\n\r?\n/)) {
@@ -271,7 +454,7 @@ function sseEvents(text: string): unknown[] {
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice("data:".length).replace(/^ /, ""))
       .join("\n");
-    if (data.trim() !== "") events.push(JSON.parse(data));
+    if (data.trim() !== "" && data.trim() !== "[DONE]") events.push(JSON.parse(data));
   }
   return events;
 }
@@ -394,6 +577,76 @@ function replyMessage(text: string, streamed: boolean): ReplyMessage {
   );
 }
 
+const ResponseEvent = z.looseObject({ type: z.string(), response: z.unknown() });
+const ErrorFields = z.looseObject({ code: z.string().nullish(), message: z.string().nullish() });
+const StreamFailure = ErrorFields.extend({
+  error: ErrorFields.nullish(),
+  response: z.looseObject({ error: ErrorFields.nullish() }).nullish(),
+});
+
+/** What an `error` event (its own `code` and `message`, or its `error`'s) or a `response.failed`
+ *  event (its response's `error`) of a Responses stream says. */
+function streamError(event: unknown): string {
+  const failure: z.infer<typeof StreamFailure> = StreamFailure.safeParse(event).data ?? {};
+  const said = failure.response?.error ?? failure.error ?? failure;
+  return `${said.code ?? "error"}: ${said.message ?? ""}`;
+}
+
+/**
+ * The response a streamed (SSE) Responses reply holds: the one its last event, `response.completed`
+ * or `response.incomplete`, carries whole, its output items and usage included (F9), as OpenAI's
+ * own clients take it; the events before it hold nothing that one lacks. Throws on an `error` or
+ * `response.failed` event, and on a stream that ends before either last event, so that a reply cut
+ * short is never taken for a whole one.
+ */
+export function streamedResponse(text: string): unknown {
+  let done: unknown;
+  for (const event of sseEvents(text)) {
+    const { type, response } = ResponseEvent.parse(event);
+    if (type === "response.completed" || type === "response.incomplete") done = response;
+    else if (type === "error" || type === "response.failed") {
+      throw new Error(`the stream ended in an error: ${streamError(event)}`);
+    }
+  }
+  if (done === undefined) throw new Error("the stream ended before response.completed");
+  return done;
+}
+
+/** A Responses API response, as far as the runner reads one. */
+const ResponsesReply = z.looseObject({
+  id: z.string().optional(),
+  model: z.string().min(1),
+  status: z.string(),
+  output: z.array(ContentBlock),
+  incomplete_details: z.looseObject({ reason: z.string().nullish() }).nullish(),
+  usage: ResponsesUsage,
+});
+
+/** A Responses API response as a ReplyMessage: its id and model, its output items as `content`,
+ *  its stop reason the reason it is incomplete, else its status (`completed`), and its usage as
+ *  sent. Its echo of the request (`instructions`, `tools`) is left out. Throws when it is no
+ *  response, or one whose status is neither `completed` nor `incomplete`. */
+export function responseMessage(response: unknown): ReplyMessage {
+  const parsed = ResponsesReply.safeParse(response);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      `the reply is not a Responses API response: ${issue?.path.join(".") || "the response"}: ${issue?.message}`
+    );
+  }
+  const { id, model, status, output, incomplete_details, usage } = parsed.data;
+  if (status !== "completed" && status !== "incomplete") {
+    throw new Error(`the response's status is ${status}, neither completed nor incomplete`);
+  }
+  return ReplyMessage.parse({
+    ...(id === undefined ? {} : { id }),
+    model,
+    content: output,
+    stop_reason: incomplete_details?.reason ?? status,
+    usage,
+  });
+}
+
 /** The gateway at `options.baseUrl`. Throws when an option is out of range. */
 export function createGateway(options: GatewayOptions): Gateway {
   const { keyFile, concurrency, timeoutMs, budgetUsd } = options;
@@ -427,12 +680,22 @@ export function createGateway(options: GatewayOptions): Gateway {
   let running = 0;
   const waiting: (() => void)[] = [];
 
-  /** Counts `message`, the reply to a body whose model `bodyPrice` prices. */
-  function count(message: ReplyMessage, bodyPrice: Price): Spent {
+  /** Counts `message`, the reply of API `responses` or Messages to a body whose model `bodyPrice`
+   *  prices. */
+  function count(message: ReplyMessage, bodyPrice: Price, responses: boolean): Spent {
     // The model that answered is the one charged; the body's price stands where the table lacks it.
     const price = prices[message.model] ?? bodyPrice;
-    const usd = costUsd(message.usage, price);
-    const spent = { model: message.model, ...tokensOf(message.usage), usd };
+    let tokens: Omit<Spent, "model" | "usd">;
+    let usd: number;
+    if (responses) {
+      const usage = ResponsesUsage.parse(message.usage);
+      tokens = responsesTokensOf(usage);
+      usd = responsesCostUsd(usage, price);
+    } else {
+      tokens = tokensOf(message.usage);
+      usd = costUsd(message.usage, price);
+    }
+    const spent: Spent = { model: message.model, ...tokens, usd };
     const total = models[spent.model];
     models[spent.model] = {
       calls: (total?.calls ?? 0) + 1,
@@ -440,14 +703,21 @@ export function createGateway(options: GatewayOptions): Gateway {
       output: (total?.output ?? 0) + spent.output,
       cacheRead: (total?.cacheRead ?? 0) + spent.cacheRead,
       cacheWrite: (total?.cacheWrite ?? 0) + spent.cacheWrite,
+      reasoning: (total?.reasoning ?? 0) + (spent.reasoning ?? 0),
       usd: (total?.usd ?? 0) + usd,
     };
     totalUsd += usd;
     return spent;
   }
 
-  async function send(body: MessagesBody, { headers = {} }: SendOptions = {}): Promise<Reply> {
+  async function send(body: RequestBody, { headers = {} }: SendOptions = {}): Promise<Reply> {
     checkHeaders(headers);
+    const responses = isResponsesBody(body);
+    if (responses && Object.keys(headers).length > 0) {
+      throw new Error(
+        `a Responses API body goes with no header beside it, not ${Object.keys(headers).join(", ")}: the anthropic-* headers are the Messages API's`
+      );
+    }
     const bodyPrice = prices[body.model];
     if (bodyPrice === undefined) {
       throw new Error(
@@ -471,6 +741,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       const started = performance.now();
       const { message, requestId } = await postMessages({
         url: baseUrl,
+        ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
         key,
         body: text,
         headers,
@@ -479,12 +750,14 @@ export function createGateway(options: GatewayOptions): Gateway {
         tries: GATEWAY_TRIES,
         timeoutMs,
         accept: (reply, response) => ({
-          message: replyMessage(reply, streamed),
+          message: responses
+            ? responseMessage(streamed ? streamedResponse(reply) : JSON.parse(reply))
+            : replyMessage(reply, streamed),
           requestId: response.headers.get("request-id") ?? undefined,
         }),
       });
       const durationMs = Math.round(performance.now() - started);
-      const spent = count(message, bodyPrice);
+      const spent = count(message, bodyPrice, responses);
       return requestId === undefined
         ? { message, durationMs, spent }
         : { message, requestId, durationMs, spent };

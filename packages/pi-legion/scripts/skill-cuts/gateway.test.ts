@@ -7,20 +7,27 @@ import { MessagesApiError, postMessages } from "../skill-scenarios/messages-api"
 import type { Fetch } from "../skill-scenarios/production-dispatch";
 import {
   BudgetSpent,
+  type ContentBlock,
   costUsd,
   createGateway,
   GATEWAY_TRIES,
   type GatewayOptions,
+  isResponsesBody,
   type MessagesBody,
   PRICES,
+  type ResponsesBody,
+  responsesCostUsd,
+  responsesTokensOf,
+  toolCalls,
 } from "./gateway";
 
-// The gateway's client, on F5 (testdata/): the model gateway's replies to request bodies made from
-// F2, captured by plan task t1 (testdata/CAPTURE.md, "F5") with
+// The gateway's client, on F5 and F9 (testdata/): the model gateway's replies to request bodies
+// made from F2 and F8, captured by plan task t1 (testdata/CAPTURE.md, "F5") with
 // `bun $TMPDIR/infra4676/send.ts <body.json> > F5-<shape>.sse`, a scratch script that posts the
-// body to the gateway's `/v1/messages` with the key read inside it; the body sets `stream`, so each
-// reply is an SSE stream, kept with its `content-type` and `request-id` headers. Every fetch here
-// is a fake: no test reaches a network.
+// body to the gateway's `/v1/messages` with the key read inside it, and by the OpenAI route's task
+// ("F8 and F9") with `bun send-openai.ts <body.json> > F9-<shape>.sse`, its twin for
+// `/v1/responses`; each body sets `stream`, so each reply is an SSE stream, kept with its
+// `content-type` and `request-id` headers. Every fetch here is a fake: no test reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const scratch = temporaryDirectory("skill-cuts-gateway", { real: true });
@@ -30,13 +37,38 @@ const BODY = JSON.parse(
   readFileSync(path.join(TESTDATA, "F2-request.json"), "utf8")
 ) as MessagesBody;
 
-/** F5's reply `shape` as the gateway sent it: its SSE body and its kept headers. */
-function f5(shape: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `F5-${shape}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `F5-${shape}.sse`), "utf8"), {
+/** The body F9's replies answer: F8, the Responses API body Oh My Pi 18.18.6 sent for an F2-like
+ *  history with `--model openai/gpt-6.1-sol`. */
+const RESPONSES_BODY = JSON.parse(
+  readFileSync(path.join(TESTDATA, "F8-request.json"), "utf8")
+) as ResponsesBody;
+
+/** The fixture reply `stem` as the gateway sent it: its SSE body and its kept headers. */
+function fixtureReply(stem: string): Response {
+  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `${stem}.headers.json`), "utf8"));
+  return new Response(readFileSync(path.join(TESTDATA, `${stem}.sse`), "utf8"), {
     status: kept.status,
     headers: kept.headers,
   });
+}
+
+/** F5's reply `shape`, a Messages API stream. */
+function f5(shape: string): Response {
+  return fixtureReply(`F5-${shape}`);
+}
+
+/** F9's reply `shape`, a Responses API stream. */
+function f9(shape: string): Response {
+  return fixtureReply(`F9-${shape}`);
+}
+
+/** The response F9's reply `shape` holds whole: the one its `response.completed` event carries. */
+function f9Response(shape: string): { output: ContentBlock[]; usage: { cost: number } } {
+  const events = readFileSync(path.join(TESTDATA, `F9-${shape}.sse`), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice("data: ".length)));
+  return events.find((event) => event.type === "response.completed").response;
 }
 
 /** An Anthropic error answer. */
@@ -400,7 +432,7 @@ test("refuses a body whose model has no price before any call, and takes a price
   );
   expect(sent).toHaveLength(0);
 
-  const price = { input: 1, output: 1, cacheWrite5m: 1, cacheWrite1h: 1, cacheRead: 1 };
+  const price = { input: 1, output: 1, cacheWriteShort: 1, cacheWriteLong: 1, cacheRead: 1 };
   const priced = world(() => f5("text"), { prices: { "acme-model-1": price } });
   // The reply says claude-sonnet-5-5 answered, so that model's own price counts it.
   const reply = await priced.gateway.send({ ...BODY, model: "acme-model-1" });
@@ -511,4 +543,218 @@ test("the key file's text is in no error, log line or thrown message", async () 
   for (let at = 0; at + 10 <= key.length; at += 1) {
     expect(said.filter((text) => text.includes(key.slice(at, at + 10)))).toEqual([]);
   }
+});
+
+test("posts a Responses body to <base>/v1/responses with the key as a bearer token, and reads its stream whole (F8, F9)", async () => {
+  const key = fixtureSecret("gw");
+  const { gateway, sent } = world(() => f9("skill-read"), { keyFile: keyFileHolding(key) });
+  expect(isResponsesBody(RESPONSES_BODY)).toBe(true);
+  expect(isResponsesBody(BODY)).toBe(false);
+  const reply = await gateway.send(RESPONSES_BODY);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.url).toBe("http://gateway.test/v1/responses");
+  expect(sent[0]?.headers.get("authorization")).toBe(`Bearer ${key}`);
+  expect(sent[0]?.key).toBeNull();
+  expect(sent[0]?.headers.get("anthropic-version")).toBeNull();
+  expect(sent[0]?.headers.get("content-type")).toBe("application/json");
+  expect(sent[0]?.body).toEqual(RESPONSES_BODY);
+  expect(reply.requestId).toBe("req_5542a27f0cee414cb1c756fb5aac9e83");
+  expect(reply.message.model).toBe("gpt-6.1-sol");
+  expect(reply.message.stop_reason).toBe("completed");
+  // The reply's content is the response's output items as they came, and its echo of the request
+  // (`instructions`, `tools`) is left out.
+  expect(reply.message.content).toEqual(f9Response("skill-read").output);
+  expect(Object.keys(reply.message).sort()).toEqual([
+    "content",
+    "id",
+    "model",
+    "stop_reason",
+    "usage",
+  ]);
+  expect(toolCalls(reply.message.content)).toEqual([
+    {
+      id: String(f9Response("skill-read").output[0]?.call_id),
+      name: "read",
+      input: { i: "Reading alpha checklist reference", path: "skill://alpha/references/x.md" },
+    },
+  ]);
+});
+
+test("reads every item of a Responses reply: reasoning with its encrypted content, a message's text, and tool calls (F9)", async () => {
+  const { gateway } = world((n) => f9(["text", "skill-read-and-other"][n - 1] ?? ""));
+  const text = await gateway.send(RESPONSES_BODY);
+  const [reasoning, message] = text.message.content;
+  expect(reasoning?.type).toBe("reasoning");
+  expect(String(reasoning?.encrypted_content).length).toBeGreaterThan(100);
+  expect(message).toMatchObject({
+    type: "message",
+    role: "assistant",
+    content: [
+      {
+        type: "output_text",
+        text: "1. Read `references/x.md`.\n2. Write each step’s result on one line.\n3. Stop after the third step.",
+      },
+    ],
+  });
+  expect(toolCalls(text.message.content)).toEqual([]);
+
+  const both = await gateway.send(RESPONSES_BODY);
+  expect(toolCalls(both.message.content).map((call) => [call.name, call.input])).toEqual([
+    ["read", { i: "Reading requested beta skill", path: "skill://beta" }],
+    [
+      "bash",
+      {
+        i: "Listing current directory entries",
+        command: "ls",
+        timeout: null,
+        cwd: null,
+        pty: null,
+        async: null,
+        name: null,
+        ready: null,
+      },
+    ],
+  ]);
+});
+
+test("sums a Responses reply's usage, its cache reads and writes and its reasoning, at gpt-6.1-sol's list price, which is the gateway's own cost (F9)", async () => {
+  // F9's cache-read reply is the second send of the skill-read reply's body.
+  const { gateway } = world((n) => f9(["skill-read", "cache-read", "text"][n - 1] ?? ""));
+  const first = await gateway.send(RESPONSES_BODY);
+  const second = await gateway.send(RESPONSES_BODY);
+  const third = await gateway.send(RESPONSES_BODY);
+  // gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read and $2.50 a 30-minute cache write, per
+  // million tokens; its input tokens count the reads and writes among them. The first:
+  // (7985 - 7982) x 2 + 30 x 10 + 7982 x 2.50 = 20261.
+  expect(first.spent).toMatchObject({
+    model: "gpt-6.1-sol",
+    input: 3,
+    output: 30,
+    cacheRead: 0,
+    cacheWrite: 7982,
+    reasoning: 0,
+  });
+  expect(first.spent.usd).toBeCloseTo(0.020261, 10);
+  // The second send of that body reads what the first wrote: 3 x 2 + 30 x 10 + 7982 x 0.10.
+  expect(second.spent).toMatchObject({ input: 3, output: 30, cacheRead: 7982, cacheWrite: 0 });
+  expect(second.spent.usd).toBeCloseTo(0.0011042, 10);
+  // The text reply: 3 x 2 + 76 x 10 + 8083 x 0.10 + 19 x 2.50, 43 of its 76 output tokens reasoning.
+  expect(third.spent).toMatchObject({
+    input: 3,
+    output: 76,
+    cacheRead: 8083,
+    cacheWrite: 19,
+    reasoning: 43,
+  });
+  expect(third.spent.usd).toBeCloseTo(0.0016218, 10);
+  // Each is the gateway's own count of the reply, its usage's `cost`.
+  for (const [reply, shape] of [
+    [first, "skill-read"],
+    [second, "cache-read"],
+    [third, "text"],
+  ] as const) {
+    expect(reply.spent.usd).toBeCloseTo(f9Response(shape).usage.cost, 10);
+  }
+  const spend = gateway.spend();
+  expect(spend.models["gpt-6.1-sol"]).toMatchObject({
+    calls: 3,
+    input: 9,
+    output: 136,
+    cacheRead: 16065,
+    cacheWrite: 8001,
+    reasoning: 43,
+  });
+  expect(spend.usd).toBeCloseTo(0.020261 + 0.0011042 + 0.0016218, 10);
+});
+
+test("prices gpt-6.1-sol's long context, over 272,000 input tokens, at its higher rates, and a write the usage does not split as a 12-hour one", () => {
+  const usage = {
+    input_tokens: 300_000,
+    output_tokens: 100,
+    input_tokens_details: {
+      cached_tokens: 200_000,
+      cache_write_tokens: 50_000,
+      cache_write_tokens_details: { ttl_30m_tokens: 20_000, ttl_12h_tokens: 30_000 },
+    },
+    output_tokens_details: { reasoning_tokens: 40 },
+  };
+  const price = PRICES["gpt-6.1-sol"];
+  if (price === undefined) throw new Error("PRICES has no gpt-6.1-sol");
+  expect(responsesTokensOf(usage)).toEqual({
+    input: 50_000,
+    output: 100,
+    cacheRead: 200_000,
+    cacheWrite: 50_000,
+    reasoning: 40,
+  });
+  // 50000 x 4 + 100 x 15 + 200000 x 0.20 + 20000 x 5 + 30000 x 10 = 641500.
+  expect(responsesCostUsd(usage, price)).toBeCloseTo(0.6415, 10);
+  // At 272,000 input tokens, the lower rates: 22000 x 2 + 100 x 10 + 200000 x 0.10 + 20000 x 2.50 +
+  // 30000 x 5 = 265000.
+  const short = { ...usage, input_tokens: 272_000 };
+  expect(responsesCostUsd(short, price)).toBeCloseTo(0.265, 10);
+  // Unsplit, the 50000 written are priced at the 12-hour rate: 22000 x 2 + 1000 + 20000 + 50000 x 5.
+  const unsplit = {
+    ...short,
+    input_tokens_details: { cached_tokens: 200_000, cache_write_tokens: 50_000 },
+  };
+  expect(responsesCostUsd(unsplit, price)).toBeCloseTo(0.315, 10);
+});
+
+test("a Responses body goes with no header beside it: one given is refused by name, before any call", async () => {
+  const { gateway, sent } = world(() => f9("text"));
+  const error = await gateway
+    .send(RESPONSES_BODY, { headers: { "anthropic-version": "2023-06-01" } })
+    .catch((caught: unknown) => caught);
+  expect(String(error)).toBe(
+    "Error: a Responses API body goes with no header beside it, not anthropic-version: the anthropic-* headers are the Messages API's"
+  );
+  expect(sent).toHaveLength(0);
+});
+
+test("tries again a Responses stream cut short before response.completed, or ended by an error event", async () => {
+  const whole = readFileSync(path.join(TESTDATA, "F9-text.sse"), "utf8");
+  const cut = whole.slice(0, whole.indexOf('data: {"type":"response.completed"'));
+  const failed = 'data: {"type":"error","code":"server_error","message":"made up"}\n\n';
+  const { gateway, sent, slept } = world((n) =>
+    n === 1 ? new Response(cut) : n === 2 ? new Response(failed) : f9("text")
+  );
+  const reply = await gateway.send(RESPONSES_BODY);
+  expect(reply.message.stop_reason).toBe("completed");
+  expect(sent).toHaveLength(3);
+  expect(slept).toEqual([1000, 2000]);
+
+  const failing = world(() => new Response(failed));
+  await expect(failing.gateway.send(RESPONSES_BODY)).rejects.toThrow(
+    `the stream ended in an error: server_error: made up, on each of ${GATEWAY_TRIES} tries`
+  );
+  const short = world(() => new Response(cut));
+  await expect(short.gateway.send(RESPONSES_BODY)).rejects.toThrow(
+    "the stream ended before response.completed"
+  );
+});
+
+test("postMessages on the bearer route posts to its path with the key as authorization and no API version, and no header given replaces the key", async () => {
+  const key = fixtureSecret("gw");
+  const seen: { url: string; headers: Headers }[] = [];
+  await postMessages({
+    url: "http://gateway.test",
+    path: "/v1/responses",
+    auth: "bearer",
+    key: async () => key,
+    body: "{}",
+    headers: { Authorization: "Bearer replaced-not-a-secret" },
+    fetch: async (url, init) => {
+      seen.push({ url, headers: new Headers(init.headers) });
+      return new Response("answered");
+    },
+    sleep: async () => {},
+    tries: 1,
+    timeoutMs: 5_000,
+    accept: (text) => text,
+  });
+  expect(seen[0]?.url).toBe("http://gateway.test/v1/responses");
+  expect(seen[0]?.headers.get("authorization")).toBe(`Bearer ${key}`);
+  expect(seen[0]?.headers.get("x-api-key")).toBeNull();
+  expect(seen[0]?.headers.get("anthropic-version")).toBeNull();
 });

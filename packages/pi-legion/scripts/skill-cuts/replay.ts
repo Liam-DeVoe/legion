@@ -1,31 +1,52 @@
 /**
  * The replay of one arm of a case (plan, R5 `replay.ts`): its captured request body sent to the
- * gateway, and the reply that is the judged step.
+ * gateway, and the reply that is the judged step. The body is of either API the gateway serves:
+ * a Messages body, or an OpenAI Responses body (gateway.ts's `isResponsesBody`); every round sends
+ * the body in its own API, on the case's own model.
  *
  * A reply whose every tool call is a read of a file of the case's skill (a `read` of
  * `skill://<skill>` or `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one) is not
  * the step: the agent is still loading the skill. Each of those reads is answered the way the
  * arm's files would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]`
  * header whose path is the skill's installed one, the same in every arm, or Oh My Pi's not-found
- * result for a file the arm lacks), as one `tool_result` block in the shape Oh My Pi sends (F2),
+ * result for a file the arm lacks), in the form Oh My Pi sends a tool result in the body's API,
  * and the body goes again with the reply and the answers added; at most `maxSkillRounds` times
- * (MAX_SKILL_ROUNDS). The first reply that holds no tool call, or any other tool call (a read of
- * another skill, a read of a path on disk, a read of a directory of the skill, any other tool), is
- * the judged step, and so is the reply after the last round, whatever it holds. Every round goes
- * with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside the body.
+ * (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's message and its answers as one
+ * user message of `tool_result` blocks (F2); a Responses reply's output items go back as they came
+ * (its reasoning items' encrypted content included), each followed in the input by a
+ * `function_call_output` item holding the answer's text (F8: the Responses API takes no error
+ * flag, and Oh My Pi sends none). The first reply that holds no tool call, or any other tool call
+ * (a read of another skill, a read of a path on disk, a read of a directory of the skill, any
+ * other tool), is the judged step, and so is the reply after the last round, whatever it holds.
+ * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
+ * the body (none beside a Responses body).
  *
  * Every run of an arm sends the same body, so the gateway's prompt cache can serve all but the
- * first run's prefix, but only up to the body's last cache breakpoint, and the bodies Oh My Pi
- * builds hold theirs on the tools and the system prompt only: the pilot's runs read about 20,000
- * tokens of a 340,000-token body from the cache and paid the rest as input. So each run sends the
- * body with a breakpoint on its last message (`withCacheBreakpoint`), and `replay` sends an arm's
- * first run alone, so that the others read what it wrote.
+ * first run's prefix. A Messages body is cached only up to its last cache breakpoint, and the
+ * bodies Oh My Pi builds hold theirs on the tools and the system prompt only: the pilot's runs
+ * read about 20,000 tokens of a 340,000-token body from the cache and paid the rest as input. So
+ * each run sends a Messages body with a breakpoint on its last message (`withCacheBreakpoint`).
+ * The Responses route caches the prefix a body shares with an earlier one by itself (F9: the
+ * second send of a body read all but 3 of its 7,985 input tokens from the cache), so a Responses
+ * body goes as it is, with no `cache_control`; its reads are counted as `cacheRead`. `replay`
+ * sends an arm's first run alone, so that the others read what it wrote.
  */
 import { statSync } from "node:fs";
 import path from "node:path";
 import { type Arm, skillFile } from "./arms";
 import { skillReadFile } from "./cases";
-import type { ContentBlock, Gateway, MessagesBody, Reply, SendOptions, Spent } from "./gateway";
+import {
+  type ContentBlock,
+  type Gateway,
+  isResponsesBody,
+  type MessagesBody,
+  type Reply,
+  type RequestBody,
+  type SendOptions,
+  type Spent,
+  type ToolCall,
+  toolCalls,
+} from "./gateway";
 
 /** The most times a replay answers a reply's skill reads and sends again. */
 export const MAX_SKILL_ROUNDS = 3;
@@ -114,7 +135,7 @@ export interface Replayed {
 
 /** How a replay runs: the most rounds of skill reads it answers, and the headers that go with the
  *  body on every round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside
- *  the captured body, whose betas its fields need). */
+ *  a captured Messages body, whose betas its fields need; none beside a Responses body). */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
 }
@@ -126,11 +147,11 @@ interface SkillRead {
   readonly file: string;
 }
 
-/** The skill read `block` is, or undefined when it is any other tool call. A read of a directory
+/** The skill read `call` is, or undefined when it is any other tool call. A read of a directory
  *  of the skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild. */
-function skillRead(block: ContentBlock, arm: Arm): SkillRead | undefined {
-  const { id, name, input } = block;
-  if (typeof id !== "string" || name !== "read") return undefined;
+function skillRead(call: ToolCall, arm: Arm): SkillRead | undefined {
+  const { id, name, input } = call;
+  if (id === undefined || name !== "read") return undefined;
   if (typeof input !== "object" || input === null || !("path" in input)) return undefined;
   if (typeof input.path !== "string") return undefined;
   const file = skillReadFile(arm.skill, input.path);
@@ -142,22 +163,54 @@ function skillRead(block: ContentBlock, arm: Arm): SkillRead | undefined {
   return { id, file };
 }
 
+/** `body` with `content`, a reply whose every tool call is one of `reads`, and the arm's answer to
+ *  each read added, in the form of the body's API (see the file's header). */
+function answered(
+  body: RequestBody,
+  content: readonly ContentBlock[],
+  reads: readonly SkillRead[],
+  arm: Arm
+): RequestBody {
+  const answers = reads.map((read) => ({ id: read.id, ...skillFile(arm, read.file) }));
+  if (isResponsesBody(body)) {
+    const outputs = answers.map(({ id, text }) => ({
+      type: "function_call_output",
+      call_id: id,
+      output: text,
+    }));
+    return { ...body, input: [...body.input, ...content, ...outputs] };
+  }
+  const results = answers.map(({ id, text, isError }) => ({
+    type: "tool_result",
+    tool_use_id: id,
+    content: [{ type: "text", text }],
+    is_error: isError,
+  }));
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content },
+      { role: "user", content: results },
+    ],
+  };
+}
+
 /** Sends `body` for `arm`, answers its skill reads, and returns the judged step. Rejects when a
  *  send does (the gateway's `BudgetSpent` among them). */
 export async function replayOnce(
-  body: MessagesBody,
+  body: RequestBody,
   arm: Arm,
   gateway: Gateway,
   { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions = {}
 ): Promise<Replayed> {
-  const cached = withCacheBreakpoint(body);
-  const messages = [...cached.messages];
+  let sent: RequestBody = isResponsesBody(body) ? body : withCacheBreakpoint(body);
   const usage: Spent[] = [];
   for (let rounds = 0; ; rounds += 1) {
-    const reply = await gateway.send({ ...cached, messages: [...messages] }, { headers });
+    const reply = await gateway.send(sent, { headers });
     usage.push(reply.spent);
-    const calls = reply.message.content.filter((block) => block.type === "tool_use");
-    const reads = calls.map((block) => skillRead(block, arm));
+    const calls = toolCalls(reply.message.content);
+    const reads = calls.map((call) => skillRead(call, arm));
     if (
       rounds >= maxSkillRounds ||
       calls.length === 0 ||
@@ -165,21 +218,7 @@ export async function replayOnce(
     ) {
       return { step: reply, rounds, usage };
     }
-    messages.push(
-      { role: "assistant", content: reply.message.content },
-      {
-        role: "user",
-        content: reads.map((read) => {
-          const { text, isError } = skillFile(arm, read.file);
-          return {
-            type: "tool_result",
-            tool_use_id: read.id,
-            content: [{ type: "text", text }],
-            is_error: isError,
-          };
-        }),
-      }
-    );
+    sent = answered(sent, reply.message.content, reads, arm);
   }
 }
 
@@ -190,7 +229,7 @@ export async function replayOnce(
  * first one writes serves the others' shared prefix.
  */
 export async function replay(
-  body: MessagesBody,
+  body: RequestBody,
   arm: Arm,
   gateway: Gateway,
   n: number,

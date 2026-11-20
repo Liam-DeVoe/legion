@@ -25,6 +25,7 @@ import {
   messageSse,
   type RecordedRequest,
   type Recorder,
+  responseSse,
   sseResponse,
   startRecorder,
 } from "./recorder";
@@ -86,19 +87,31 @@ let recorder: Recorder;
 beforeAll(() => {
   recorder = startRecorder({
     route: (request: RecordedRequest) => {
-      if (request.method !== "POST" || request.path !== "/v1/messages") return undefined;
+      const responses = request.path === "/v1/responses";
+      if (request.method !== "POST" || (request.path !== "/v1/messages" && !responses)) {
+        return undefined;
+      }
       const body = JSON.parse(request.body) as { model: string };
       const answered = answer(body);
       if (answered instanceof Response) return answered;
+      // A Responses body (an openai/<id> case's replay) gets the answer in its API's stream.
       return sseResponse(
-        messageSse({
-          id: `msg_standin_${request.n}`,
-          model: body.model,
-          content: [{ type: "text", text: answered }],
-          stopReason: "end_turn",
-          inputTokens: usage.input,
-          outputTokens: usage.output,
-        }),
+        responses
+          ? responseSse({
+              id: `resp_standin_${request.n}`,
+              model: body.model,
+              output: [{ type: "message", text: answered }],
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+            })
+          : messageSse({
+              id: `msg_standin_${request.n}`,
+              model: body.model,
+              content: [{ type: "text", text: answered }],
+              stopReason: "end_turn",
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+            }),
         `req_standin_${request.n}`
       );
     },
@@ -443,6 +456,8 @@ const F1 = path.join(
   "2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl"
 );
 const F2 = path.join(TESTDATA, "F2-request.json");
+/** The Responses API body Oh My Pi sent for an F2-like history on openai/gpt-6.1-sol. */
+const F8 = path.join(TESTDATA, "F8-request.json");
 
 /** F1's messages, in order. */
 const messages: SessionMessage[] = readFileSync(F1, "utf8")
@@ -492,7 +507,7 @@ function behaviourStandIn(body: { [field: string]: unknown }): string | Response
       reason: "The stand-in judge read the step.",
     });
   }
-  const text = JSON.stringify(body.messages);
+  const text = JSON.stringify(body.messages ?? body.input);
   let refuse = text.includes("BROKEN");
   if (text.includes("FLAKY") && flakyLeft > 0) {
     flakyLeft -= 1;
@@ -569,16 +584,23 @@ function writeSkill(dir: string, files: Record<string, string>): void {
 function scenario(
   name: string,
   newSkill: string,
-  cases: readonly { id: string; realStep?: string; violatingStep?: string; marker?: string }[]
+  cases: readonly {
+    id: string;
+    realStep?: string;
+    violatingStep?: string;
+    marker?: string;
+    model?: string;
+  }[]
 ): Scenario {
   const dir = path.join(scratch, name);
   const old = path.join(dir, "old");
   const fresh = path.join(dir, "new");
   writeSkill(old, { "SKILL.md": f1File(2), "references/x.md": f1File(4) });
   writeSkill(fresh, { "SKILL.md": newSkill, "references/x.md": f1File(4) });
-  const made = cases.map(({ id, realStep, violatingStep }) =>
-    makeCase(id, realStep, violatingStep)
-  );
+  const made = cases.map(({ id, realStep, violatingStep, model }) => ({
+    ...makeCase(id, realStep, violatingStep),
+    ...(model === undefined ? {} : { model }),
+  }));
   const casesFile = path.join(dir, "cases.jsonl");
   writeFileSync(casesFile, `${made.map((c) => JSON.stringify(c)).join("\n")}\n`);
   return {
@@ -594,7 +616,8 @@ function scenario(
 
 /** Saves a body recorded from F2 for each case of `s` and each arm of `arms` (with `plantedLine`
  *  for minus), where the capture step under `out` reads it back: F2 with the case's id and marker
- *  in its user text, and the arm's read result of SKILL.md in place of F2's, or, for none, no read. */
+ *  in its user text, and the arm's read result of SKILL.md in place of F2's, or, for none, no read.
+ *  An `openai/<id>` case's body is F8 changed the same way, and goes with no header. */
 function recordCaptures(
   s: Scenario,
   arms: readonly ArmName[],
@@ -602,14 +625,24 @@ function recordCaptures(
   out = s.out
 ): void {
   const f2 = readFileSync(F2, "utf8");
+  const f8 = readFileSync(F8, "utf8");
   const dirs = { old: s.old, new: s.new, ...(plantedLine === undefined ? {} : { plantedLine }) };
   for (const c of s.cases) {
+    const responses = c.model.startsWith("openai/");
     for (const name of arms) {
       const arm = buildArm(c, name, dirs, path.join(s.dir, "arms", c.id));
-      const body = JSON.parse(f2);
-      body.messages[0].content[1].text = `Case ${c.id} ${s.markers.get(c.id)}: write the checklist.`;
-      if (name === "none") body.messages = [body.messages[0]];
-      else body.messages[2].content[0].content[0].text = arm.messages[2]?.content?.[0]?.text;
+      const said = `Case ${c.id} ${s.markers.get(c.id)}: write the checklist.`;
+      const read = arm.messages[2]?.content?.[0]?.text;
+      const body = JSON.parse(responses ? f8 : f2);
+      if (responses) {
+        body.input[0].content[1].text = said;
+        if (name === "none") body.input = [body.input[0]];
+        else body.input[2].output = read;
+      } else {
+        body.messages[0].content[1].text = said;
+        if (name === "none") body.messages = [body.messages[0]];
+        else body.messages[2].content[0].content[0].text = read;
+      }
       const files = capturePaths(armCaptureDir(out, arm), c.id, name);
       mkdirSync(path.dirname(files.body), { recursive: true });
       writeFileSync(files.body, JSON.stringify(body));
@@ -618,7 +651,7 @@ function recordCaptures(
         JSON.stringify({
           case: c.id,
           arm: name,
-          requestHeaders: F2_HEADERS,
+          requestHeaders: responses ? {} : F2_HEADERS,
           captureDigest: "0123456789abcdef",
           sessionDigest: c.sessionDigest,
         })
@@ -803,7 +836,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 for their model), 1 unscreened, 1 not run"
+      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served), 1 unscreened, 1 not run"
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -985,6 +1018,103 @@ describe("behaviour", () => {
     expect(result(s.out, "c04").peakRssBytes).toBe(1024 ** 3 + 1);
     expect(existsSync(caseResultFile(s.out, "c05"))).toBe(false);
   }, 120_000);
+
+  /** One screen of three cases, made once for the rows below: on openai/gpt-6.1-sol, on an
+   *  Anthropic model behind another gateway prefix, and on a model the gateway does not serve
+   *  (F7-skill-cuts.json's servedModels: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol). */
+  let servedRun:
+    | Promise<{ s: Scenario; ran: Ran; requests: readonly RecordedRequest[] }>
+    | undefined;
+  const served = () => {
+    servedRun ??= (async () => {
+      const s = scenario("served", LOSS_SKILL(), [
+        { id: "c-openai", model: "openai/gpt-6.1-sol" },
+        { id: "c-prefixed", model: "gateway/claude-sonnet-5-5" },
+        { id: "c-unserved", model: "anthropic/claude-opus-5-5" },
+      ]);
+      recordCaptures(s, ["old", "new", "none"]);
+      answer = behaviourStandIn;
+      usage = { input: 10, output: 3 };
+      const from = recorder.requests.length;
+      const ran = await cli(behaviour("screen", s));
+      return { s, ran, requests: requestsSince(from) };
+    })();
+    return servedRun;
+  };
+
+  test("a case on openai/gpt-6.1-sol runs: its replays go to the Responses route on its own model, and its judge stays the pinned one", async () => {
+    const { s, ran, requests } = await served();
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    // The two served cases, 63 requests each: three controls, 30 replays, 30 judgements.
+    expect(requests).toHaveLength(2 * 63);
+    const c = result(s.out, "c-openai");
+    expect(c.dropped).toBeNull();
+    expect(c.stages.screen?.state).toBe("counted");
+    expect(passes(c, "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
+    const responses = requests.filter((request) => request.path === "/v1/responses");
+    expect(responses).toHaveLength(30);
+    for (const request of responses) {
+      const body = JSON.parse(request.body);
+      expect(body.model).toBe("gpt-6.1-sol");
+      expect(body.input[0].content[1].text).toContain("Case c-openai");
+      expect(request.body).not.toContain("cache_control");
+      expect(Object.keys(request.headers).filter((name) => name.startsWith("anthropic-"))).toEqual(
+        []
+      );
+    }
+    const judge = loadPrompt("judge").settings;
+    const judged = requests.filter((request) => isJudgement(JSON.parse(request.body)));
+    expect(judged).toHaveLength(2 * 33);
+    expect(judged.every((request) => request.path === "/v1/messages")).toBe(true);
+    expect(judged.every((request) => JSON.parse(request.body).model === judge.model)).toBe(true);
+    // Each run keeps its reply's output items and what the replay used, its reasoning counted.
+    const run = c.stages.screen?.runs[0];
+    expect(run?.reply?.map((block) => block.type)).toEqual(["message"]);
+    expect(run?.replaySpent[0]).toMatchObject({ model: "gpt-6.1-sol", reasoning: 0 });
+    // The request log records a Responses body's max_output_tokens and reasoning effort.
+    const logged = readFileSync(path.join(s.out, "requests.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      logged.find((line) => line.kind === "replay" && line.model === "gpt-6.1-sol")
+    ).toMatchObject({ max_tokens: 128000, effort: "low", stream: true, stopReason: "completed" });
+  }, 300_000);
+
+  test("a case on an Anthropic model behind another gateway prefix runs, as the served model of its id, on the Messages route", async () => {
+    const { s, requests } = await served();
+    const c = result(s.out, "c-prefixed");
+    expect(c.dropped).toBeNull();
+    expect(passes(c, "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
+    const replays = requests.filter(
+      (request) => request.path === "/v1/messages" && !isJudgement(JSON.parse(request.body))
+    );
+    expect(replays.filter((request) => request.body.includes("Case c-prefixed"))).toHaveLength(30);
+    for (const request of replays) {
+      expect(JSON.parse(request.body).model).toBe("claude-sonnet-5-5");
+      expect(request.headers["anthropic-beta"]).toBe(F2_HEADERS["anthropic-beta"] ?? "");
+    }
+  }, 300_000);
+
+  test("a case on a model the gateway does not serve is dropped as model-not-served, before any call, and the report counts it", async () => {
+    const { s, ran, requests } = await served();
+    const c = result(s.out, "c-unserved");
+    expect(c.dropped).toBe(
+      "model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves (the configuration's servedModels: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol)"
+    );
+    expect(c.controls).toBeNull();
+    expect(c.stages.screen).toBeUndefined();
+    expect(requests.filter((request) => request.body.includes("Case c-unserved"))).toEqual([]);
+    expect(ran.code).toBe(0);
+    const reported = await cli(report(s));
+    expect(reported.code).toBe(0);
+    expect(reported.stdout).toContain(
+      "case c-unserved: dropped: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
+    );
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 1 model-not-served), "
+    );
+  }, 300_000);
 
   test("Oh My Pi is --omp, LEGION_OMP_PATH or the omp on PATH, as an absolute path, and behaviour and load given --models refuse by name when none names one", async () => {
     const bin = path.join(scratch, "omp-bin");

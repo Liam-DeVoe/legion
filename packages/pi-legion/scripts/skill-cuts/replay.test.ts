@@ -4,7 +4,13 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Arm } from "./arms";
-import { createGateway, type Gateway, type MessagesBody, type Reply } from "./gateway";
+import {
+  createGateway,
+  type Gateway,
+  type MessagesBody,
+  type Reply,
+  type ResponsesBody,
+} from "./gateway";
 import {
   MAX_BREAKPOINTS,
   MAX_SKILL_ROUNDS,
@@ -13,12 +19,17 @@ import {
   withCacheBreakpoint,
 } from "./replay";
 
-// The replay of an arm, on F5 (testdata/): the model gateway's replies to request bodies made from
-// F2, captured by plan task t1 (testdata/CAPTURE.md, "F5") with
-// `bun $TMPDIR/infra4676/send.ts <body.json> > F5-<shape>.sse`. F5-skill-read's only tool call
-// reads skill://alpha/references/x.md; F5-skill-read-and-other holds a read of skill://beta, a
-// `bash` call and a read of skill://alpha/references/x.md; F5-text holds text only. The gateway's
-// fetch is a fake that answers with them: no test reaches a network.
+// The replay of an arm, on F5 and F9 (testdata/): the model gateway's replies to request bodies
+// made from F2 and F8, captured as testdata/CAPTURE.md says ("F5", and "F8 and F9") with
+// `bun send.ts <body.json> > F5-<shape>.sse` and `bun send-openai.ts <body.json> >
+// F9-<shape>.sse`, scratch scripts that post the body to the gateway's `/v1/messages` and
+// `/v1/responses`. F5-skill-read's only tool call reads skill://alpha/references/x.md;
+// F5-skill-read-and-other holds a read of skill://beta, a `bash` call and a read of
+// skill://alpha/references/x.md; F5-text holds text only. F9's are the Responses API's
+// (openai/gpt-6.1-sol's) replies: F9-skill-read's only tool call reads
+// skill://alpha/references/x.md; F9-skill-read-and-other holds a read of skill://beta and a
+// `bash` call; F9-text a reasoning item and a message. The gateway's fetch is a fake that answers
+// with them: no test reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const scratch = temporaryDirectory("skill-cuts-replay", { real: true });
@@ -27,6 +38,12 @@ const scratch = temporaryDirectory("skill-cuts-replay", { real: true });
 const BODY = JSON.parse(
   readFileSync(path.join(TESTDATA, "F2-request.json"), "utf8")
 ) as MessagesBody;
+
+/** The Responses body of an arm on openai/gpt-6.1-sol: F8, the F2-like history Oh My Pi 18.18.6
+ *  sent for that model. */
+const RESPONSES_BODY = JSON.parse(
+  readFileSync(path.join(TESTDATA, "F8-request.json"), "utf8")
+) as ResponsesBody;
 
 const SKILL_MD =
   "---\nname: alpha\ndescription: Use when a task asks for the alpha checklist of the made-up fixture project; it lists the three alpha steps.\n---\n\n# Alpha\n\n1. Read `references/x.md` before the first step.\n2. Write each step's result on one line.\n3. Stop after the third step.\n";
@@ -59,13 +76,32 @@ function armWith(name: "old" | "new" | "minus", files: Record<string, string>): 
   };
 }
 
-/** F5's reply `shape` as the gateway sent it. */
-function f5(shape: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `F5-${shape}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `F5-${shape}.sse`), "utf8"), {
+/** The fixture reply `stem` as the gateway sent it. */
+function fixtureReply(stem: string): Response {
+  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `${stem}.headers.json`), "utf8"));
+  return new Response(readFileSync(path.join(TESTDATA, `${stem}.sse`), "utf8"), {
     status: kept.status,
     headers: kept.headers,
   });
+}
+
+/** F5's reply `shape`, a Messages API stream. */
+function f5(shape: string): Response {
+  return fixtureReply(`F5-${shape}`);
+}
+
+/** F9's reply `shape`, a Responses API stream. */
+function f9(shape: string): Response {
+  return fixtureReply(`F9-${shape}`);
+}
+
+/** The output items of F9's reply `shape`: those its `response.completed` event carries. */
+function f9Output(shape: string): Record<string, unknown>[] {
+  const events = readFileSync(path.join(TESTDATA, `F9-${shape}.sse`), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice("data: ".length)));
+  return events.find((event) => event.type === "response.completed").response.output;
 }
 
 /** A gateway whose fake fetch answers the n-th call (from 1) with `answer`, and the bodies and
@@ -412,4 +448,70 @@ test("withCacheBreakpoint does not add a second breakpoint to a last block that 
     "tools.10",
   ]);
   expect(lastBlock(cached).cache_control).toEqual({ type: "ephemeral" });
+});
+
+test("on a Responses body (F8, F9): answers a skill read with a function_call_output item, adds no cache_control, and stops at the first other reply", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies, headers } = world((n) => f9(n === 1 ? "skill-read" : "text"));
+  const replayed = await replayOnce(RESPONSES_BODY, arm, gateway);
+  const sent = bodies as readonly unknown[] as readonly ResponsesBody[];
+  expect(sent).toHaveLength(2);
+  // The body goes as it was captured: the Responses route caches the prefix it shares by itself.
+  expect(sent[0]).toEqual(RESPONSES_BODY);
+  expect(JSON.stringify(sent)).not.toContain("cache_control");
+  // The second send is the body with the reply's output items as they came and the arm's answer
+  // to its read, the form Oh My Pi sends a tool result in (F8's `function_call_output`).
+  const [read] = f9Output("skill-read");
+  const { input: sentInput, ...sentFields } = sent[1] ?? RESPONSES_BODY;
+  const { input: bodyInput, ...bodyFields } = RESPONSES_BODY;
+  expect(sentFields).toEqual(bodyFields);
+  expect(sentInput).toEqual([
+    ...bodyInput,
+    read,
+    {
+      type: "function_call_output",
+      call_id: read?.call_id,
+      output: `[Skill file: ${INSTALLED}/references/x.md]\n${X_MD.replace(/\n$/, "")}`,
+    },
+  ]);
+  expect(JSON.stringify(sent)).not.toContain(arm.skillDir ?? "no directory");
+  // No anthropic-* header goes beside a Responses body.
+  for (const each of headers) {
+    expect([...each.keys()].filter((name) => name.startsWith("anthropic-"))).toEqual([]);
+  }
+
+  expect(replayed.rounds).toBe(1);
+  expect(replayed.step.message.stop_reason).toBe("completed");
+  expect(replayed.step.message.content.map((block) => block.type)).toEqual([
+    "reasoning",
+    "message",
+  ]);
+  // Each send's cached tokens are recorded as its cache reads.
+  expect(replayed.usage.map((spent) => [spent.model, spent.cacheRead, spent.reasoning])).toEqual([
+    ["gpt-6.1-sol", 0, 0],
+    ["gpt-6.1-sol", 8083, 43],
+  ]);
+});
+
+test("on a Responses body: a reply with a read of another skill and another tool call is the judged step at once (F9)", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = world(() => f9("skill-read-and-other"));
+  const replayed = await replayOnce(RESPONSES_BODY, arm, gateway);
+  expect(bodies).toHaveLength(1);
+  expect(replayed.rounds).toBe(0);
+  expect(replayed.step.message.content.map((block) => block.name)).toEqual(["read", "bash"]);
+});
+
+test("on a Responses body: at most three rounds of skill reads, and a read of a file the arm lacks is answered with the not-found text", async () => {
+  const arm = armWith("new", { "SKILL.md": SKILL_MD });
+  const { gateway, bodies } = world(() => f9("skill-read"));
+  const replayed = await replayOnce(RESPONSES_BODY, arm, gateway);
+  const sent = bodies as readonly unknown[] as readonly ResponsesBody[];
+  expect(sent.map((body) => body.input.length)).toEqual([3, 5, 7, 9]);
+  expect(replayed.rounds).toBe(MAX_SKILL_ROUNDS);
+  expect(sent[1]?.input.at(-1)).toEqual({
+    type: "function_call_output",
+    call_id: f9Output("skill-read")[0]?.call_id,
+    output: `File not found: ${INSTALLED}/references/x.md`,
+  });
 });

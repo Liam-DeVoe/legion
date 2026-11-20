@@ -741,4 +741,92 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
     },
     ROW_TIMEOUT_MS
   );
+
+  test(
+    "a case on openai/gpt-6.1-sol is captured as the Responses body Oh My Pi sends to /v1/responses (F8's shape), its hints from the Anthropic hint model, and a recorded prompt as its instructions",
+    async () => {
+      await captures();
+      const models = path.join(dir, "models-openai.yml");
+      // The pod's models.yml shape: Oh My Pi's built-in openai provider at the gateway's /v1,
+      // with no api and no models list, beside the Messages route's provider.
+      writeFileSync(
+        models,
+        `${MODELS}  openai:\n    baseUrl: http://127.0.0.1:9/v1\n    compat: {statefulResponses: false}\n    modelOverrides:\n      gpt-6.1-sol: {contextWindow: 922000}\n`
+      );
+      const options: CaptureOptions = {
+        omp: binary(),
+        outDir: path.join(dir, "out"),
+        scratchDir: path.join(dir, "scratch"),
+        cacheDir: path.join(dir, "cache"),
+        source: localSource(path.join(dir, "repos")),
+        models,
+        hints,
+        hintModel: "anthropic/claude-sonnet-5-5",
+      };
+      const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+      const c: Case = { ...f1Case("openai-1"), model: "openai/gpt-6.1-sol" };
+      const arm = buildArm(c, "old", dirs, path.join(dir, "arms-openai"));
+      const { body, record } = await captureBody(c, arm, options);
+      expect(body.model).toBe("gpt-6.1-sol");
+      expect(body.messages).toBeUndefined();
+      expect(Array.isArray(body.input)).toBe(true);
+      expect(typeof body.instructions).toBe("string");
+      expect(JSON.stringify(body)).not.toContain("cache_control");
+      expect(record.model).toBe("openai/gpt-6.1-sol");
+      expect(record.hintModel).toBe("anthropic/claude-sonnet-5-5");
+      expect(record.requestHeaders).toEqual({});
+      expect(record.connections.http).toContain("POST /v1/responses");
+      expect(record.connections.http).not.toContain("POST /v1/messages");
+      // Oh My Pi read the recorder's Responses end of turn as a whole reply.
+      expect(record.exit).toEqual({ code: 0, signal: null, reason: "" });
+      // The arm's messages are the input: its user text, and its read results as tool outputs.
+      const sent = texts(body.input);
+      for (const index of [0, 2, 4]) {
+        const text = stripSkillHeader(arm.messages[index]?.content?.[0]?.text ?? "");
+        expect(text).not.toBe("");
+        expect(sent.some((one) => one.includes(text))).toBe(true);
+      }
+      expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
+      // The listing is in its instructions, each skill under the hint its profile holds.
+      const listing = skillListing(body);
+      expect([...listing.keys()].sort()).toEqual(["alpha", "beta"]);
+      for (const { skill, hint } of record.hints) expect(listing.get(skill)).toBe(hint);
+      expect(record.captureDigest).toBe(promptDigest(body));
+
+      // A recorded prompt goes as its blocks joined, a blank line between, into the instructions.
+      const sub: Case = {
+        ...f1Case("openai-subagent-1"),
+        model: "openai/gpt-6.1-sol",
+        context: "subagent:task",
+        profile: {
+          ...c.profile,
+          contextFiles: [],
+          systemPrompt: SUBAGENT_PROMPT,
+          tools: SUBAGENT_TOOLS,
+        },
+      };
+      const subArm = buildArm(sub, "old", dirs, path.join(dir, "arms-openai-subagent"));
+      const recorded = await captureBody(sub, subArm, options);
+      const hint = recorded.record.hints.find((each) => each.skill === "alpha")?.hint;
+      expect(recorded.body.instructions).toBe(
+        armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint)
+          .blocks.filter((block) => block.trim() !== "")
+          .join("\n\n")
+      );
+      expect(recorded.record.recordedPrompt?.line).toBe("replaced");
+
+      // The hint model is the case's model by default, and hints are written on the Messages
+      // route only: an OpenAI case with no hint model is refused.
+      const { hintModel: _, ...noHintModel } = options;
+      const refused = await captureBody(
+        { ...f1Case("openai-2"), model: "openai/gpt-6.1-sol" },
+        buildArm(f1Case("openai-2"), "old", dirs, path.join(dir, "arms-openai-2")),
+        noHintModel
+      ).catch((caught: unknown) => caught);
+      expect(String(refused)).toContain(
+        "the hint model openai/gpt-6.1-sol is not served on the Anthropic Messages route"
+      );
+    },
+    ROW_TIMEOUT_MS
+  );
 });

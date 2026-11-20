@@ -343,6 +343,103 @@ exact capture commands are in the headers of `psql-rows.test.ts` (the count, the
 query and the edge shapes) and `count.test.ts` (the models query), and `count.test.ts` checks each
 query's rows against its capture.
 
+## F8 and F9: Oh My Pi's Responses body for `openai/gpt-6.1-sol`, and the gateway's replies (`F8-*`, `F9-*`)
+
+`$O` is the scratch directory `/legion/scratch/tmp/infra4676/openai-route.ByGhxu`, outside the
+repository, which held two scratch scripts:
+
+- **measure** (`bun $O/measure.ts <out dir> <thinking>`, run from `packages/pi-legion`): a stand-in
+  on `127.0.0.1` that stores each request's body byte for byte as `<out>/request-<n>.json`, and
+  its method, path and headers less those recorder.ts's `keptHeaders` leaves out (every auth
+  header, and every header naming a key, token, secret, team or user), with the names of the left
+  out ones, as `<out>/request-<n>.headers.json`; it answers 404 to every request. It writes the
+  scratch profile `fixture` under `$O/home` (F1's skills `alpha` and `beta` copied in; a
+  `models.yml` of the pod profile's `openai` provider only, pointed at the stand-in's `/v1`, with a
+  placeholder key, `compat.statefulResponses: false` and `modelOverrides: {gpt-6.1-sol:
+  {contextWindow: 922000}}`; a `config.yml` whose default and smol roles are
+  `openai/gpt-6.1-sol`), and runs `omp --profile fixture -p --mode json --no-session --model
+  openai/gpt-6.1-sol --thinking <thinking> --hook replay-hook.ts "placeholder prompt"` with only
+  `HOME`, `PATH`, `TMPDIR`, `TZ`, `PI_NO_TITLE` and the hook's `SKILL_CUTS_MESSAGES` (the history)
+  in its environment.
+- **send-openai** (`bun $O/send-openai.ts <body.json>`): posts the body to
+  `$ANTHROPIC_BASE_URL/v1/responses` with `authorization: Bearer <key>`, the key read from the key
+  file inside the script and printed nowhere. stdout is the reply body as received; the first
+  stderr line is the status and the kept response headers (`content-type`, `request-id`,
+  `llm_provider-x-request-id`, `llm_provider-openai-processing-ms`, `llm_provider-openai-version`);
+  the second lists only the names of the headers left out (the other `llm_provider-*` headers, the
+  organisation and project among them, the rate limits, the cookie, `date`, and the gateway's own).
+
+The history is F2's (`$R/f2/history.json`) with its assistant message made the one an OpenAI
+session holds, and its read result's path the scratch profile's:
+
+```sh
+jq --arg old $R/f1/home --arg new $O/home '(.[1] |= (.content[0].id = "call_replay_alpha_1|fc_replay_alpha_1" | .api = "openai-responses" | .provider = "openai" | .model = "gpt-6.1-sol")) | (.[2].toolCallId = "call_replay_alpha_1|fc_replay_alpha_1") | (.[2].content[0].text |= sub($old; $new))' $R/f2/history.json > $O/history.json
+bun $O/measure.ts $O/rec-off off
+cp $O/rec-off/request-4.json F8-request.json
+jq '{method, path, headers}' $O/rec-off/request-4.headers.json > F8-request.headers.json
+```
+
+Oh My Pi ended with exit 1 after the 404s, having made four requests: `GET /v1/models`, two
+`POST /v1/responses` hint requests of its smol role (one per skill), and the turn, `POST
+/v1/responses` (request 4, F8). Each POST left out `authorization` and `user-agent`; F8's headers
+file keeps `accept: text/event-stream`, `session_id` and `x-client-request-id` (the run's random
+uuid), and Oh My Pi sent no `anthropic-*` header. F8's body is `model: "gpt-6.1-sol"`, the system
+prompt as one `instructions` text (Oh My Pi joins its prompt's blocks with a blank line between),
+the history as `input` items (a user message of two `input_text` parts, the date reminder and the
+request; a `function_call` of `read` on `skill://alpha` whose `call_id` is the history's id before
+its `|`, with no item id; a `function_call_output` holding the read result's text), 11 `tools` of
+`{type: "function", name, description, parameters, strict: true}`, `stream: true`, `store:
+false`, `prompt_cache_key` (the session's uuid), `stream_options: {include_obfuscation: false}`,
+`max_output_tokens: 128000`, `reasoning: {effort: "low"}` (Oh My Pi's `--thinking off` on this
+model) and `include: ["reasoning.encrypted_content"]`: no `cache_control` and no
+`prompt_cache_options`. It is kept byte for byte; no line of it holds the provider name of "Words
+replaced in the Oh My Pi fixtures", so no word was replaced.
+
+F9's bodies are F8 with input items added, each sent once with send-openai, each answered 200:
+
+```sh
+jq -c --arg t "<added text>" '.input += [{role: "user", content: [{type: "input_text", text: $t}]}]' F8-request.json > $O/f9/body-<shape>.json
+bun $O/send-openai.ts $O/f9/body-<shape>.json > $O/f9/reply-<reply>.sse 2> $O/f9/reply-<reply>.err
+sed 's/"safety_identifier":"[^"]*"/"safety_identifier":"example-safety-identifier"/g' $O/f9/reply-<reply>.sse > F9-<reply>.sse
+head -1 $O/f9/reply-<reply>.err | jq . > F9-<reply>.headers.json
+```
+
+| Reply | Body | What came back |
+| --- | --- | --- |
+| `F9-skill-read` | added text `Now read skill://alpha/references/x.md with the read tool. Make that one tool call and no other.` | one `function_call` of `read` on `skill://alpha/references/x.md`; input 7985 tokens, `cache_write_tokens` 7982 (all 30-minute), output 30 |
+| `F9-skill-read-and-other` | added text `Now make two tool calls in this one message: read skill://beta with the read tool, and run the command ls with the bash tool.` | a `read` of `skill://beta` and a `bash` of `ls`; `cached_tokens` 7751, `cache_write_tokens` 237 |
+| `F9-cache-read` | `body-skill-read.json` sent again | one `read`; `cached_tokens` 7982, `cache_write_tokens` 0 |
+| `F9-text` | `body-skill-read.json` with F9-skill-read's output item, a `function_call_output` of x.md under its `[Skill file: …]` header, and the user text `Now reply with the alpha checklist as three short lines. Call no tool.` | a `reasoning` item with its `encrypted_content`, then a `message` of the three lines; `cached_tokens` 8083, `cache_write_tokens` 19, output 76, 43 of them reasoning |
+
+`F9-text`'s body was made with:
+
+```sh
+X="[Skill file: $O/home/.omp/profiles/fixture/agent/skills/alpha/references/x.md]
+$(cat $O/home/.omp/profiles/fixture/agent/skills/alpha/references/x.md)"
+grep '^data: {' $O/f9/reply-skill-read.sse | sed 's/^data: //' | jq -c 'select(.type == "response.completed") | .response.output' > $O/f9/out-skill-read.json
+jq -c --slurpfile out $O/f9/out-skill-read.json --arg x "$X" --arg t "Now reply with the alpha checklist as three short lines. Call no tool." '.input += $out[0] + [{type: "function_call_output", call_id: $out[0][0].call_id, output: $x}, {role: "user", content: [{type: "input_text", text: $t}]}]' $O/f9/body-skill-read.json > $O/f9/body-text.json
+```
+
+Three sends before it are not kept: two bodies of F8 with only a text ask (the model read
+`references/x.md` first, as the skill says), and the body above less its last user text (an empty
+message). The gateway took the reply's output items back as input with their ids.
+
+Each reply is `data:` lines with no event names, `response.created` to `response.completed`, then
+`data: [DONE]`. `response.completed` carries the whole response: its output items, its `usage`
+(`input_tokens` counts the cached and written tokens among it, `output_tokens` the reasoning among
+it, and `cost` is the gateway's own count, equal to gpt-6.1-sol's list price of the usage: 0.020261,
+0.0022436, 0.0011042 and 0.0016218 in the table's order), `service_tier: "default"`, and the
+request's `instructions` and `tools` echoed. The one value changed is each response's
+`safety_identifier`, which the gateway derives from its caller: it is `example-safety-identifier`
+in every event that holds it, and every other byte is as received.
+
+Checked with `public_leak_check.py check-public-text` and `check-private-names.sh` (both clean),
+and with the scan below, whose only hits in F8 and F9 are values of kinds it does not know, each
+an opaque value the API made: the Responses item ids (`item_id`), the `call_id`s, the reasoning
+item's `encrypted_content` and the `llm_provider-x-request-id` header; and the closing
+`data: [DONE]`, which is no JSON. It finds no piece of the key, no key or token shape and no
+private name in them.
+
 ## The scan
 
 `bun $TOOLS/scan.ts packages/pi-legion/scripts/skill-cuts/testdata` reads every file here, and the

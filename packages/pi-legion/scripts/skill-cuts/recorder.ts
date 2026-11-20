@@ -1,16 +1,21 @@
 /**
- * A stand-in Anthropic Messages endpoint on 127.0.0.1 (plan, "Where things run"): a host process
- * pointed at it sends its model requests here, never to the gateway. The recorder keeps each
- * request, its body byte for byte and its headers less every auth header and every header that
- * names a key, a token, a secret, a team or a user, and answers it: with what `route` returns, or
- * with END_TURN_REPLY, a fixed end-of-turn reply streamed as Server-Sent Events, when `route`
- * returns nothing. capture.ts records Oh My Pi's request bodies with it, and `cli.test.ts` builds
- * its stand-in gateway on it.
+ * A stand-in model endpoint on 127.0.0.1 (plan, "Where things run"), of the Anthropic Messages API
+ * and of OpenAI's Responses API: a host process pointed at it sends its model requests here, never
+ * to the gateway. The recorder keeps each request, its body byte for byte and its headers less
+ * every auth header and every header that names a key, a token, a secret, a team or a user, and
+ * answers it: with what `route` returns, or, when `route` returns nothing, with a fixed
+ * end-of-turn reply streamed as Server-Sent Events in the API its path names (END_TURN_REPLY to
+ * `/v1/messages`, END_TURN_RESPONSE to `/v1/responses`). capture.ts records Oh My Pi's request
+ * bodies with it, and `cli.test.ts` builds its stand-in gateway on it.
  *
  * `messageSse` writes a reply message as the event stream the Messages API sends for a request
  * that sets `stream` (the event shapes of the F5 replies): a `message_start`, each content block as
  * a start, one delta and a stop, a `message_delta` with the stop reason and the output tokens, and
- * a `message_stop`. It writes text, `tool_use` and `thinking` blocks.
+ * a `message_stop`. It writes text, `tool_use` and `thinking` blocks. `responseSse` writes a
+ * response as the event stream the gateway's Responses route sends (the event shapes of the F9
+ * replies: `data` lines with no event names, each item added, its text or arguments as one delta
+ * and done, then `response.completed` with the whole response, and `[DONE]`). It writes `message`,
+ * `function_call` and `reasoning` items.
  */
 
 /** A request the recorder took: its number from 1, method, path with its query, the headers it
@@ -24,7 +29,7 @@ export interface RecordedRequest {
 }
 
 /** The answer to a request, or undefined for the recorder's own: END_TURN_REPLY to a POST to
- *  `/v1/messages`, a 404 to anything else. */
+ *  `/v1/messages`, END_TURN_RESPONSE to a POST to `/v1/responses`, a 404 to anything else. */
 export type Route = (
   request: RecordedRequest
 ) => Response | undefined | Promise<Response | undefined>;
@@ -144,7 +149,135 @@ export const END_TURN_REPLY = messageSse({
   stopReason: "end_turn",
 });
 
-/** `sse` as the response a streamed Messages request gets. */
+/** An output item of a response that `responseSse` writes: a message's text, a function call
+ *  with its arguments, or a reasoning item's encrypted content. */
+export type ResponseItem =
+  | { readonly type: "message"; readonly text: string }
+  | {
+      readonly type: "function_call";
+      readonly callId: string;
+      readonly name: string;
+      readonly arguments: Readonly<Record<string, unknown>>;
+    }
+  | { readonly type: "reasoning"; readonly encryptedContent: string };
+
+/** The response `responseSse` streams. */
+export interface ResponseReply {
+  readonly id: string;
+  readonly model: string;
+  readonly output: readonly ResponseItem[];
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+}
+
+/** `item`, the `index`-th of response `id`, as the Responses API writes an output item whole. */
+function wireItem(item: ResponseItem, index: number, id: string): Record<string, unknown> {
+  const itemId = `${id}_${index}`;
+  switch (item.type) {
+    case "message":
+      return {
+        id: `msg_${itemId}`,
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: item.text, annotations: [] }],
+      };
+    case "function_call":
+      return {
+        id: `fc_${itemId}`,
+        type: "function_call",
+        status: "completed",
+        call_id: item.callId,
+        name: item.name,
+        arguments: JSON.stringify(item.arguments),
+      };
+    case "reasoning":
+      return {
+        id: `rs_${itemId}`,
+        type: "reasoning",
+        summary: [],
+        encrypted_content: item.encryptedContent,
+      };
+  }
+}
+
+/** `response` as the event stream the gateway's Responses route sends for a request that sets
+ *  `stream` (F9). */
+export function responseSse(response: ResponseReply): string {
+  const lines: string[] = [];
+  const data = (value: Record<string, unknown>) => {
+    lines.push(`data: ${JSON.stringify({ ...value, sequence_number: lines.length })}\n\n`);
+  };
+  const items = response.output.map((item, index) => wireItem(item, index, response.id));
+  const head = {
+    id: response.id,
+    object: "response",
+    model: response.model,
+    status: "in_progress",
+    output: [],
+  };
+  data({ type: "response.created", response: head });
+  data({ type: "response.in_progress", response: head });
+  response.output.forEach((item, index) => {
+    const whole = items[index] ?? {};
+    const at = { item_id: whole.id, output_index: index };
+    if (item.type === "message") {
+      const part = { type: "output_text", text: "", annotations: [] };
+      data({
+        type: "response.output_item.added",
+        output_index: index,
+        item: { ...whole, status: "in_progress", content: [] },
+      });
+      data({ type: "response.content_part.added", ...at, content_index: 0, part });
+      data({ type: "response.output_text.delta", ...at, content_index: 0, delta: item.text });
+      data({ type: "response.output_text.done", ...at, content_index: 0, text: item.text });
+      data({
+        type: "response.content_part.done",
+        ...at,
+        content_index: 0,
+        part: { ...part, text: item.text },
+      });
+    } else if (item.type === "function_call") {
+      data({
+        type: "response.output_item.added",
+        output_index: index,
+        item: { ...whole, status: "in_progress", arguments: "" },
+      });
+      data({ type: "response.function_call_arguments.delta", ...at, delta: whole.arguments });
+      data({ type: "response.function_call_arguments.done", ...at, arguments: whole.arguments });
+    } else {
+      data({ type: "response.output_item.added", output_index: index, item: whole });
+    }
+    data({ type: "response.output_item.done", output_index: index, item: whole });
+  });
+  const input = response.inputTokens ?? 10;
+  const output = response.outputTokens ?? 3;
+  data({
+    type: "response.completed",
+    response: {
+      ...head,
+      status: "completed",
+      output: items,
+      usage: {
+        input_tokens: input,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        output_tokens: output,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: input + output,
+      },
+    },
+  });
+  return `${lines.join("")}data: [DONE]\n\n`;
+}
+
+/** The recorder's own answer to a Responses request: one message, `Recorded.`, ending the turn. */
+export const END_TURN_RESPONSE = responseSse({
+  id: "resp_recorder_end_turn",
+  model: "recorder",
+  output: [{ type: "message", text: "Recorded." }],
+});
+
+/** `sse` as the response a streamed request of either API gets. */
 export function sseResponse(sse: string, requestId?: string): Response {
   const headers: Record<string, string> = { "content-type": "text/event-stream" };
   if (requestId !== undefined) headers["request-id"] = requestId;
@@ -174,6 +307,9 @@ export function startRecorder(options: { readonly route?: Route } = {}): Recorde
       if (answer !== undefined) return answer;
       if (recorded.method === "POST" && url.pathname === "/v1/messages") {
         return sseResponse(END_TURN_REPLY, `req_recorder_${recorded.n}`);
+      }
+      if (recorded.method === "POST" && url.pathname === "/v1/responses") {
+        return sseResponse(END_TURN_RESPONSE, `req_recorder_${recorded.n}`);
       }
       return new Response("not found", { status: 404 });
     },

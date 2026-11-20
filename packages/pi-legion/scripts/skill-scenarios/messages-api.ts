@@ -1,16 +1,20 @@
 /**
  * The Anthropic Messages API route and retry that label-comments.ts and skill-cuts/gateway.ts both
- * use, so one loop decides when a model call is tried again.
+ * use, so one loop decides when a model call is tried again. gateway.ts posts to the gateway's
+ * OpenAI Responses route through the same loop (`path` and `auth`).
  *
  * Exports:
- * - `ANTHROPIC_VERSION`: the `anthropic-version` header every call sends.
+ * - `ANTHROPIC_VERSION`: the `anthropic-version` header every call with the `x-api-key` key sends.
  * - `readKeyFile(file)`: the key a file holds, read now. `runKeyCommand(file)`: the key a program
  *   prints, run now. Each throws naming the file or the program, never the key.
- * - `modelError(status, text)`: why a call failed, from Anthropic's error JSON when the body is one.
+ * - `modelError(status, text)`: why a call failed, from the error JSON when the body is one (the
+ *   Messages API's and OpenAI's share its shape, `{"error": {"type", "message"}}`).
  * - `retryAfterMs(response)`: the wait a `retry-after` header asks for, at most 60 s, or 0.
- * - `postMessages(call)`: one POST of `call.body` to `<call.url>/v1/messages` with the key in the
- *   `x-api-key` header, got again from `call.key()` for each try, and `call.headers` beside it
- *   (names taken in lower case; one may replace `anthropic-version`, none the key or
+ * - `postMessages(call)`: one POST of `call.body` to `<call.url><call.path>` (`/v1/messages` by
+ *   default) with the key got again from `call.key()` for each try: in the `x-api-key` header
+ *   beside `anthropic-version` (`call.auth` `x-api-key`, the default), or as
+ *   `authorization: Bearer <key>` (`bearer`, OpenAI's form); and `call.headers` beside it (names
+ *   taken in lower case; one may replace `anthropic-version`, none the key's header or
  *   `content-type`). Each try has `call.timeoutMs`, its body read included; a try past it is
  *   ended and counts as a failed try. A failed connection, a body that fails after its headers, a
  *   timeout, a 429 or a 5xx, or an ok answer that `call.accept(text, response)` throws on is tried
@@ -82,15 +86,20 @@ export class MessagesApiError extends Error {
 
 /** One model call, as `postMessages` makes it. */
 export interface MessagesCall<T> {
-  /** The route's base URL with no trailing slash: the call goes to `<url>/v1/messages`. */
+  /** The route's base URL with no trailing slash: the call goes to `<url><path>`. */
   readonly url: string;
-  /** The key for the `x-api-key` header, got again for each try. */
+  /** The route's path, `/v1/messages` by default. */
+  readonly path?: string;
+  /** The key, got again for each try. */
   readonly key: () => Promise<string>;
+  /** How the key goes: in the `x-api-key` header, beside `anthropic-version` (the default), or as
+   *  `authorization: Bearer <key>`, with no `anthropic-version` (OpenAI's form). */
+  readonly auth?: "x-api-key" | "bearer";
   /** The request body, as JSON text. */
   readonly body: string;
   /** Headers sent beside the call's own, such as the `anthropic-beta` a body's fields need. Each
-   *  name is taken in lower case; one may replace `anthropic-version`, but never `x-api-key` or
-   *  `content-type`, which the call sets after them. */
+   *  name is taken in lower case; one may replace `anthropic-version`, but never the key's header
+   *  or `content-type`, which the call sets after them. */
   readonly headers?: Readonly<Record<string, string>>;
   readonly fetch: Fetch;
   readonly sleep: Sleep;
@@ -113,14 +122,15 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
     let response: Response;
     let text: string;
     try {
-      response = await call.fetch(`${call.url}/v1/messages`, {
+      const key = await call.key();
+      response = await call.fetch(`${call.url}${call.path ?? "/v1/messages"}`, {
         method: "POST",
         headers: {
-          "anthropic-version": ANTHROPIC_VERSION,
+          ...(call.auth === "bearer" ? {} : { "anthropic-version": ANTHROPIC_VERSION }),
           ...Object.fromEntries(
             Object.entries(call.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])
           ),
-          "x-api-key": await call.key(),
+          ...(call.auth === "bearer" ? { authorization: `Bearer ${key}` } : { "x-api-key": key }),
           "content-type": "application/json",
         },
         body: call.body,

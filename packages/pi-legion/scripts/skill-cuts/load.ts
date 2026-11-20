@@ -37,14 +37,18 @@
  *   leaves Claude Code's own default.
  *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
- * headers the host sent beside it. A run loads the skill when the first assistant message reads
- * it (`firstMessageLoad`): for Oh My Pi, a `read` of `skill://<name>`, `skill://<name>/SKILL.md` or
- * a path ending `/<name>/SKILL.md`; for Claude Code, a `Skill` call naming `<name>` or
- * `<plugin>:<name>`, or a `Read` of a path ending `/<name>/SKILL.md`. These are R1's reads
- * (count.sql): a read selector after the last `/` (`:raw`, `:1-40`) is taken off first, and a read
- * of a reference is no load. One tool call of the message that reads the skill is enough, whatever
- * comes before it. A run never goes past that first message: no tool call is answered, so a skill
- * that another skill sends the agent to is never counted as loaded by its own description.
+ * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
+ * to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints still come from an
+ * Anthropic `--hint-model`) to the Responses route. A run loads the skill when the first assistant
+ * message reads it (`firstMessageLoad`, over the message's tool calls in either API: `tool_use`
+ * blocks, or `function_call` items with their arguments parsed): for Oh My Pi, a `read` of
+ * `skill://<name>`, `skill://<name>/SKILL.md` or a path ending `/<name>/SKILL.md`; for Claude
+ * Code, a `Skill` call naming `<name>` or `<plugin>:<name>`, or a `Read` of a path ending
+ * `/<name>/SKILL.md`. These are R1's reads (count.sql): a read selector after the last `/`
+ * (`:raw`, `:1-40`) is taken off first, and a read of a reference is no load. One tool call of
+ * the message that reads the skill is enough, whatever comes before it. A run never goes past that
+ * first message: no tool call is answered, so a skill that another skill sends the agent to is
+ * never counted as loaded by its own description.
  *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
  * task's loads and verdict, the skill's verdict, the spend), `runs/<task id>.jsonl` (one JSON line
@@ -91,6 +95,9 @@ import {
   type MessagesBody,
   PRICES,
   type Reply,
+  type RequestBody,
+  type ToolCall,
+  toolCalls,
 } from "./gateway";
 import { type RecordedRequest, startRecorder } from "./recorder";
 import {
@@ -190,6 +197,7 @@ const SpentRecord = z.strictObject({
   output: z.number(),
   cacheRead: z.number(),
   cacheWrite: z.number(),
+  reasoning: z.number().optional(),
   usd: z.number(),
 });
 
@@ -404,8 +412,8 @@ function readsSkillFile(target: string, name: string): boolean {
 
 /** How the tool call `call` of a reply loads `skill` in `host` (`read <path>`, `Skill <name>`,
  *  `Read <path>`), or undefined when it does not. */
-function loadingCall(host: Host, call: ContentBlock, skill: TestedSkill): string | undefined {
-  const input: unknown = call.input;
+function loadingCall(host: Host, call: ToolCall, skill: TestedSkill): string | undefined {
+  const { input } = call;
   const field = (key: string): string | undefined => {
     const value = typeof input === "object" && input !== null ? Reflect.get(input, key) : null;
     return typeof value === "string" ? value : undefined;
@@ -428,19 +436,19 @@ function loadingCall(host: Host, call: ContentBlock, skill: TestedSkill): string
   return file !== undefined && readsSkillFile(file, skill.name) ? `Read ${file}` : undefined;
 }
 
-/** What the first assistant message of a run, the reply's `content`, did with `skill` in `host`
- *  (see the file's header). */
+/** What the first assistant message of a run, the reply's `content` in either API, did with
+ *  `skill` in `host` (see the file's header). */
 export function firstMessageLoad(
   host: Host,
   content: readonly ContentBlock[],
   skill: TestedSkill
 ): FirstMessage {
-  const calls = content.filter((block) => block.type === "tool_use");
+  const calls = toolCalls(content);
   const loadedBy = calls.map((call) => loadingCall(host, call, skill)).find((how) => how) ?? null;
   return {
     loaded: loadedBy !== null,
     loadedBy,
-    toolCalls: calls.map((call) => (typeof call.name === "string" ? call.name : "")),
+    toolCalls: calls.map((call) => call.name ?? ""),
   };
 }
 
@@ -582,7 +590,7 @@ export interface ClaudeCaptureRecord {
 
 /** A task's captured body, the headers it goes with, and what the host lists for the skill. */
 interface Captured {
-  readonly body: MessagesBody;
+  readonly body: RequestBody;
   readonly headers: Readonly<Record<string, string>>;
   readonly listed: string;
 }
@@ -1101,9 +1109,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const slash = o.model.indexOf("/");
   const provider = slash < 0 ? "anthropic" : o.model.slice(0, slash);
   const modelId = o.model.slice(slash + 1);
-  if (provider !== "anthropic") {
+  if (provider !== "anthropic" && provider !== "openai") {
     throw new LoadRefused(
-      `--model ${o.model}: the runs go to the gateway's Anthropic Messages route, so the model is anthropic/<id>`
+      `--model ${o.model}: the runs go to the gateway's Anthropic Messages route (anthropic/<id>) or its OpenAI Responses route (openai/<id>)`
+    );
+  }
+  if (provider === "openai" && o.host === "claude") {
+    throw new LoadRefused(
+      `--model ${o.model}: Claude Code calls the Anthropic Messages API only, so its model is anthropic/<id>`
     );
   }
   if (PRICES[modelId] === undefined) {
@@ -1123,7 +1136,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     name,
     renamedFrom: name === own ? null : own,
     host: o.host,
-    model: `anthropic/${modelId}`,
+    model: `${provider}/${modelId}`,
     thinking: o.thinking,
     runs: o.runs,
     hintModel: o.host === "omp" ? (o.hintModel ?? null) : null,

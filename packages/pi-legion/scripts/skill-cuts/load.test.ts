@@ -8,7 +8,13 @@ import { skillHeaderPath } from "../skill-scenarios/transcript";
 import { skillListing } from "./capture";
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
-import { ContentBlock, ReplyMessage, streamedMessage } from "./gateway";
+import {
+  ContentBlock,
+  ReplyMessage,
+  responseMessage,
+  streamedMessage,
+  streamedResponse,
+} from "./gateway";
 import {
   claudeListing,
   firstMessageLoad,
@@ -26,6 +32,8 @@ import {
   type RecordedRequest,
   type Recorder,
   type ReplyBlock,
+  type ResponseItem,
+  responseSse,
   sseResponse,
   startRecorder,
 } from "./recorder";
@@ -77,6 +85,23 @@ function blocksOf(body: Body, index: number): ContentBlock[] {
 function f5(name: string): ContentBlock[] {
   const sse = readFileSync(path.join(TESTDATA, `F5-${name}.sse`), "utf8");
   return ReplyMessage.parse(streamedMessage(sse)).content;
+}
+
+/** The content of the F9 reply `name`, a Responses API reply of openai/gpt-6.1-sol, read whole as
+ *  gateway.ts reads one: its output items. */
+function f9(name: string): ContentBlock[] {
+  const sse = readFileSync(path.join(TESTDATA, `F9-${name}.sse`), "utf8");
+  return responseMessage(streamedResponse(sse)).content;
+}
+
+/** A Responses API `function_call` item of tool `name` with `input`, as F9's are written. */
+function functionCall(name: string, input: Record<string, unknown>): ContentBlock {
+  return {
+    type: "function_call",
+    call_id: `call_${name}_1`,
+    name,
+    arguments: JSON.stringify(input),
+  };
 }
 
 const F2 = fixture("F2-request.json");
@@ -243,6 +268,48 @@ describe("a run loads the skill when its first assistant message reads it", () =
       F2_READ,
       pluginAlpha,
       none(["read"]),
+    ],
+    [
+      "Oh My Pi on a Responses reply: a function call reading skill://alpha loads alpha",
+      "omp",
+      [functionCall("read", { i: "Reading the alpha skill", path: "skill://alpha" })],
+      alpha,
+      { loaded: true, loadedBy: "read skill://alpha", toolCalls: ["read"] },
+    ],
+    [
+      "Oh My Pi on a Responses reply: a function call reading alpha's SKILL.md by its path loads alpha",
+      "omp",
+      [functionCall("read", { path: ALPHA_PATH })],
+      alpha,
+      { loaded: true, loadedBy: `read ${ALPHA_PATH}`, toolCalls: ["read"] },
+    ],
+    [
+      "Oh My Pi on a Responses reply: a read of alpha's reference does not load alpha (F9 skill-read)",
+      "omp",
+      f9("skill-read"),
+      alpha,
+      none(["read"]),
+    ],
+    [
+      "Oh My Pi on a Responses reply: a read of skill://beta beside a bash call loads beta and not alpha (F9)",
+      "omp",
+      f9("skill-read-and-other"),
+      beta,
+      { loaded: true, loadedBy: "read skill://beta", toolCalls: ["read", "bash"] },
+    ],
+    [
+      "Oh My Pi on a Responses reply: the same message does not load alpha (F9)",
+      "omp",
+      f9("skill-read-and-other"),
+      alpha,
+      none(["read", "bash"]),
+    ],
+    [
+      "Oh My Pi on a Responses reply: reasoning and text only do not load alpha (F9 text)",
+      "omp",
+      f9("text"),
+      alpha,
+      none([]),
     ],
   ];
   test.each(rows)("%s", (_name, host, content, skill, want) => {
@@ -450,7 +517,12 @@ let recorder: Recorder;
 beforeAll(() => {
   recorder = startRecorder({
     route: (request: RecordedRequest) => {
-      if (request.method !== "POST" || request.path !== "/v1/messages") return undefined;
+      if (
+        request.method !== "POST" ||
+        (request.path !== "/v1/messages" && request.path !== "/v1/responses")
+      ) {
+        return undefined;
+      }
       const body = Request.parse(JSON.parse(request.body));
       // Oh My Pi's hint request: no system prompt, no tools, `Skill: <name>` in its message.
       const hint = /\\nSkill: ([^\\]+)\\nDescription: /.exec(request.body)?.[1];
@@ -458,6 +530,27 @@ beforeAll(() => {
         body.system === undefined && body.tools === undefined && hint !== undefined
           ? [{ type: "text", text: `Use for the ${hint} work, stand-in hint.` }]
           : answer(body);
+      // A Responses body gets the same answer in its API's stream.
+      if (request.path === "/v1/responses") {
+        const output = content.flatMap((block): ResponseItem[] =>
+          block.type === "text"
+            ? [{ type: "message", text: block.text }]
+            : block.type === "tool_use"
+              ? [
+                  {
+                    type: "function_call",
+                    callId: block.id,
+                    name: block.name,
+                    arguments: block.input,
+                  },
+                ]
+              : []
+        );
+        return sseResponse(
+          responseSse({ id: `resp_standin_${request.n}`, model: body.model, output }),
+          `req_standin_${request.n}`
+        );
+      }
       return sseResponse(
         messageSse({
           id: `msg_standin_${request.n}`,
@@ -788,6 +881,77 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(ran.stdout).toContain(
         "no verdict: R6's rule is of 3 runs a task, and this test runs 1"
       );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "on openai/gpt-6.1-sol: captures the Responses body Oh My Pi sends, its hints from the Anthropic hint model, and counts a function call reading skill://<name> as a load",
+    async () => {
+      const dir = path.join(scratch, "omp-openai");
+      const { out, common } = hostInputs(dir);
+      const models = path.join(dir, "models.yml");
+      // The pod's models.yml shape: the gateway's Messages route, and its OpenAI route as Oh My
+      // Pi's built-in openai provider at the gateway's /v1, with no api and no models list.
+      writeFileSync(
+        models,
+        "providers:\n  anthropic:\n    baseUrl: http://127.0.0.1:9\n    api: anthropic-messages\n    compat: {replayUnsignedThinking: false, supportsLongCacheRetention: true}\n    models:\n      - {id: claude-sonnet-5-5, name: Claude Sonnet 5.5, reasoning: true, input: [text, image], contextWindow: 1000000, maxTokens: 128000, cost: {input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5}}\n  openai:\n    baseUrl: http://127.0.0.1:9/v1\n    compat: {statefulResponses: false}\n    modelOverrides:\n      gpt-6.1-sol: {contextWindow: 922000}\n"
+      );
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+      answer = () => [
+        { type: "tool_use", id: "call_alpha_1", name: "read", input: { path: "skill://alpha" } },
+      ];
+      const before = recorder.requests.length;
+      const ran = await cli([
+        "load",
+        ...common,
+        "--host",
+        "omp",
+        "--profile",
+        profile,
+        "--omp",
+        String(omp),
+        "--models",
+        models,
+        "--model",
+        "openai/gpt-6.1-sol",
+        "--hint-model",
+        "anthropic/claude-sonnet-5-5",
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(ran.stdout).toContain("model openai/gpt-6.1-sol");
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      // F8's shape: the prompt as `instructions`, the history as `input` items, no messages.
+      expect(body.model).toBe("gpt-6.1-sol");
+      expect(body.messages).toBeUndefined();
+      expect(typeof body.instructions).toBe("string");
+      expect(JSON.stringify(body)).not.toContain("cache_control");
+      expect(texts(body.input).some((text) => text.includes(NEED))).toBe(true);
+      const listing = skillListing(body);
+      expect([...listing.keys()].sort()).toEqual(["alpha", "beta"]);
+      expect(listing.get("alpha")).toBe("Use for the alpha work, stand-in hint.");
+      const record = JSON.parse(readFileSync(files.record, "utf8"));
+      expect(record.requestHeaders).toEqual({});
+      expect(record.connections.http).toContain("POST /v1/responses");
+      expect(record.hintCalls.map((call: { model: string }) => call.model)).toEqual([
+        "claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+      ]);
+      // The run went to the Responses route; the hints to the Messages route.
+      const sent = recorder.requests.slice(before);
+      expect(sent.filter((request) => request.path === "/v1/responses")).toHaveLength(1);
+      expect(sent.filter((request) => request.path === "/v1/messages")).toHaveLength(2);
+      expect(savedRuns(out, "need-1")).toMatchObject([
+        {
+          loaded: true,
+          loadedBy: "read skill://alpha",
+          toolCalls: ["read"],
+          stopReason: "completed",
+          usage: { model: "gpt-6.1-sol", reasoning: 0 },
+        },
+      ]);
     },
     HOST_ROW_TIMEOUT_MS
   );
