@@ -1445,12 +1445,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
-	// pauseHoldsSince reads the holds a project's pause has or had on the project's pods since a
-	// moment (store.Store.PausePodHoldsSince), which each sweep of the update rounds reads once
-	// (podPauseHolds). openSupervision sets it to the store's own read. It is a field rather than a
-	// call on the supervisor's store because the update round sweep's own tests put groups of claims
-	// to the sweep hundreds of thousands of times, hold no pause, and answer it from memory rather
-	// than with one database round trip per sweep (podupdate_sweep_rig_test.go).
+	// pauseHoldsSince, where it is set, is how each sweep of the update rounds reads the holds a
+	// project's pause has or had on the project's pods since a moment (podPauseHolds); left unset,
+	// as openSupervision leaves it, the sweep reads the supervisor's store
+	// (store.Store.PausePodHoldsSince). Only the update round sweep's own tests set it: they put
+	// groups of claims to the sweep hundreds of thousands of times, hold no pause, and answer it
+	// from memory rather than with one database round trip per sweep
+	// (podupdate_sweep_rig_test.go).
 	pauseHoldsSince func(ctx context.Context, project string, since time.Time) ([]store.PausePodHold, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
@@ -1700,8 +1701,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, pauseHoldsSince: st.PausePodHoldsSince,
-		refreshGate: refreshGate, pauses: pauses,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}

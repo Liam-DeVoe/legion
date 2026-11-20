@@ -179,7 +179,8 @@ func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 // podPauseHolds is the holds a project's pause has or had on the project's pods, by issue, read
 // once for the sweep: every hold that stands, and every hold that ended, or whose pause let out a
 // launch of its pod, since the oldest round any of claims records opened, which are the holds a
-// round's bound can move by.
+// round's bound can move by. It reads them from the supervisor's store, or through
+// pauseHoldsSince where that is set.
 func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Claim, now time.Time) (map[string]podHolds, error) {
 	since := now
 	for _, c := range claims {
@@ -187,12 +188,16 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 			since = *c.UpdateOpenedAt
 		}
 	}
-	read, err := s.pauseHoldsSince(ctx, s.cfg.Project, since)
+	read := s.pauseHoldsSince
+	if read == nil {
+		read = s.supervisor.store.PausePodHoldsSince
+	}
+	held, err := read(ctx, s.cfg.Project, since)
 	if err != nil {
 		return nil, err
 	}
 	holds := map[string]podHolds{}
-	for _, hold := range read {
+	for _, hold := range held {
 		holds[hold.Issue] = append(holds[hold.Issue], hold)
 	}
 	return holds, nil
