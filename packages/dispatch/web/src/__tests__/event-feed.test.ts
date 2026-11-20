@@ -17,6 +17,7 @@ import {
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
+  issueResultsQuery,
   issueStepsQuery,
   myRepliesCountQuery,
   prioritiesQuery,
@@ -145,6 +146,8 @@ const READS = {
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
   otherProjectAsks: { key: ["asks", "OTHER-1"] },
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
+  // CORE-9's checks and results, which its Verification tab reads.
+  otherResults: { key: issueResultsQuery("CORE-9").queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
@@ -176,6 +179,8 @@ const READS = {
   referencePicker: { key: ["issues", "CORE"] },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
+  // CORE-1's checks and results, which its Verification tab reads.
+  results: { key: issueResultsQuery("CORE-1").queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
@@ -1545,31 +1550,6 @@ test("a retracted result refreshes the results of the check's issue and of the r
   ]);
 });
 
-// A check's new state at a head moves the one read that shows it: the results of the check's
-// issue, where the event sits, whose answer carries the state of each check at each head. The
-// event names no other issue, so no other issue's results move.
-test("a check's new state refreshes the results of the check's issue alone", () => {
-  const stateChanged = event(
-    "check.state_changed",
-    {
-      check: "k1",
-      checks: ["k1", "k2"],
-      head: "1111111111111111111111111111111111111111",
-      issue: "CORE-1",
-      pull_requests: [70],
-      reason: "fail",
-      state: "no",
-    },
-    { actor: { id: "dispatch-check-states", kind: "system" }, notify: false }
-  );
-  expect(eventRefreshTargets(stateChanged, "alice").map((target) => target.queryKey)).toEqual([
-    ["issue", "CORE-1"],
-    ["events", "CORE-1"],
-    ["issues", "project", "CORE"],
-    ["issue", "CORE-1", "results"],
-  ]);
-});
-
 // A document version moves what the Spec tab's gap pills and the Verification tab's checks
 // read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
 // reads hang under the issue's key, and every issue target is `exact`, so the branch names them
@@ -1831,16 +1811,34 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   ),
 };
 
+/**
+ * The types whose whole refresh is pinned: every read of the page the event marks stale, and no
+ * other. Each such type's case below holds it to this list as well as to the reads every issue
+ * event refreshes, so a type that falls to `ownerTargets`' last branch, which refreshes every
+ * issue read, the project counts and the Inbox, fails by its own name.
+ *
+ * A check's new state at a head moves the one read that shows it beyond those: the results of the
+ * check's issue, where the event sits, whose answer carries the state of each check at each head.
+ * The event names no other issue, so no other issue's results move.
+ */
+const WHOLE_REFRESH: Partial<Record<EventType, readonly ReadName[]>> = {
+  "check.state_changed": ["detail", "labelledProjectList", "log", "projectList", "results"],
+};
+
 test.each(
   Object.entries(eventsByType).filter(
     ([type, incoming]) => incoming.issue_key !== null && type !== "subscription.remove_requested"
   )
-)("%s refreshes its issue's detail, its log and its project list, and no other issue's detail", (_type, incoming) => {
+)("%s refreshes its issue's detail, its log and its project list, no other issue's detail, and no read its whole refresh leaves out", (type, incoming) => {
   const refreshed = refreshedReads(incoming);
   expect(refreshed).toContain("detail");
   expect(refreshed).toContain("log");
   expect(refreshed).toContain("projectList");
   expect(refreshed).not.toContain("otherProjectList");
+  const whole = WHOLE_REFRESH[type as EventType];
+  if (whole !== undefined) {
+    expect([...refreshed].sort()).toEqual([...whole].sort());
+  }
 });
 
 test("a feed event prepends a newer event to the loaded log page", () => {
