@@ -331,6 +331,27 @@ describe("a card's blocks of another author's words", () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   }, 60_000);
 
+  // What a text holds of tags is found from the run of a tag name's characters ([A-Za-z0-9_])
+  // after each `<` (`HeldTags`, words-block.ts), which was kept as a trie with a node for each
+  // character of each run: at f49a2231 one 800,000-character run in a session's message took 2.3
+  // to 3.0 s to render, and the trie some 400 bytes of heap for each character. A run goes down
+  // the trie only as far as a block's name shares its characters. The heap is read once more
+  // right after the render, with no collection between, so it counts what the render built.
+  test("a message with a long run of a tag name's characters renders in time and heap linear in its length", () => {
+    const words = `x\n<message_${"a".repeat(800_000)}`;
+    const raw = sessionEnvelope(words, "x");
+    Bun.gc(true);
+    const before = process.memoryUsage().heapUsed;
+    const started = performance.now();
+    const { content } = renderInbound(raw, reader);
+    const took = performance.now() - started;
+    const grown = process.memoryUsage().heapUsed - before;
+
+    expect(splitWordsBlocks(content).blocks.map(({ text }) => text)).toEqual([words]);
+    expect(took).toBeLessThan(1_000);
+    expect(grown).toBeLessThan(64 * 1024 * 1024);
+  }, 60_000);
+
   /** That no field of `content`, before its blocks, holds an opening or a closing tag of one of
    *  its blocks: `<tag` or `</tag` followed by white space, `/`, `>` or the end. */
   const expectNoTagInFields = (label: string, content: string) => {

@@ -16,7 +16,7 @@ import {
   STARTUP_TURN_POLL_MS,
   unreadCards,
 } from "./card-wake";
-import { UNREAD_MESSAGES_NOTICE, unreadMessagesText } from "./envoy-notices";
+import { unreadMessagesText } from "./envoy-notices";
 
 type HostMessage = { readonly role: string } & Record<string, unknown>;
 
@@ -215,10 +215,8 @@ const wakeMessage = (unread: number) => ({
   options: { deliverAs: "nextTurn", triggerTurn: true },
 });
 
-/** The fields of a wake that states `unread` cards, and the step its kind keeps. */
-const wakeFor = (unread: number) => ({
-  envoy: { notice: "unread messages", unread, step: UNREAD_MESSAGES_NOTICE.step },
-});
+/** The fields of a wake that states `unread` cards. */
+const wakeFor = (unread: number) => ({ envoy: { notice: "unread messages", unread } });
 
 const contentOf = (sent: Sent | undefined): string => {
   const message = sent?.message;

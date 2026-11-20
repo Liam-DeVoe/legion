@@ -3,4 +3,5 @@ body: |-
   A `low` card of the Legion daemon, or of a Dispatch event whose envelope says `low`, goes into the
   session's stored context with no turn and is read at the next turn, whatever starts it, under file
   and SQL session storage alike. Every other card starts a turn as before. The plugin's own notices
-  state the fields of their kind, then the one step their reader takes (`step`).
+  state only the fields of their kind, and the `envoy_whoami` and `envoy_inbox` descriptions give
+  the step their reader takes.

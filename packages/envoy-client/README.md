@@ -65,22 +65,27 @@ words of any block of the card hold, and that no earlier block of the card took.
 other authors' words too (an ask's question, an issue's title in a catch-up), so nothing in the
 card opens or closes an element of a block's tag but that block, and two blocks never share a tag.
 `wordsBlocks(before, blocks)` draws all the blocks that follow `before` by that rule in one pass,
-in time linear in the text's length however many names the blocks have; a block's name is one a
-tag can have (`[A-Za-z_][A-Za-z0-9_]*`), and any other throws. Each text is scanned once for the
-run of those characters after each `<` and `</`, and each block's tag is a lookup of its name in
-what was found. `inFront(parts, text)` is what a host hands on when it puts lines or other
-messages in front of a card (the Codex inbox's hook text, claude-envoy's prompt at the rows a turn
-never read): the parts and the card joined by blank lines, with the card's blocks drawn again,
-attributes and words unchanged, under the tags the rule gives them against everything in front of
-them as well. Where nothing in front holds such a tag, and for a text with no block, that is the
-two joined as they are. A host that joins many cards one after another builds the text with
-`TextInFront` (`part` for a text it joins as it is, `card` for a card), which gives the same text
-as `inFront` called on each card with everything before it, and keeps the tags already held from
-one card to the next, so the whole text is drawn in time linear in its length however many names
-its cards' blocks have (the Go daemon's `texts.InFront` reads a drawn block by the same rule,
-which `packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag
+in time and memory linear in the text's length however many names the blocks have and however
+long a run of a tag name's characters the text holds; a block's name is one a tag can have
+(`[A-Za-z_][A-Za-z0-9_]*`), and any other throws. Each text is scanned once for the run of those
+characters after each `<` and `</`, and each block's tag is a lookup of its name in what was found,
+which follows a run only as far as a name looked up shares its characters. `inFront(parts, text)`
+is what a host hands on when it puts lines or other messages in front of a card (the Codex
+inbox's hook text, claude-envoy's prompt at the rows a turn never read): the parts and the card
+joined by blank lines, with the card's blocks drawn again, attributes and words unchanged, under
+the tags the rule gives them against everything in front of them as well. Where nothing in front
+holds such a tag, and for a text with no block, that is the two joined as they are. A host that
+joins many cards one after another builds the text with `TextInFront` (`part` for a text it joins
+as it is, `card` for a card), which gives the same text as `inFront` called on each card with
+everything before it, and keeps the tags already held from one card to the next, so the whole
+text is drawn in time and memory linear in its length however many names its cards' blocks have
+(the Go daemon's `texts.InFront` reads a drawn block by the same rule, which
+`packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag
 carries `by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is
-set; a card sets `by` and `at` only where its own fields do not name the author and the time.
+set; a card sets `by` and `at` only where its own fields do not name the author and the time, and
+not where the object that holds the words' field, below the payload's own fields, has a `by` or an
+`at` of its own (a project-paused card's `pause` names who paused and when, so its reason's block
+names neither).
 `splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
 `decode` reads, and the blocks, and checks each tag against the rule.
 

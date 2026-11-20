@@ -3233,17 +3233,27 @@ describe("what a card carries", () => {
         expect(block?.rest, where).toBe(entry.rest);
         expect(block?.more, where).toBe(entry.more === true ? true : undefined);
         // The author and the time of these words, from their own entry in `words`: on the block,
-        // or as a field of an object that holds the words, such as the kept decision's own row.
-        const held = holdersOf(envoy.message, keys)
+        // or as a field of an object that holds the words, such as the kept decision's own row,
+        // or by the object that holds the words' field below the payload's own fields, where it
+        // has a `by` or an `at` of its own, as the pause names who paused and when.
+        const holders = holdersOf(envoy.message, keys);
+        const own = holders.length > 1 ? holders.at(-1) : undefined;
+        const ownBy = own?.["by"] !== undefined;
+        const ownAt = own?.["at"] !== undefined;
+        const held = holders
           .flatMap((holder) => Object.values(holder))
           .filter((value): value is string => typeof value === "string");
-        expect(block?.by ?? held.find((value) => value === entry.by), where).toBe(entry.by);
+        if (ownBy) expect(block?.by, where).toBeUndefined();
+        else expect(block?.by ?? held.find((value) => value === entry.by), where).toBe(entry.by);
         const time = Date.parse(entry.at);
         expect(time, where).not.toBeNaN();
-        const at =
-          block?.at ??
-          held.find((value) => /^\d{4}-\d{2}-\d{2}T/.test(value) && Date.parse(value) === time);
-        expect(at === undefined ? undefined : Date.parse(at), where).toBe(time);
+        if (ownAt) expect(block?.at, where).toBeUndefined();
+        else {
+          const at =
+            block?.at ??
+            held.find((value) => /^\d{4}-\d{2}-\d{2}T/.test(value) && Date.parse(value) === time);
+          expect(at === undefined ? undefined : Date.parse(at), where).toBe(time);
+        }
       }
       if (sample.kind === "catch-up") {
         const kept = paths.filter((path) =>

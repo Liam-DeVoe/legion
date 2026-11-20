@@ -1213,7 +1213,11 @@ const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
  * the path where that name is not the path. A path whose field the payload leaves out, as a
  * stand-in the bus took with its long fields dropped leaves out an answer, draws a block with no
  * words after those, with its entry's mark that more follows. A block names the author and the
- * time only where no field of the objects that hold the words names them. A `role` that names the
+ * time only where no field of the objects that hold the words names them, and where the object
+ * that holds the words' field, when that is no field of the payload itself, holds no `by` (for
+ * the author) or `at` (for the time) of its own: the pause of a project-paused notice names who
+ * paused and when (`pause.by`, `pause.at`), and so its reason's block names neither. What the
+ * holders name is read once for each holder, however many words it holds. A `role` that names the
  * reader (the card's topic ends in `-<role>`) is not shown: the reader knows its own role. A
  * payload with no `words` object, as a daemon before that object writes, shows every field, and
  * so does a payload whose `words` object has a key that is no path, or whose path names a list's
@@ -1258,26 +1262,28 @@ function daemonFields(
     if (typeof name !== "string" || fieldAt(root, keys).found !== undefined) return every;
     taken.push({ path, name, text: "", holders: fieldAt(fields, keys).holders });
   }
+  const names = holderNames();
   const words = taken.map(({ path, name, text, holders }): NamedWords => {
     const entry = paths[path];
     const meta: Readonly<Record<string, unknown>> = isObject(entry) ? entry : {};
     const { by, at, rest, more } = meta;
-    const shown = holders.flatMap((holder) => Object.values(holder));
     const time = typeof at === "string" && TIME.test(at) ? Date.parse(at) : Number.NaN;
-    const timeShown = shown.some(
-      (value) =>
-        value === at ||
-        (typeof value === "string" &&
-          TIME.test(value) &&
-          !Number.isNaN(time) &&
-          Date.parse(value) === time)
-    );
+    const own = holders.length > 1 ? holders[holders.length - 1] : undefined;
+    const byShown =
+      (own !== undefined && namesOwn(own, "by")) ||
+      holders.some((holder) => names(holder).values.has(by));
+    const timeShown =
+      (own !== undefined && namesOwn(own, "at")) ||
+      holders.some((holder) => {
+        const { values, times } = names(holder);
+        return values.has(at) || (!Number.isNaN(time) && times.has(time));
+      });
     const block = blockName(name);
     return {
       name: block,
       words: {
         text,
-        by: typeof by === "string" && !shown.includes(by) ? by : undefined,
+        by: typeof by === "string" && !byShown ? by : undefined,
         at: typeof at === "string" && !timeShown ? at : undefined,
         field: path === block ? undefined : path,
         rest: typeof rest === "number" && Number.isInteger(rest) ? rest : undefined,
@@ -1286,6 +1292,41 @@ function daemonFields(
     };
   });
   return { fields, words };
+}
+
+/** What the fields of one object that holds words name: their values, and the instant of each
+ *  value that starts as an RFC 3339 time does (`TIME`). */
+interface HolderNames {
+  readonly values: ReadonlySet<unknown>;
+  readonly times: ReadonlySet<number>;
+}
+
+/** What each object that holds words names (`HolderNames`), read the first time it is asked of
+ *  and kept, so the fields of an object are read once however many words it holds. */
+function holderNames(): (holder: Readonly<Record<string, unknown>>) => HolderNames {
+  const read = new Map<Readonly<Record<string, unknown>>, HolderNames>();
+  return (holder) => {
+    let names = read.get(holder);
+    if (names === undefined) {
+      const values = new Set(Object.values(holder));
+      const times = new Set<number>();
+      for (const value of values) {
+        if (typeof value !== "string" || !TIME.test(value)) continue;
+        const time = Date.parse(value);
+        if (!Number.isNaN(time)) times.add(time);
+      }
+      names = { values, times };
+      read.set(holder, names);
+    }
+    return names;
+  };
+}
+
+/** Whether `holder` has a field `key` that names something: a value that is neither null nor
+ *  empty. */
+function namesOwn(holder: Readonly<Record<string, unknown>>, key: string): boolean {
+  const value = Object.hasOwn(holder, key) ? holder[key] : undefined;
+  return value !== undefined && value !== null && value !== "";
 }
 
 /** The name of the block of the field `name`, a segment of a words path (`PATH_SEGMENT`): `name`

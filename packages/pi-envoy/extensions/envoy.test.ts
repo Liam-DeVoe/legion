@@ -23216,7 +23216,7 @@ describe("consumer delivery", () => {
 
   test("a gap the registration answers is a notice held until the host is settled, held again after a restart", async () => {
     const gapNotices = (deliveries: readonly { readonly content: string }[]) =>
-      deliveries.filter((delivery) => delivery.content.includes("cause: retention_gap"));
+      deliveries.filter((delivery) => delivery.content.includes("retention_hours: "));
     const first = await bootConsumer("consumer-gap-a", { gap: true, turn: "streaming" });
     expect(gapNotices(first.fixture.deliveries)).toHaveLength(0);
     await first.stop();

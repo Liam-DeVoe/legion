@@ -64,3 +64,27 @@ test("a notice with many words keys renders in time linear in its length", () =>
 
   expect(performance.now() - started).toBeLessThan(1_000);
 }, 120_000);
+
+// A block names its author and its time only where no field of the objects that hold its words
+// names them (`daemonFields`), and each block read every field of those objects again, a time
+// field parsed as a time at each: at f49a2231 a notice of 4,000 words keys beside 4,000 time
+// fields took 18 to 27 s to render. What the objects name is read once for each object.
+test("a notice with many words keys beside many time fields renders in time linear in its length", () => {
+  const payload: Record<string, unknown> = {};
+  const words: Record<string, object> = {};
+  for (let n = 0; n < 4000; n++) {
+    payload[`t${n}`] = "2026-11-14T21:05:01Z";
+    payload[`w${n}`] = `block ${n}`;
+    words[`w${n}`] = { by: `user:u${n}`, at: "2026-11-15T08:00:00Z" };
+  }
+  const started = performance.now();
+  const { content } = renderInbound(notice({ ...payload, words }), reader);
+  const took = performance.now() - started;
+
+  const { blocks } = splitWordsBlocks(content);
+  expect(blocks).toHaveLength(4000);
+  expect(blocks[0]).toMatchObject({ by: "user:u0", at: "2026-11-15T08:00:00Z" });
+  // The render takes 0.2 to 0.3 s in a pod, and the scan per words key took about 5 s for this
+  // notice: 2.5 s holds a busy runner and still fails that scan.
+  expect(took).toBeLessThan(2_500);
+}, 120_000);

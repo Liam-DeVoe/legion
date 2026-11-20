@@ -70,6 +70,16 @@ const TOPIC_GUIDE =
   "slack.<team>.<channel>.thread.<ts>.message|mention; ghostwispr.<session>.<kind>; " +
   "whatsapp.<phone>.<jid>.<kind>; envoy.exceptions.<original-topic>.";
 
+// The step a reader takes on each of Envoy's own notices, keyed by the kind the notice's first
+// field states (`notice: <kind>`): the notices hold only their facts (`notice-text.ts`). The
+// session-id notice's step is in envoy_whoami's description.
+const ENVOY_NOTICE_STEPS =
+  "On notice: messages may be missing, whatever its cause, read the live source of each thing " +
+  "you wait on. On notice: Envoy inbound unavailable, read live sources until a registration is " +
+  "accepted; what the stream stored arrives then. On notice: unread messages, read each card " +
+  "above the notice. On notice: message not shown, read it now with the command its read_with " +
+  "names.";
+
 export type { SchemaApi, ToolArgumentsShape } from "@legion/contracts";
 
 const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown as readonly [
@@ -210,7 +220,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_inbox",
-    description: "List this Pi session's 50 most recent rendered Envoy deliveries, newest first.",
+    description: `List this Pi session's 50 most recent rendered Envoy deliveries, newest first. ${ENVOY_NOTICE_STEPS}`,
     arguments: () => ({}),
     operation: EnvoyToolOperation.inbox,
   },
@@ -253,7 +263,8 @@ export const envoyToolSpecs = [
   {
     name: "envoy_whoami",
     description:
-      "Returns this session's Envoy identity: session ID, machine ID, port, and directory. session_id is the address a reply reaches. Where a host runs a task subagent inside its parent's process, such a subagent registers no Envoy session of its own, so its session_id is the parent session that spawned it and the result says so.",
+      "Returns this session's Envoy identity: session ID, machine ID, port, and directory. session_id is the address a reply reaches. Where a host runs a task subagent inside its parent's process, such a subagent registers no Envoy session of its own, so its session_id is the parent session that spawned it and the result says so. " +
+      "On notice: session id changed, run envoy_whoami again and send the new id to your peers.",
     arguments: () => ({}),
     operation: EnvoyToolOperation.whoami,
   },

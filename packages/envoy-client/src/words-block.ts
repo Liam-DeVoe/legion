@@ -134,9 +134,9 @@ export function inFront(parts: readonly string[], text: string): string {
  * all that a part or a card adds to it is its own text. So the text keeps what it holds of tags
  * (`HeldTags`): each part and card is scanned once, when it is joined, whatever the names of the
  * blocks after it, and each block's tag is a lookup of its name in what was kept. The whole is
- * drawn in time linear in its length however many names its cards' blocks have, where taking
- * `inFront` of the text so far for each card scans all of it again at every card, every earlier
- * card's words included.
+ * drawn in time and memory linear in its length however many names its cards' blocks have and
+ * however long a run of a tag name's characters it holds, where taking `inFront` of the text so
+ * far for each card scans all of it again at every card, every earlier card's words included.
  */
 export class TextInFront {
   readonly #held: HeldTags;
@@ -241,69 +241,103 @@ function drawBlock(tag: string, attributes: string, text: string): string {
  * longest run of them that follows a `<` or a `</`, and `<name-n` or `</name-n` where that run is
  * the name and no more and is followed by `-` and digits that start with the digits of n, with no
  * leading zero: `<answer-12` holds the tags of `a`, `an` and on to `answer`, and `answer-1` and
- * `answer-12`. The runs are kept in a trie of their characters (`HeldName`), so each piece is
- * scanned once, when it is added, whatever the names asked of after, and what the text holds of
- * the tags of a name is a walk of the name's characters. A piece is scanned on its own, which
- * finds what the joined text holds, since a tag holds no new line.
+ * `answer-12`. Each piece is scanned once, when it is added, whatever the names asked of after,
+ * and each run it holds is kept as where it is, at the root of a trie of the runs' characters
+ * (`HeldName`). A name asked of walks the trie, and each node it passes hands the runs it keeps on
+ * to the node of their next character; a run that ends at a node adds its suffixes to it there.
+ * So a run goes down the trie only as far as a name asked of shares its characters, never past
+ * the longest such name, and a run no name starts as builds nothing: the trie holds a node for a
+ * character of a run only where a name asked of reached it. That keeps the memory, and the time
+ * of every walk together, linear in the pieces' length, however long a run is. A piece is scanned
+ * on its own, which finds what the joined text holds, since a tag holds no new line.
  */
 class HeldTags {
   readonly texts: string[] = [];
-  readonly #runs: HeldName = { next: undefined, suffixes: undefined, least: 0 };
+  readonly #runs: HeldName = { next: undefined, runs: undefined, suffixes: undefined, least: 0 };
 
   constructor(texts: readonly string[]) {
     for (const text of texts) this.add(text);
   }
 
-  /** Adds `text` after the pieces, and what it holds of tags. One pass over `text`. */
+  /** Adds `text` after the pieces, and the runs it holds. One pass over `text`. */
   add(text: string): void {
-    this.texts.push(text);
+    const piece = this.texts.push(text) - 1;
     for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at)) {
       at++;
       if (text.charCodeAt(at) === SLASH) at++;
-      let held = this.#runs;
-      for (; at < text.length && isNameUnit(text.charCodeAt(at)); at++) {
-        const unit = text.charCodeAt(at);
-        held.next ??= new Map();
-        let next = held.next.get(unit);
-        if (next === undefined) {
-          next = { next: undefined, suffixes: undefined, least: 1 };
-          held.next.set(unit, next);
-        }
-        held = next;
-      }
-      if (held === this.#runs || text.charCodeAt(at) !== DASH) continue;
-      let suffix = 0;
-      for (let index = at + 1; index < text.length; index++) {
-        const digit = text.charCodeAt(index) - 48;
-        // A tag's suffix has no leading zero, so `-0` holds none.
-        if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break;
-        suffix = suffix * 10 + digit;
-        if (suffix > SUFFIX_CAP) break;
-        held.suffixes ??= new Set();
-        held.suffixes.add(suffix);
-      }
+      const start = at;
+      while (at < text.length && isNameUnit(text.charCodeAt(at))) at++;
+      if (at === start) continue;
+      this.#runs.runs ??= [];
+      this.#runs.runs.push(piece, start, at);
     }
   }
 
   /** What the text holds of the tags of `name`: undefined where it holds none. */
   of(name: string): HeldName | undefined {
     let held: HeldName | undefined = this.#runs;
-    for (let index = 0; held !== undefined && index < name.length; index++) {
-      held = held.next?.get(name.charCodeAt(index));
+    for (let depth = 0; held !== undefined && depth < name.length; depth++) {
+      this.#handOn(held, depth);
+      held = held.next?.get(name.charCodeAt(depth));
     }
     return held === this.#runs ? undefined : held;
+  }
+
+  /** Hands each run that `held`, the node at `depth`, keeps on to the node of the run's character
+   *  at `depth`, which it builds where there is none: a run that ends at that node adds its
+   *  suffixes to it, and any other is kept there. */
+  #handOn(held: HeldName, depth: number): void {
+    const runs = held.runs;
+    if (runs === undefined) return;
+    held.runs = undefined;
+    held.next ??= new Map();
+    for (let index = 0; index < runs.length; index += 3) {
+      const piece = runs[index] ?? 0;
+      const start = runs[index + 1] ?? 0;
+      const end = runs[index + 2] ?? 0;
+      const text = this.texts[piece] ?? "";
+      const unit = text.charCodeAt(start + depth);
+      let next = held.next.get(unit);
+      if (next === undefined) {
+        next = { next: undefined, runs: undefined, suffixes: undefined, least: 1 };
+        held.next.set(unit, next);
+      }
+      if (start + depth + 1 < end) {
+        next.runs ??= [];
+        next.runs.push(piece, start, end);
+      } else holdSuffixes(next, text, end);
+    }
   }
 }
 
 /** A node of the trie of `HeldTags`: the name that a run the text holds starts with, whose own
  *  tag, suffix 0, the text therefore holds. */
 interface HeldName {
-  /** The node of each character that follows the name in a run the text holds. */
+  /** The node of each character that follows the name in a run handed on past this node. */
   next: Map<number, HeldName> | undefined;
+  /** The runs longer than the name that start with it and that no walk has handed on yet: for
+   *  each, its piece, where it starts and where it ends, one after another. */
+  runs: number[] | undefined;
   /** Each n of a `-n` that follows a run that is the name and no more. */
   suffixes: Set<number> | undefined;
   /** A suffix every one below which the text holds: one at least, since it holds suffix 0. */
   least: number;
+}
+
+/** Adds to `held` the suffix of each tag of its name that `text` holds after a run that is the
+ *  name and no more and ends at `end`: each n whose digits begin the digits after a `-` there. */
+function holdSuffixes(held: HeldName, text: string, end: number): void {
+  if (text.charCodeAt(end) !== DASH) return;
+  let suffix = 0;
+  for (let index = end + 1; index < text.length; index++) {
+    const digit = text.charCodeAt(index) - 48;
+    // A tag's suffix has no leading zero, so `-0` holds none.
+    if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break;
+    suffix = suffix * 10 + digit;
+    if (suffix > SUFFIX_CAP) break;
+    held.suffixes ??= new Set();
+    held.suffixes.add(suffix);
+  }
 }
 
 /** `/`, which a closing tag's `</` holds. */

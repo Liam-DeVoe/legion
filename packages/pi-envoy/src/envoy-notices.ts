@@ -8,15 +8,13 @@ import { noticeKind, noticeText } from "@legion/envoy-client/notice-text";
 
 /**
  * The session-id notice (`tellIdChanged` in `extensions/envoy.ts`): a fork or a branch carried
- * this conversation over from the session `previous_session_id` to `session_id`. An id the session
- * gave out before is stale, so its step is to name itself afresh to its peers.
+ * this conversation over from the session `previous_session_id` to `session_id`. The step its
+ * reader takes is in `envoy_whoami`'s description (`@legion/envoy-client/tool-contract`).
  */
-export const SESSION_ID_CHANGED_NOTICE = noticeKind(
-  "envoy",
-  "session id changed",
-  ["previous_session_id", "session_id"],
-  "run envoy_whoami again and send the new id to your peers"
-);
+export const SESSION_ID_CHANGED_NOTICE = noticeKind("envoy", "session id changed", [
+  "previous_session_id",
+  "session_id",
+]);
 
 /** The session-id notice for a conversation carried over from `previous` to `current`. */
 export function sessionIdChangedText(previous: string, current: string): string {
@@ -28,14 +26,10 @@ export function sessionIdChangedText(previous: string, current: string): string 
 
 /**
  * The wake (`CardWake`): `unread` Envoy cards above it arrived with no turn to read them, and it
- * starts that turn.
+ * starts that turn. The step its reader takes is in `envoy_inbox`'s description
+ * (`@legion/envoy-client/tool-contract`).
  */
-export const UNREAD_MESSAGES_NOTICE = noticeKind(
-  "envoy",
-  "unread messages",
-  ["unread"],
-  "read each card above"
-);
+export const UNREAD_MESSAGES_NOTICE = noticeKind("envoy", "unread messages", ["unread"]);
 
 /** The wake for `unread` cards. */
 export function unreadMessagesText(unread: number): string {

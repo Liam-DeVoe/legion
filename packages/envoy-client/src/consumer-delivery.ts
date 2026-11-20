@@ -843,17 +843,19 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
 }
 
 /**
- * The gap notice: messages published to this session may be missing. `cause` is the gap's kind.
- * A `retention_gap` names the stream it is in and how long that stream keeps a message; a
- * `stream_recreated` names the stream that was replaced and the one that replaced it. Its step:
- * read the live source of each thing the session waits on before it relies on a message about it.
+ * The gap notice: messages published to this session may be missing. No field names the gap's
+ * cause, since its fields tell it: a `retention_gap` always states `retention_hours`, how long the
+ * stream keeps a message, and never `previous_stream`, with the stream it is in where the
+ * listener named one; a `stream_recreated` always states `previous_stream`, the stream that was
+ * replaced, with `stream`, the one that replaced it, and never `retention_hours`. So a reader
+ * tells the two apart by which of `retention_hours` and `previous_stream` the notice states. The
+ * step its reader takes is in `envoy_inbox`'s description (`tool-contract.ts`).
  */
-export const GAP_NOTICE = noticeKind(
-  "envoy",
-  "messages may be missing",
-  ["cause", "stream", "previous_stream", "retention_hours"],
-  "read the live source of each thing you wait on"
-);
+export const GAP_NOTICE = noticeKind("envoy", "messages may be missing", [
+  "stream",
+  "previous_stream",
+  "retention_hours",
+]);
 
 /**
  * A gap notice as every host shows it: a card, rendered as every notice is (`noticeText`). It is a
@@ -863,7 +865,6 @@ export const GAP_NOTICE = noticeKind(
 export function gapNoticeText(notice: ConsumerGapNotice): string {
   const recreated = notice.kind === "stream_recreated";
   return noticeText(GAP_NOTICE, {
-    cause: notice.kind,
     stream: notice.stream,
     previous_stream: recreated ? notice.previousStream : undefined,
     retention_hours: recreated ? undefined : notice.retentionHours,
@@ -874,15 +875,12 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
  * The notice a session gets when the listener can give it no consumer: its registration was
  * refused, by one of the reasons `ErrorWireSchema.reason` lists (`transport.ts`), or it failed, so
  * nothing reaches it until a later registration is accepted. `error` is the listener's own
- * message, which carries its machine-readable reason. Its step: read live sources rather than
- * wait for a message until then.
+ * message, which carries its machine-readable reason. The step its reader takes is in
+ * `envoy_inbox`'s description (`tool-contract.ts`).
  */
-export const INBOUND_UNAVAILABLE_NOTICE = noticeKind(
-  "envoy",
-  "Envoy inbound unavailable",
-  ["error"],
-  "read live sources until a registration is accepted"
-);
+export const INBOUND_UNAVAILABLE_NOTICE = noticeKind("envoy", "Envoy inbound unavailable", [
+  "error",
+]);
 
 /**
  * The inbound-unavailable notice for `why`, the listener's own message, built once for every host.

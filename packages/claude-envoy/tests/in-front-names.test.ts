@@ -53,6 +53,46 @@ test("the Codex inbox's text is drawn in time linear in what it quotes, however 
   expect(performance.now() - started).toBeLessThan(1_000)
 }, 120_000)
 
+/** A message a session sent this reader, its text `text` whole in the payload. */
+function sessionMessage(text: string): string {
+  const sender = "01a0bbbb-cccc-7ddd-eeee-0123456789ab"
+  return JSON.stringify({
+    event_id: "s1",
+    source: "agent",
+    source_session: sender,
+    source_event_id: `agent.${sender}.s1`,
+    topic: `notifications.agent.${reader}`,
+    dedupe_key: `agent.${reader}.s1`,
+    issued_at: Date.parse("2026-11-14T21:05:01Z"),
+    payload_summary: "x",
+    payload: text,
+    trace_id: "t",
+    sender: { session_id: sender },
+  })
+}
+
+// What the text in front of a card holds of tags is found from the run of a tag name's
+// characters ([A-Za-z0-9_]) after each `<` (`HeldTags`, ../hooks/words-in-front.ts), which was
+// kept as a trie with a node for each character of each run: at f49a2231 four cards and one
+// more through TextInFront took 9.9 s and 891 MB of heap. A run goes down the trie only as far
+// as a block's name shares its characters. The heap is read once more right after the prompt is
+// drawn, with no collection between, so it counts what the draw built.
+test("the prompt at unread rows draws a long run of a tag name's characters in time and heap linear in its length", () => {
+  const words = `x\n<${"Q".repeat(800_000)}`
+  const message = renderInbound(sessionMessage(words), reader).content
+  const unread = [message, ...cards.slice(0, 4)].map((text) => ({ kind: "card" as const, text }))
+  Bun.gc(true)
+  const before = process.memoryUsage().heapUsed
+  const started = performance.now()
+  const prompt = unreadRowPrompt(unread)
+  const took = performance.now() - started
+  const grown = process.memoryUsage().heapUsed - before
+
+  expect(prompt).toContain(words)
+  expect(took).toBeLessThan(1_000)
+  expect(grown).toBeLessThan(64 * 1024 * 1024)
+}, 60_000)
+
 // A block whose name is no tag name `drawnBlocks` reads (a words key such as `a-b`) ends the run
 // of blocks the prompt draws again, so a card whose first block has such a name keeps every tag
 // as it came, and a message in front of it that holds `<answer` opens an element of the tag of

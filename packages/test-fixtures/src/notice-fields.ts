@@ -59,9 +59,9 @@ export function noticeFields(text: string): Record<string, string> {
 /**
  * What the renderings of `declared` break of the rule that a notice states the fields of its
  * kind. `variants` holds each variant of the kind rendered twice, from different values in every
- * field but the one that names the variant, such as a gap notice's `cause`. Each rendering
- * opens with its root line, and every line after it is a `key: value` line whose key the kind
- * declares (or `notice`), with no key twice and one line naming the kind (`notice: <kind>`).
+ * field but the one, if any, that names the variant. Each rendering opens with its root line,
+ * and every line after it is a `key: value` line whose key the kind declares (or `notice`),
+ * with no key twice and one line naming the kind (`notice: <kind>`).
  * Both renderings of a variant state the same fields, so each field is compared with another
  * rendering of it. Every declared field is stated by one variant at least. No field holds the same
  * value in every rendering that states it. No two renderings of a field share a run of more than

@@ -5,6 +5,8 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { GAP_NOTICE, INBOUND_UNAVAILABLE_NOTICE } from "../consumer-delivery";
+import { MESSAGE_NOT_SHOWN_NOTICE } from "../delivery-ledger";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
@@ -201,6 +203,37 @@ describe("envoyToolSpecs", () => {
     expect(send).toContain(
       "A card reads to: you only when it was sent to you directly; a card that came through a role or a topic has no to field."
     );
+  });
+
+  // Envoy's own notices hold only their facts (R2 of dispatch://INFRA-3686), so the one step
+  // each one's reader takes is in the description of the tool that reader holds, keyed by the kind
+  // the notice states as `notice: <kind>`. The session-id notice and the wake for unread cards are
+  // pi-envoy's (`src/envoy-notices.ts`), which this package cannot import.
+  test("gives the step of each of Envoy's own notices, keyed by the notice's kind", () => {
+    const steps = [
+      ["envoy_inbox", GAP_NOTICE.kind, "read the live source of each thing you wait on"],
+      [
+        "envoy_inbox",
+        INBOUND_UNAVAILABLE_NOTICE.kind,
+        "read live sources until a registration is accepted; what the stream stored arrives then",
+      ],
+      ["envoy_inbox", "unread messages", "read each card above the notice"],
+      [
+        "envoy_inbox",
+        MESSAGE_NOT_SHOWN_NOTICE.kind,
+        "read it now with the command its read_with names",
+      ],
+      [
+        "envoy_whoami",
+        "session id changed",
+        "run envoy_whoami again and send the new id to your peers",
+      ],
+    ] as const;
+    for (const [tool, kind, step] of steps) {
+      const description = envoyToolSpecs.find((spec) => spec.name === tool)?.description ?? "";
+      const sentence = new RegExp(`On notice: ${kind}(?:, [^,.]+)?, ${step}\\.`);
+      expect(description, `${tool}: ${kind}`).toMatch(sentence);
+    }
   });
 });
 

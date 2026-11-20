@@ -10,7 +10,6 @@ import {
   failureNoticeText,
   type LedgerChange,
   type LedgerSnapshot,
-  MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
 
 const SESSION = "ses-1";
@@ -261,7 +260,6 @@ describe("a frame the session could not be shown", () => {
         published_at: "2026-10-26T11:59:00Z",
         error: "the transcript write failed",
         read_with: "dispatch read",
-        step: MESSAGE_NOT_SHOWN_NOTICE.step,
       },
     });
     expect(ledger.delivered({ event_id: "evt-lost" })).toBe(true);
@@ -401,7 +399,6 @@ describe("a frame the session could not be shown", () => {
         published_at: "2026-10-26T11:59:00Z",
         error: "nope",
         read_with: "dispatch read",
-        step: MESSAGE_NOT_SHOWN_NOTICE.step,
       },
     });
   });

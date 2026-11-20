@@ -554,7 +554,6 @@ test("a gap the registration reports is told once, through the notice path", asy
     expect(notices).toHaveLength(1)
     expect(noticeFields(notices[0]?.content ?? "")).toMatchObject({
       notice: "messages may be missing",
-      cause: "retention_gap",
       retention_hours: "72",
     })
   } finally {
