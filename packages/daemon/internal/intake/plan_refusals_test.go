@@ -3,6 +3,7 @@ package intake
 import (
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -84,5 +85,50 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	// what tells the route to write the plain failure for it.
 	if got := PlanVersionOld("LEGION-208", 3, 2).Reasons; got != nil {
 		t.Fatalf("PLAN_VERSION_OLD carries reasons %+v, want none", got)
+	}
+}
+
+func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
+	entry := record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}}
+	for _, stale := range []struct {
+		name string
+		make func(record.StepEntry) *Refusal
+	}{
+		{"sign-off", func(given record.StepEntry) *Refusal {
+			return SignOff{Issue: "LEGION-208", Entry: given}.StaleEntry(record.StepEntry{Place: entry.Place, Starts: 1})
+		}},
+		{"backward move", func(given record.StepEntry) *Refusal {
+			return BackwardMove{Issue: "LEGION-208", Entry: given}.StaleEntry(record.StepEntry{Place: entry.Place, Starts: 1})
+		}},
+	} {
+		t.Run(stale.name, func(t *testing.T) {
+			refusal := stale.make(entry)
+			if strings.Contains(refusal.Message, "no run of a step") {
+				t.Fatalf("recorded count-zero entry described as absent: %s", refusal.Message)
+			}
+			if !strings.Contains(refusal.Message, "asked of run 0 of the step at place 2 of task a") {
+				t.Fatalf("recorded count-zero entry is not named as its run: %s", refusal.Message)
+			}
+		})
+	}
+}
+
+func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
+	for _, stale := range []struct {
+		name string
+		make func(record.StepEntry) *Refusal
+	}{
+		{"sign-off", func(given record.StepEntry) *Refusal {
+			return SignOff{Issue: "LEGION-208", Entry: given}.StaleEntry(record.StepEntry{Starts: 1})
+		}},
+		{"backward move", func(given record.StepEntry) *Refusal {
+			return BackwardMove{Issue: "LEGION-208", Entry: given}.StaleEntry(record.StepEntry{Starts: 1})
+		}},
+	} {
+		t.Run(stale.name, func(t *testing.T) {
+			if refusal := stale.make(record.StepEntry{}); !strings.Contains(refusal.Message, "asked of no run of a step") {
+				t.Fatalf("zero entry is not described as absent: %s", refusal.Message)
+			}
+		})
 	}
 }

@@ -1803,7 +1803,7 @@ func staleEntry(code, request, issue string, given, now record.StepEntry, then s
 
 // describeEntry names a run of a step as a refusal does.
 func describeEntry(entry record.StepEntry) string {
-	if entry.Starts == 0 {
+	if entry == (record.StepEntry{}) {
 		return "no run of a step"
 	}
 	return fmt.Sprintf("run %d of the %s at place %d of task %s", entry.Starts, entry.Place.Kind, entry.Place.Place, entry.Place.Task)
