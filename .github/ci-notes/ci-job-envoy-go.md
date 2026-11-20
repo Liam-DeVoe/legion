@@ -54,7 +54,7 @@ package, internal/dispatch/events, the shutdown feed test, the container-backed 
 matrix, the integration suite and the agentloop vet. The package list runs 104 test
 binaries, beside 37 packages with no test files (both runs of the pair at 8cfd2682, read
 from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
-jobs 132732382594 and 132742525106) it took 519.0 s and 594.0 s from the first event of
+jobs 132732382594 and 132742525106) it took 519.5 s and 594.1 s from the first event of
 its stream to the last, and every other call of this step had ended before it did. All nine
 calls are started in the background at the step's head, the long ones longest first, so the
 step costs the longest of them rather than their sum. The short calls follow the long ones,

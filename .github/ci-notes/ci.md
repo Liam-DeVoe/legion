@@ -1835,7 +1835,7 @@ DISPATCH_TEST_DATABASE_URL and skip without it (internal/dispatch/store/store_te
 testDatabaseURL), cloning their databases through a harness of their own (store_test.go,
 templates), and delivery's take theirs from storetest.Open
 (internal/dispatch/store/storetest/storetest.go, serverURL), which does the same;
-cmd/listener/dispatch_resolution_test.go:204 gets its database through internal/testpg, so the
+cmd/listener/dispatch_resolution_test.go's migratedDispatchDatabase gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's and the auth service's tests open no store, so they need none.
 

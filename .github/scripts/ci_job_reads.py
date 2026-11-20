@@ -1666,8 +1666,9 @@ class RaceJob(NamedTuple):
 # 66058706, job 136223826856), against 680.5 s and 686.0 s in the pair (jobs 136026780235 and
 # 136039518500), 812.3 / 30 = 27.08, so 28m; internal/dispatch/api 1,154.1 s (run 44687712471 at
 # 56f4dabc, job 136126011060), against 1,123.8 s and 1,118.6 s in the pair (jobs 136026779922
-# and 136039518473), 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs 1,603.9 s (run
-# 44657322918, job 136026779859), 1,603.9 / 30 = 53.46, so 54m. Each figure is read from that
+# and 136039518473), 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs 1,609.7 s (run
+# 44717243297 at 66058706, job 136223826761), against 1,603.9 s and 1,590.7 s in the pair,
+# 1,609.7 / 30 = 53.66, so 54m. Each figure is read from that
 # job's own `go test -json` artifact. envoy-go-race-api's step runs its package through
 # database-skips.sh (main's #4456), which takes that -timeout as its --timeout (RACE_API_SCRIPT).
 ENVOY_RACE_LANE = (
@@ -2546,7 +2547,7 @@ impossible=$!
 # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
 # 158,364 (text, setting) pairs asked over two connections, and what a pair costs is a
 # round trip rather than arithmetic. Measured on run 42774209109: 2.16 ms a round trip
-# in this lane against 0.16 ms against an idle server, the package 375.5 s here for
+# in this lane against 0.16 ms against an idle server, the package 166.1 s contended there for
 # 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
 # both halves of that - the queue this package waits in, and the 158,364 round trips
 # it puts into the queue every other package of the job waits in - so

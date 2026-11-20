@@ -199,8 +199,8 @@ jobs:
       # transcription of PostgreSQL's scan.l to a real PostgreSQL: it asks a server about 158,364
       # (text, setting) pairs, and what a pair costs is a round trip, not arithmetic. Measured on
       # run 42774209109: 2.16 ms a round trip in this lane against 0.16 ms against an idle
-      # server, the package 375.5 s here for 53.7 s of wall alone on four idle cores and 63.8 s
-      # of CPU. Two things follow, and the service answers both: the package waits on a queue the
+      # server, the package 166.1 s contended there for 53.7 s of wall alone on four idle cores and
+      # 63.8 s of CPU. Two things follow, and the service answers both: the package waits on a queue the
       # rest of this job fills, and those 158,364 round trips are themselves load on the server
       # every other package of the job shares - a cost its own time does not show. So it gets an
       # instance of its own, on 5435, named on the pgmigrate call of the unit step and nowhere
@@ -436,7 +436,7 @@ jobs:
           # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
           # 158,364 (text, setting) pairs asked over two connections, and what a pair costs is a
           # round trip rather than arithmetic. Measured on run 42774209109: 2.16 ms a round trip
-          # in this lane against 0.16 ms against an idle server, the package 375.5 s here for
+          # in this lane against 0.16 ms against an idle server, the package 166.1 s contended there for
           # 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
           # both halves of that - the queue this package waits in, and the 158,364 round trips
           # it puts into the queue every other package of the job waits in - so
