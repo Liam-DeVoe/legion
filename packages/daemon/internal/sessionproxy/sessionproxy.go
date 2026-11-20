@@ -364,7 +364,10 @@ func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, e
 	return oauth2call.Call(s.Read(c.dialer.Dial(s.Context(), instance)))
 }
 
-func (c connectorDialer) Close() error { return c.dialer.Close() }
+func (c connectorDialer) Close() error {
+	_, err := oauth2call.Call(struct{}{}, c.dialer.Close())
+	return err
+}
 
 // newConnectorDialer builds the dialer a pod uses, with connectorOptions. It signs in as account,
 // which the pod's own credentials impersonate, or as the pod itself when account is "".
@@ -478,6 +481,6 @@ func impersonationClient(ctx context.Context, base http.RoundTripper) (*http.Cli
 	}
 	return oauth2call.RefusalClient(oauth2.NewClient(
 		context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Transport: base})),
-		source,
+		oauth2call.TokenSource(source),
 	)), nil
 }
