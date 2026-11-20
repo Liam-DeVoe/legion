@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -87,7 +88,9 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // store's two variables named apart, since they are Legion's under either store, the controller's
 // Slack channel list, which the runtime sets in the controller's pod alone, Claude Code's three
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
-// which it tells a Claude role alone, in its start command, and the name the
+// which it tells a Claude role alone, in its start command, what holds a resumed Oh My Pi to the
+// session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
+// recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
@@ -99,6 +102,9 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned) is the runtime's in the
 // same way, only under ExchangeAndBroker, where the deployment sets dispatch_token_broker: a
 // deployment that does not keeps the name the operator's, as it was before the setting existed.
+// OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session store's variables though
+// nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the config root the agent
+// directory and a session's path key sit under, so it is refused like them.
 // The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[string]setter {
 	set := map[string]setter{}
@@ -111,6 +117,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 		add(name, "Legion sets to place the sessions a resume reads (runtime.kubernetes.session_store)", false)
 	}
 	add(ompsessions.DSNFileName, "is the name the providers volume mounts the session database's URL under (runtime.kubernetes.session_store)", false)
+	add(ompdirs.ConfigRootVariable, "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)", false)
 	add(slackChannelsVariable, "Legion's runtime sets for the controller it launches, from the project's slack_channels alone", false)
 	add(launcher.TestPGVariable, "Legion's runtime sets in every role of an issue pod whose deployment serves the pod's own test database (runtime.kubernetes.test_postgres), and refuses here whether or not it does, since a pod env naming another server would point every test at it", false)
 	const claude = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
@@ -119,6 +126,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
+	add(runtime.SessionExclusiveVariable, "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session", false)
 	// The composed names are this runtime's to compose as well, from the operator's own value and
 	// the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the operator
 	// writes the attributes its whole deployment is billed under, and the runtime writes the
