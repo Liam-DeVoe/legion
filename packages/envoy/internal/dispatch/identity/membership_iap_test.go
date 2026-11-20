@@ -188,20 +188,32 @@ func TestIAPStandingFollowsTheDirectory(t *testing.T) {
 		r.record(directoryAda)
 		r.active(directoryAda, "u-ada", 2*time.Hour)
 		before := r.row(directoryAda)
+		// The signer holds the check until every call has started or joined one and stopped
+		// waiting, so the calls overlap whatever the machine's load: one check reads the Directory
+		// once, and a check of each call's own would read it five times once released.
+		release := r.google.HoldSigner()
 		var wg sync.WaitGroup
 		answers := make([]Standing, 5)
 		for i := range answers {
 			wg.Go(func() { answers[i] = r.standing(directoryAda) })
 		}
 		wg.Wait()
-		after := r.row(directoryAda)
-		if r.reads() != 1 || !after.confirmedAt.After(*before.confirmedAt) {
-			t.Fatalf("five concurrent Standings of an Active answer two hours old read the Directory %d times, confirmation %s -> %s; want one shared check that confirms", r.reads(), stamp(before.confirmedAt), stamp(after.confirmedAt))
-		}
 		for _, answer := range answers {
-			if answer.Held || !answer.NotHeldUntil.Equal(*after.notHeldUntil) || !after.notHeldUntil.Equal(after.confirmedAt.Add(24*time.Hour)) {
-				t.Fatalf("Standing = %+v; want not held until the new deadline %s, 24 hours after the confirmation %s", answer, stamp(after.notHeldUntil), stamp(after.confirmedAt))
+			if answer.Held || !answer.NotHeldUntil.Equal(*before.notHeldUntil) {
+				t.Fatalf("Standing while the check is held = %+v; want not held until the old deadline %s", answer, stamp(before.notHeldUntil))
 			}
+		}
+		release()
+		waitFor(t, "the shared check's Active outcome", func() bool {
+			return r.row(directoryAda).confirmedAt.After(*before.confirmedAt)
+		})
+		time.Sleep(time.Second)
+		after := r.row(directoryAda)
+		if r.reads() != 1 {
+			t.Fatalf("five concurrent Standings of an Active answer two hours old read the Directory %d times; want one shared check", r.reads())
+		}
+		if answer := r.standing(directoryAda); answer.Held || !answer.NotHeldUntil.Equal(*after.notHeldUntil) || !after.notHeldUntil.Equal(after.confirmedAt.Add(24*time.Hour)) {
+			t.Fatalf("Standing after the check = %+v; want not held until the new deadline %s, 24 hours after the confirmation %s", answer, stamp(after.notHeldUntil), stamp(after.confirmedAt))
 		}
 	})
 	t.Run("a check longer than the wait", func(t *testing.T) {
