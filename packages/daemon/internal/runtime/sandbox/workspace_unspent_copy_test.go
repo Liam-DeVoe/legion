@@ -148,10 +148,15 @@ func copiesSent(g *rig, tokens ...claim.Token) int {
 }
 
 // startRole is token's role start in pod, as the runtime makes it: the restore hop and then the
-// start frame, which the launcher answers once it has applied what it holds whole.
+// start frame on the pod's current launcher session, which the launcher answers once it has
+// applied what it holds whole.
 func startRole(t *testing.T, g *rig, token claim.Token, pod string) {
 	t.Helper()
-	if err := g.r.launchers.start(g.ctx, token, pod, shimwire.LauncherStart{ID: "start-" + string(token), Generation: 1}); err != nil {
+	session, err := g.r.launchers.await(g.ctx, token, pod)
+	if err != nil {
+		t.Fatalf("the launcher of %s in %s: %v", token, pod, err)
+	}
+	if err := g.r.launchers.start(g.ctx, token, pod, session, shimwire.LauncherStart{ID: "start-" + string(token), Generation: 1}); err != nil {
 		t.Fatalf("start %s in %s: %v", token, pod, err)
 	}
 }

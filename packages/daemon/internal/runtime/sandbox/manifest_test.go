@@ -359,7 +359,8 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // (TestABurstableIssuePodCarriesNoSafeToEvictAnnotation). Each carries, beside them and as the only
 // other annotation of its template, the configuration it was built from, its own kind's in its own
 // sandbox (podShapeAnnotation): the one record an update round reads a pod's drift from
-// (podShapeDrift), written here and nowhere else.
+// (podShapeDrift), written here and nowhere else; and, under a configured leak check setting, the
+// checker it was built under (leakCheckerAnnotation), which a launch keeping the pod tells its role.
 func TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -372,7 +373,7 @@ func TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations(
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := stopEvictionAnnotations(podShape(r, l.kind, l.microVM), true)
+			want := stopEvictionAnnotations(r, podShape(r, l.kind, l.microVM), true)
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
 			}
@@ -427,12 +428,12 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 					if (l.microVM != nil) != (sandbox.Type == SandboxMicroVM) {
 						t.Fatalf("the %s's launch in a %s project runs in a microVM: %v", role, sandboxName, l.microVM != nil)
 					}
-					want := stopEvictionAnnotations(podShape(r, l.kind, l.microVM), tc.extended)
+					want := stopEvictionAnnotations(r, podShape(r, l.kind, l.microVM), tc.extended)
 					if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 						t.Errorf("the issue pod of the %s's launch carries %v, want exactly %v", role, got, want)
 					}
 				}
-				controller := stopEvictionAnnotations(podShape(r, controllerPod{}, nil), true)
+				controller := stopEvictionAnnotations(r, podShape(r, controllerPod{}, nil), true)
 				if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, controller) {
 					t.Errorf("the controller's pod carries %v, want exactly %v", got, controller)
 				}
@@ -510,11 +511,11 @@ func TestABurstableControllerPodKeepsBothStopEvictionAnnotations(t *testing.T) {
 			if err != nil {
 				t.Fatalf("configure with the controller's pod reserving %+v: %v", controller, err)
 			}
-			want := stopEvictionAnnotations(podShape(r, controllerPod{}, nil), true)
+			want := stopEvictionAnnotations(r, podShape(r, controllerPod{}, nil), true)
 			if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, want) {
 				t.Errorf("the controller's pod carries %v, want exactly %v", got, want)
 			}
-			issue := stopEvictionAnnotations(podShape(r, issuePod{}, nil), true)
+			issue := stopEvictionAnnotations(r, podShape(r, issuePod{}, nil), true)
 			if got := podAnnotations(t, r, rootSpec(t)); !maps.Equal(got, issue) {
 				t.Errorf("the issue pod carries %v, want exactly %v", got, issue)
 			}
@@ -523,12 +524,16 @@ func TestABurstableControllerPodKeepsBothStopEvictionAnnotations(t *testing.T) {
 }
 
 // stopEvictionAnnotations is the whole annotation map a kind's pod template carries under r:
-// Karpenter's, which every pod carries, the configuration the pod is built from, and the Cluster
-// Autoscaler's where that pod asks GKE for extended run time.
-func stopEvictionAnnotations(shape string, extended bool) map[string]string {
+// Karpenter's, which every pod carries, the configuration the pod is built from, the Cluster
+// Autoscaler's where that pod asks GKE for extended run time, and the leak checker it was built
+// under where r's deployment configures one.
+func stopEvictionAnnotations(r *Runtime, shape string, extended bool) map[string]string {
 	want := map[string]string{doNotDisruptAnnotation: "true", podShapeAnnotation: shape}
 	if extended {
 		want[safeToEvictAnnotation] = "false"
+	}
+	if r.leakCheck.Configured() {
+		want[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
 	}
 	return want
 }
@@ -2962,8 +2967,8 @@ func keptReadings(t *testing.T, s sandbox) (decoded, stored bool) {
 	return ownsKeptVolume(&s), storedOwnsKeptVolume(u)
 }
 
-// A microVM pod carries the two stop-eviction annotations a gVisor pod does, and its kind's pod
-// shape in a microVM as the only other one
+// A microVM pod carries the two stop-eviction annotations a gVisor pod does, its kind's pod
+// shape in a microVM, and the checker it was built under
 // (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
 // nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
@@ -2972,7 +2977,8 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 	if got := renderedSandbox(t, template); got != SandboxMicroVM {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
-	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM())}
+	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM()),
+		leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}
