@@ -233,6 +233,57 @@ func TestANarrowingThatLeavesNothingInPlaceOfASubjectIsRefusedBeforeItIsSent(t *
 	}
 }
 
+// namedRecorder is fatalRecorder reporting name as its test's name, as a row of that name would.
+type namedRecorder struct {
+	*fatalRecorder
+	name string
+}
+
+func (n namedRecorder) Name() string { return n.name }
+
+// ForTheKeeperToPutBack is the keeper row's by its whole name (allowsKeeperRestoration): a row whose
+// name only begins with keeperRestorationRow is refused the option by name and its bare narrowing
+// is not sent, while the keeper row's own is. A name read by its prefix let any row named after the
+// keeper row narrow a stream with nothing in place, and both rows that pass the option today still
+// passed, since each is either the keeper row itself or a name no prefix reaches.
+func TestOnlyTheKeeperRowByItsWholeNameMayLeaveTheKeeperASubjectToPutBack(t *testing.T) {
+	const stream = "KEEPER_NAMED"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"named.kept.>", "named.taken.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	bare := info.Config
+	bare.Subjects = []string{"named.kept.>"}
+	update := func(name string) string {
+		recorder := namedRecorder{fatalRecorder: &fatalRecorder{TB: t}, name: name}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			UpdateStream(recorder, js, bare, ForTheKeeperToPutBack)
+		}()
+		<-done
+		return recorder.message
+	}
+	if message := update(keeperRestorationRow + "InNameOnly"); !strings.Contains(message, "ForTheKeeperToPutBack is reserved for "+keeperRestorationRow) {
+		t.Fatalf("a row named %sInNameOnly passed ForTheKeeperToPutBack and failed with %q, want it refused by the keeper-only option", keeperRestorationRow, message)
+	}
+	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, info.Config.Subjects) {
+		t.Fatalf("after the refused narrowing the stream reads %v (%v), want %v: it was sent", held, err, info.Config.Subjects)
+	}
+	if message := update(keeperRestorationRow); message != "" {
+		t.Fatalf("the keeper row's own narrowing marked ForTheKeeperToPutBack failed with %q, want it sent", message)
+	}
+	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, bare.Subjects) {
+		t.Fatalf("after the keeper row's narrowing the stream reads %v (%v), want %v", held, err, bare.Subjects)
+	}
+}
+
 // lostGuardReadJetStream loses StreamInfo calls before it delegates them, as a read on a member
 // whose stream group has just lost its leader does. UpdateStream must not send a narrowing until
 // a guard read has answered.

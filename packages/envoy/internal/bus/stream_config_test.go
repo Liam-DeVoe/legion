@@ -61,6 +61,12 @@ func (js *streamInfoJetStream) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.S
 	return info, nil
 }
 
+// AccountInfo answers at once, as the metadata leader of a cluster that has one does: the read a
+// write that waits past one read period sends (metadataLeader).
+func (js *streamInfoJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
+}
+
 func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
 	if js.updateErr != nil {
 		return nil, js.updateErr

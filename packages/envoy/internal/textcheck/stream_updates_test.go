@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -69,7 +70,7 @@ func testSources(root string, visit func(rel string, fileSet *token.FileSet, fil
 		if err != nil {
 			return err
 		}
-		file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(fileSet, path, nil, 0)
 		if err != nil {
 			return err
 		}
@@ -90,8 +91,23 @@ func testSources(root string, visit func(rel string, fileSet *token.FileSet, fil
 // context that a test hands the code under test, and it stands in for the server under that
 // code's own update.
 func directStreamUpdates(root string) ([]directStreamUpdate, error) {
+	type source struct {
+		rel     string
+		fileSet *token.FileSet
+		file    *ast.File
+	}
+	var sources []source
+	values := subjectValues{local: map[*ast.Object][]ast.Expr{}, global: map[string][]ast.Expr{}}
+	if err := testSources(root, func(rel string, fileSet *token.FileSet, file *ast.File) {
+		sources = append(sources, source{rel: rel, fileSet: fileSet, file: file})
+		values.learn(path.Dir(rel)+" "+file.Name.Name, file)
+	}); err != nil {
+		return nil, err
+	}
 	var found []directStreamUpdate
-	err := testSources(root, func(rel string, fileSet *token.FileSet, file *ast.File) {
+	for _, source := range sources {
+		rel, fileSet, file := source.rel, source.fileSet, source.file
+		pkg := path.Dir(rel) + " " + file.Name.Name
 		fixtureNames := map[string]bool{}
 		for _, spec := range file.Imports {
 			imported, _ := strconv.Unquote(spec.Path.Value)
@@ -118,7 +134,7 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 			ast.Inspect(decl, func(node ast.Node) bool {
 				switch node := node.(type) {
 				case *ast.CallExpr:
-					if rawStreamUpdateRequest(node) {
+					if rawStreamUpdateRequest(node, values, pkg) {
 						record(node.Pos())
 					}
 				case *ast.SelectorExpr:
@@ -133,45 +149,107 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 				return true
 			})
 		}
+	}
+	return found, nil
+}
+
+// subjectValues are the values each variable and constant of the test sources is given, so that
+// a subject held in one is read as what it holds: local, by the declaration the parser resolved a
+// name to within its file (a declaration, a := and every later = of that name), and global, by a
+// package's top-level name, for a file that reads a constant or a variable another file of its
+// package declares, keyed "<directory> <package> <name>".
+type subjectValues struct {
+	local  map[*ast.Object][]ast.Expr
+	global map[string][]ast.Expr
+}
+
+// learn records the values file, of package pkg ("<directory> <package>"), gives its names.
+func (v subjectValues) learn(pkg string, file *ast.File) {
+	for _, decl := range file.Decls {
+		if gen, ok := decl.(*ast.GenDecl); ok {
+			for _, spec := range gen.Specs {
+				if value, ok := spec.(*ast.ValueSpec); ok && len(value.Values) == len(value.Names) {
+					for i, name := range value.Names {
+						v.global[pkg+" "+name.Name] = append(v.global[pkg+" "+name.Name], value.Values[i])
+					}
+				}
+			}
+		}
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.ValueSpec:
+			if len(node.Values) == len(node.Names) {
+				for i, name := range node.Names {
+					if name.Obj != nil {
+						v.local[name.Obj] = append(v.local[name.Obj], node.Values[i])
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			if len(node.Lhs) == len(node.Rhs) {
+				for i, left := range node.Lhs {
+					if name, ok := left.(*ast.Ident); ok && name.Obj != nil {
+						v.local[name.Obj] = append(v.local[name.Obj], node.Rhs[i])
+					}
+				}
+			}
+		}
+		return true
 	})
-	return found, err
+}
+
+// of is the values name can hold: those of the declaration the parser resolved it to, or, for a
+// name its file does not declare, those of the top-level name of pkg.
+func (v subjectValues) of(name *ast.Ident, pkg string) []ast.Expr {
+	if name.Obj != nil {
+		return v.local[name.Obj]
+	}
+	return v.global[pkg+" "+name.Name]
 }
 
 // rawSendMethods are nats.Conn's sends that take their subject as an argument.
 var rawSendMethods = map[string]bool{"Request": true, "RequestWithContext": true, "Publish": true, "PublishRequest": true}
 
-// rawStreamUpdateRequest reports whether call is a send (rawSendMethods) of a JetStream
-// stream-update subject (streamUpdateSubject). Every such request bypasses testnats.UpdateStream's
-// read-back and its narrowing guard. A watch of that subject, or a test of a string against it,
-// sends nothing.
-func rawStreamUpdateRequest(call *ast.CallExpr) bool {
+// rawStreamUpdateRequest reports whether call, in package pkg, is a send (rawSendMethods) of a
+// JetStream stream-update subject (streamUpdateSubject). Every such request bypasses
+// testnats.UpdateStream's read-back and its narrowing guard. A watch of that subject, or a test of
+// a string against it, sends nothing.
+func rawStreamUpdateRequest(call *ast.CallExpr, values subjectValues, pkg string) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || !rawSendMethods[selector.Sel.Name] {
 		return false
 	}
-	return slices.ContainsFunc(call.Args, streamUpdateSubject)
+	return slices.ContainsFunc(call.Args, func(arg ast.Expr) bool { return streamUpdateSubject(arg, values, pkg, map[ast.Expr]bool{}) })
 }
 
 // streamUpdateSubject reports whether subject is a JetStream stream-update subject as the source
 // spells it: a string literal that begins with rawStreamUpdateSubject, such a literal with more
-// joined after it by +, or a fmt.Sprintf whose format is such a literal. A subject held in a
-// variable is not followed.
-func streamUpdateSubject(subject ast.Expr) bool {
+// joined after it by +, a fmt.Sprintf whose format is such a literal, or a variable or constant
+// any of whose values (subjectValues) is one. seen holds the expressions already read, so a value
+// that joins its own name ends.
+func streamUpdateSubject(subject ast.Expr, values subjectValues, pkg string, seen map[ast.Expr]bool) bool {
+	if seen[subject] {
+		return false
+	}
+	seen[subject] = true
 	switch subject := subject.(type) {
 	case *ast.BasicLit:
 		text, err := strconv.Unquote(subject.Value)
 		return subject.Kind == token.STRING && err == nil && strings.HasPrefix(text, rawStreamUpdateSubject)
 	case *ast.ParenExpr:
-		return streamUpdateSubject(subject.X)
+		return streamUpdateSubject(subject.X, values, pkg, seen)
 	case *ast.BinaryExpr:
-		return subject.Op == token.ADD && streamUpdateSubject(subject.X)
+		return subject.Op == token.ADD && streamUpdateSubject(subject.X, values, pkg, seen)
+	case *ast.Ident:
+		return slices.ContainsFunc(values.of(subject, pkg), func(value ast.Expr) bool { return streamUpdateSubject(value, values, pkg, seen) })
 	case *ast.CallExpr:
 		selector, ok := subject.Fun.(*ast.SelectorExpr)
 		if !ok || selector.Sel.Name != "Sprintf" || len(subject.Args) == 0 {
 			return false
 		}
-		pkg, ok := selector.X.(*ast.Ident)
-		return ok && pkg.Name == "fmt" && streamUpdateSubject(subject.Args[0])
+		fmtPkg, ok := selector.X.(*ast.Ident)
+		return ok && fmtPkg.Name == "fmt" && streamUpdateSubject(subject.Args[0], values, pkg, seen)
 	}
 	return false
 }
@@ -197,10 +275,12 @@ func TestNoTestUpdatesAStreamExceptThroughTestnatsUpdateStream(t *testing.T) {
 }
 
 // plantedStreamUpdates is a tree under the envoy module's path for the control below: demo's tests
-// update a stream themselves in each shape the check names, and through the fixture and a fake
-// JetStream context, which it lets pass, and one watches the update subject and one tests a string
-// against it, which send nothing; stacktest is a test helper that updates one itself, and
-// production a package that is neither a test nor a helper.
+// update a stream themselves in each shape the check names, a raw subject held in a variable, a
+// constant of the same file and one of another file of the package among them, and through the
+// fixture and a fake JetStream context, which it lets pass; one watches the update subject, one
+// tests a string against it and one sends to a variable that holds another subject, which send no
+// update; stacktest is a test helper that updates one itself, and production a package that is
+// neither a test nor a helper.
 var plantedStreamUpdates = map[string]string{
 	"internal/testnats/streams.go": `package testnats
 
@@ -267,6 +347,32 @@ func isUpdate(subject string) bool { return strings.HasPrefix(subject, "$JS.API.
 func throughFixture(js nats.JetStreamContext, cfg nats.StreamConfig) { fixture.UpdateStream(js, cfg) }
 
 func readOnly(js nats.JetStreamContext) { js.StreamInfo("S") }
+
+const fileUpdateSubject = "$JS.API.STREAM.UPDATE.CONST"
+
+func rawHeld(conn *nats.Conn, stream string) {
+	subject := "$JS.API.STREAM.UPDATE." + stream
+	_, _ = conn.Request(subject, nil, time.Second)
+}
+
+func rawHeldAfterAnother(conn *nats.Conn, stream string) {
+	subject := "notifications.github.x"
+	subject = "$JS.API.STREAM.UPDATE." + stream
+	_ = conn.Publish(subject, nil)
+}
+
+func rawConstant(conn *nats.Conn) { _ = conn.Publish(fileUpdateSubject, nil) }
+
+func rawOtherFilesConstant(conn *nats.Conn) { _ = conn.Publish(packageUpdateSubject, nil) }
+
+func rawHeldOtherSubject(conn *nats.Conn) {
+	subject := "notifications.github.x"
+	_ = conn.Publish(subject, nil)
+}
+`,
+	"internal/demo/subjects_test.go": `package demo
+
+const packageUpdateSubject = "$JS.API.STREAM.UPDATE.PACKAGE"
 `,
 	"internal/stacktest/stack.go":   "package stacktest\n\nimport \"github.com/nats-io/nats.go\"\n\nfunc Start(js nats.JetStreamContext, cfg nats.StreamConfig) { js.UpdateStream(&cfg) }\n",
 	"internal/production/update.go": "package production\n\nimport \"github.com/nats-io/nats.go\"\n\nfunc Keep(js nats.JetStreamContext, cfg nats.StreamConfig) { js.UpdateStream(&cfg) }\n",
@@ -302,8 +408,12 @@ func TestTheStreamUpdateCheckFindsEveryShapeItNamesAndNothingElse(t *testing.T) 
 		"internal/demo/demo_test.go narrow",
 		"internal/demo/demo_test.go newAPI",
 		"internal/demo/demo_test.go operator",
+		"internal/demo/demo_test.go rawConstant",
 		"internal/demo/demo_test.go rawFormatted",
+		"internal/demo/demo_test.go rawHeld",
+		"internal/demo/demo_test.go rawHeldAfterAnother",
 		"internal/demo/demo_test.go rawJoined",
+		"internal/demo/demo_test.go rawOtherFilesConstant",
 		"internal/demo/demo_test.go rawRequest",
 		"internal/demo/demo_test.go refuse",
 		"internal/stacktest/stack.go Start",

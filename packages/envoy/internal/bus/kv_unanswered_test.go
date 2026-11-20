@@ -505,10 +505,11 @@ func TestACreateStepThatLosesItsReadOfAnotherStartsBucketGoesOnWithinItsReadLimi
 	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	// The other start's bucket, at three copies, whose create this start's meets: its count is not
-	// this start's, so the server answers this start's create "stream name already in use".
-	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
-		t.Fatalf("the other start's create: %v", err)
-	}
+	// this start's, so the server answers this start's create "stream name already in use". The
+	// fixture creates it (Cluster.CreateKeyValue), on this connection before the relay is armed:
+	// the create of more than one copy is answered only at the bucket's first election, which a
+	// loaded machine can hold past the connection's own ten-second wait.
+	cluster.CreateKeyValue(t, conn, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 
 	relay.arm(1)
 	started := time.Now()

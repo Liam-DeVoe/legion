@@ -325,10 +325,11 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("flush the listener: %v", err)
 	}
 	createCtx, abandon := context.WithCancel(t.Context())
-	abandoned := make(chan error, 1)
+	abandoned := make(chan struct{})
 	go func() {
-		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
-		abandoned <- err
+		defer close(abandoned)
+		// The answer is discarded: this create is abandoned on purpose, so its wait fails nothing.
+		_, _ = other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
 	}()
 	_, err = creates.NextMsg(time.Minute)
 	abandon()

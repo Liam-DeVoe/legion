@@ -242,6 +242,12 @@ func (js *scriptedUpdateJetStream) StreamInfo(string, ...nats.JSOpt) (*nats.Stre
 	return &nats.StreamInfo{Config: js.config}, nil
 }
 
+// AccountInfo answers at once, as the metadata leader of a cluster that has one does: the read a
+// write that waits past one read period sends (metadataLeader).
+func (js *scriptedUpdateJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
+}
+
 // counts is the updates js was sent and the reads it answered so far.
 func (js *scriptedUpdateJetStream) counts() ([]nats.StreamConfig, int) {
 	js.mu.Lock()

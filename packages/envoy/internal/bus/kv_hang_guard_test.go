@@ -3,8 +3,13 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,7 +103,7 @@ func TestAReadAgainWarningOnlyOccursWhenTheSendStarts(t *testing.T) {
 	handler := &cancelOnUnansweredWarning{cancel: cancel, request: "warning-order STREAM.INFO"}
 	logtest.SetDefault(t, handler)
 	var sends atomic.Int32
-	limit := &readLimit{first: 20 * time.Millisecond, limit: 20 * time.Millisecond}
+	limit := readRun(20 * time.Millisecond)
 	_, err := readAgain(ctx, "warning-order STREAM.INFO", limit, func() (int, error) {
 		sends.Add(1)
 		return 0, nats.ErrTimeout
@@ -131,8 +136,9 @@ func (e heldUnansweredWarningError) Error() string {
 func (heldUnansweredWarningError) Unwrap() error { return nats.ErrTimeout }
 
 // A warning can outlive its own read limit. Its error belongs to that send, not to the
-// mutable last error of the caller that has already continued, which warnedSend cannot reach:
-// it is handed the previous send's error by value when readAgain builds the send.
+// mutable last error of the caller that has already continued, which the send cannot reach:
+// readAgain hands limitedRead the warning, the previous send's error in it, by value in the call
+// that starts the send (sendAgain).
 func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	logs := captureLogs(t)
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
@@ -141,7 +147,7 @@ func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	release := sync.OnceFunc(func() { close(released) })
 	defer release()
 	var sends atomic.Int32
-	limit := &readLimit{first: firstReadLimit, limit: firstReadLimit}
+	limit := readRun(firstReadLimit)
 	value, err := readAgain(ctx, "held-warning STREAM.INFO", limit, func() (int, error) {
 		if sends.Add(1) == 1 {
 			return 0, heldUnansweredWarningError{ctx: ctx, release: released}
@@ -162,4 +168,98 @@ func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 		}
 	}
 	t.Fatal("the retry whose warning was held logged no warning for its first lost send")
+}
+
+// readAgain's sends run on goroutines of their own (Bounded) and can outlive the call that started
+// them, while readAgain sets its own last error again for the next send. So no function literal of
+// readAgain may read a variable readAgain sets again: the warning goes to the send by value, in the
+// call that starts it (sendAgain). A closure that built the warning inside the send,
+// `func() (T, error) { ...lastErr...; return read() }`, compiles and passes both warning rows above
+// in every plain run, since the send starts long before readAgain sets the error again; only
+// -race saw it, once in three runs. This row refuses it by name in every run, and holds its
+// reading to a planted readAgain that shares its error.
+func TestReadAgainHandsItsSendsNothingItSetsAgain(t *testing.T) {
+	planted := `package bus
+
+func readAgain(read func() (int, error)) (int, error) {
+	var lastErr error
+	for sends := 1; ; sends++ {
+		value, err := limited(func() (int, error) { warn(sends, lastErr); return read() })
+		if err == nil {
+			return value, nil
+		}
+		lastErr = err
+	}
+}
+`
+	if found, err := sharedWithItsSends("planted.go", planted); err != nil || !slices.Equal(found, []string{"lastErr at planted.go:6", "sends at planted.go:6"}) {
+		t.Fatalf("the planted readAgain's shared variables = %q (%v), want lastErr and sends at planted.go:6: the reading cannot see the sharing it refuses", found, err)
+	}
+	found, err := sharedWithItsSends("start_wait.go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) > 0 {
+		t.Fatalf("readAgain's function literals read %q, variables readAgain sets again: a send that outlives its read limit then reads the caller's later value; hand it a copy in the call that starts it (sendAgain)", found)
+	}
+}
+
+// sharedWithItsSends parses the Go file at path (src, when not nil, is its text) and returns each
+// variable of its readAgain that readAgain sets again after declaring it (an assignment, an
+// increment, or a := that reuses it) and that a function literal of readAgain declared outside it
+// reads, as "<name> at <file>:<line of the read>", sorted and once each. The parser's own scopes
+// decide which declaration a name is, so a literal's own variable of the same name is not one.
+func sharedWithItsSends(path string, src any) ([]string, error) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, path, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	var body *ast.BlockStmt
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "readAgain" {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		return nil, fmt.Errorf("%s declares no readAgain", path)
+	}
+	setAgain := map[*ast.Object]bool{}
+	mark := func(expr ast.Expr, at ast.Node) {
+		if ident, ok := expr.(*ast.Ident); ok && ident.Obj != nil && ident.Obj.Kind == ast.Var && ident.Obj.Decl != at {
+			setAgain[ident.Obj] = true
+		}
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range node.Lhs {
+				mark(left, node)
+			}
+		case *ast.IncDecStmt:
+			mark(node.X, node)
+		}
+		return true
+	})
+	var found []string
+	ast.Inspect(body, func(node ast.Node) bool {
+		literal, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		ast.Inspect(literal.Body, func(inner ast.Node) bool {
+			ident, ok := inner.(*ast.Ident)
+			if !ok || ident.Obj == nil || !setAgain[ident.Obj] {
+				return true
+			}
+			if decl, ok := ident.Obj.Decl.(ast.Node); ok && decl.Pos() >= literal.Pos() && decl.End() <= literal.End() {
+				return true
+			}
+			found = append(found, fmt.Sprintf("%s at %s:%d", ident.Name, path, fileSet.Position(ident.Pos()).Line))
+			return true
+		})
+		return false
+	})
+	slices.Sort(found)
+	return slices.Compact(found), nil
 }

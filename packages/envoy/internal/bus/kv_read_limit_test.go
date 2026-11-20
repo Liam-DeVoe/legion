@@ -314,9 +314,10 @@ func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 }
 
 // slowWritesJetStream applies and answers each stream update writeDelay after its send, while it
-// answers every read of the stream at once, as a server whose writes wait on its JetStream API
-// queue and its metadata group's commit does while its info queue answers reads (writeLimitOf). No
-// server is behind it. sent is when each update went out, measured from began.
+// answers every read of the stream, and of the account its metadata leader answers
+// (metadataLeader), at once, as a server whose writes wait on its JetStream API queue and its
+// metadata group's commit does while its info queue answers reads (writeLimitOf). No server is
+// behind it. sent is when each update went out, measured from began.
 type slowWritesJetStream struct {
 	nats.JetStreamContext
 	began time.Time
@@ -331,6 +332,10 @@ func (js *slowWritesJetStream) StreamInfo(string, ...nats.JSOpt) (*nats.StreamIn
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	return &nats.StreamInfo{Config: js.cfg}, nil
+}
+
+func (js *slowWritesJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
 }
 
 func (js *slowWritesJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
@@ -349,10 +354,11 @@ func (js *slowWritesJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JS
 // limit: a read's answer sets the run of reads and never the run of writes (writeLimitOf). Here
 // each update lands, and is answered, 2 s after its send: the first send is cut at 630 ms, read
 // back and sent again under a limit of 1.26 s, and that send is cut and sent again under 2.52 s, so
-// each send comes at least the whole limit of the send before it after that send, and there are no
-// more than three. A write limit the read-back's answer set back to 630 ms sent the update at 0,
-// 0.66, 1.31 and 1.97 s. The reads keep their own limit: each is answered at once, so the run of
-// reads ends at the first limit.
+// each send comes at least the whole limit of the send before it after that send, less how late a
+// send may start beside the code's clock (sendStartAllowance), and there are no more than three. A
+// write limit the read-back's answer set back to 630 ms sent the update at 0, 0.66, 1.31 and
+// 1.97 s. The reads keep their own limit: each is answered at once, so the run of reads ends at the
+// first limit.
 func TestAWriteTheServerAnswersLaterThanItsReadsIsSentAgainOnlyAfterItsOwnLimit(t *testing.T) {
 	const stream = "KV_envoy_slow_writes_test"
 	js := &slowWritesJetStream{cfg: nats.StreamConfig{Name: stream, MaxAge: time.Minute}}
@@ -375,10 +381,10 @@ func TestAWriteTheServerAnswersLaterThanItsReadsIsSentAgainOnlyAfterItsOwnLimit(
 	t.Logf("the update the server answers after %s was sent %d times, at %v", writeDelay, len(sent), sent)
 	limit := firstReadLimit
 	for i := 1; i < len(sent); i++ {
-		if gap := sent[i] - sent[i-1]; gap < limit {
+		if gap := sent[i] - sent[i-1]; gap < limit-sendStartAllowance {
 			t.Fatalf("the update was sent at %v: send %d came %s after the one before it, inside that send's own limit, %s", sent, i+1, gap.Round(time.Millisecond), limit)
 		}
-		limit = min(2*limit, RequestTimeout)
+		limit = min(2*limit, writeLimitCeiling)
 	}
 	if len(sent) > 3 {
 		t.Fatalf("the update was sent %d times, at %v, want at most three: one send for each write limit, 630ms, 1.26s and 2.52s, the last of which outlasts the %s answer", len(sent), sent, writeDelay)

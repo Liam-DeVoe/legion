@@ -176,6 +176,29 @@ func (f *fatalRecorder) Deadline() (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// deadlineTB is a testing.TB reporting at as its deadline, as a testing.T run under a timeout does.
+type deadlineTB struct {
+	testing.TB
+	at time.Time
+}
+
+func (d deadlineTB) Deadline() (time.Time, bool) { return d.at, true }
+
+// A fatalRecorder bounds UpdateStream's reads by the deadline of the test it wraps (updateDeadline),
+// as that test itself does, and a recorder of a TB that reports none gives none. A recorder that
+// reported no deadline left every read of an update through it unbounded, so a row whose update
+// never settled ran to go test's own timeout, which names no row; the rows that use a recorder
+// all settle, so none of them told the two apart.
+func TestAFatalRecorderKeepsTheDeadlineOfTheTestItWraps(t *testing.T) {
+	at := time.Now().Add(time.Hour)
+	if got, want := updateDeadline(&fatalRecorder{TB: deadlineTB{TB: t, at: at}}), at.Add(-updateMargin); !got.Equal(want) {
+		t.Fatalf("UpdateStream's bound through a recorder of a test whose deadline is %s = %s, want %s: that deadline less updateMargin", at.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+	if got := updateDeadline(&fatalRecorder{TB: struct{ testing.TB }{t}}); !got.IsZero() {
+		t.Fatalf("UpdateStream's bound through a recorder of a TB that reports no deadline = %s, want none", got.Format(time.RFC3339Nano))
+	}
+}
+
 // A test gets one account however often it asks, so every connection it makes reaches the streams
 // any other made; a subtest gets an account of its own, where none of its parent's streams is.
 func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
