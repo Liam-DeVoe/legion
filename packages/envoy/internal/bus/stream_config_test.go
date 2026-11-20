@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,8 +33,14 @@ import (
 // (TestOwnedStreamRaisesTheConsumerCapWhereItBindsAndKeepsAHigherDeployedOne).
 const capsAnUnsetStream = true
 
+// streamInfoJetStream is a stream no server is behind, as a start's reads and writes find it. Its
+// state is under mu, since a start calls it from more than one goroutine at once: each send runs on
+// a goroutine of its own (Bounded), and the read of the stream's leader that a purge waits on
+// (probeLeader, through StreamInfo) runs on beside the start's next update once the purge is
+// answered first. A test reads what it holds through held.
 type streamInfoJetStream struct {
 	nats.JetStreamContext
+	mu                        sync.Mutex
 	config                    nats.StreamConfig
 	purgedSubjects            []string
 	roleMessages              int
@@ -49,9 +56,28 @@ type streamInfoJetStream struct {
 	purgeSends int
 }
 
+// held is a copy of what js holds, read under its lock: a send the start abandoned, or a read of
+// the stream's leader nobody waits for any more, can still run when the start has returned.
+func (js *streamInfoJetStream) held() *streamInfoJetStream {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return &streamInfoJetStream{
+		config:                    js.config,
+		purgedSubjects:            slices.Clone(js.purgedSubjects),
+		roleMessages:              js.roleMessages,
+		injectRoleMessageOnUpdate: js.injectRoleMessageOnUpdate,
+		updateErr:                 js.updateErr,
+		unansweredPurges:          js.unansweredPurges,
+		lostPurgeAnswers:          js.lostPurgeAnswers,
+		purgeSends:                js.purgeSends,
+	}
+}
+
 // StreamInfo answers the stream as it holds it, and a read filtered to a role lane
 // (nats.StreamInfoRequest) with the role messages it holds on that lane.
 func (js *streamInfoJetStream) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	info := &nats.StreamInfo{Config: js.config}
 	for _, opt := range opts {
 		if request, ok := opt.(*nats.StreamInfoRequest); ok && slices.Contains(roleLaneSubjects, request.SubjectsFilter) && js.roleMessages > 0 {
@@ -68,6 +94,8 @@ func (js *streamInfoJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, er
 }
 
 func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	if js.updateErr != nil {
 		return nil, js.updateErr
 	}
@@ -80,6 +108,8 @@ func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JS
 }
 
 func (js *streamInfoJetStream) PurgeStream(_ string, opts ...nats.JSOpt) error {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	js.purgeSends++
 	if js.unansweredPurges > 0 {
 		js.unansweredPurges--
@@ -207,8 +237,8 @@ func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testin
 	}
 
 	// Then
-	if js.config.MaxAge != desiredConfig.MaxAge {
-		t.Fatalf("stream MaxAge = %s, want %s", js.config.MaxAge, desiredConfig.MaxAge)
+	if held := js.held(); held.config.MaxAge != desiredConfig.MaxAge {
+		t.Fatalf("stream MaxAge = %s, want %s", held.config.MaxAge, desiredConfig.MaxAge)
 	}
 }
 
@@ -255,8 +285,8 @@ func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
 		"notifications.role.>",
 		"notifications.envoy.exceptions.notifications.role.>",
 	}
-	if !reflect.DeepEqual(js.purgedSubjects, wantPurgedSubjects) {
-		t.Fatalf("purged subjects = %v, want %v", js.purgedSubjects, wantPurgedSubjects)
+	if held := js.held(); !reflect.DeepEqual(held.purgedSubjects, wantPurgedSubjects) {
+		t.Fatalf("purged subjects = %v, want %v", held.purgedSubjects, wantPurgedSubjects)
 	}
 }
 
@@ -271,8 +301,9 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
-	if js.roleMessages != 0 {
-		t.Fatalf("legacy role messages published during migration remained: %d", js.roleMessages)
+	held := js.held()
+	if held.roleMessages != 0 {
+		t.Fatalf("legacy role messages published during migration remained: %d", held.roleMessages)
 	}
 	wantPurges := []string{
 		"notifications.role.>",
@@ -280,8 +311,8 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 		"notifications.role.>",
 		"notifications.envoy.exceptions.notifications.role.>",
 	}
-	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) {
-		t.Fatalf("purged subjects = %v, want %v", js.purgedSubjects, wantPurges)
+	if !reflect.DeepEqual(held.purgedSubjects, wantPurges) {
+		t.Fatalf("purged subjects = %v, want %v", held.purgedSubjects, wantPurges)
 	}
 }
 
@@ -297,8 +328,9 @@ func TestALegacyRoleLanePurgeTheServerLeavesUnansweredIsSentAgain(t *testing.T) 
 	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first purge of the role lanes drew no answer = %v, want it to go on", err)
 	}
-	if js.unansweredPurges != 0 {
-		t.Fatalf("unanswered purges left = %d, want the lost one spent: the row held nothing", js.unansweredPurges)
+	held := js.held()
+	if held.unansweredPurges != 0 {
+		t.Fatalf("unanswered purges left = %d, want the lost one spent: the row held nothing", held.unansweredPurges)
 	}
 	wantPurges := []string{
 		"notifications.role.>",
@@ -306,14 +338,14 @@ func TestALegacyRoleLanePurgeTheServerLeavesUnansweredIsSentAgain(t *testing.T) 
 		"notifications.role.>",
 		"notifications.envoy.exceptions.notifications.role.>",
 	}
-	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) {
-		t.Fatalf("purged subjects = %v, want %v: the lost purge sent again, then the purge after the update", js.purgedSubjects, wantPurges)
+	if !reflect.DeepEqual(held.purgedSubjects, wantPurges) {
+		t.Fatalf("purged subjects = %v, want %v: the lost purge sent again, then the purge after the update", held.purgedSubjects, wantPurges)
 	}
-	if js.purgeSends != len(wantPurges)+1 || js.roleMessages != 0 {
-		t.Fatalf("purges sent = %d with %d role messages left, want %d and none: the lost one and the ones that landed", js.purgeSends, js.roleMessages, len(wantPurges)+1)
+	if held.purgeSends != len(wantPurges)+1 || held.roleMessages != 0 {
+		t.Fatalf("purges sent = %d with %d role messages left, want %d and none: the lost one and the ones that landed", held.purgeSends, held.roleMessages, len(wantPurges)+1)
 	}
-	if streamCapturesRoleLanes(js.config.Subjects) {
-		t.Fatalf("subjects %v still capture the role lanes after the start", js.config.Subjects)
+	if streamCapturesRoleLanes(held.config.Subjects) {
+		t.Fatalf("subjects %v still capture the role lanes after the start", held.config.Subjects)
 	}
 }
 
@@ -328,8 +360,9 @@ func TestALegacyRoleLanePurgeThatLandedWithItsAnswerLostIsNotSentAgain(t *testin
 	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first purge landed with its answer lost = %v, want it to go on", err)
 	}
-	if js.lostPurgeAnswers != 0 {
-		t.Fatalf("lost answers left = %d, want the one spent: the row held nothing", js.lostPurgeAnswers)
+	held := js.held()
+	if held.lostPurgeAnswers != 0 {
+		t.Fatalf("lost answers left = %d, want the one spent: the row held nothing", held.lostPurgeAnswers)
 	}
 	wantPurges := []string{
 		"notifications.role.>",
@@ -337,8 +370,8 @@ func TestALegacyRoleLanePurgeThatLandedWithItsAnswerLostIsNotSentAgain(t *testin
 		"notifications.role.>",
 		"notifications.envoy.exceptions.notifications.role.>",
 	}
-	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) || js.purgeSends != len(wantPurges) {
-		t.Fatalf("purged subjects = %v in %d sends, want %v in %d: the purge that landed is not sent again", js.purgedSubjects, js.purgeSends, wantPurges, len(wantPurges))
+	if !reflect.DeepEqual(held.purgedSubjects, wantPurges) || held.purgeSends != len(wantPurges) {
+		t.Fatalf("purged subjects = %v in %d sends, want %v in %d: the purge that landed is not sent again", held.purgedSubjects, held.purgeSends, wantPurges, len(wantPurges))
 	}
 }
 
@@ -630,8 +663,8 @@ func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
 	if _, err := ensureStreamWithConfig(t.Context(), js, &desiredConfig, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
-	if !reflect.DeepEqual(js.config.Subjects, desiredConfig.Subjects) {
-		t.Fatalf("stream subjects = %v, want %v", js.config.Subjects, desiredConfig.Subjects)
+	if held := js.held(); !reflect.DeepEqual(held.config.Subjects, desiredConfig.Subjects) {
+		t.Fatalf("stream subjects = %v, want %v", held.config.Subjects, desiredConfig.Subjects)
 	}
 }
 
@@ -833,11 +866,12 @@ func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
 			if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("ensure stream: %v", err)
 			}
-			if slices.Contains(js.config.Subjects, roleSubject) {
-				t.Fatalf("stream subjects = %v, still capturing the role lane %q", js.config.Subjects, roleSubject)
+			held := js.held()
+			if slices.Contains(held.config.Subjects, roleSubject) {
+				t.Fatalf("stream subjects = %v, still capturing the role lane %q", held.config.Subjects, roleSubject)
 			}
-			if !slices.Contains(js.purgedSubjects, "notifications.role.>") {
-				t.Fatalf("purged subjects = %v, want the role lanes purged", js.purgedSubjects)
+			if !slices.Contains(held.purgedSubjects, "notifications.role.>") {
+				t.Fatalf("purged subjects = %v, want the role lanes purged", held.purgedSubjects)
 			}
 		})
 	}
@@ -1073,25 +1107,30 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 }
 
 // createdMeanwhileJetStream answers its first StreamInfo with no stream, as a start sees it when
-// another start creates the stream between this one's read and its create.
+// another start creates the stream between this one's read and its create. answered is atomic: a
+// start sends each read on a goroutine of its own (Bounded), and a read it abandoned at its limit
+// runs on beside the next.
 type createdMeanwhileJetStream struct {
 	nats.JetStreamContext
-	answered bool
+	answered atomic.Bool
 }
 
 func (js *createdMeanwhileJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if !js.answered {
-		js.answered = true
+	if js.answered.CompareAndSwap(false, true) {
 		return nil, nats.ErrStreamNotFound
 	}
 	return js.JetStreamContext.StreamInfo(stream, opts...)
 }
 
 // staleStreamInfoJetStream answers every StreamInfo with the stream as it stood before any update,
-// as two starts see it when both read the stream before either writes.
+// as two starts see it when both read the stream before either writes. No server is behind it.
+// Its updates are under mu, since a start sends each update on a goroutine of its own (Bounded),
+// and one it abandoned at its limit runs on beside the start's next send and the test; the test
+// reads them through sent.
 type staleStreamInfoJetStream struct {
 	nats.JetStreamContext
 	read    nats.StreamInfo
+	mu      sync.Mutex
 	updates []nats.StreamConfig
 }
 
@@ -1100,9 +1139,25 @@ func (js *staleStreamInfoJetStream) StreamInfo(_ string, _ ...nats.JSOpt) (*nats
 	return &info, nil
 }
 
+// AccountInfo answers at once, as the metadata leader of a cluster that has one does: the read an
+// update that waits past one read period sends (metadataLeader), which would otherwise reach the
+// JetStream context no server is behind.
+func (js *staleStreamInfoJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
+}
+
 func (js *staleStreamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	js.updates = append(js.updates, *cfg)
 	return &nats.StreamInfo{Config: *cfg}, nil
+}
+
+// sent is every update sent through js so far.
+func (js *staleStreamInfoJetStream) sent() []nats.StreamConfig {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return slices.Clone(js.updates)
 }
 
 // Two starts that both find the deployed stream without an id, before either writes one, write the
@@ -1117,10 +1172,11 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 			t.Fatalf("%s starts: %v", start, err)
 		}
 	}
-	if len(js.updates) != 2 {
-		t.Fatalf("updates = %d, want one per start", len(js.updates))
+	updates := js.sent()
+	if len(updates) != 2 {
+		t.Fatalf("updates = %d, want one per start", len(updates))
 	}
-	first, second := js.updates[0].Metadata[StreamIDMetadataKey], js.updates[1].Metadata[StreamIDMetadataKey]
+	first, second := updates[0].Metadata[StreamIDMetadataKey], updates[1].Metadata[StreamIDMetadataKey]
 	if first == "" || first != second {
 		t.Fatalf("racing starts wrote ids %q and %q, want one id", first, second)
 	}

@@ -280,15 +280,15 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t
 
 // missingOnceJetStream answers the first KeyValue lookup "bucket not found", as a start's lookup
 // is answered when it lands just before another start's create: the start then sends its own
-// create and draws "stream name already in use".
+// create and draws "stream name already in use". looked is atomic: a start sends each lookup on a
+// goroutine of its own (Bounded), and one it abandoned at its limit runs on beside the next.
 type missingOnceJetStream struct {
 	nats.JetStreamContext
-	looked bool
+	looked atomic.Bool
 }
 
 func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
-	if !js.looked {
-		js.looked = true
+	if js.looked.CompareAndSwap(false, true) {
 		return nil, nats.ErrBucketNotFound
 	}
 	return js.JetStreamContext.KeyValue(bucket)
@@ -403,14 +403,17 @@ func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
 // context of a millisecond, so the server takes the create and the answer, which the server gives
 // only at the stream's first leader election, finds nobody waiting. The start sends the create
 // again, and the server answers that equal create at once, while the stream has no leader: the
-// order a slow election makes, forced without holding the election.
+// order a slow election makes, forced without holding the election. sent is atomic: the create
+// sent again waits under a doubled limit, so a copy of it goes out beside it while it waits past
+// the first limit (limitedRead), and a copy still in flight when the start returns runs on beside
+// the test.
 type earlyAnswerJetStream struct {
 	nats.JetStreamContext
-	sent int
+	sent atomic.Int32
 }
 
 func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if js.sent++; js.sent == 1 {
+	if js.sent.Add(1) == 1 {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
 		return js.JetStreamContext.AddStream(cfg, append(slices.Clone(opts), nats.Context(ctx))...)
@@ -427,8 +430,8 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
-	if early.sent < 2 {
-		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", early.sent)
+	if sent := early.sent.Load(); sent < 2 {
+		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", sent)
 	}
 	if !hasLeader(t, cluster.JetStream(t), Stream) {
 		t.Fatal("the start answered while the stream it created had no leader")
