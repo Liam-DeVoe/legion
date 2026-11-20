@@ -1850,7 +1850,8 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil {
 		return 0, released, err
 	}
-	a.judged(passRead{tx: tx, writes: read.writes, counted: read.counted, issues: issues, slots: slots, facts: read.facts}, rows, facts, line, dropped)
+	read.slots = slots
+	a.judged(read, rows, facts, line, dropped)
 	// The issues this judgement finds waiting give their rows back before the line is promoted,
 	// so this pass's own line and its own slots (record.OwnSlots) read the state after the
 	// release: an issue that waits holds none of the cap's slots, and the slot it gives back is
