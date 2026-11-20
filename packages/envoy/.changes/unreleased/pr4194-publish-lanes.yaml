@@ -10,8 +10,8 @@ body: |-
   listener beside envoy-dispatch, whose user holds Dispatch's lane, or on the webhook listener,
   whose user holds GitHub's lane. Dispatch and the webhook listener publish their lanes straight
   to NATS. A caller that published either lane through the route publishes elsewhere:
-  envoy-measure's probe moves to `notifications.whatsapp.` in theorem-labs/agent-infra#4967, and a
-  rig that fakes a Dispatch or GitHub event publishes it straight to its own NATS with the lane's
+  envoy-measure's probe moves off those lanes in the deployment repository's change, which merges
+  before the listener moves, and a rig that fakes a Dispatch or GitHub event publishes it straight to its own NATS with the lane's
   own user.
 time: 2026-11-20T13:00:00Z
 custom:

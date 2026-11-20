@@ -878,7 +878,9 @@ export function inboundUnavailableNoticeText(why: string): string {
  * shown. `why` is the message that notice told. After a registration that is not recorded for
  * certain (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice
  * says that the listener recorded a registration, and not that the session receives again. An
- * accepted registration is answered only once the listener wrote its record, so that is true.
+ * accepted registration is answered only once the listener wrote its record, so that is true,
+ * except on a listener whose known-session store is not open, which records nothing and answers
+ * 200 all the same (the listener's `knownRecordWriteTimeout`).
  */
 export function inboundRestoredNoticeText(why: string): string {
   if (isUnrecordedRegistration(why)) {
