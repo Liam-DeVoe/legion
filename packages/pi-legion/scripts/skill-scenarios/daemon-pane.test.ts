@@ -48,6 +48,7 @@ const inherited = {
   GH_CONFIG_DIR: "/outer/gh",
   LEGION_GH_PATH: "/outer/gh-binary",
   PATH: `${outerBin}:/usr/bin`,
+  OMP_SESSION_EXCLUSIVE: "1",
 };
 
 // The world the pane's issue is on, as the run's world.json holds it: its gh bundle is under the
@@ -75,6 +76,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT_FILE");
     expect(workerEnv).not.toHaveProperty("LEGION_GIT_PATH");
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
+    expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
     const ghConfigDir = `${ghRoot}/example`;
     expect(workerEnv).toMatchObject({
