@@ -1119,17 +1119,20 @@ Each entry is `{"state": …, "at": …, "cause": …}`:
     and `webhook_redelivery` and `ci_reconcile` are `off` without NATS too.
 - `at` is when the newest attempt was recorded, as its pass ended, by the database's clock, in
   RFC 3339 UTC. It is `null` unless the state is `succeeded` or `failed`.
-- `cause` is the text of the first failure of that attempt, at most 1,024 bytes. A longer text is
-  cut, and ends with `… (cut from <n> bytes)`. It is `null` unless the state is `failed`.
+- `cause` is the class of the first failure of that attempt: `status <n>`, the HTTP status GitHub
+  answered, or `no status` for a failure that names none: GitHub never answered, or the read
+  itself failed on an answer it got. It is `null` unless the state is `failed`.
 
 `github` never decides `ok` or the status: a server serves everything but these reads while
 GitHub fails. Each server keeps a copy of the record of attempts in memory, reads it again each
 time any server records an attempt, and answers from that copy, so `github` sends the database
 nothing and waits on nothing.
 
-A cause can name a repository, because a GitHub error carries the address it asked. `/healthz`
-needs no credential, so whoever reaches the server's HTTP port can read the cause. Serve Dispatch
-on a private network.
+The failure's own text can name a repository, because a GitHub error carries the address it
+asked, and `/healthz` needs no credential, so whoever reaches the server's HTTP port can read the
+answer. So `/healthz` answers the class alone. Read the text, at most 1,024 bytes, in the
+database's `github_read_attempts` table: `select read, at, cause from github_read_attempts;`. A
+longer text is cut, and ends with `… (cut from <n> bytes)`.
 
 The delivery intakes also read GitHub, for each webhook event, and have no entry of their own.
 They report through `delivery_reconcile`: the reconcile reads the same pull requests and runs with

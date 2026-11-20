@@ -67,7 +67,7 @@ var errPrivateProjectsUnavailable = errors.New("the project stays public: every 
 var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())")
 
 // errPrivateProjectsIncomplete is a switch to private while the store cannot hold the project
-// private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and the command that repairs it.
+// private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and what repairs it.
 var errPrivateProjectsIncomplete = errors.New("the project stays public until the store can hold it private")
 
 // privateProjectIncomplete answers, read in the switch's own transaction q, why project key cannot
@@ -82,7 +82,7 @@ func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key str
 		return err
 	}
 	if len(incomplete) > 0 {
-		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(incomplete, "of "+key))
+		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(incomplete, "rows of "+key))
 	}
 	if err := sessionProjectsFilled(ctx, q); err != nil {
 		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)

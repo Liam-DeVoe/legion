@@ -41,25 +41,28 @@ const storeCompletenessInterval = time.Hour
 const incompleteRowsNamed = 20
 
 // storeIncomplete answers nil when a private project's reads would answer no row wrongly: every
-// row a project owns has a node naming its project (graphcensus.ProjectComplete), and both
-// backfills a switch to private waits for have run (backfillMarkersMissing). Otherwise it answers
-// why, naming the first rows and the command that repairs it.
+// row a project owns has a node naming its project, and no node stands behind no row
+// (graphcensus.ProjectComplete), and both backfills a switch to private waits for have run
+// (backfillMarkersMissing). Otherwise it answers why, naming the first rows and nodes, each with
+// its cure, or the backfill not run and its command.
 func storeIncomplete(ctx context.Context, q graphstore.Queryer) error {
 	incomplete, err := graphcensus.ProjectComplete(ctx, q)
 	if err != nil {
 		return err
 	}
 	if len(incomplete) > 0 {
-		return incompleteRowsError(incomplete, "a project owns")
+		return incompleteRowsError(incomplete, "rows and nodes a project owns")
 	}
 	return backfillMarkersMissing(ctx, q)
 }
 
-// incompleteRowsError says how many rows, those whose names ("a project owns", "of PRIV"), have no
-// node naming their project, names the first of them, and the command that writes their nodes.
+// incompleteRowsError says how many of the store's rows and nodes, those whose names ("rows of
+// PRIV"), a private project's reads would answer wrongly, and names the first of them as the
+// project census answers each line: with its own cure, the backfill, the erase that removes it, or
+// none. It adds no cure of its own, since no one command cures every class.
 func incompleteRowsError(incomplete []string, whose string) error {
-	return fmt.Errorf("%d rows %s have no node naming their project, so a private project's reads would answer them wrongly (%s): "+
-		"envoy-dispatch backfill-graph-store writes their nodes, and envoy-dispatch census --store names them",
+	return fmt.Errorf("%d %s are incomplete in the graph store, so a private project's reads would answer them wrongly; "+
+		"each names its own cure, and envoy-dispatch census --store names them all: %s",
 		len(incomplete), whose, strings.Join(incomplete[:min(len(incomplete), incompleteRowsNamed)], ", "))
 }
 
