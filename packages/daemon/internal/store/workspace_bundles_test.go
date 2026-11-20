@@ -18,6 +18,21 @@ import (
 // name (TestThePodTheWorkCameOffIsAnsweredNothingAndSpendsNoAttempt).
 const releasedPodUID = "pod-being-released"
 
+// savedIssue is the issue the saves of the tests that read a bundle's bytes are of.
+const savedIssue = "released-issue"
+
+// sentBody is the bytes the store answers the pod of podUID for release's bundle of issue, read as
+// the runtime reads them once that pod has taken the bundle's one restore attempt
+// (WorkspaceBundleSentTo).
+func sentBody(t *testing.T, s *Store, issue, podUID string, release int64) []byte {
+	t.Helper()
+	body, err := s.WorkspaceBundleSentTo(context.Background(), issue, podUID, release)
+	if err != nil {
+		t.Fatalf("read the bytes of the bundle of %s sent to %s: %v", issue, podUID, err)
+	}
+	return body
+}
+
 // A released issue's bundle round-trips whole — its bytes, the commit its working copy sat on, the
 // heads it carries, the bookmarks that pointed into it, the release that saved it and the pod its
 // work came off — survives a second release replacing it, and goes when the restore is confirmed.
@@ -37,18 +52,21 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 		At:        at,
 		PodUID:    releasedPodUID,
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-0", replacement); err != nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-0", replacement); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("an issue never released reads %v, %v; want no bundle", take, err)
 	}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 11, saved); err != nil {
 		t.Fatal(err)
 	}
-	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-1", replacement)
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-1", replacement)
 	if err != nil || take != runtime.WorkspaceBundleSend {
 		t.Fatalf("read the saved bundle: %v, %v", take, err)
 	}
-	if !bytes.Equal(read.Bundle, saved.Bundle) || read.Size() != saved.Size() {
-		t.Fatalf("the bundle read back is %d bytes, want the %d saved", read.Size(), saved.Size())
+	if read.Bundle != nil {
+		t.Fatalf("the take answered %d bytes of the bundle, want none: the bytes are a read of their own", len(read.Bundle))
+	}
+	if body := sentBody(t, s, savedIssue, "pod-1", read.Release); !bytes.Equal(body, saved.Bundle) {
+		t.Fatalf("the bundle read back is %d bytes, want the %d saved", len(body), saved.Size())
 	}
 	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
 		t.Fatalf("the bundle read back is %+v, want %+v", read, saved)
@@ -67,31 +85,34 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	// in place of the newer, and the new bundle has had no restore attempt, whatever became of
 	// the one the row it replaced had.
 	again := runtime.WorkspaceBundle{Bundle: []byte("PACK newer"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-of-the-second-release"}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, again); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 12, again); err != nil {
 		t.Fatal(err)
 	}
-	read, take, err = s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != "PACK newer" || read.Head != again.Head || read.Release != 12 {
-		t.Fatalf("after a second release the bundle is %q at %s of release %d (%v, %v), want the newer one", read.Bundle, read.Head, read.Release, take, err)
+	read, take, err = s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-2", at.Add(time.Hour+time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend || read.Head != again.Head || read.Release != 12 {
+		t.Fatalf("after a second release the take answered %s of release %d (%v, %v), want the newer one", read.Head, read.Release, take, err)
+	}
+	if body := sentBody(t, s, savedIssue, "pod-2", 12); string(body) != "PACK newer" {
+		t.Fatalf("after a second release the bundle is %q, want the newer one", body)
 	}
 	if len(read.Tips) != 0 || len(read.Bookmarks) != 0 {
 		t.Fatalf("the newer bundle reads tips %v and bookmarks %v, want neither", read.Tips, read.Bookmarks)
 	}
 
-	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
+	if err := s.DeleteWorkspaceBundle(ctx, savedIssue); err != nil {
 		t.Fatal(err)
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("after the launcher confirmed the restore the bundle reads %v, %v; want none", take, err)
 	}
 	// A confirmation that arrives twice finishes rather than failing.
-	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
+	if err := s.DeleteWorkspaceBundle(ctx, savedIssue); err != nil {
 		t.Fatalf("a repeated delete: %v", err)
 	}
 	if err := s.PutWorkspaceBundle(ctx, "", 11, saved); err == nil {
 		t.Fatal("a bundle saved under no issue was accepted")
 	}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 0, saved); err == nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 0, saved); err == nil {
 		t.Fatal("a bundle saved under no release was accepted")
 	}
 	// A save that cannot say which pod the work came off is refused: the row could not then
@@ -99,7 +120,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	// relaunch would spend the attempt its replacement needs.
 	noPod := saved
 	noPod.PodUID = ""
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, noPod); err == nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 11, noPod); err == nil {
 		t.Fatal("a bundle saved without the pod its work came off was accepted")
 	}
 }
@@ -113,32 +134,32 @@ func TestARestoreConfirmationDeletesOnlyTheBundleOfTheReleaseItNames(t *testing.
 	s := migratedStore(t)
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
 	first := runtime.WorkspaceBundle{Bundle: []byte("PACK first"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, first); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 11, first); err != nil {
 		t.Fatal(err)
 	}
 	second := runtime.WorkspaceBundle{Bundle: []byte("PACK second"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-of-the-second-release"}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, second); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 12, second); err != nil {
 		t.Fatal(err)
 	}
 	// The first release's restore is confirmed now, by a launcher that held its report through
 	// the pod that saved the second.
-	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 11); err != nil {
+	if err := s.DeleteRestoredWorkspaceBundle(ctx, savedIssue, 11); err != nil {
 		t.Fatal(err)
 	}
-	kept, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(kept.Bundle) != "PACK second" || kept.Release != 12 {
-		t.Fatalf("a report of release 11 left %q of release %d (%v, %v), want the second release's bundle kept",
-			kept.Bundle, kept.Release, take, err)
+	kept, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-2", at.Add(time.Hour+time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend || kept.Release != 12 || string(sentBody(t, s, savedIssue, "pod-2", 12)) != "PACK second" {
+		t.Fatalf("a report of release 11 left release %d (%v, %v), want the second release's bundle kept",
+			kept.Release, take, err)
 	}
 	// The second release's own confirmation drops it, and a report the daemon reads twice
 	// finishes rather than failing.
-	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 12); err != nil {
+	if err := s.DeleteRestoredWorkspaceBundle(ctx, savedIssue, 12); err != nil {
 		t.Fatal(err)
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("after the report of release 12 the bundle reads %v, %v; want none", take, err)
 	}
-	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 12); err != nil {
+	if err := s.DeleteRestoredWorkspaceBundle(ctx, savedIssue, 12); err != nil {
 		t.Fatalf("a repeated confirmation: %v", err)
 	}
 }
@@ -158,44 +179,44 @@ func TestABundleIsTakenForOneRestoreAttemptAndThenKept(t *testing.T) {
 	// TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPod.
 	replacement := at.Add(time.Minute)
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 11, saved); err != nil {
 		t.Fatal(err)
 	}
-	first, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-uid-1", replacement)
-	if err != nil || take != runtime.WorkspaceBundleSend || string(first.Bundle) != string(saved.Bundle) {
-		t.Fatalf("the pod that replaces the released one was answered %q (%v, %v), want the saved work", first.Bundle, take, err)
+	first, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-uid-1", replacement)
+	if err != nil || take != runtime.WorkspaceBundleSend || string(sentBody(t, s, savedIssue, "pod-uid-1", first.Release)) != string(saved.Bundle) {
+		t.Fatalf("the pod that replaces the released one was answered %v (%v), want the saved work", take, err)
 	}
 	// The same pod again, which is its roles container restarting, and then the pod that
 	// replaces it, and then a third after an eviction. Each is newer than the save, so the
 	// spent attempt is the only thing refusing them.
 	for i, pod := range []string{"pod-uid-1", "pod-uid-2", "pod-uid-3"} {
 		created := replacement.Add(time.Duration(i) * time.Minute)
-		again, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", pod, created)
+		again, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, pod, created)
 		if err != nil || take != runtime.WorkspaceBundleNone {
 			t.Fatalf("%s was answered %q (%v, %v) after the bundle's one attempt, want nothing to send", pod, again.Bundle, take, err)
 		}
 	}
 	// The work is kept, and it holds the issue's pod until the issue's work is over.
-	size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
+	size, held, err := s.WorkspaceBundleSize(ctx, savedIssue)
 	if err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("after the attempt the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 	// The issue's next release saves work of its own, which has an attempt of its own.
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the next release"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-uid-3"}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, newer); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 12, newer); err != nil {
 		t.Fatal(err)
 	}
-	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-uid-4", at.Add(time.Hour+time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != string(newer.Bundle) || read.Release != 12 {
-		t.Fatalf("the pod after the next release was answered %q of release %d (%v, %v), want that release's own work", read.Bundle, read.Release, take, err)
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-uid-4", at.Add(time.Hour+time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend || read.Release != 12 || string(sentBody(t, s, savedIssue, "pod-uid-4", 12)) != string(newer.Bundle) {
+		t.Fatalf("the pod after the next release was answered release %d (%v, %v), want that release's own work", read.Release, take, err)
 	}
 	// A send with no pod to name is refused: the record is what the rule rests on, and a row
 	// marked by no pod names nothing an operator can read. A send that cannot say when its pod
 	// was created is refused for the same reason: the rule has nothing to read.
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "", replacement); err == nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "", replacement); err == nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a take that named no pod was answered %v, %v; want it refused", take, err)
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-uid-5", time.Time{}); err == nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-uid-5", time.Time{}); err == nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a take that said nothing of when its pod was created was answered %v, %v; want it refused", take, err)
 	}
 }
@@ -222,37 +243,37 @@ func TestThePodTheWorkCameOffIsAnsweredNothingAndSpendsNoAttempt(t *testing.T) {
 		At:     at,
 		PodUID: releasedPodUID,
 	}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 11, saved); err != nil {
 		t.Fatal(err)
 	}
 	// Two relaunches in the pod being released: neither is answered, and neither spends the
 	// attempt. The second is answered the same as the first, which is what says the first left
 	// the row as it found it.
 	for _, created := range []time.Time{released, at.Add(time.Minute)} {
-		got, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", releasedPodUID, created)
+		got, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, releasedPodUID, created)
 		if err != nil || take != runtime.WorkspaceBundleNone {
 			t.Fatalf("the pod the work came off, asking as created %s against the save at %s, was answered %q (%v, %v); want nothing to send",
 				created, at, got.Bundle, take, err)
 		}
 	}
 	// The pod the wake made after the save takes the whole of it, attempt and all.
-	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-replacement", at.Add(time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != string(saved.Bundle) || read.Head != saved.Head ||
-		!slices.Equal(read.Tips, saved.Tips) || read.Release != 11 {
-		t.Fatalf("the pod created after the save was answered %q at %s of release %d with tips %v (%v, %v), want the saved work whole",
-			read.Bundle, read.Head, read.Release, read.Tips, take, err)
+	read, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-replacement", at.Add(time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend || read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || read.Release != 11 ||
+		string(sentBody(t, s, savedIssue, "pod-replacement", 11)) != string(saved.Bundle) {
+		t.Fatalf("the pod created after the save was answered %s of release %d with tips %v (%v, %v), want the saved work whole",
+			read.Head, read.Release, read.Tips, take, err)
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-replacement", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-replacement", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the replacement pod's roles container restarted and was answered %v, %v; want the spent attempt to refuse it", take, err)
 	}
 
 	// A pod's creationTimestamp has one-second resolution, so a pod created inside the save's
 	// own second cannot be ordered against it and is taken as the newer one: refusing it would
 	// cost a legitimate restore, and the pod being released is refused by its uid anyway.
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, saved); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, savedIssue, 12, saved); err != nil {
 		t.Fatal(err)
 	}
-	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-of-the-same-second", at.Truncate(time.Second)); err != nil || take != runtime.WorkspaceBundleSend {
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, savedIssue, "pod-of-the-same-second", at.Truncate(time.Second)); err != nil || take != runtime.WorkspaceBundleSend {
 		t.Fatalf("a pod created inside the save's own second was answered %v, %v; want the save read to its second", take, err)
 	}
 }
@@ -324,11 +345,13 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 	}
 }
 
-// The ask a start with no time left to send a bundle makes spends the attempt exactly as the take
-// does — the pod the work came off is answered nothing and spends nothing, a pod created after the
-// save takes it as sent, a pod no newer than the save takes it as refused, and no pod after either
-// is answered anything — but it never reads the bundle's bytes back, and the bytes stay whole.
-func TestSpendingTheAttemptRecordsItAsTheTakeDoesAndReadsNoBody(t *testing.T) {
+// The bytes of a saved bundle are read apart from the ask that takes its one restore attempt, and
+// only by the pod that took that attempt as sent, for the release it took it of; the take itself
+// answers the row's facts and never its bytes. Before the attempt no pod reads them, and after it
+// a pod that did not take it, the pod the work came off, the attempt's own pod asking for another
+// release, and a pod refused as no newer than the save each read nothing. The bytes stay whole for
+// a person to recover.
+func TestOnlyThePodThatTookTheAttemptReadsTheBundlesBytes(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	at := time.Date(2026, 11, 3, 9, 30, 0, 0, time.UTC)
@@ -340,35 +363,51 @@ func TestSpendingTheAttemptRecordsItAsTheTakeDoesAndReadsNoBody(t *testing.T) {
 		At:        at,
 		PodUID:    releasedPodUID,
 	}
-	if _, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", "pod-0", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("an issue never released was answered %v (%v), want nothing", take, err)
+	if body := sentBody(t, s, "sent-issue", "pod-replacement", 11); body != nil {
+		t.Fatalf("an issue never released was read %d bytes, want none", len(body))
 	}
 	for issue, release := range map[string]int64{"sent-issue": 11, "refused-issue": 12} {
 		if err := s.PutWorkspaceBundle(ctx, issue, release, saved); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", releasedPodUID, at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("the pod the work came off was answered %v (%v), want nothing and the attempt left", take, err)
+	if body := sentBody(t, s, "sent-issue", "pod-replacement", 11); body != nil {
+		t.Fatalf("the replacement pod read %d bytes before it took the attempt, want none", len(body))
 	}
-	spent, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", "pod-replacement", at.Add(time.Minute))
+	took, take, err := s.TakeWorkspaceBundleForRestore(ctx, "sent-issue", "pod-replacement", at.Add(time.Minute))
 	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the pod created after the save was answered %v (%v), want the attempt taken as the take takes it", take, err)
+		t.Fatalf("the pod created after the save was answered %v (%v), want the attempt taken as sent", take, err)
 	}
-	if spent.Bundle != nil || spent.Head != saved.Head || spent.Release != 11 || !spent.At.Equal(at) || !slices.Equal(spent.Tips, saved.Tips) {
-		t.Fatalf("the spend answered %d bytes, head %s, release %d at %s, tips %v; want no bytes and the row's facts: head %s, release 11 at %s, tips %v",
-			len(spent.Bundle), spent.Head, spent.Release, spent.At, spent.Tips, saved.Head, at, saved.Tips)
+	if took.Bundle != nil || took.Head != saved.Head || took.Release != 11 || !took.At.Equal(at) || !slices.Equal(took.Tips, saved.Tips) {
+		t.Fatalf("the take answered %d bytes, head %s, release %d at %s, tips %v; want no bytes and the row's facts: head %s, release 11 at %s, tips %v",
+			len(took.Bundle), took.Head, took.Release, took.At, took.Tips, saved.Head, at, saved.Tips)
 	}
-	refused, take, err := s.SpendWorkspaceBundleAttempt(ctx, "refused-issue", "pod-skewed-replacement", at.Add(-time.Minute))
+	if body := sentBody(t, s, "sent-issue", "pod-replacement", 11); !bytes.Equal(body, saved.Bundle) {
+		t.Fatalf("the pod that took the attempt read %d bytes, want the %d saved", len(body), len(saved.Bundle))
+	}
+	for _, other := range []struct {
+		why     string
+		pod     string
+		release int64
+	}{
+		{"a pod that did not take the attempt", "pod-after-an-eviction", 11},
+		{"the pod the work came off", releasedPodUID, 11},
+		{"the attempt's own pod asking for another release", "pod-replacement", 12},
+	} {
+		if body := sentBody(t, s, "sent-issue", other.pod, other.release); body != nil {
+			t.Fatalf("%s read %d bytes, want none: only the pod that took the attempt reads them", other.why, len(body))
+		}
+	}
+	refused, take, err := s.TakeWorkspaceBundleForRestore(ctx, "refused-issue", "pod-skewed-replacement", at.Add(-time.Minute))
 	if err != nil || take != runtime.WorkspaceBundleRefusedOlder || refused.Bundle != nil {
 		t.Fatalf("a pod created before the save was answered %v with %d bytes (%v), want it refused with none", take, len(refused.Bundle), err)
 	}
+	if body := sentBody(t, s, "refused-issue", "pod-skewed-replacement", 12); body != nil {
+		t.Fatalf("the pod refused as no newer than the save read %d bytes, want none", len(body))
+	}
 	for _, issue := range []string{"sent-issue", "refused-issue"} {
-		if got, take, err := s.TakeWorkspaceBundleForRestore(ctx, issue, "pod-after-an-eviction", at.Add(time.Hour)); err != nil || take != runtime.WorkspaceBundleNone {
-			t.Fatalf("the pod after the spent attempt of %s was answered %d bytes (%v, %v), want nothing: the spend was the bundle's one attempt", issue, len(got.Bundle), take, err)
-		}
 		if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(saved.Bundle) {
-			t.Fatalf("after the spend %s holds %d bytes (held=%t, %v), want the %d saved kept", issue, size, held, err, len(saved.Bundle))
+			t.Fatalf("after the attempt %s holds %d bytes (held=%t, %v), want the %d saved kept", issue, size, held, err, len(saved.Bundle))
 		}
 	}
 }

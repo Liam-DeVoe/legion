@@ -606,14 +606,13 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes
 		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-		// The same ask with no body read back, for a start with no time left to send one: it
-		// spends that start's pod's one attempt all the same.
-		opts.SpentWorkspaceBundle = st.SpendWorkspaceBundleAttempt
+		// arrives late takes no newer release's work with it. The read of the bytes is the pod's
+		// that took the bundle's one restore attempt, and only that pod's.
+		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.DeleteRestoredWorkspaceBundle
+		// The ask that takes that attempt, which reads none of the bytes: the first pod that is not
+		// the one the work came off takes it, whether the bundle is sent or that pod is refused as
+		// no newer than the save, and nothing is answered for that bundle again.
+		opts.WorkspaceBundleAttempt = st.TakeWorkspaceBundleForRestore
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the

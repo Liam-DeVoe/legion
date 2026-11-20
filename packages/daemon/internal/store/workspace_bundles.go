@@ -53,20 +53,29 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	return nil
 }
 
-// TakeWorkspaceBundleForRestore answers the bundle issue's last release saved for the pod of
-// podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
-// same statement what that ask did to the bundle. It answers runtime.WorkspaceBundleNone, having
-// recorded nothing, when the issue has no bundle — one never released, one whose restore the
-// launcher confirmed, one whose release a wake cancelled — when the row already carries an
-// attempt, and when the pod asking is the pod the work came off (source_pod_uid).
+// TakeWorkspaceBundleForRestore takes the one restore attempt of the bundle issue's last release
+// saved, for the pod of podUID, created at podCreated, whose launcher it is about to be sent to,
+// and answers what that ask did to the bundle with the bundle's facts: its head, tips, bookmarks,
+// save time, release and the pod its work came off, never its bytes. It answers
+// runtime.WorkspaceBundleNone, having recorded nothing, when the issue has no bundle — one never
+// released, one whose restore the launcher confirmed, one whose release a wake cancelled — when the
+// row already carries an attempt, and when the pod asking is the pod the work came off
+// (source_pod_uid).
+//
+// The bytes are a read of their own, by the pod this ask answered WorkspaceBundleSend
+// (WorkspaceBundleSentTo). A bundle runs to tens of megabytes, and the ask that changes the row is
+// made before every start of every role whatever time the start has left, so it carries none of
+// them: the runtime reads them only when it has the time to send them, under the bound of the send
+// itself, and a read that fails costs that send and nothing else.
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
 // on the pod's own disk comes back with that record gone and the workspace as the roles left it,
 // hours of work past the save, and a bundle sent again there would `jj edit` back to the saved
 // head and move each bookmark `--allow-backwards` over all of it. The attempt is written before
-// any slice leaves the daemon, so a send that fails halfway, a restore that fails and a restore
-// whose report never arrived all leave the same row: one no pod is sent again.
+// the bytes are read and before any slice leaves the daemon, so a read that fails, a send that fails
+// halfway, a restore that fails and a restore whose report never arrived all leave the same row:
+// one no pod is sent again.
 //
 // Whose attempt it is, the row's two pod columns decide, and they are the other half of the same
 // rule. Every start of every role takes the bundle for its pod (sandbox's launchers.start), and
@@ -99,30 +108,6 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-	return s.takeWorkspaceBundle(ctx, issue, podUID, podCreated, `case when attempt_outcome = 'sent' then bundle end`)
-}
-
-// SpendWorkspaceBundleAttempt is TakeWorkspaceBundleForRestore's one statement with no body read
-// back: it records the same attempt against the pod of podUID, created at podCreated, and answers
-// the same take and the row's facts, but never the bundle's bytes. It is for a start that has no
-// time left to send a bundle (sandbox's launchers.restoreWorkspace): that start must still spend
-// its pod's one attempt, or a later start of the pod, or the pod after it, would be sent the bundle
-// over the work this start's role does; and the body, up to tens of megabytes, is what the time it
-// has left cannot spare.
-//
-// The outcome it writes is the one the take writes: `sent` for a pod created after the save, though
-// nothing will be sent, since an attempt the daemon spent without sending is the row a send that
-// failed halfway leaves, which no pod is sent again; `refused_older` otherwise. So it needs no new
-// outcome, and the row's work stays in the database for a person to recover, holding the issue's
-// pod (workflow.IdleHoldBundleUnrestored).
-func (s *Store) SpendWorkspaceBundleAttempt(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-	return s.takeWorkspaceBundle(ctx, issue, podUID, podCreated, `null::bytea`)
-}
-
-// takeWorkspaceBundle is the one statement both asks make, reading back body, an SQL expression of
-// the updated row: the bundle where its outcome is `sent`, or no bytes at all. Both expressions are
-// this file's own constants.
-func (s *Store) takeWorkspaceBundle(ctx context.Context, issue, podUID string, podCreated time.Time, body string) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -132,15 +117,12 @@ func (s *Store) takeWorkspaceBundle(ctx context.Context, issue, podUID string, p
 	var b runtime.WorkspaceBundle
 	var outcome string
 	var tips, bookmarks []byte
-	// The body is read back only when it is being sent: a refusal records the attempt and
-	// answers the row's facts alone, and a bundle runs to tens of megabytes.
 	err := s.pool.QueryRow(ctx, `update workspace_bundles
 		set attempt_pod_uid = $2, attempt_at = now(),
 			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
 		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-		returning attempt_outcome, `+body+`,
-			at, head, tips, bookmarks, release_id, source_pod_uid`,
-		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+		returning attempt_outcome, at, head, tips, bookmarks, release_id, source_pod_uid`,
+		issue, podUID, podCreated).Scan(&outcome, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 	}
@@ -153,12 +135,35 @@ func (s *Store) takeWorkspaceBundle(ctx context.Context, issue, podUID string, p
 	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its bookmarks: %w", issue, err)
 	}
-	// The outcome the statement wrote is the answer: `sent` for the body above, `refused_older`
-	// for the pod it refused, whose attempt is spent all the same.
+	// The outcome the statement wrote is the answer: `sent` for the pod whose bytes are then
+	// WorkspaceBundleSentTo's, `refused_older` for the pod it refused, whose attempt is spent all
+	// the same.
 	if outcome != "sent" {
 		return b, runtime.WorkspaceBundleRefusedOlder, nil
 	}
 	return b, runtime.WorkspaceBundleSend, nil
+}
+
+// WorkspaceBundleSentTo reads the bytes of the bundle release saved for issue, for the pod of podUID
+// that took that bundle's one restore attempt as sent (TakeWorkspaceBundleForRestore). Only that pod
+// reads them, and only for the release it took the attempt of: a pod that did not take the attempt,
+// the pod the work came off and a pod refused as no newer than the save read nothing. It answers no
+// bytes and no error where the store holds no such bundle any more — its restore was confirmed, the
+// issue's next release replaced it, or the issue's work is over — so there is nothing to send. The
+// read changes nothing: the attempt was spent by the take, and the bytes stay until the restore is
+// confirmed.
+func (s *Store) WorkspaceBundleSentTo(ctx context.Context, issue, podUID string, release int64) ([]byte, error) {
+	var body []byte
+	err := s.pool.QueryRow(ctx, `select bundle from workspace_bundles
+		where issue = $1 and attempt_pod_uid = $2 and attempt_outcome = 'sent' and release_id = $3`,
+		issue, podUID, release).Scan(&body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the workspace bundle of %s sent to the pod %s: %w", issue, podUID, err)
+	}
+	return body, nil
 }
 
 // WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, and false

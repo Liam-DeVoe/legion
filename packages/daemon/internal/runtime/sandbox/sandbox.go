@@ -290,6 +290,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
 	pool, poolSet := opts.Scheduling.NodeSelector[poolKey]
+	missingSeams := missingBundleSeams(opts)
 	switch {
 	case opts.Namespace == "":
 		return refuse("no namespace")
@@ -322,6 +323,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
 	case opts.LeakCheckIndexPoll < 0:
 		return refuse("the leak check index poll %s is negative; zero reads the index every %s", opts.LeakCheckIndexPoll, leakCheckIndexPoll)
+	case missingSeams != "":
+		return refuse("the seams of a release's saved work are given all three or none, since a runtime given some restores nothing and says nothing: %s not given", missingSeams)
 	case (opts.DispatchURL == "") != (opts.DispatchToken == ""):
 		return refuse("the Dispatch URL and its bearer are configured together (URL %q, bearer given: %t)",
 			opts.DispatchURL, opts.DispatchToken != "")
@@ -439,7 +442,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
 		opts.VolumeReported, r.log)
 	r.launchers.leakCheckIndex = opts.LeakCheckIndex
-	r.launchers.spent = opts.SpentWorkspaceBundle
+	r.launchers.attempt = opts.WorkspaceBundleAttempt
 	r.launchers.startReserve = opts.TerminationGrace
 	r.leakCheckIndexPoll = opts.LeakCheckIndexPoll
 	if r.leakCheckIndexPoll == 0 {
@@ -450,6 +453,28 @@ func configureProber(opts Options) (*Runtime, error) {
 	// read afterwards.
 	r.podShapes = podShapes(r)
 	return r, nil
+}
+
+// missingBundleSeams names the seams of a release's saved work opts does not give, where it gives
+// at least one of them, and is "" where it gives all three or none.
+func missingBundleSeams(opts Options) string {
+	var missing []string
+	for _, seam := range []struct {
+		name  string
+		given bool
+	}{
+		{"SavedWorkspaceBundle", opts.SavedWorkspaceBundle != nil},
+		{"WorkspaceBundleAttempt", opts.WorkspaceBundleAttempt != nil},
+		{"WorkspaceBundleRestored", opts.WorkspaceBundleRestored != nil},
+	} {
+		if !seam.given {
+			missing = append(missing, seam.name)
+		}
+	}
+	if len(missing) == 3 {
+		return ""
+	}
+	return strings.Join(missing, ", ")
 }
 
 // roleConfigRoles are the roles Options.RoleConfigFiles may name, in the workflow's order: every

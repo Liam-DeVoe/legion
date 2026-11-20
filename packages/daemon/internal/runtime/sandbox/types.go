@@ -368,16 +368,18 @@ type Options struct {
 	// which is one no live record and no mapping names, once that cache's retention passes.
 	// Required for supervision.
 	Mapped func() []ghrepo.Repository
-	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
-	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
-	// release took off the released pod's disk back into the pod that replaces it: the runtime
-	// sends it to that pod's launcher before any role of the pod starts (launchers.restoreWorkspace),
-	// and confirms it on the launcher's Held. SpentWorkspaceBundle is the same ask with no body read
-	// back, which a start with no time left to send the bundle makes, so it still spends its pod's
-	// one restore attempt. The daemon fills all three from its store; a runtime given fewer than all
-	// three restores nothing, which is what a pod whose issue was never released does anyway.
+	// WorkspaceBundleAttempt takes a pod's one restore attempt of the bundle an issue's last release
+	// saved, SavedWorkspaceBundle reads that bundle's bytes for the pod that took the attempt, and
+	// WorkspaceBundleRestored is the confirmation that drops the bundle once the issue's new pod
+	// holds it. The three carry the work a release took off the released pod's disk back into the
+	// pod that replaces it: the runtime takes the attempt before every start, and, where it has the
+	// time, reads the bytes and sends them to that pod's launcher before any role of the pod starts
+	// (launchers.restoreWorkspace), and confirms it on the launcher's Held. The daemon fills all
+	// three from its store. A runtime given none restores nothing, which is what a pod whose issue
+	// was never released does anyway; one given some but not all is refused (configureProber), since
+	// it too would restore nothing, and say nothing.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
-	SpentWorkspaceBundle    runtime.SpentWorkspaceBundle
+	WorkspaceBundleAttempt  runtime.WorkspaceBundleAttempt
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was

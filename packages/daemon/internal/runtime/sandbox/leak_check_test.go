@@ -74,7 +74,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	})
 }
 
@@ -250,9 +250,13 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle, saved.Bundle) {
+			body, err := st.WorkspaceBundleSentTo(g.ctx, testTree, string(pod.UID), bundle.Release)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if take != runtime.WorkspaceBundleSend || !bytes.Equal(body, saved.Bundle) {
 				t.Fatalf("after the refusal the store answers the pod %d bytes (take %v), want the %d saved still to send",
-					len(bundle.Bundle), take, len(saved.Bundle))
+					len(body), take, len(saved.Bundle))
 			}
 		})
 	}

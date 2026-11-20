@@ -59,7 +59,7 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	g.spawn(spec)
@@ -129,7 +129,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	}
 	const refusal = "git bundle unbundle: object not found"
 	g := newRig(t, nil, withFailedRestore(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -177,7 +177,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *testing.T) {
 	st := migratedStore(t)
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	g.spawn(spec)
@@ -282,7 +282,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(nil, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(nil, st.WorkspaceBundleSentTo, st.DeleteRestoredWorkspaceBundle, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -295,9 +295,13 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if take != runtime.WorkspaceBundleSend || !bytes.Equal(kept.Bundle, second.Bundle) || kept.Release != second.Release {
+	body, err := st.WorkspaceBundleSentTo(ctx, testTree, "pod-uid", kept.Release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if take != runtime.WorkspaceBundleSend || !bytes.Equal(body, second.Bundle) || kept.Release != second.Release {
 		t.Fatalf("after the first release's report the store holds %q of release %d (take=%v), want the %q release %d saved since",
-			kept.Bundle, kept.Release, take, second.Bundle, second.Release)
+			body, kept.Release, take, second.Bundle, second.Release)
 	}
 	// The pod of the second release restores it, and that report drops it.
 	later, err := bundleFrames(testTree, second)
@@ -324,7 +328,7 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 	}
 	const refusal = "launcher_bundle sequence rebuilt to another digest than its slices declared"
 	g := newRig(t, nil, withRefusedBundle(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -390,7 +394,7 @@ func replacementRefusedByClockSkew(t *testing.T, skipped bool) {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleAttempt, o.WorkspaceBundleRestored = st.WorkspaceBundleSentTo, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
 	if skipped {
 		g.r.launchers.startReserve = time.Hour

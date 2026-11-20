@@ -71,12 +71,13 @@ type launchers struct {
 	// index to each role's launcher in each pod (takeIndexTurn), under mu.
 	startReserve time.Duration
 	indexTurns   map[indexTurnKey]*indexTurn
-	// saved is the bundle an issue's last release left and restored the confirmation that drops
-	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored);
-	// spent is saved's ask with no body read back, for a start with no time left to send one
-	// (Options.SpentWorkspaceBundle). A launchers built without all three restores nothing.
+	// attempt takes a pod's one restore attempt of the bundle an issue's last release left, saved
+	// reads that bundle's bytes for the pod that took the attempt, and restored is the confirmation
+	// that drops it, the daemon's store behind all three (Options.WorkspaceBundleAttempt,
+	// SavedWorkspaceBundle, WorkspaceBundleRestored). A launchers built without all three restores
+	// nothing.
+	attempt  runtime.WorkspaceBundleAttempt
 	saved    runtime.SavedWorkspaceBundle
-	spent    runtime.SpentWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
 	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
@@ -387,10 +388,11 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// The work the release took off the pod this one replaces goes over next: the launcher holds
 	// the bundle and restores it into the workspace before it runs the role's command, so the
 	// restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). It leaves the start its reserve
-	// (beforeTheStart), and stops the start only where the store does not answer the ask that
-	// takes this pod's one restore attempt (restoreWorkspace). It goes before the index: this send
-	// is the bundle's one attempt, and the index has the poll's next push besides.
+	// included (internal/launcher's bundleRestore). The ask that takes this pod's one restore
+	// attempt is made whatever time is left, and stops the start only where the store does not
+	// answer it; the read of the bytes and the slices then leave the start its reserve
+	// (restoreWorkspace, beforeTheStart). It goes before the index: this send is the bundle's one
+	// attempt, and the index has the poll's next push besides.
 	if err := d.restoreWorkspace(ctx, token, podUID); err != nil {
 		return startNotSent{err: err}
 	}
@@ -617,33 +619,19 @@ func (s *launcherSession) installedLeakCheckIndex() string {
 
 // beforeTheStart is ctx ended d.startReserve before ctx's own deadline: the bound of a hop a start
 // sends before its start frame and never stops on. Where no more than the reserve is left there is
-// no such hop, and the error says so (noTimeBeforeTheStart). A ctx with no deadline bounds the hop
-// alone.
+// no such hop, and the error says so. A ctx with no deadline bounds the hop alone.
 func (d *launchers) beforeTheStart(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if err := d.noTimeBeforeTheStart(ctx); err != nil {
-		return nil, nil, err
-	}
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		hop, cancel := context.WithCancel(ctx)
 		return hop, cancel, nil
 	}
-	hop, cancel := context.WithDeadline(ctx, deadline.Add(-d.startReserve))
-	return hop, cancel, nil
-}
-
-// noTimeBeforeTheStart is why a start may send no hop before its start frame — no more than
-// d.startReserve is left of ctx — or nil where it may.
-func (d *launchers) noTimeBeforeTheStart(ctx context.Context) error {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return nil
-	}
 	if left := time.Until(deadline); left <= d.startReserve {
-		return fmt.Errorf("the start has %s left, no more than the %s it keeps for its start frame",
+		return nil, nil, fmt.Errorf("the start has %s left, no more than the %s it keeps for its start frame",
 			left.Round(time.Millisecond), d.startReserve)
 	}
-	return nil
+	hop, cancel := context.WithDeadline(ctx, deadline.Add(-d.startReserve))
+	return hop, cancel, nil
 }
 
 // indexTurn is one pod's turn to push the leak check index to one role's launcher: slot holds the
@@ -772,10 +760,11 @@ func (d *launchers) serveLeakCheckIndex(ctx context.Context, session *launcherSe
 	return fmt.Errorf("the pod's launcher took every slice of %s without installing it", name)
 }
 
-// bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
-// carries at most is 160 slices of shimwire.LauncherBundlePayloadBytes, each one round trip the
-// launcher answers out of memory, so this is room for a slow connection rather than for the
-// common case; a hop that outruns it costs the restore and never the start.
+// bundleRestoreBound is how long the hop of one pod's saved bundle may take once its attempt is
+// taken: the read of its bytes out of the daemon's store and the slices that carry them. The 40 MiB
+// a release carries at most is 160 slices of shimwire.LauncherBundlePayloadBytes, each one round
+// trip the launcher answers out of memory, so this is room for a slow store or connection rather
+// than for the common case; a hop that outruns it costs the restore and never the start.
 const bundleRestoreBound = 2 * time.Minute
 
 // restoreWorkspace carries the bundle the last release of this pod's issue saved to the pod's
@@ -792,28 +781,28 @@ const bundleRestoreBound = 2 * time.Minute
 // started now would work in a workspace that a later start of the pod, or the pod after it, could
 // be sent the bundle over.
 //
-// The ask runs under the start's own context with a bound of its own, apiTimeout, as every other
-// call of this runtime to something it does not run, and before every start of the pod, whatever
-// time is left. A store that answers its own error, or does not answer within that bound while the
-// start's context is alive, is a store fault (bundleStoreFault, runtime.ErrSessionStore), which
-// the supervisor waits out every minute and charges no launch failure, since nothing of the claim
-// is at fault. An ask the start's own deadline cut is the start running out of time, and is
-// returned as that.
+// The ask that takes this pod's one restore attempt reads none of the bundle's bytes, so a call
+// that changes the store's row never carries tens of megabytes. It runs under the start's own
+// context with a bound of its own, apiTimeout, as every other call of this runtime to something it
+// does not run, and before every start of the pod, whatever time is left. A store that answers its
+// own error, or does not answer within that bound while the start's context is alive, is a store
+// fault (bundleStoreFault, runtime.ErrSessionStore), which the supervisor waits out every minute
+// and charges no launch failure, since nothing of the claim is at fault. An ask the start's own
+// deadline cut is the start running out of time, and is returned as that.
 //
-// The start's reserve (beforeTheStart) bounds only the slices, which go after the ask: they never
-// take the time the start frame needs. A start that has no more than the reserve left when it asks
-// makes the ask that reads no body (spent, store.SpendWorkspaceBundleAttempt), since it will send
-// none: it spends the attempt all the same, and a body of tens of megabytes is what its last
-// seconds cannot spare. Where the ask, of either kind, has left no more than the reserve, nothing
-// is sent, and the work stays in the database, as after a send that failed.
+// The bytes are read after the ask, by the pod that took the attempt (saved,
+// store.WorkspaceBundleSentTo), and only where the start has more than its reserve left
+// (beforeTheStart). The read and the slices share one bound, bundleRestoreBound inside the start's
+// time less its reserve, so they never take the time the start frame needs. A read that fails or is
+// cut is a send that failed: it is logged, nothing is sent, and the work stays in the database. So
+// is a start with no time left once the ask has answered.
 //
-// One attempt per bundle, and the read is it: the store records the pod this send is for before
-// it answers the body, and answers nothing for that bundle afterwards
-// (store.TakeWorkspaceBundleForRestore). So a roles container that restarts, a pod that replaces
-// this one and a third pod after an eviction are each sent nothing, and no bundle is ever applied
-// over work a running pod's roles have done since the save. The work itself stays in the
-// database, which holds the issue's pod (workflow.IdleHoldBundleUnrestored) until the issue's
-// work is over.
+// One attempt per bundle, and the ask is it: the store records the pod this send is for before
+// it answers, and answers that bundle to no pod afterwards (store.TakeWorkspaceBundleForRestore).
+// So a roles container that restarts, a pod that replaces this one and a third pod after an
+// eviction are each sent nothing, and no bundle is ever applied over work a running pod's roles
+// have done since the save. The work itself stays in the database, which holds the issue's pod
+// (workflow.IdleHoldBundleUnrestored) until the issue's work is over.
 //
 // Whose attempt it is the session's own pod decides, and the store decides it: a release stops
 // the roles of the pod it is releasing, so a role relaunched in that pod before the teardown
@@ -825,7 +814,7 @@ const bundleRestoreBound = 2 * time.Minute
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) error {
-	if d.saved == nil || d.spent == nil || d.restored == nil {
+	if d.attempt == nil || d.saved == nil || d.restored == nil {
 		return nil
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
@@ -838,14 +827,9 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	// The ask is this pod's one attempt, made before every start of the pod whatever time is left:
 	// a start that did not ask would leave the attempt open for a later start of the pod, or for
-	// the pod after it, to be sent the bundle over the work this start's role does. A start that
-	// will send nothing asks for no body.
-	ask := (func(context.Context, string, string, time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error))(d.saved)
-	if d.noTimeBeforeTheStart(ctx) != nil {
-		ask = d.spent
-	}
+	// the pod after it, to be sent the bundle over the work this start's role does.
 	asking, cancelAsk := context.WithTimeout(ctx, apiTimeout)
-	bundle, take, err := ask(asking, issue, podUID, session.podCreated)
+	bundle, take, err := d.attempt(asking, issue, podUID, session.podCreated)
 	cancelAsk()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -873,11 +857,20 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return nil
 	}
 	defer cancelReserve()
+	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
+	defer cancel()
+	bundle.Bundle, err = d.saved(restoring, issue, podUID, bundle.Release)
+	if err != nil {
+		d.log.Warn("launcher bundle: the saved workspace bundle's bytes could not be read for this pod's one restore attempt, so no pod is sent it; the work stays in the daemon's database and holds the issue's pod, and the role starts with the whole of its reserve",
+			"issue", issue, "launcher", token, "pod", podUID, "saved", bundle.At, "head", bundle.Head, "release", bundle.Release, "error", err)
+		return nil
+	}
+	// The store holds the bundle no more — its restore was confirmed, or the issue's next release
+	// replaced it — or it holds a save of a workspace with nothing unpushed: there is nothing to
+	// send.
 	if len(bundle.Bundle) == 0 {
 		return nil
 	}
-	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
-	defer cancel()
 	frames, err := bundleFrames(issue, bundle)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be sliced, so the pod starts on what was pushed",
