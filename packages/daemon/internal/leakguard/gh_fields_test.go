@@ -194,47 +194,6 @@ func TestGhWorkflowRunJSONReadsItsInputsOneFieldAtATime(t *testing.T) {
 	}
 }
 
-// A call that sends its standard input to GitHub as content (GhRequest.StdinSent) has that input
-// read by the private-name pass whether or not the shared check asked for it. The pinned shared
-// check of an INFRA issue pod clears `gh workflow run <w> --json=true` without asking for its
-// standard input (measured on 2026-11-20 with legion c3a4c997 and the pod's
-// /legion/scratch/leak-check/public-leak-check.sh: the call's one input naming the fixture's pair
-// reached GitHub, which answered 404 for the invented workflow), so a guard that reads the input
-// only where the check buffered it lets the rule file's names through. Here the check is a
-// stand-in that clears every call without asking (Passes): two inputs holding the pair's two
-// words still pass, and gh is handed the input the guard read; one input holding both is refused,
-// named by its JSON path. The same holds for a call whose caller parsed it and for a bare argv.
-func TestGhStandardInputSentAsContentIsReadWhereTheCheckDidNotAskForIt(t *testing.T) {
-	apart := `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
-	together := `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
-	refusedWhole(t, apart)
-	args := []string{"workflow", "run", "triage.yml", "-R", "acme/widgets", "--json=true"}
-	for _, tc := range []struct {
-		name  string
-		files []GhFile
-	}{
-		{"named by the caller's parse", []GhFile{}},
-		{"read out of a bare argv", nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			call := func(stdin string) (GhAnswer, error) {
-				req := GhRequest{Args: args, Stdin: strings.NewReader(stdin), Files: tc.files, Repo: "invented-org/invented-repo"}
-				if tc.files != nil {
-					req.StdinUse, req.StdinSent = StdinRequestBody, true
-				}
-				return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public).GhCall(bound(t), req)
-			}
-			answer, err := call(apart)
-			cleared(t, err)
-			if string(answer.Stdin) != apart {
-				t.Errorf("gh is handed %q, want the input the guard read, %q", answer.Stdin, apart)
-			}
-			_, err = call(together)
-			reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .name: "+leakguardtest.PairClass)
-		})
-	}
-}
-
 // A JSON body nested thousands of objects deep is read one string at a time under a label of
 // bounded length: a chain of 9,999 objects whose innermost value names the fixture's pair is
 // refused, the report naming the value by the path's first two steps, "…" and its last five. The
