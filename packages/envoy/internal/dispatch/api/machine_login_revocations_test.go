@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -61,5 +62,50 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 	want := []string{"POST /v1/launcher-credentials/cred-2/revoke-by-approver", "POST /v1/launcher-credentials/cred-3/revoke-by-approver"}
 	if err != nil || revoked != 2 || !slices.Equal(revokes(), want) {
 		t.Errorf("the next claim revoked %d (%v), sending %v; want cred-2 and cred-3, and neither cred-after, issued after the removal, nor the service's", revoked, err, revokes())
+	}
+}
+
+// TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke: the loop's pass asks the store
+// before each broker call whether its claim may still send one (store.MachineLoginRevocations'
+// Sendable). alice takes erin, a restricted member, off ACC's list, and the pass claims the
+// revocation that owes and lists erin's machine logins. While the list is in flight the claim ages
+// past the retry window less the broker client's bound on a call (its tried_at set back that far and
+// a second more, as a slow list would leave it), so the pass sends no revoke of erin's login, which
+// another process may claim again before such a call is over, and the revocation stays owed for the
+// next claim. The list reaching the broker is the row's own control: the pass ran, and its claim
+// was within its window then.
+//
+// Control: revokeOwedMachineLogins' mayCall answering true whatever the claim's age, and the pass
+// revokes erin's login, named.
+func TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
+		if response := dispatchRequest(t, served, write.method, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("alice %s ACC's list: status=%d body=%s", write.does, response.Code, response.Body.String())
+		}
+	}
+	const list = "GET /v1/launcher-credentials"
+	rig.bodyByRoute[list] = `{"credentials":[{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
+	aged := brokerRevocationRetry - registered.deps.AgentSecrets.HTTP.Timeout + time.Second
+	rig.beforeAnswer[list] = func() {
+		if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = tried_at - make_interval(secs => $1)`, aged.Seconds()); err != nil {
+			t.Errorf("age the claim while the list is in flight: %v", err)
+		}
+	}
+
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Contains(rig.routes, list) {
+		t.Fatalf("the pass sent %v, want erin's list first: the claim was within its window then", rig.routes)
+	}
+	if revokes := slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") }); len(revokes) != 0 {
+		t.Errorf("the pass sent %v after its claim aged past its window during the list, want no revoke", revokes)
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || !owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass, want it still owed", owed, err)
 	}
 }
