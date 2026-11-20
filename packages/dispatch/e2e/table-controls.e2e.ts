@@ -37,11 +37,13 @@ import {
   editArtifact,
   getArtifact,
   getInbox,
+  getMyState,
   listIssueArtifacts,
   listMyReplies,
   mintAgentToken,
   patchIssue,
   putArchitectureSource,
+  putIssueState,
   putRepoProject,
   replyToMessageDelivery,
   resolveAsk,
@@ -5526,6 +5528,164 @@ test("a Conversation turn resolved elsewhere while its Reply holds the focus han
     if (holder.turn !== null) {
       wrong.push(`at ${size.width} px: the focus is on ${holder.name} in the turn ${holder.turn}`);
     }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, each with an issue and three comments pinned, and one card unpinned.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19b at
+// 89072a56 and e9ed2743): the reader holds the focus on a pinned card's Unpin on the issue
+// margin's Pinned tab when their other device unpins that card, a loss the reader did not cause.
+// At both commits the focus goes into the next card - its Unpin in Chromium, its author link in
+// Firefox and WebKit - at 1440 and 1280 px: the tab draws each card as an <article> in a <div>
+// (`features/margin/PinnedTab.tsx`), which is no row by `ROW_SELECTOR` and carries no marker
+// (`components/row-marker.ts`), so the rescue takes the next card's control for a control in no
+// row. The architect's rule of 2026-11-19: a loss the reader did not cause moves the focus into
+// no other row of a list. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("a pinned card unpinned on another device while its Unpin holds the focus hands the focus into no other card @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+  ]) {
+    const issue = await createIssue({ project: "CORE", title: `Pinned at ${size.width} px` });
+    const markers: string[] = [];
+    for (const turn of [1, 2, 3]) {
+      const made = await createComment(
+        issue.key,
+        { body: `Pinned turn ${turn}.` },
+        SURFACE_SESSION
+      );
+      markers.push(`pinned_items:comment:${made.id}`);
+    }
+    // The reader's own state of the issue, as their other device reads it before it writes.
+    const state = async () => {
+      const mine = (await getMyState("alice"))[issue.key];
+      return { dismissed: mine?.dismissed ?? [], seq: mine?.seq ?? 0 };
+    };
+    const before = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: [...before.dismissed, ...markers], seq: before.seq + 1 },
+      { login: "alice" }
+    );
+    await page.setViewportSize(size);
+    await page.goto(`/issues/${issue.key}`);
+    const margin = page.getByTestId("margin-sheet");
+    await margin.getByRole("tab", { name: "Pinned" }).click();
+    const cards = margin.getByRole("article");
+    await expect(cards).toHaveCount(3);
+    const second = cards.filter({ hasText: "Pinned turn 2." });
+    const unpin = second.getByRole("button", { name: "Unpin" });
+    await unpin.focus();
+    await expect(unpin).toBeFocused();
+    const now = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: now.dismissed.filter((marker) => marker !== markers[1]), seq: now.seq + 1 },
+      { login: "alice" }
+    );
+    await expect(second).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const named =
+        active?.getAttribute("aria-label") ||
+        active?.textContent?.replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        card:
+          active
+            ?.closest('[data-testid="margin-sheet"] article')
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 30) ?? null,
+        name: `${active?.tagName.toLowerCase()} "${named}"`,
+      };
+    });
+    if (holder.card !== null) {
+      wrong.push(
+        `at ${size.width} px: the focus is on ${holder.name} in the card "${holder.card}"`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19dt at
+// 89072a56): the search bar's Filter panel draws its Updated since box only while no date is set
+// (`SearchPalette.tsx`), so the reader's own date takes the focused box away. The architect's
+// ruling of 2026-11-19: a change on a date box is the reader's press, and the focus walks back to
+// the control before the box, Author, as it did at 90fa8211. At 89072a56 it does only where the
+// engine fires `change` before the page drops the box: Chromium, for a typed date. Firefox fires
+// `input` alone as the last digit completes the date, and Playwright's fill(), the value set
+// without keys as assistive technology sets it, fires `input` and then `change` on a box the page
+// has already dropped on that `input`. So the rescue sees no press, reads the loss as one the
+// reader did not cause, passes over Author, which takes typed text, and lands on Status: for a
+// set date in Chromium, Firefox and WebKit, and for a typed one in Firefox. WebKit's date box
+// takes no typed date from Playwright's keys, so the typed case is not read there. A focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a date the reader gives the search bar's Updated since is their press, so the focus walks back to Author @firefox @webkit", async ({
+  browserName,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Harbour lights" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const wrong: string[] = [];
+  for (const how of ["typed", "set"] as const) {
+    if (how === "typed" && browserName === "webkit") continue;
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+    await page.keyboard.press("Control+k");
+    const bar = page.getByRole("dialog", { name: "Search" });
+    await expect(bar).toBeVisible();
+    await page.keyboard.type("Harbour");
+    await control(controlRow(bar), CONTROL.panelTrigger).click();
+    const filters = page.getByRole("dialog", { name: "Filter" });
+    const since = filters.getByLabel("Updated since");
+    await expect(since).toBeVisible();
+    const day = await page.evaluate(() => {
+      const next = new Date();
+      next.setDate(next.getDate() + 1);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return {
+        iso: `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`,
+        typed: `${pad(next.getMonth() + 1)}${pad(next.getDate())}${next.getFullYear()}`,
+      };
+    });
+    if (how === "typed") {
+      await since.focus();
+      await page.keyboard.type(day.typed);
+    } else {
+      await since.fill(day.iso);
+    }
+    await expect(since).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const field = active as HTMLInputElement | null;
+      return (
+        field?.labels?.[0]?.textContent?.trim() ||
+        active?.getAttribute("aria-label") ||
+        `${active?.tagName.toLowerCase()} "${active?.textContent?.trim().slice(0, 40)}"`
+      );
+    });
+    if (holder !== "Author") wrong.push(`a ${how} date: the focus is on ${holder}, not Author`);
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });

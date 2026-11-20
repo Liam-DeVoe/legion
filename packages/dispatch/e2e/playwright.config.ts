@@ -353,9 +353,12 @@ const parallelProjects = [
   // advance, whose `+` takes itself away, its row that Change answer opens the answer form
   // with the focus in it, whose button takes itself away, its row that an ask withdrawn
   // while the reader types its answer in the Inbox's list takes none of their next keys as text,
-  // whose answer box the record takes away, and its row that a Conversation turn resolved
+  // whose answer box the record takes away, its row that a Conversation turn resolved
   // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
-  // Open filter takes away. Measured in WebKit as well as Firefox:
+  // Open filter takes away, its row that a pinned card unpinned on another device while its
+  // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
+  // away, and its row that a date the reader gives the search bar's Updated since is their press,
+  // whose box the date takes away. Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
   // scrolling-table row.
