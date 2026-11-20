@@ -47,6 +47,12 @@ export class FakeNats implements ChannelConnection {
   private readonly statuses: ChannelConnectionStatus[] = []
   private statusWaiter: PromiseWithResolvers<void> | undefined
 
+  /**
+   * `calls` records each subscribe and unsubscribe as it is taken, `nats.subscribe <subject>` and
+   * `nats.unsubscribe <subject>`, in order: what a test waits on to know a subject was dropped
+   * after a given moment. A test that shares the array with its client's record reads that order
+   * among the client's calls too.
+   */
   constructor(readonly calls: string[] = []) {}
 
   subscribe(subject: string): ChannelTopicSubscription {
