@@ -136,30 +136,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	// migration 20261117100006) in this transaction, before the members that name it move, so a
 	// pass that fails before it rewrites that day still finds it (owedDays) where no stored member
 	// names it any more.
-	if _, err := tx.Exec(ctx, `
-		with given as (
-			select * from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key, shipped_by)
-		), held as (
-			select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
-			from given join eval_day_members stored
-				on stored.project_key = $1 and stored.family = given.family and stored.deploy_repo = given.deploy_repo
-					and stored.row_key = given.row_key
-			union all
-			select family, deploy_repo, row_key, day, shipped_by, null from eval_day_members stored
-			where project_key = $1 and family = any($7) and day = $2
-			  and (family, deploy_repo, row_key) not in (select family, deploy_repo, row_key from given)
-		), left_days as (
-			select family, day from held where day <> $2
-			union
-			select run.family, run.day from held
-			join eval_day_members run on run.project_key = $1 and run.family = $8 and run.deploy_repo = held.deploy_repo
-				and run.row_key = held.shipped_by
-			where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
-		)
-		insert into eval_days_owed (project_key, family, day)
-		select $1, family, day from left_days where day <> $2
-		on conflict do nothing
-	`, day.Project, date, memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery); err != nil {
+	if _, err := tx.Exec(ctx, leftDaysOwedStatement, day.Project, date, memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery); err != nil {
 		return fmt.Errorf("record the days %s's items left for %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	// A member whose day, repository and shipping run stand is not written again.
@@ -175,11 +152,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	`, day.Project, date, memberFamilies, deployRepos, keys, memberRepos, shippedBy); err != nil {
 		return fmt.Errorf("record the items %s counted on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
-	if _, err := tx.Exec(ctx, `
-		delete from eval_day_members
-		where project_key = $1 and family = any($2) and day = $3
-		  and (family, deploy_repo, row_key) not in (select * from unnest($4::text[], $5::text[], $6::text[]))
-	`, day.Project, families, date, memberFamilies, deployRepos, keys); err != nil {
+	if _, err := tx.Exec(ctx, goneMembersDeleteStatement, day.Project, families, date, memberFamilies, deployRepos, keys); err != nil {
 		return fmt.Errorf("delete the items %s no longer counts on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	// This write is the rewrite a day owed of its families.
@@ -207,6 +180,72 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	s.drainChanges(ctx)
 	return nil
 }
+
+// The statements of a day's write that find what the day no longer holds (leftDaysOwedStatement's
+// and goneMembersDeleteStatement's members, zeroStaleDaysStatement's and
+// zeroStaleSettingsDaysStatement's rows) each find it as the stored keys except the given ones
+// (`gone`), materialized, so the set operation runs once whatever plan the statement is given,
+// and joined back to the table by its primary key: a set operation reads each side once, and the
+// join back probes the key once per row that left. Written as `not in (…)` over the given list,
+// the filter ran the list again for each stored row once the list outgrew work_mem: one day's
+// write of k20's load at INFRA's size held eval_days for 13 minutes, and a day of 80,000 items
+// took more than 180 s. Written as `not exists`, the generic plan a statement pgx caches can
+// settle on after its fifth run estimates the list at 10 rows, and can run it again for each
+// stored row as a nested-loop anti-join. TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce
+// holds each to its plan.
+
+// leftDaysOwedStatement records owed (eval_days_owed) each day other than the project's day $2
+// that an item of the write leaves, as writeProjectDay says: $1 the project, $3 to $6 the day's
+// items (family, deploy repository, row key, shipping run), $7 the write's families and $8
+// KindDelivery. held is every item that moves: each given item stored anywhere, read by its
+// primary key, and each item of $7 stored on the day that the day no longer holds (gone).
+const leftDaysOwedStatement = `
+	with given as (
+		select * from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key, shipped_by)
+	), gone as materialized (
+		select family, deploy_repo, row_key from eval_day_members
+		where project_key = $1 and family = any($7) and day = $2
+		except
+		select family, deploy_repo, row_key from given
+	), held as (
+		select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
+		from given join eval_day_members stored
+			on stored.project_key = $1 and stored.family = given.family and stored.deploy_repo = given.deploy_repo
+				and stored.row_key = given.row_key
+		union all
+		select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, null
+		from gone join eval_day_members stored
+			on stored.project_key = $1 and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
+				and stored.row_key = gone.row_key
+	), left_days as (
+		select family, day from held where day <> $2
+		union
+		select run.family, run.day from held
+		join eval_day_members run on run.project_key = $1 and run.family = $8 and run.deploy_repo = held.deploy_repo
+			and run.row_key = held.shipped_by
+		where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
+	)
+	insert into eval_days_owed (project_key, family, day)
+	select $1, family, day from left_days where day <> $2
+	on conflict do nothing
+`
+
+// goneMembersDeleteStatement deletes the items of the families $2 that project $1 records on day
+// $3 and that the day no longer holds, the day's items being $4 to $6 (family, deploy repository,
+// row key). The deleted row is held to the day again, so an item another write moved to another
+// day while this one waited for its row lock stays where that write put it.
+const goneMembersDeleteStatement = `
+	with gone as materialized (
+		select family, deploy_repo, row_key from eval_day_members
+		where project_key = $1 and family = any($2) and day = $3
+		except
+		select * from unnest($4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key)
+	)
+	delete from eval_day_members stored
+	using gone
+	where stored.project_key = $1 and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
+		and stored.row_key = gone.row_key and stored.day = $3
+`
 
 // upsertDays writes rows in one statement, in key order, each the computation's (writer
 // `computation`) with built_by builtBy: a new row is inserted, and a stored one rewritten only
@@ -255,18 +294,29 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 	for i, row := range held {
 		evals[i], deployRepos[i], series[i], repos[i] = row.EvalID, row.DeployRepo, row.Series, row.Repo
 	}
-	if _, err := tx.Exec(ctx, `
-		with stale as (
-			select project_key, eval_id, writer, deploy_repo, series, repo, day,
-				`+staleZeroColumns+`
-			from eval_days
-			where project_key = $1 and day = $2 and eval_id = any($3) and writer = $8
-				and (eval_id, deploy_repo, series, repo) not in (select * from unnest($4::text[], $9::text[], $5::text[], $6::text[]))
-		)`+zeroStaleUpdate("$7"), project, day, evalIDs, evals, series, repos, builtBy, writerComputation, deployRepos); err != nil {
+	if _, err := tx.Exec(ctx, zeroStaleDaysStatement, project, day, evalIDs, evals, series, repos, builtBy, writerComputation, deployRepos); err != nil {
 		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
 	}
 	return nil
 }
+
+// zeroStaleDaysStatement is zeroStaleDays' statement: $1 the project, $2 the day, $3 the evals,
+// $4, $9, $5 and $6 the rows the day holds (eval, deploy repository, series, repository), $7 the
+// build and $8 writerComputation. gone is the stored rows' keys except the given ones.
+var zeroStaleDaysStatement = `
+	with gone as materialized (
+		select eval_id, deploy_repo, series, repo from eval_days
+		where project_key = $1 and day = $2 and eval_id = any($3) and writer = $8
+		except
+		select * from unnest($4::text[], $9::text[], $5::text[], $6::text[]) as given(eval_id, deploy_repo, series, repo)
+	), stale as (
+		select stored.project_key, stored.eval_id, stored.writer, stored.deploy_repo, stored.series, stored.repo, stored.day,
+			` + staleZeroColumns + `
+		from gone join eval_days stored
+			on stored.project_key = $1 and stored.eval_id = gone.eval_id and stored.writer = $8
+				and stored.deploy_repo = gone.deploy_repo and stored.series = gone.series and stored.repo = gone.repo
+				and stored.day = $2
+	)` + zeroStaleUpdate("$7")
 
 // staleZeroColumns is the columns of a stale row's zero row that depend on what it holds, as the
 // stale rows of zeroStaleDays and zeroStaleSettingsDays select them from eval_days: a zero sum,

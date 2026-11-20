@@ -412,3 +412,113 @@ func TestTheLostMergesReadProbesTheMergedFactsIndex(t *testing.T) {
 		t.Logf("%s, of 20,000 stored rows of five projects and 18,000 merged pull requests, the read of two merges answered %v through %v", how, left, scans)
 	}
 }
+
+// TestEachDeletionOfStaleFactsReadsItsListOnce: each deletion of the stored rows and filings a
+// pass computed none for (deleteStaleRows' staleRowsStatement, deleteStaleProjectRows'
+// staleProjectRowsStatement and deleteStaleFilings' staleFilingsStatement, each as the delete and
+// as a Yielded write's stamp) reads the list of computed keys it is given once, with the pass's
+// values and under the generic plan a statement pgx caches can settle on after its fifth run, as
+// explaintest.RequireListReadOnce holds it to: no SubPlan runs the list, no nested loop runs it
+// again for each row of its other side, and the deletion filters by it as a SetOp Except or a
+// hash or merge anti-join. Written as `not (issue_key = any($n))`, each stored row was compared
+// with the whole list, which a generic plan cannot hash, so a whole pass of a project of INFRA's
+// 13,000 issues compared each of its rows with up to 13,000 keys. The project here is past
+// work_mem: 80,000 issues, each with a stored row and a filing, analyzed, and each statement is
+// explained in a transaction of its own, as the pass's write (writePass) runs it, with the keys a
+// pass sends that computed every issue but one.
+func TestEachDeletionOfStaleFactsReadsItsListOnce(t *testing.T) {
+	ctx := t.Context()
+	pool := factsDatabase(t)
+	const issues, build = 80000, "legion-envoy-running"
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('PL', 'Plans', 'alice');
+		insert into issues (key, project_key, number, title, status, rank, created_by)
+		select 'PL-' || n, 'PL', n, 'An issue', 'triage', lpad(n::text, 8, '0'), '{"kind":"user","id":"alice"}'
+		from generate_series(1, 80000) as n;
+		insert into issue_facts (project_key, issue_key, opened_at, written_build)
+		select 'PL', 'PL-' || n, now() - make_interval(hours => n), 'legion-envoy-running' from generate_series(1, 80000) as n;
+		insert into issue_filings (issue_key, project_key, filed_at, filer_role, class, written_build)
+		select 'PL-' || n, 'PL', now() - make_interval(hours => n), 'architect', 'out_of_tree', 'legion-envoy-running'
+		from generate_series(1, 80000) as n;
+		analyze issues;
+		analyze issue_facts;
+		analyze issue_filings;
+	`); err != nil {
+		t.Fatalf("seed the project's issues, rows and filings: %v", err)
+	}
+	keys := make([]string, issues)
+	for n := range keys {
+		keys[n] = fmt.Sprintf("PL-%d", n+1)
+	}
+	// A pass that stated every issue and computed every one but PL-1.
+	computed := keys[1:]
+	filings := make([]Filing, len(computed))
+	for n, key := range computed {
+		filings[n].Key = key
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the deletions: %v", err)
+	}
+	stated, err := deleteStaleRows(ctx, tx, ProjectWrite{Project: "PL", Stated: keys}, computed)
+	if err != nil {
+		t.Fatalf("deleteStaleRows: %v", err)
+	}
+	whole, err := deleteStaleProjectRows(ctx, tx, ProjectWrite{Project: "PL", Whole: true}, computed)
+	if err != nil {
+		t.Fatalf("deleteStaleProjectRows: %v", err)
+	}
+	if err := deleteStaleFilings(ctx, tx, FilingsWrite{Project: "PL", Filings: filings, Whole: true}); err != nil {
+		t.Fatalf("deleteStaleFilings: %v", err)
+	}
+	var left int
+	if err := tx.QueryRow(ctx, `select count(*) from issue_filings where project_key = 'PL'`).Scan(&left); err != nil {
+		t.Fatalf("count the filings left: %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	if !slices.Equal(stated, []string{"PL-1"}) || len(whole) != 0 || left != issues-1 {
+		t.Errorf("the deletions took %v of the stated keys, then %v of the project, and left %d filings; want PL-1, none (it went already) and %d",
+			stated, whole, left, issues-1)
+	}
+
+	for _, deletion := range []struct {
+		name                 string
+		statement            string
+		arguments            []any
+		parameters, literals []string
+	}{
+		{"staleRowsStatement", staleRowsStatement(false), []any{"PL", keys, computed},
+			[]string{"text", "text[]", "text[]"}, []string{"'PL'", "array['PL-1']", "array['PL-1']"}},
+		{"staleRowsStatement, the stamp", staleRowsStatement(true), []any{"PL", keys, computed, build},
+			[]string{"text", "text[]", "text[]", "text"}, []string{"'PL'", "array['PL-1']", "array['PL-1']", "'" + build + "'"}},
+		{"staleProjectRowsStatement", staleProjectRowsStatement(false), []any{"PL", computed},
+			[]string{"text", "text[]"}, []string{"'PL'", "array['PL-1']"}},
+		{"staleProjectRowsStatement, the stamp", staleProjectRowsStatement(true), []any{"PL", computed, build},
+			[]string{"text", "text[]", "text"}, []string{"'PL'", "array['PL-1']", "'" + build + "'"}},
+		{"staleFilingsStatement of a whole read", staleFilingsStatement(false, false), []any{"PL", computed},
+			[]string{"text", "text[]"}, []string{"'PL'", "array['PL-1']"}},
+		{"staleFilingsStatement of a whole read, the stamp", staleFilingsStatement(false, true), []any{"PL", computed, build},
+			[]string{"text", "text[]", "text"}, []string{"'PL'", "array['PL-1']", "'" + build + "'"}},
+		{"staleFilingsStatement of the stated issues", staleFilingsStatement(true, false), []any{"PL", computed, keys},
+			[]string{"text", "text[]", "text[]"}, []string{"'PL'", "array['PL-1']", "array['PL-1']"}},
+		{"staleFilingsStatement of the stated issues, the stamp", staleFilingsStatement(true, true), []any{"PL", computed, keys, build},
+			[]string{"text", "text[]", "text[]", "text"}, []string{"'PL'", "array['PL-1']", "array['PL-1']", "'" + build + "'"}},
+	} {
+		t.Run(deletion.name, func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin %s's transaction: %v", deletion.name, err)
+			}
+			defer tx.Rollback(ctx)
+			var raw []byte
+			if err := tx.QueryRow(ctx, "explain (format json) "+deletion.statement, deletion.arguments...).Scan(&raw); err != nil {
+				t.Fatalf("explain %s: %v", deletion.name, err)
+			}
+			valued := explaintest.OnePlan(t, raw)
+			generic := explaintest.GenericPlan(t, ctx, tx, "stale_deletion", deletion.statement, deletion.parameters, deletion.literals)
+			explaintest.RequireListReadOnce(t, valued, deletion.name+" with the values")
+			explaintest.RequireListReadOnce(t, generic, deletion.name+" under the generic plan")
+			t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", deletion.name, explaintest.Outline(t, valued), explaintest.Outline(t, generic))
+		})
+	}
+}

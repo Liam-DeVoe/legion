@@ -582,26 +582,36 @@ func zeroStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, da
 		heldProjects[i], heldEvals[i], heldDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
 		heldSeries[i], heldRepos[i], heldDays[i] = row.Series, row.Repo, measures.Midnight(row.Day)
 	}
-	if _, err := tx.Exec(ctx, `
-		with written as materialized (
-			select * from unnest($1::text[], $2::date[]) as written(project_key, day)
-		), held as materialized (
-			select * from unnest($3::text[], $4::text[], $11::text[], $5::text[], $6::text[], $7::date[])
-				as held(project_key, eval_id, deploy_repo, series, repo, day)
-		), stale as (
-			select e.project_key, e.eval_id, e.writer, e.deploy_repo, e.series, e.repo, e.day,
-				`+staleZeroColumns+`
-			from eval_days e
-			join written on written.project_key = e.project_key and written.day = e.day
-			where e.eval_id = any($8) and e.writer = $10 and e.deploy_repo = any($12)
-				and not exists (select 1 from held where held.project_key = e.project_key and held.eval_id = e.eval_id
-					and held.deploy_repo = e.deploy_repo and held.series = e.series and held.repo = e.repo and held.day = e.day)
-		)`+zeroStaleUpdate("$9"), projects, days, heldProjects, heldEvals, heldSeries, heldRepos, heldDays, evalIDs, builtBy, writerComputation,
-		heldDeployRepos, deployRepos); err != nil {
+	if _, err := tx.Exec(ctx, zeroStaleSettingsDaysStatement, projects, days, heldProjects, heldEvals, heldSeries, heldRepos, heldDays, evalIDs, builtBy,
+		writerComputation, heldDeployRepos, deployRepos); err != nil {
 		return fmt.Errorf("write the day rows a settings change leaves no longer held as zero rows: %w", err)
 	}
 	return nil
 }
+
+// zeroStaleSettingsDaysStatement is zeroStaleSettingsDays' statement: $1 and $2 the projects and
+// days written (pairwise), $3, $4, $11, $5, $6 and $7 the rows they hold (project, eval, deploy
+// repository, series, repository, day), $8 the evals, $9 the build, $10 writerComputation and $12
+// the deploy repositories. gone is the stored rows' keys except the given ones, the form every
+// statement that finds what a day no longer holds takes (day_rows.go says why).
+var zeroStaleSettingsDaysStatement = `
+	with written as materialized (
+		select * from unnest($1::text[], $2::date[]) as written(project_key, day)
+	), gone as materialized (
+		select e.project_key, e.eval_id, e.deploy_repo, e.series, e.repo, e.day
+		from eval_days e
+		join written on written.project_key = e.project_key and written.day = e.day
+		where e.eval_id = any($8) and e.writer = $10 and e.deploy_repo = any($12)
+		except
+		select * from unnest($3::text[], $4::text[], $11::text[], $5::text[], $6::text[], $7::date[])
+			as held(project_key, eval_id, deploy_repo, series, repo, day)
+	), stale as (
+		select e.project_key, e.eval_id, e.writer, e.deploy_repo, e.series, e.repo, e.day,
+			` + staleZeroColumns + `
+		from gone join eval_days e
+			on e.project_key = gone.project_key and e.eval_id = gone.eval_id and e.writer = $10
+				and e.deploy_repo = gone.deploy_repo and e.series = gone.series and e.repo = gone.repo and e.day = gone.day
+	)` + zeroStaleUpdate("$9")
 
 // writeMovedMembers writes, in tx, the members built that moved from where stored holds them: each
 // that stored holds on another day, under another repository or shipping run, or not at all,

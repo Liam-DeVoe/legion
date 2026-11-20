@@ -8,9 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // attributionDay is the day the hand-written delivery history of seedAttribution happens on.
@@ -501,4 +504,189 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 	}
 	t.Logf("unowned-p0 of EVAL on %s: %g at %s, then %g at %s", attributionDay.Format(time.DateOnly),
 		*first.LastValue, first.LastAt.Format(time.RFC3339Nano), *second.LastValue, second.LastAt.Format(time.RFC3339Nano))
+}
+
+// TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce: each statement that finds what a day no
+// longer holds against the list its write gives it (leftDaysOwedStatement's and
+// goneMembersDeleteStatement's items, zeroStaleDaysStatement's and zeroStaleSettingsDaysStatement's
+// rows, and standingPartsQuery's readings less the write's own) reads that list once, with the
+// write's values and under the generic plan a statement pgx caches can settle on after its fifth
+// run, which estimates every list at 10 rows: the list runs under no SubPlan, no nested loop runs
+// it again for each row of its other side, and the filter is a SetOp Except over the list or a
+// hash or merge anti-join. The day is past work_mem, as one of INFRA's is: 80,000 items across 40
+// deploy repositories and 80,000 rows written through WriteProjectDay, and 80,000 readings of a
+// logged eval on the same day, the three tables analyzed. Each statement is explained with the
+// arrays a second write of the day sends, one item, one row and one reading fewer than stored, in
+// a transaction prepared as its write prepares it, and then with literals for its generic plan,
+// which reads none of them.
+//
+// The test judges the plan and not the clock, which a loaded runner would fail; k20 measures the
+// write's time on the build farm. That measurement is what this test stands for: written as
+// `not in (…)`, the filters ran the list again for each stored row once it outgrew work_mem, so
+// one day's write of k20's load at INFRA's size held eval_days for 13 minutes, and on the test
+// Postgres a day of 80,000 items took more than 180 s, where an anti-join took 1.6 s; and written
+// as `not exists`, zeroStaleDays' generic plan was a nested-loop anti-join that had not written
+// 80,000 rows after 2 minutes.
+func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	day := attributionDay
+	const items = 80000
+	deployRepos := make([]string, 40)
+	for i := range deployRepos {
+		deployRepos[i] = fmt.Sprintf("acme/deploy-%02d", i)
+	}
+	members, rows := make([]Member, items), make([]DayRow, items)
+	for i := range items {
+		members[i] = Member{Family: KindDelivery, DeployRepo: deployRepos[i%40], RowKey: PullRequestMember("acme/web", i+1), Repo: "acme/web"}
+		rows[i] = DayRow{
+			ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), DeployRepo: deployRepos[i%40],
+			Repo: fmt.Sprintf("acme/repo-%05d", i), Listed: true,
+			DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
+		}
+	}
+	if err := r.registry.WriteProjectDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild); err != nil {
+		t.Fatalf("write a day of %d items and %d rows: %v", items, items, err)
+	}
+	// The readings: the write that registers the logged eval, and the day's other readings
+	// stored beside its one.
+	r.write(t, "latency", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "first", "value": 1, "measured_at": day.Add(23 * time.Hour)}))
+	evalID := EvalID(r.project, "latency")
+	if _, err := r.database.Pool.Exec(ctx, `
+		insert into eval_readings (eval_id, series, row_kind, row_key, value, measured_at, recorded_by)
+		select $1, 'minutes', 'run', 'run-' || n, n % 97 + 1, $2::timestamptz + make_interval(secs => n), '{"kind": "user", "id": "alice"}'
+		from generate_series(1, $3::int) as n
+	`, evalID, day, items); err != nil {
+		t.Fatalf("store %d readings of %s: %v", items, evalID, err)
+	}
+	for _, table := range []string{"eval_days", "eval_day_members", "eval_readings"} {
+		if _, err := r.database.Pool.Exec(ctx, "analyze "+table); err != nil {
+			t.Fatalf("analyze %s: %v", table, err)
+		}
+	}
+	stored, err := r.database.Pool.Query(ctx, `select id::text from eval_readings where eval_id = $1 and row_key like 'run-%' order by id`, evalID)
+	if err != nil {
+		t.Fatalf("read the ids of %s's readings: %v", evalID, err)
+	}
+	ids, err := pgx.CollectRows(stored, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the ids of %s's readings: %v", evalID, err)
+	}
+
+	// The arrays a second write of the day sends, holding one item, one row and one reading fewer.
+	again, kept, written := members[1:], rows[1:], ids[1:]
+	families, memberDeployRepos, keys, shippedBy := make([]string, len(again)), make([]string, len(again)), make([]string, len(again)), make([]string, len(again))
+	for i, member := range again {
+		families[i], memberDeployRepos[i], keys[i], shippedBy[i] = member.Family, member.DeployRepo, member.RowKey, member.ShippedBy
+	}
+	projects, evals, rowDeployRepos := make([]string, len(kept)), make([]string, len(kept)), make([]string, len(kept))
+	series, repos, days := make([]string, len(kept)), make([]string, len(kept)), make([]time.Time, len(kept))
+	for i, row := range kept {
+		projects[i], evals[i], rowDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
+		series[i], repos[i], days[i] = row.Series, row.Repo, row.Day
+	}
+	evalIDs := make([]string, len(deliveryDaySlugs))
+	for i, slug := range deliveryDaySlugs {
+		evalIDs[i] = EvalID("EVAL", slug)
+	}
+	standingKey := dayKey{series: "minutes", day: day}
+	// The standing readings are the one stored reading the write does not name, and the
+	// registering write's.
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the standing readings' read: %v", err)
+	}
+	standing, err := standingParts(ctx, tx, evalID, []dayKey{standingKey}, written)
+	_ = tx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("standingParts: %v", err)
+	}
+	if got := len(standing[standingKey]); got != 2 {
+		t.Errorf("standingParts answers %d standing readings of %s on %s, want 2: the stored reading the write does not name, and the registering write's",
+			got, evalID, day.Format(time.DateOnly))
+	}
+
+	date := "'" + day.Format(time.DateOnly) + "'"
+	for _, filter := range []struct {
+		name      string
+		statement string
+		// settings are the `set local` statements the write runs the statement under.
+		settings []string
+		// lists is the CTEs a form of the statement holds its list in, whose scans are scans of
+		// the list as much as the function scan of unnest that fills them.
+		lists                []string
+		arguments            []any
+		parameters, literals []string
+	}{
+		{
+			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
+			arguments:  []any{"EVAL", day, families, memberDeployRepos, keys, shippedBy, deliveryDayFamilies, KindDelivery},
+			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text[]", "text"},
+			literals: []string{"'EVAL'", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array['']",
+				"array['delivery', 'ci']", "'delivery'"},
+		},
+		{
+			name: "goneMembersDeleteStatement", statement: goneMembersDeleteStatement,
+			arguments:  []any{"EVAL", deliveryDayFamilies, day, families, memberDeployRepos, keys},
+			parameters: []string{"text", "text[]", "date", "text[]", "text[]", "text[]"},
+			literals:   []string{"'EVAL'", "array['delivery', 'ci']", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']"},
+		},
+		{
+			name: "zeroStaleDaysStatement", statement: zeroStaleDaysStatement,
+			arguments:  []any{"EVAL", day, evalIDs, evals, series, repos, testBuild, writerComputation, rowDeployRepos},
+			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text", "text", "text[]"},
+			literals: []string{"'EVAL'", date, "array['EVAL/deploy-frequency']", "array['EVAL/deploy-frequency']", "array['deploys']",
+				"array['acme/repo-00000']", "'test-build'", "'computation'", "array['acme/deploy-00']"},
+		},
+		{
+			name: "zeroStaleSettingsDaysStatement", statement: zeroStaleSettingsDaysStatement, lists: []string{"held"},
+			settings: []string{"set local plan_cache_mode = force_custom_plan"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, testBuild, writerComputation,
+				rowDeployRepos, deployRepos},
+			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text", "text", "text[]", "text[]"},
+			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL']", "array['EVAL/deploy-frequency']", "array['deploys']",
+				"array['acme/repo-00000']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'test-build'", "'computation'",
+				"array['acme/deploy-00']", "array['acme/deploy-00']"},
+		},
+		{
+			name: "standingPartsQuery", statement: standingPartsQuery,
+			arguments:  []any{evalID, []string{standingKey.series}, []string{standingKey.repo}, []time.Time{standingKey.day}, written},
+			parameters: []string{"text", "text[]", "text[]", "timestamptz[]", "text[]"},
+			literals: []string{"'" + evalID + "'", "array['minutes']", "array['']", "array[" + date + "]::timestamptz[]",
+				"array['00000000-0000-0000-0000-000000000000']"},
+		},
+	} {
+		t.Run(filter.name, func(t *testing.T) {
+			tx, err := r.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin %s's transaction: %v", filter.name, err)
+			}
+			defer tx.Rollback(ctx)
+			for _, setting := range filter.settings {
+				if _, err := tx.Exec(ctx, setting); err != nil {
+					t.Fatalf("%s: %v", setting, err)
+				}
+			}
+			var raw []byte
+			if err := tx.QueryRow(ctx, "explain (format json) "+filter.statement, filter.arguments...).Scan(&raw); err != nil {
+				t.Fatalf("explain %s: %v", filter.name, err)
+			}
+			valued := explaintest.OnePlan(t, raw)
+			generic := explaintest.GenericPlan(t, ctx, tx, "filter_"+strings.ToLower(filter.name), filter.statement, filter.parameters, filter.literals)
+			explaintest.RequireListReadOnce(t, valued, filter.name+" with the values", filter.lists...)
+			explaintest.RequireListReadOnce(t, generic, filter.name+" under the generic plan", filter.lists...)
+			t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", filter.name, explaintest.Outline(t, valued), explaintest.Outline(t, generic))
+		})
+	}
+
+	// The second write itself, which leaves one item fewer and makes one row zero.
+	if err := r.registry.WriteProjectDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild); err != nil {
+		t.Fatalf("write the day again with one item and one row fewer: %v", err)
+	}
+	if held := r.count(t, `select count(*) from eval_day_members where project_key = 'EVAL'`); held != items-1 {
+		t.Errorf("eval_day_members holds %d items of EVAL, want %d", held, items-1)
+	}
+	if zero := r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation' and n = 0`); zero != 1 {
+		t.Errorf("eval_days holds %d zero rows of EVAL, want 1: the row the day no longer holds", zero)
+	}
 }

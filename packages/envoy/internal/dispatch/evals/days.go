@@ -383,10 +383,11 @@ const writtenWhileLogged = `exists (select from logged_spans s where r.recorded_
 // order the writes committed in, since every path breaks a tie of moments by this order. They are
 // the standing readings of its day and series (of its repository, for a repository's row) that
 // have a value and were written while the eval was logged (writtenWhileLogged). One statement
-// reads every key's: the eval's standing readings of each day the keys name, once a day, through
-// eval_readings_row with that day's range in its index condition, each then matched to the keys
-// of its day. Joined to every key at once instead, the readings were planned, for a week's keys,
-// as one scan of the eval that each key then filtered whole.
+// reads every key's (standingPartsQuery): the eval's standing readings of each day the keys name,
+// once a day, through eval_readings_row with that day's range in its index condition, less the
+// write's own, each then read by its id and matched to the keys of its day. Joined to every key
+// at once instead, the readings were planned, for a week's keys, as one scan of the eval that
+// each key then filtered whole.
 func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey, written []string) (map[dayKey][]dayPart, error) {
 	standing := map[dayKey][]dayPart{}
 	if len(keys) == 0 {
@@ -396,24 +397,7 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 	for index, key := range keys {
 		series[index], repos[index], days[index] = key.series, key.repo, key.day
 	}
-	rows, err := tx.Query(ctx, `
-		with `+loggedSpans+`, k as (
-			select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
-		)
-		select k.at, r.value, r.weight, r.measured_at, r.recorded_at, r.id::text
-		from (select distinct day from k) d
-		cross join lateral (
-			select r.series, r.attributes ->> 'repo' as repo, r.value, coalesce(r.n, 1)::float8 as weight,
-				r.measured_at, r.recorded_at, r.id
-			from eval_readings r
-			where r.eval_id = $1 and r.superseded_at is null and r.value is not null
-				and r.measured_at >= d.day and r.measured_at < d.day + interval '24 hours'
-				and r.id <> all($5::text[]::uuid[])
-				and `+writtenWhileLogged+`
-		) r
-		join k on k.day = d.day and k.series = r.series and (k.repo = '' or r.repo = k.repo)
-		order by k.at, r.recorded_at, r.id
-	`, evalID, series, repos, days, written)
+	rows, err := tx.Query(ctx, standingPartsQuery, evalID, series, repos, days, written)
 	if err != nil {
 		return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(keys), evalID, err)
 	}
@@ -430,3 +414,34 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 	}
 	return standing, nil
 }
+
+// standingPartsQuery is standingParts' statement: $1 the eval, $2 to $4 the keys (series,
+// repository, day) and $5 the ids of the write's own readings. standing is the ids of the
+// standing readings of the keys' days except the write's, materialized, so the set operation
+// runs once whatever plan the joins after it take, and reads each side once (day_rows.go says
+// why a day's write finds what it leaves out so): as `r.id <> all($5)` in each day's read, every
+// reading was compared with the list, which a generic plan, knowing no value of it, cannot hash;
+// as a `not exists`, its generic plan was a nested-loop anti-join that runs the list again for
+// each reading, and its plan with the values hashed the list again for each key.
+const standingPartsQuery = `
+	with ` + loggedSpans + `, k as (
+		select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
+	), standing as materialized (
+		select r.id
+		from (select distinct day from k) d
+		cross join lateral (
+			select r.id from eval_readings r
+			where r.eval_id = $1 and r.superseded_at is null and r.value is not null
+				and r.measured_at >= d.day and r.measured_at < d.day + interval '24 hours'
+				and ` + writtenWhileLogged + `
+		) r
+		except
+		select * from unnest($5::text[]::uuid[]) as written(id)
+	)
+	select k.at, r.value, coalesce(r.n, 1)::float8, r.measured_at, r.recorded_at, r.id::text
+	from standing
+	join eval_readings r on r.id = standing.id
+	join k on k.series = r.series and r.measured_at >= k.day and r.measured_at < k.day + interval '24 hours'
+		and (k.repo = '' or r.attributes ->> 'repo' = k.repo)
+	order by k.at, r.recorded_at, r.id
+`
