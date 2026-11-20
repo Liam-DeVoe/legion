@@ -535,7 +535,8 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 // the moment the launch says it waits, so none of them sees such a wait. Here the bubble's clock,
 // which the time package reads, moves an hour, the machine's own (Deps.Clock) moves an hour, and
 // the bubble's moves an hour more. A timer that gives up within an hour on either clock, or a poll
-// paced by either clock that reads the other, therefore gives up while the stop is still in flight.
+// paced at an hour or less by either clock that reads the other, therefore gives up while the stop
+// is still in flight.
 func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := sessionStops(t)
