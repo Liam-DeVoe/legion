@@ -437,12 +437,20 @@ var formWatchesSignals atomic.Int32
 
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
-// form watches createSignals, it watches them itself for as long as cmd runs
-// (watchSignalsWhileGcloudRuns). Once cmd has been waited for, on every outcome, it kills what is
-// left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding
-// its output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's
-// own, so nothing else is in it, and while a process is left in it its id names no other group.
+// form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns), from before
+// cmd starts until what is left of cmd's group has been killed: gcloud, in a group of its own,
+// gets no signal sent to this command's group, so a signal that came between gcloud's start and
+// a watch armed after it, or between a watch's stop and that last kill, would end this command
+// by the signal's default action and leave gcloud's group running. A signal that comes while cmd
+// starts waits for the start (killRunningGcloud takes runningGcloud, which the start holds), so
+// the gcloud it started is recorded, and killed. Once cmd has been waited for, on every outcome,
+// it kills what is left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a
+// child holding its output, which gcloudWaitDelay stops the wait for and does not kill. The group
+// is gcloud's own, so nothing else is in it, and while a process is left in it its id names no
+// other group.
 func runRecorded(cmd *exec.Cmd) error {
+	stop := watchSignalsWhileGcloudRuns()
+	defer stop()
 	runningGcloud.Lock()
 	if err := cmd.Start(); err != nil {
 		runningGcloud.Unlock()
@@ -451,14 +459,36 @@ func runRecorded(cmd *exec.Cmd) error {
 	pid := cmd.Process.Pid
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
-	stop := watchSignalsWhileGcloudRuns()
+	reachedGcloudStep(gcloudStarted)
 	err := cmd.Wait()
-	stop()
+	reachedGcloudStep(gcloudWaited)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
 	runningGcloud.Unlock()
 	return err
+}
+
+// gcloudStep names a step of runRecorded at which a test can hold the call (atGcloudStep).
+type gcloudStep string
+
+const (
+	// gcloudStarted: gcloud runs, and its pid is recorded.
+	gcloudStarted gcloudStep = "started"
+	// gcloudWaited: gcloud has been waited for, and what is left of its group is not yet killed.
+	gcloudWaited gcloudStep = "waited"
+)
+
+// atGcloudStep, where a test sets it, runs at each step runRecorded reaches (gcloudStep), so the
+// test can hold the call there and send a signal at exactly that step
+// (TestGcloudSignInEndedByASignalKillsGcloudsChild). It is nil outside such a test.
+var atGcloudStep func(gcloudStep)
+
+// reachedGcloudStep runs atGcloudStep for step, where a test has set it.
+func reachedGcloudStep(step gcloudStep) {
+	if atGcloudStep != nil {
+		atGcloudStep(step)
+	}
 }
 
 // killRunningGcloud kills each gcloud runRecorded is running, with its group (killGcloudGroup),

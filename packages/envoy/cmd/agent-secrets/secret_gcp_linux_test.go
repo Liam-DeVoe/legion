@@ -272,21 +272,48 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 	child.requireGone(t)
 }
 
+// gcloudSignalHold is the variable that names the step of runRecorded (gcloudStep) at which
+// TestGcloudSignInSignalHelper holds its gcloud call for good, once it has written the step's
+// name to the file "held" beside its pid file; unset, the call is not held.
+const gcloudSignalHold = "AGENT_SECRETS_GCLOUD_SIGNAL_HOLD"
+
+// gcloudSignalLast is the variable that gives TestGcloudSignInSignalHelper's stub gcloud its last
+// line (gcloudStubIn): "wait" where it is unset, or "exit 0".
+const gcloudSignalLast = "AGENT_SECRETS_GCLOUD_SIGNAL_LAST"
+
 // TestGcloudSignInSignalHelper is the process TestGcloudSignInEndedByASignalKillsGcloudsChild
 // signals: `secret list` against a fake broker serving the GCP store, with no other source of a
 // Google credential, so its sign-in runs `gcloud auth list` through the stub gcloud of
-// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, which never
-// answers. The deadline on each store call stays 60s, so the signal comes while the call runs. It
-// prints RETURNED <exit code> should the form return.
+// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, ending with
+// the line gcloudSignalLast gives. The deadline on each store call stays 60s, so the signal comes
+// while the call runs; where gcloudSignalHold names a step, the call is held at that step
+// (atGcloudStep) for an hour, longer than any test runs, so the signal comes there. It prints
+// RETURNED <exit code> should the form return.
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
 	}
+	if hold := gcloudStep(os.Getenv(gcloudSignalHold)); hold != "" {
+		held := filepath.Join(filepath.Dir(pidFile), "held")
+		atGcloudStep = func(step gcloudStep) {
+			if step != hold {
+				return
+			}
+			if err := os.WriteFile(held, []byte(step), 0o600); err != nil {
+				fmt.Println("HOLD", err)
+			}
+			time.Sleep(time.Hour)
+		}
+	}
+	last := os.Getenv(gcloudSignalLast)
+	if last == "" {
+		last = "wait"
+	}
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useNoADC(t)
-	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), "wait")
+	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	t.Setenv("PATH", filepath.Dir(gcloud.path)+":/usr/bin:/bin")
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
@@ -297,61 +324,88 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
-// a shell's status 130 - and the child that held gcloud's output is gone with it.
+// a shell's status 130 - and the child that held gcloud's output is gone with it. That holds
+// wherever the interrupt comes in runRecorded: while the call waits on gcloud; right after gcloud
+// has started, before the call waits (gcloudStarted); and once a gcloud that exited leaving its
+// child has been waited for, before what is left of its group is killed (gcloudWaited). The last
+// two rows hold the call at that step (gcloudSignalHold) and signal only once the helper says it
+// is there, so a signal watch armed after gcloud's start, or stopped before that last kill, fails
+// them every time, not only when a loaded machine happens to send the signal into the gap.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
-	dir := t.TempDir()
-	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
-	t.Cleanup(func() { child.cleanUp(t) })
-	helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
-	helper.Env = append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile)
-	var out bytes.Buffer
-	helper.Stdout, helper.Stderr = &out, &out
-	if err := helper.Start(); err != nil {
-		t.Fatal(err)
+	for _, row := range []struct {
+		name, last string
+		hold       gcloudStep
+	}{
+		{name: "while the call waits on gcloud", last: "wait"},
+		{name: "right after gcloud starts", last: "wait", hold: gcloudStarted},
+		{name: "once a gcloud that left its child is waited for", last: "exit 0", hold: gcloudWaited},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
+			t.Cleanup(func() { child.cleanUp(t) })
+			helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
+			helper.Env = append(os.Environ(),
+				"AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile,
+				gcloudSignalLast+"="+row.last,
+				gcloudSignalHold+"="+string(row.hold))
+			var out bytes.Buffer
+			helper.Stdout, helper.Stderr = &out, &out
+			if err := helper.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := make(chan struct{})
+			go func() {
+				_ = helper.Wait()
+				close(waited)
+			}()
+			ended := func(within time.Duration) bool {
+				select {
+				case <-waited:
+					return true
+				case <-time.After(within):
+					return false
+				}
+			}
+			t.Cleanup(func() {
+				_ = helper.Process.Kill()
+				ended(10 * time.Second)
+			})
+			held := func() bool {
+				if row.hold == "" {
+					return true
+				}
+				step, err := os.ReadFile(filepath.Join(dir, "held"))
+				return err == nil && gcloudStep(step) == row.hold
+			}
+			seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+				pid := child.pid()
+				if pid == 0 || !held() {
+					return false
+				}
+				running, err := child.runs(pid)
+				return err == nil && running
+			})
+			if !seen {
+				_ = helper.Process.Kill()
+				ended(10 * time.Second)
+				t.Fatalf("the stub gcloud's child was never seen running with the call held at %q; the helper said %q", row.hold, out.String())
+			}
+			if err := helper.Process.Signal(syscall.SIGINT); err != nil {
+				t.Fatal(err)
+			}
+			if !ended(10 * time.Second) {
+				_ = helper.Process.Kill()
+				ended(10 * time.Second)
+				t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", out.String())
+			}
+			status := helper.ProcessState.Sys().(syscall.WaitStatus)
+			if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
+				t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
+			}
+			child.requireGone(t)
+		})
 	}
-	waited := make(chan struct{})
-	go func() {
-		_ = helper.Wait()
-		close(waited)
-	}()
-	ended := func(within time.Duration) bool {
-		select {
-		case <-waited:
-			return true
-		case <-time.After(within):
-			return false
-		}
-	}
-	t.Cleanup(func() {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-	})
-	seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		pid := child.pid()
-		if pid == 0 {
-			return false
-		}
-		running, err := child.runs(pid)
-		return err == nil && running
-	})
-	if !seen {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", out.String())
-	}
-	if err := helper.Process.Signal(syscall.SIGINT); err != nil {
-		t.Fatal(err)
-	}
-	if !ended(10 * time.Second) {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", out.String())
-	}
-	status := helper.ProcessState.Sys().(syscall.WaitStatus)
-	if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
-		t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
-	}
-	child.requireGone(t)
 }
 
 // TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves
