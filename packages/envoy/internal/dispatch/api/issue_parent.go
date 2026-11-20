@@ -67,17 +67,17 @@ const legionLabel = "legion"
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by
 // $1: whether that issue, or any issue on its parent chain, carries the legion label. It lives
 // here because it is one more parent-chain walk bounded by parentDepthCap, like the ones above.
-// Labels keep the case they were typed in and are only de-duplicated case-insensitively, so
-// `Legion` is a real stored value and the match is on lower(label) in the collation "C". In "C",
-// lower() changes only A-Z, which for the six ASCII letters of legion is exactly what
-// strings.EqualFold matches, so the walk and holdsLegionLabel agree on every database. In a glibc
-// collation such as en_US.UTF-8, lower() also changes U+0130 (İ) to i, and the walk would read
-// LEGİON as legion. The walk starts at the issue itself, so one query answers both its own
-// labels and its ancestors'. A chain deeper than the cap answers false. A claim never reaches
-// that case - loadIssue refuses such a chain before this runs - but a write's advice does
-// (computeWriteAdvice, write_advice.go), and there it means the issue is treated as one Legion
-// does not run: the "still in triage" line prints. A chain that deep needs a reparent that
-// refuseParentTooDeep would have refused.
+// Labels keep the case they were typed in and are only de-duplicated where strings.EqualFold
+// matches them (labelKey), so `Legion` is a real stored value and the match is on lower(label)
+// in the collation "C". In "C", lower() changes only A-Z, which for the six ASCII letters of
+// legion is exactly what strings.EqualFold matches, so the walk and holdsLegionLabel agree on
+// every database. In a glibc collation such as en_US.UTF-8, lower() also changes U+0130 (İ) to
+// i, and the walk would read LEGİON as legion. The walk starts at the issue itself, so one query
+// answers both its own labels and its ancestors'. A chain deeper than the cap answers false. A
+// claim never reaches that case - loadIssue refuses such a chain before this runs - but a write's
+// advice does (computeWriteAdvice, write_advice.go), and there it means the issue is treated as
+// one Legion does not run: the "still in triage" line prints. A chain that deep needs a reparent
+// that refuseParentTooDeep would have refused.
 var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather

@@ -206,7 +206,7 @@ func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, store
 }
 
 // holdsLegionLabel says whether labels hold the legion label in any letter case. Labels keep the
-// case they were typed in, and are de-duplicated without case (normalizeIssueLabels).
+// case they were typed in, and are de-duplicated where strings.EqualFold matches them (labelKey).
 func holdsLegionLabel(labels []string) bool {
 	return slices.ContainsFunc(labels, func(label string) bool { return strings.EqualFold(label, legionLabel) })
 }
