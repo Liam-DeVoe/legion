@@ -84,7 +84,8 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // sequence at the cut does not move for a post deleted after the cut, which the page then reads
 // as deleted, and it reads nothing kept, which holds present answers under keys that name no cut.
 // It goes out under an ETag over the cut and its own bytes, and is kept under no key
-// (writePastListAnswer).
+// (writePastListAnswer). It leaves out what the records at the cut do not give
+// (eventPageAtTheCut).
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -116,6 +117,10 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -194,6 +199,7 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // therefore capped at the safe horizon, at or below which every event is final, the same cap and
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
+// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut).
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -214,8 +220,20 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		newest, err := s.newestEventIDAtTheCut(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		through = min(through, newest)
+	}
 	events, err := s.readEventsAfterID(r.Context(), after, through, limit)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -617,6 +635,13 @@ func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]stri
 	return marks, nil
 }
 
+// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
+// fields (attachAskEventFields).
+var askEventKinds = map[string]bool{
+	"ask.opened": true, "ask.anchor_refreshed": true, "ask.answered": true, "ask.resolved": true,
+	"ask.edited": true, "ask.handed_back": true, "ask.asked_of": true,
+}
+
 // decodedAskEventPayload is the ask payload that needs read-time fields added before it is written
 // to an event response. Other event payloads remain their database JSON.
 type decodedAskEventPayload struct {
@@ -634,9 +659,7 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
-		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
-		default:
+		if !askEventKinds[events[index].Type] {
 			continue
 		}
 		raw, ok := events[index].Payload.(json.RawMessage)

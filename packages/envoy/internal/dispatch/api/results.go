@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -424,8 +425,14 @@ type issueCheckResults struct {
 // The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
 // newest pull request head as on every read: the derived result is that head's, and stands at
 // the named commit only where that commit is the head.
+//
+// At a cut the read reads the checks of the Verification document's version then, makes no read
+// of GitHub and writes nothing (results_as_of.go), and refuses ?at=.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	if refuseResultsCommitAtCut(w, r) {
 		return
 	}
 	at := r.URL.Query().Get("at")
@@ -450,7 +457,13 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	_, atCut := asof.CutFrom(r.Context())
+	var checks []model.CheckBlock
+	if atCut {
+		checks, err = s.checkBlocksAtTheCut(r.Context(), artifact, trees)
+	} else {
+		checks, err = s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -477,9 +490,11 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if !atCut {
+		if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
@@ -488,15 +503,19 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.learn(r.Context(), checks)
-	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
+	if atCut {
+		checksAtTheCut(r.Context(), checks)
+	} else {
+		// Every head GitHub has to be asked for is learned before the first check is answered, so
+		// two `before_merge` checks of one issue name one list of bases and not two
+		// (comparisonReader.learn).
+		reader := newComparisonReader(s, at)
+		reader.learn(r.Context(), checks)
+		for index := range checks {
+			reader.answer(r.Context(), &checks[index])
+		}
+		answerCompatibilityCurrency(checks, at)
 	}
-	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
 	trees.resolve()
 	WriteJSON(w, http.StatusOK, body)
@@ -778,8 +797,9 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // in document order, with its block id. The markdown is read live and parsed; nothing is
 // written. A rendering can repeat an id; the block index keys one row per id, and so does this,
 // so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// read it by this rule: the checks of a Verification document (checkBlocksIn, which takes its
+// two halves, typedBlockMarkdown and visitTypedBlocks, one at a time, so that a read at a cut
+// parses a stored version with the second) and the requirements of a spec (requirementBlocksIn).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -796,6 +816,14 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	if err != nil {
 		return err
 	}
+	return visitTypedBlocks(artifactID, blockType, markdown, texts, trees, visit)
+}
+
+// visitTypedBlocks parses markdown, a rendering of document artifactID, and hands visit each block
+// of blockType in it as typedBlocksIn says. texts is the text the block index stores for each
+// block, by id, which visit is handed the tree's content of when trees is true; a block it holds
+// no text for answers its own content.
+func visitTypedBlocks(artifactID, blockType, markdown string, texts map[string]string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)
@@ -864,9 +892,19 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
 // the slice has stopped growing, since what is registered is a pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, "check", trees != nil)
+	if err != nil {
+		return nil, err
+	}
+	return checkBlocksOfRendering(artifactID, markdown, texts, trees)
+}
+
+// checkBlocksOfRendering is checkBlocksIn of markdown, a rendering of document artifactID, with
+// texts the text the block index stores for each block, by id (visitTypedBlocks).
+func checkBlocksOfRendering(artifactID, markdown string, texts map[string]string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
+	err := visitTypedBlocks(artifactID, "check", markdown, texts, trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
@@ -895,10 +933,6 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	if len(checks) == 0 {
 		return []model.CheckBlock{}, nil
 	}
-	issueKey := ""
-	if artifact.IssueKey != nil {
-		issueKey = *artifact.IssueKey
-	}
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
@@ -918,6 +952,18 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
+	addressChecks(checks, artifact, indexed)
+	return checks, nil
+}
+
+// addressChecks fills in each of checks, the check blocks of artifact, its issue, its reference,
+// and from indexed, what the block index holds of each check by block id, the version its words
+// last changed in and their digest. A check that indexed does not hold keeps neither.
+func addressChecks(checks []model.CheckBlock, artifact model.Artifact, indexed map[string]model.CheckBlock) {
+	issueKey := ""
+	if artifact.IssueKey != nil {
+		issueKey = *artifact.IssueKey
+	}
 	for index := range checks {
 		checks[index].IssueKey = issueKey
 		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
@@ -927,7 +973,6 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 			checks[index].Version, checks[index].SHA256 = block.Version, block.SHA256
 		}
 	}
-	return checks, nil
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
