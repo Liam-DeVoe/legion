@@ -394,7 +394,7 @@ func TestARoleMessageTakenAfterTheStopIsKeptWithoutAResolution(t *testing.T) {
 }
 
 // A role message the lane takes once the listener stopped, to a role token no claim can name, is
-// refused by its keep under a rule (errRoleUnkeepable): it was never held, so it is given up as
+// refused by its keep under a rule (errRoleNotKeepable): it was never held, so it is given up as
 // delivery_failed with its exception, not reported as a held message no keep could store.
 func TestARoleMessageTakenAfterTheStopThatNoKeepTakesIsDeliveryFailed(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)

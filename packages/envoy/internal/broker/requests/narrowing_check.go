@@ -42,6 +42,13 @@ const NarrowingCheckSkippedMessage = "broker: the narrowing check was skipped"
 // transaction inside that same call, so the check takes at most a third of the client's budget.
 // A caller that gave up before the broker wrote its pending request is the cost this check
 // removes, so the check must end well inside what the caller is waiting out.
+//
+// One revoke runs past these bounds: the give-back of a token GitHub minted in an answer the check
+// could not use (secrets.GitHubApp's giveBackUnusable) runs under a detached bound of its own,
+// secrets' revokeTimeout (10 seconds), since the check's own bound is the likeliest thing to have
+// cut that answer off. No mint starts once the budget is spent, so at most one such give-back runs
+// past it, and a check takes at most 20 seconds in all: still inside the client's 30, with less
+// of that to spare.
 const (
 	DefaultNarrowingCheckBudget = 10 * time.Second
 	DefaultNarrowingCheckMint   = 5 * time.Second
@@ -49,7 +56,7 @@ const (
 
 // DefaultNarrowingChecks bounds, per enrollment, the checks that reach GitHub: five at once,
 // refilled one every twelve seconds. A refused request writes no row, so the guards inside
-// Create's transaction (lockPendingNames, pendingRequest) never see it, and a caller in a loop
+// Create's transaction (lockPendingNames, pendingRequests) never see it, and a caller in a loop
 // could otherwise drive the App into a rate limit at GitHub, which would turn the check off for
 // everybody. Five lets a caller correct its flags a few times in a minute; past it the GitHub
 // part is skipped and the request goes to its approver, which is what it did before this check
@@ -229,9 +236,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
-// mint's own bound from it takes the shorter of the two. A budget already spent is answered
-// without asking GitHub anything, and reads as trouble to the caller, which lets the request
-// through.
+// mint's own bound from it takes the shorter of the two. The give-back of a token whose answer the
+// mint could not use runs to a detached bound of its own instead (DefaultNarrowingCheckBudget's
+// comment). A budget already spent is answered without asking GitHub anything, and reads as
+// trouble to the caller, which lets the request through.
 func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -309,14 +317,14 @@ func (m *Machine) narrowingCause(ctx context.Context, mint Minter, name string, 
 }
 
 // narrowingCauseProbes bounds the per-repository probes one cause search makes. Each probe is a
-// whole mint — an installations listing, a token request, and for a read-only narrowing a second
-// token request without actions — and a narrowing may name up to secrets.MaxNarrowedRepositories
-// of them, so an unbounded search would ask GitHub a hundred times for a reason the caller is
-// refused for either way. Past this many the search answers narrowingCauseNotFound, as it does
-// for the budget, and that refusal still names every repository the caller asked for, which is
-// what a caller of such a narrowing has to read anyway. The budget usually ends the search first;
-// this bound is what holds for a deployment that raises the budget, so no one request can drive
-// the App into the rate limit the per-enrollment bound exists to prevent.
+// whole mint — an installations listing and a token request — and a narrowing may name up to
+// secrets.MaxNarrowedRepositories of them, so an unbounded search would ask GitHub a hundred times
+// for a reason the caller is refused for either way. Past this many the search answers
+// narrowingCauseNotFound, as it does for the budget, and that refusal still names every
+// repository the caller asked for, which is what a caller of such a narrowing has to read anyway.
+// The budget usually ends the search first; this bound is what holds for a deployment that raises
+// the budget, so no one request can drive the App into the rate limit the per-enrollment bound
+// exists to prevent.
 const narrowingCauseProbes = 5
 
 // narrowingRepositoryRefusal is the refusal of a narrowing naming a repository the App's
@@ -328,8 +336,9 @@ func narrowingRepositoryRefusal(name, repository string, narrowing *secrets.GitH
 
 // narrowingPermissionsRefusal is the refusal of a read-only narrowing whose read permissions
 // GitHub will not grant: the App's installation holds fewer than contents, metadata and pull
-// requests, the three a read-only token request always asks for, the fourth (actions) having been
-// asked for again without already (secrets' optionalReadOnlyPermission).
+// requests, the three a read-only token request always asks for, the others (actions, checks and
+// statuses) being asked for only where the installation holds them (secrets'
+// optionalReadOnlyPermissions).
 func narrowingPermissionsRefusal(name string, narrowing *secrets.GitHubNarrowing) error {
 	return fmt.Errorf("%w: %s: the App's installation on %s does not hold the read access the narrowing asks for: contents, metadata and pull requests", secrets.ErrMintNarrowingRefused, name, narrowing.Owner)
 }

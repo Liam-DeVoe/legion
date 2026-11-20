@@ -42,15 +42,16 @@ func New(raw string) Address {
 
 // Raw is the address as configured, credential included. It builds a request to the broker: its
 // URL, the URL its proof signs, the audience of a request object it carries, and the OAuth
-// endpoints. Four callers read it for anything else, and none of them prints it: the helper's
+// endpoints. Five callers read it for anything else, and none of them prints it: the helper's
 // check that a URL it is asked to sign is one of its operator routes (internal/broker/helper's
 // operatorRoute), agent-secrets-helper's check that an address is set (its serve), the token
-// client's trim of the address it is given (brokerclient.New), and agent-secrets' check that a
-// broker whose settings it acts on is https or loopback (requireTrustedBrokerURL). Every caller
+// client's trim of the address it is given (brokerclient.New), agent-secrets' check that a
+// broker whose settings it acts on is https or loopback (requireTrustedBrokerURL), and its check
+// that an id it prints by its shape is no value the address holds (addressHolds). Every caller
 // keeps what it answers out of every output - a log field, an error's text, a line on stderr -
 // since printing it is the leak this type exists to prevent: a message names the address through
 // the Address itself, a request URL built from it through Call, and that request's error through
-// Error or Cause.
+// Error or Cause, or through Named where the URL ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""
@@ -69,15 +70,19 @@ func (a Address) Clean() bool { return redact.Clean(a.Raw()) }
 const WordsNotPrinted = "(not printed: the broker's address is not clean)"
 
 // Words is text that whoever answered a request built from Raw wrote - a refusal's words, its
-// code, the answer id it names, a value it quotes - as a message may print it: text itself beside
-// a clean address, and WordsNotPrinted beside any other. Whoever answers at an address that is not
-// clean, the broker or anyone who can answer for it, can repeat the credential the address
-// carries in any text of its answer, so a message made from such an answer prints its status and
-// WordsNotPrinted, and no other part of it. A caller that tells answers apart by their text reads
-// that text as it came, never what Words answers, and prints it nowhere.
+// code, the answer id it names, a value it quotes - as a message may print it: beside a clean
+// address the text on one line (redact.OneLine), as it came where it holds no control character
+// and Go-quoted where it holds one, so a line break or an escape sequence in an answer cannot
+// start a line of its own in the message that prints it; and WordsNotPrinted beside any other.
+// Whoever answers at an address that is not clean, the broker or anyone who can answer for it,
+// can repeat the credential the address carries in any text of its answer, so a message made
+// from such an answer prints its status and WordsNotPrinted, and no other part of it. A caller
+// that tells answers apart by their text reads that text as it came, never what Words answers,
+// and prints it nowhere. A decoder's error for an answer the helper or `agent-secrets enroll --pod`
+// cannot read prints through Words as well, since the decoder quotes the answer's text.
 func (a Address) Words(text string) string {
 	if a.Clean() {
-		return text
+		return redact.OneLine(text)
 	}
 	return WordsNotPrinted
 }
@@ -106,3 +111,11 @@ func (a Address) Error(err error) error { return redact.Error(err, a.Raw()) }
 // Cause is redact.Cause with the address as the base: Error without net/http's *url.Error wrapper,
 // for a message that names the call itself.
 func (a Address) Cause(err error) error { return redact.Cause(err, a.Raw()) }
+
+// Named is redact.Named with the address as the base: err, from a request built from Raw, named
+// by name, the caller's own words for the call, for a request URL that ends in what a caller typed.
+// No Error, Cause or Class of the result names that URL again. The helper's revoke is the case:
+// its route ends in the enrollment id it was handed, which `unenroll --enrollment` takes as typed
+// and the broker never accepted, so its failure names the route without the id, and neither
+// UNENROLL_FAILED nor UNENROLL_OUTCOME_UNKNOWN prints the request URL.
+func (a Address) Named(err error, name string) error { return redact.Named(err, a.Raw(), name) }

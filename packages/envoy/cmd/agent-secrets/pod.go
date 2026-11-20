@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // defaultPodTokenFile is where a Legion pod and a hand-launched session pod both mount their
@@ -70,14 +71,17 @@ func (p podIdentity) String() string {
 // Reading the UID from the token rather than taking it as a flag is what spares the pod a
 // downwardAPI entry for its own UID: the one thing the broker will accept is already in the file
 // the pod must read anyway.
+//
+// A token it cannot read is refused in fixed text naming --pod-token-file, never in the decoder's
+// words, which describe the token: the file holds a credential.
 func podClaims(token string) (podIdentity, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return podIdentity{}, errors.New("the projected service-account token is not a JWT")
+		return podIdentity{}, errors.New("the projected service-account token in the file --pod-token-file names is not a JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return podIdentity{}, fmt.Errorf("the projected token's claims are not base64url: %w", err)
+		return podIdentity{}, errors.New("the claims of the projected token in the file --pod-token-file names are not base64url")
 	}
 	var claims struct {
 		Subject    string `json:"sub"`
@@ -88,7 +92,7 @@ func podClaims(token string) (podIdentity, error) {
 		} `json:"kubernetes.io"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return podIdentity{}, fmt.Errorf("the projected token's claims are not JSON: %w", err)
+		return podIdentity{}, errors.New("the claims of the projected token in the file --pod-token-file names are not JSON")
 	}
 	id := podIdentity{Subject: claims.Subject, PodUID: claims.Kubernetes.Pod.UID}
 	if id.PodUID == "" {
@@ -134,8 +138,8 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	var result struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", false, fmt.Errorf("decode enrollment response: %w", err)
+	if err := c.decode(raw, &result, "decode enrollment response"); err != nil {
+		return "", false, err
 	}
 	if result.EnrollmentID == "" {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
@@ -167,8 +171,10 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 			return exitUsageError
 		}
 	}
+	// The directory holds key.pem, so it is named by its flag and never by its path, and its
+	// errors print the system's reason alone (redact.File), as key.pem's own do (outKeyFile).
 	if err := os.MkdirAll(out, 0o700); err != nil {
-		fmt.Fprintf(stderr, "%s --pod: %v\n", prefix, err)
+		fmt.Fprintf(stderr, "%s --pod: make %s: %v\n", prefix, outDir, redact.File(err))
 		return 1
 	}
 	unlock, err := lockEnrollDir(filepath.Join(out, enrollLockFile))
@@ -194,6 +200,13 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 // key is kept on purpose (a new key while the old enrollment is live is refused
 // ALREADY_ENROLLED), so the marker is what makes keeping it safe. A box's launcher writes the
 // same file for the same reason.
+//
+// No line here names the key directory or the token file by its path but the renewal command
+// printed on success: it is a command to paste, and both paths were just used (the token file
+// read and its token accepted, the directory holding the key.pem the broker enrolled), so it
+// names the paths the run used, as the GCP forms' retry commands name the credentials file that
+// signed them in. Every other line names them by their flags (outDir, outKeyFile,
+// --pod-token-file).
 func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
@@ -206,7 +219,7 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 			return
 		}
 		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n"), 0o600); err != nil {
-			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s: %v\n", prefix, enrollmentErrorFile, err)
+			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 		}
 	}
 	token, err := readPodToken(tokenFile)
@@ -263,14 +276,14 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 		}
 	}
 	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
-		refuse(fmt.Sprintf("%s --pod: %v", prefix, err))
+		refuse(fmt.Sprintf("%s --pod: write %s in %s: %v", prefix, enrollmentFile, outDir, redact.File(err)))
 		return 1
 	}
 	// The id is written, so an earlier run's refusal is spent: selectSigner reads the error file
 	// only where it finds no id, and it now finds one. Removed after the id rather than before
 	// it, so a failed write above never leaves the directory with neither.
 	if err := os.Remove(filepath.Join(out, enrollmentErrorFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stderr, "%s --pod: remove the earlier refusal in %s: %v\n", prefix, enrollmentErrorFile, err)
+		fmt.Fprintf(stderr, "%s --pod: remove the earlier refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 	}
 	// A pod keeps no credential helper to re-run this command, so it needs a renewer: say which
 	// one, on stderr, where it cannot be mistaken for the enrollment id. The key directory is
@@ -283,7 +296,9 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
-	fmt.Fprintln(stdout, enrollmentID)
+	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
+	// (brokeraddr.Address.Words); the file above keeps it as it came.
+	fmt.Fprintln(stdout, idWords(base, enrollmentID))
 	return 0
 }
 
@@ -296,7 +311,8 @@ func podRefusal(prefix, what string, identity podIdentity, base brokeraddr.Addre
 	if errors.As(err, &refused) {
 		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
 		if !refused.withheld {
-			code := refused.Code
+			// The code is the broker's, so it prints on one line as Message does.
+			code := redact.OneLine(refused.Code)
 			if code == "" {
 				code = "UNKNOWN"
 			}
@@ -322,8 +338,8 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	var result struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", fmt.Errorf("decode token login response: %w", err)
+	if err := c.decode(raw, &result, "decode token login response"); err != nil {
+		return "", err
 	}
 	if result.CredentialID == "" {
 		return "", errors.New("the broker's token login answered no credential_id")
@@ -333,14 +349,15 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 
 // enrollSessionKey is the session key in dir: the one already there, so re-running enroll on a dir
 // keeps the key whose enrollment the broker holds live, or a new one written exactly as keygen
-// writes it (PKCS8 PEM, 0600, in a 0700 directory, renamed into place).
+// writes it (PKCS8 PEM, 0600, in a 0700 directory, renamed into place). dir is the directory
+// --out names, and its errors name key.pem by that flag (outKeyFile), never by its path.
 func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("make %s: %w", outDir, redact.File(err))
 	}
 	path := filepath.Join(dir, keyFile)
 	if exists(path) {
-		return loadKey(path)
+		return loadKey(path, outKeyFile)
 	}
 	key, err := proof.NewKey()
 	if err != nil {
@@ -351,10 +368,20 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 	if err := writeFileAtomic(path, pemBytes, 0o600); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("write %s: %w", outKeyFile, redact.File(err))
 	}
 	return key, nil
 }
+
+// outKeyFile is how every message names the session key in the directory keygen's and enroll
+// --pod's --out names: by the flag that names its directory, since the key's path is the path of
+// a file that holds a credential. main.go's loadKey reads it under this name, keygen and
+// enrollSessionKey write it under it, and outDir names the directory itself.
+const outKeyFile = "key.pem in " + outDir
+
+// outDir is the directory keygen's and enroll --pod's --out (or AGENT_SECRETS_KEY_DIR) names, as
+// a message names it.
+const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
 
 // enrollLockFile is the lock a pod's self-enrollment is serialized on, in the key dir it writes.
 // A pod can run `enroll --pod` more than once over one directory, so two runs can overlap;

@@ -73,7 +73,7 @@ func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 		})
 	}
 	t.Run("a role token no claim can name", func(t *testing.T) {
-		err := fmt.Errorf("keep: %w", errRoleUnkeepable)
+		err := fmt.Errorf("keep: %w", errRoleNotKeepable)
 		if keepFailureHolds(err) {
 			t.Error("keepFailureHolds holds a keep under a role token no claim can name, which no attempt can keep")
 		}

@@ -77,7 +77,7 @@ func writeServiceAccountFile(t *testing.T, path, email, tokenURI string) {
 	}
 	data, err := json.Marshal(map[string]string{
 		"type":           "service_account",
-		"project_id":     "acme-agent-infra",
+		"project_id":     "acme-deployment",
 		"private_key_id": "test-key",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		"client_email":   email,
@@ -117,7 +117,7 @@ func startMetadataServer(t *testing.T, email string) *metadataServer {
 		metadataTokenPath: `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`,
 		"/computeMetadata/v1/instance/service-accounts/default/email":    email,
 		"/computeMetadata/v1/instance/service-accounts/default/identity": "metadata-identity-token",
-		"/computeMetadata/v1/project/project-id":                         "acme-agent-infra",
+		"/computeMetadata/v1/project/project-id":                         "acme-deployment",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -305,7 +305,8 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // TestGCPSecretNoSourceListsEverySource: with no source present - no gcloud on PATH, no
 // credentials file, no variable, and nothing answering at the metadata server's address - the
 // command stops within 2 s, before any Secret Manager call, with one refusal that names each of
-// the six sources (the third by both its variables).
+// the six sources (the third by both its variables, the well-known file by the setting that
+// names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -324,11 +325,14 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	for _, source := range []string{
 		"CLOUDSDK_AUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
 		"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT",
-		filepath.Join(dir, "application_default_credentials.json"), "gcloud", "metadata server",
+		"the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)", "gcloud", "metadata server",
 	} {
 		if !strings.Contains(stderr, source) {
 			t.Fatalf("stderr %q does not name %s", stderr, source)
 		}
+	}
+	if strings.Contains(stderr, dir) {
+		t.Fatalf("stderr %q names the gcloud configuration directory %s", stderr, dir)
 	}
 	if _, calls := fake.calledUnder(); calls != 0 {
 		t.Fatalf("Secret Manager saw %d calls, want none", calls)
@@ -353,7 +357,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("CLOUDSDK_CORE_ACCOUNT", "nobody@example.com")
 			},
-			code: 1, says: []string{"CLOUDSDK_CORE_ACCOUNT names nobody@example.com"},
+			code: 1, says: []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed;"},
 		},
 		{
 			name: "credentials file does not parse",
@@ -398,14 +402,14 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "missing")
 			},
-			code: 1, says: []string{"the gcloud configuration missing (CLOUDSDK_ACTIVE_CONFIG_NAME): read the gcloud configuration missing"},
+			code: 1, says: []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"},
 		},
 		{
 			name: "active gcloud refresh fails",
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("STUB_GCLOUD_REFUSE_TOKEN", "1")
 			},
-			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com", "Reauthentication failed"},
+			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com: exit status 1: run the same gcloud command yourself to see its message"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

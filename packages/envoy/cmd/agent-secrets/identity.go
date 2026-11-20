@@ -20,10 +20,12 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
@@ -81,6 +83,25 @@ func keyDir() string {
 	return filepath.Dir(helper.DefaultSocket(os.Getenv))
 }
 
+// keyDirName is how a message names the key dir (keyDir): AGENT_SECRETS_KEY_DIR where that is set,
+// else its default's own expression as helper.DefaultSocket resolves it - under XDG_RUNTIME_DIR,
+// or under /run/user/$UID where that is unset too - never the directory's path. The key dir holds
+// key.pem, and a setting meant for a credential's place is where a person who pasted the
+// credential puts it.
+func keyDirName() string {
+	switch {
+	case os.Getenv("AGENT_SECRETS_KEY_DIR") != "":
+		return "AGENT_SECRETS_KEY_DIR"
+	case os.Getenv("XDG_RUNTIME_DIR") != "":
+		return "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
+	default:
+		return "/run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR and XDG_RUNTIME_DIR are unset)"
+	}
+}
+
+// keyDirFile is how a message names the file name in the key dir: name in keyDirName.
+func keyDirFile(name string) string { return name + " in " + keyDirName() }
+
 // brokerBaseURL is the broker's address as brokerURLVar gives it (clientGetenv: the environment,
 // else the settings file), without the slashes it ends in (brokerclient.WithoutTrailingSlashes,
 // the rule both halves of this client read an address by), and the empty Address when neither
@@ -122,8 +143,32 @@ func approveURL() string {
 // enrollment session_id of its own, so an unset result here is what the broker's requests.
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
+//
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs. A shell that
+// carries it beside another session's id, because a Codex session was started from a Claude Code
+// or Oh My Pi shell or the other way round, names whichever of `codex`, `claude` and `omp` is
+// this process's nearest ancestor; where the walk finds none of them, the order above, with
+// CODEX_THREAD_ID after CLAUDE_CODE_SESSION_ID, as before Codex was a host.
 func requestSessionID() string {
-	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	codex := os.Getenv("CODEX_THREAD_ID")
+	others := cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	if codex != "" && (others == "" || nearestHarness("codex", "claude", "omp") == "codex") {
+		return codex
+	}
+	return others
+}
+
+// harnessName is the name nearestHarness compares for a process's comm: the command name, with a
+// trailing ".exe" taken off.
+//
+// A name is the base name of the binary the process executed, cut to 15 characters, with a
+// trailing ".exe" taken off: Claude Code's npm package runs its binary as bin/claude.exe. A host
+// started through an interpreter (an npm install that runs as node) has the interpreter's name,
+// so the walk passes it and may stop at a host further out, and a Claude Code run that way inside
+// a Codex shell names the Codex thread. dispatch's walk (nearestAncestorNamed,
+// packages/envoy-client/src/process-ancestry.ts) reads names by the same rule.
+func harnessName(comm string) string {
+	return strings.TrimSuffix(strings.TrimSpace(comm), ".exe")
 }
 
 func exists(path string) bool {
@@ -147,7 +192,9 @@ func launcherKeyDir(dir string) bool {
 	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
 }
 
-// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait.
+// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait. A value that is
+// no duration of zero or more is refused naming the variable and its rule, never the value, which
+// the environment holds whatever was put there.
 func enrollWait() (time.Duration, error) {
 	v := os.Getenv("AGENT_SECRETS_ENROLL_WAIT")
 	if v == "" {
@@ -155,7 +202,7 @@ func enrollWait() (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
-		return 0, fmt.Errorf("AGENT_SECRETS_ENROLL_WAIT=%q is not a duration such as 20s", v)
+		return 0, errors.New("AGENT_SECRETS_ENROLL_WAIT is not a Go duration of zero or more, such as 20s")
 	}
 	return d, nil
 }
@@ -196,8 +243,9 @@ func helperInstalled() bool {
 // failure is the broker call's. It reads neither a person's sign-in nor the machine cache, and
 // asks no metadata server: those are the chain's later sources, which --source reports. A
 // registered session on a helper holding no launcher credential (NO_CREDENTIAL: never logged in,
-// or its login lapsed or was refused, until the operator logs the machine in) has none, since that
-// helper enrolls no one; it is exit 1 with the not-logged-in notice. A helper that cannot be asked
+// its login lapsed or was refused, or, in identity mode, its trade loop has not traded or has
+// stopped) has none, since that helper enrolls no one; it is exit 1, quoting the helper's own
+// answer, which names the cure of its mode (brokerclient.Hint). A helper that cannot be asked
 // — its socket refuses connections, is absent although AGENT_SECRETS_HELPER_SOCK names it or the
 // helper is installed, or gives no answer within identityDeadline — is exit 1 with a notice on
 // stderr, so a caller that then uses its other backend does not do so silently. With no key dir,
@@ -215,8 +263,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets identity: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "identity")
 	}
 	if *source {
 		return identitySource(stdout, stderr)
@@ -241,7 +288,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 	case resp.Code == helper.CodeNotASession:
 		return 1
 	case resp.Code == helper.CodeNoCredential:
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", errNoCredential)
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", noCredential(resp).sessionLine())
 		return 1
 	default:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s answered %s: %s; not an agent session\n", answer.sock, resp.Code, resp.Error)

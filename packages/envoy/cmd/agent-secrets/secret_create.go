@@ -90,6 +90,7 @@ func watchCreateSignals() (stop func()) {
 	}
 	signals := make(chan os.Signal, len(watched))
 	signal.Notify(signals, watched...)
+	formWatchesSignals.Add(1)
 	done, exited := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
@@ -106,6 +107,7 @@ func watchCreateSignals() (stop func()) {
 	return sync.OnceFunc(func() {
 		close(done)
 		<-exited
+		formWatchesSignals.Add(-1)
 		signal.Stop(signals)
 		select {
 		case sig := <-signals:
@@ -145,9 +147,12 @@ func endAtOnce(sig os.Signal) {
 	exitBySignal(sig)
 }
 
-// exitBySignal ends the process by sig: back at its default action, the platform raises it where
-// it can (raiseSignal), and the exit status a shell gives for sig is the fallback.
+// exitBySignal ends the process by sig: it first kills each gcloud runGcloud is running, with its
+// group (killRunningGcloud), since gcloud, in a group of its own, does not get sig; then, back at
+// sig's default action, the platform raises it where it can (raiseSignal), and the exit status a
+// shell gives for sig is the fallback.
 func exitBySignal(sig os.Signal) {
+	killRunningGcloud()
 	signal.Reset(sig)
 	if raiseSignal(sig) {
 		time.Sleep(time.Second)
@@ -385,7 +390,7 @@ func (p *pendingCreate) interrupted() {
 		return
 	case p.stored:
 		p.sayStored()
-		reread(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+		rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 		return
 	}
 	if failure := p.abandonLocked(p.failure); failure != nil {
@@ -405,8 +410,8 @@ func (p *pendingCreate) endingAtOnce(sig os.Signal) {
 func (p *pendingCreate) rereadOutcome(outcome discardOutcome) {
 	switch outcome {
 	case deletedEmpty:
-		_, _ = p.s.broker.RereadSecret(context.WithoutCancel(p.s.ctx), p.name)
+		_, _, _ = p.s.askReread(context.WithoutCancel(p.s.ctx), p.name)
 	case keptMayHoldValue:
-		reread(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+		rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 	}
 }

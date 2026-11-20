@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // flakyRequestID is the request flakyBroker leaves pending, and flakyValue the value its grant
@@ -196,6 +197,11 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 					t.Errorf("stderr = %q, want it to carry %q", stderr, want)
 				}
 			}
+			// The broker's address is clean, so every line naming a failed read prints the call
+			// it made, whatever wait that read asked the broker to hold it for.
+			if strings.Contains(stderr, redact.NotPrinted) {
+				t.Errorf("stderr = %q: a read of a clean broker address prints its call", stderr)
+			}
 			if row.exit == exitPending && strings.Contains(stderr, "is still waiting for approval") {
 				t.Errorf("stderr = %q: a wait that ran out on failed polls says it read the request pending", stderr)
 			}
@@ -220,12 +226,12 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	}{
 		{reset, true},
 		{fmt.Errorf("wrapped: %w", reset), true},
-		{&cutOffError{"GET " + base + "/v1/requests/x", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
-		{&cutOffError{"GET " + base + "/v1/requests/x", io.ErrUnexpectedEOF}, true},
+		{&cutOffError{base: brokeraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
+		{&cutOffError{base: brokeraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: io.ErrUnexpectedEOF}, true},
 		// The helper's socket failing under a machine session's proof is the local signer's
 		// failure, not a poll that did not reach the broker: it ends the wait, as before.
 		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
-		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent}, false},
+		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent, ""}, false},
 		{&apiError{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}, true},
 		{&apiError{Status: http.StatusBadGateway, Message: "<html>502 Bad Gateway</html>"}, true},
 		{&apiError{Status: http.StatusServiceUnavailable, Code: "SHUTTING_DOWN", Message: "shutting down"}, true},

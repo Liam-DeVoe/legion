@@ -26,13 +26,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
 
 // TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe: as a session's forms print it, a
@@ -58,6 +57,8 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			// The settings are base's answer, as client.Settings marks them (Settings.answeredBy).
+			row.settings.answeredBy = brokeraddr.New(row.base)
 			src := brokerSource(brokeraddr.New(row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
@@ -229,20 +230,8 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 // broker's address, while an ordinary id still verifies and is answered.
 func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	key, err := proof.NewKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDir := writeKeyDir(t, key, testEnrollmentID)
-	verifier := &proof.Verifier{Skew: time.Minute,
-		Lookup: func(_ context.Context, id string) (string, bool, error) {
-			return thumbprint, id == testEnrollmentID, nil
-		},
-		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	key := newProofKey(t)
+	keyDir := key.keyDir
 	var reached, verified atomic.Int32
 	// The handler reads broker.URL, so broker is assigned before the server serves: Start, which
 	// sets the URL, runs after the assignment and before the goroutine that serves.
@@ -253,7 +242,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 			return
 		}
 		reached.Add(1)
-		if _, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, broker.URL+r.URL.Path, time.Now()); err != nil {
+		if err := key.verify(r, broker.URL); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"code":"PROOF_INVALID","error":"the proof does not verify"}`))
 			return
@@ -266,7 +255,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	defer broker.Close()
 	for _, id := range []string{"req%zz", "a b", "a/b", "req%25zz"} {
 		_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "status", id)
-		want := "agent-secrets status: " + strconv.Quote(id) + " is not a request id\n"
+		want := "agent-secrets status: not a request id (the argument is not printed: it holds a character a call's path would change)\n"
 		if exit == 0 || stderr != want {
 			t.Errorf("status %q: exit %d, stderr %q; want exactly %q, with no trailer since nothing was sent", id, exit, stderr, want)
 		}
@@ -644,6 +633,9 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an HTTP answer to HTTPS", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, answered, ""},
 		{"an HTTP answer to HTTPS, as net/http reports it", http.ErrSchemeMismatch, answered, ""},
 		{"an untrusted certificate", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, answered, ""},
+		{"a TLS alert the broker sent, over TCP", tlsalerttest.Get(t, tlsalerttest.Remote(t)), answered, ""},
+		{"a TLS alert this client sent on a record it could not take, over TCP", tlsalerttest.Get(t, tlsalerttest.Local(t)), answered, ""},
+		{"a TLS alert over QUIC", tls.AlertError(40), answered, ""},
 		{"EOF after the request", io.EOF, answered, ""},
 		{"a reset after the request", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, answered, ""},
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},

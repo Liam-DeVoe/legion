@@ -16,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
@@ -27,13 +28,12 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	const form = "grant list"
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet(form, stderr)
-	asJSON := flags.Bool("json", false, "print the broker's response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", form, positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, form)
 	}
 	base, signer, err := machineContext()
 	if err != nil {
@@ -44,7 +44,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	c := newClient(base)
 	grants, raw, err := c.OperatorGrants(ctx, signer)
 	if err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	if *asJSON {
 		writeVerbatim(stdout, raw)
@@ -53,7 +53,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, strings.Join(grantColumns, "\t"))
 	for _, g := range grants.Grants {
-		fmt.Fprintln(tw, strings.Join(grantRow(g), "\t"))
+		fmt.Fprintln(tw, strings.Join(grantRow(c.baseURL, g), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -79,22 +79,31 @@ func grantExpiry(expires *time.Time) string {
 var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
 
 // grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
-// such value.
+// such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
+// print (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in
+// it, a tab among them, would start a line of its own or split the cell, and not at all beside an
+// address that carries a credential; the grant id, as every id the broker answers prints
+// (idWords), still whole there where it is a UUID the address does not hold.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
 // for a shared secret — and the judge as its decider, "judge:<model id>". APPROVER alone read as
 // the owner's own approval of a request that owner never saw. An automatic grant nobody decided
 // prints "-" under both.
-func grantRow(g OperatorGrant) []string {
+func grantRow(base brokeraddr.Address, g OperatorGrant) []string {
 	session := g.Enrollment.Kind + "/" + g.Enrollment.RuntimeID
 	if g.Enrollment.Slot != nil {
 		session += "/" + *g.Enrollment.Slot
 	}
-	return []string{
+	cells := []string{
 		g.GrantID, strings.Join(g.Names, ","), g.Granted, orDashPtr(g.Approver), orDashPtr(g.DecidedBy),
 		session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt),
 	}
+	for i, cell := range cells {
+		cells[i] = base.Words(cell)
+	}
+	cells[0] = idWords(base, g.GrantID)
+	return cells
 }
 
 // orDashPtr is what s points at, or "-" where it points at nothing: a cell the broker's answer
@@ -151,7 +160,7 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	c := newClient(base)
 	if err := c.RevokeOperatorGrant(ctx, signer, grantID); err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(base))
 	return 0

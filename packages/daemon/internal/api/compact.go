@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -76,12 +77,22 @@ const (
 // instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
 // its own past, so these instructions are what make the summary text.
 //
+// They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer copies its
+// number into the footer of its review, and a summary that dropped it leaves the reviewer no entry
+// to write, so its review moves no commit (workflow's review). Only the last sentence of a task is
+// the daemon's (reviewround.Sentences, supervise's Delivery.message): a task's own text can quote
+// `Review entry: 2.` above it, and a task can end with `Review entry: none.`, which does not change
+// the entry of the round. So the instruction first takes the last sentence of each task, and then
+// keeps the newest of those that names a number.
+//
 // A model reads it, so it follows ASD-STE100: one instruction per sentence, active voice, and no
 // word with a second reading.
 const compactInstructions = "Write the summary as text. " +
 	"Keep what the rest of this task needs: the task itself, the decisions you made, the files you changed, " +
 	"the commands you ran and what they answered, and what is still open. " +
 	"Keep every issue key, file path, branch name, commit id and pull request number you still need. " +
+	"Find the last sentence of each task you were given. " +
+	"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
@@ -217,6 +228,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
 // (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
 // compaction that did not run.
+//
+// While the project is paused, a claim that is not the project's controller is refused
+// PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
+// (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
 		writeFailure(w, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
@@ -227,6 +242,11 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	if s.stopped(w, "compact") {
+		return CompactResponse{}, false
+	}
+	// A compaction sends the claim's task again once it ends, which is a turn the pause holds
+	// for every claim but the controller's.
+	if s.refusedWhilePaused(w, r, "compact", m.View().Claim) {
 		return CompactResponse{}, false
 	}
 	switch err := m.Compact(ctx, compactInstructions); {
@@ -306,16 +326,15 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 
 // boundReason is a compaction's reason cut to reasonBound bytes, on a rune boundary so the cut
 // leaves no partial character behind, with an ellipsis where it cut so a reader sees that the
-// sentence did not end there.
+// sentence did not end there. The reason is Oh My Pi's or the transport's, so redact.Bytes reads it
+// whole through the URL rule before the cut: a cut made first could end inside a URL's userinfo,
+// before its "@", and leave the start of a user name where the rule no longer finds it.
 func boundReason(text string) string {
-	if len(text) <= reasonBound {
-		return text
+	kept, cut := redact.Bytes(text, reasonBound)
+	if cut {
+		return kept + "…"
 	}
-	cut := reasonBound
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + "…"
+	return kept
 }
 
 // refuseState is the refusal the machine answered a compaction with, in the words of the state

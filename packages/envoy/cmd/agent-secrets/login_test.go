@@ -37,7 +37,10 @@ import (
 // commands after it call: it records the session name and the whole form of each trade, hands out
 // an enrollment id per registration, answers a session proof naming any enrollment but the last
 // one it made exactly as the broker answers one whose lease has lapsed, and answers GET
-// /v1/settings with settings, or 404 while it holds none.
+// /v1/settings with settings, or 404 while it holds none. Its POST /v1/secrets/{name}/reread,
+// once rereadAnswer is set, answers a live session's proof with rereadAnswer, a lapsed one 401
+// PROOF_INVALID "proof invalid: not live", and a call with no proof 202, and records each call's
+// enrollment ("" for none).
 type loginBroker struct {
 	server *httptest.Server
 	mu     sync.Mutex
@@ -49,6 +52,19 @@ type loginBroker struct {
 	enrollments int
 	live        string
 	settings    map[string]any
+	// enrollmentID, when set, is the id every registration is answered with.
+	enrollmentID string
+	// refusal, once set (refuseTrades), answers every trade.
+	refusal *loginRefusal
+	// rereadAnswer answers a live session's reread; rereads is each reread's enrollment.
+	rereadAnswer func(name string) Reread
+	rereads      []string
+}
+
+// loginRefusal is the answer refuseTrades makes the token endpoint give.
+type loginRefusal struct {
+	status int
+	body   map[string]any
 }
 
 func newLoginBroker(t *testing.T) *loginBroker {
@@ -62,7 +78,14 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		b.mu.Lock()
 		b.sessions = append(b.sessions, r.PostForm.Get("session"))
 		b.forms = append(b.forms, r.PostForm)
+		refusal := b.refusal
 		b.mu.Unlock()
+		if refusal != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(refusal.status)
+			_ = json.NewEncoder(w).Encode(refusal.body)
+			return
+		}
 		writeLoginJSON(w, map[string]any{
 			"access_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
 			"credential_id": "credential-1", "credential_expires_at": "2099-01-01T00:00:00Z",
@@ -82,6 +105,9 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		b.mu.Lock()
 		b.enrollments++
 		b.live = fmt.Sprintf("enrollment-%d", b.enrollments)
+		if b.enrollmentID != "" {
+			b.live = b.enrollmentID
+		}
 		id := b.live
 		b.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
@@ -98,6 +124,34 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		}
 		writeLoginJSON(w, map[string]any{"enrollment_id": live, "runtime_id": "this-box", "grants": []any{}})
 	})
+	mux.HandleFunc("POST /v1/secrets/{name}/reread", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		answer, live := b.rereadAnswer, b.live
+		b.mu.Unlock()
+		if answer == nil {
+			http.NotFound(w, r)
+			return
+		}
+		enrollment := ""
+		if r.Header.Get("Proof") != "" {
+			enrollment = proofEnrollment(t, r)
+		}
+		b.mu.Lock()
+		b.rereads = append(b.rereads, enrollment)
+		b.mu.Unlock()
+		switch {
+		case enrollment == "":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"accepted":true}` + "\n"))
+		case enrollment != live:
+			w.WriteHeader(http.StatusUnauthorized)
+			writeLoginJSON(w, map[string]any{"code": "PROOF_INVALID", "error": "proof invalid: not live"})
+		default:
+			reread := answer(r.PathValue("name"))
+			writeLoginJSON(w, map[string]any{"name": reread.Name, "served": reread.Served, "reason": reread.Reason, "type": reread.Type})
+		}
+	})
 	b.server = httptest.NewServer(mux)
 	t.Cleanup(b.server.Close)
 	return b
@@ -111,11 +165,25 @@ func (b *loginBroker) lapse() {
 	b.live = ""
 }
 
+// refuseTrades answers every later trade with status and body.
+func (b *loginBroker) refuseTrades(status int, body map[string]any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refusal = &loginRefusal{status: status, body: body}
+}
+
 // liveEnrollment is the enrollment the broker holds a lease for.
 func (b *loginBroker) liveEnrollment() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.live
+}
+
+// rereadEnrollments is each reread's enrollment, in order, "" for a call with no proof.
+func (b *loginBroker) rereadEnrollments() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.rereads...)
 }
 
 // proofEnrollment reads the enrollment a request's session proof names (its `eid` claim).
@@ -314,6 +382,69 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(brokerclient.SessionFor(record)), " ") {
 		t.Fatal("the session name carries a space, which no form field of a trade may")
+	}
+}
+
+// TestASignInsFailedTradeNamesOnlyTheCureOfItsClass: a kept sign-in whose session lapsed trades
+// again on the next call (registerSignInSession), and a trade the broker refuses tells the person
+// only what cures that refusal, in the broker's own words and nothing added: a sign-in the broker
+// revoked names `agent-secrets login` once, as the broker words it; a machine the deployment does
+// not list names no login, which would not list it; a person Dispatch holds names no login, since
+// a new sign-in on the box makes a second box key and changes nothing; and a broker that answers
+// 503 names none either, since the next trade may be served.
+func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
+	const held = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   map[string]any
+		logins int // how often the error names agent-secrets login, in any form
+	}{
+		// The broker's words for a revoked sign-in (internal/broker/oauth, Provider.personSignIn).
+		{"a sign-in the broker revoked", http.StatusBadRequest, map[string]any{"error": "invalid_grant",
+			"error_description": "ada@example.com revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`."}, 1},
+		// The broker's words for a machine no entry lists (internal/broker/exchange, Set.Person),
+		// as the token endpoint answers them.
+		{"a machine the deployment does not list", http.StatusBadRequest, map[string]any{"error": "invalid_request",
+			"error_description": "The subject token was refused: no entry lists the Google account box@fleet.iam.gserviceaccount.com, which the actor token names as the machine."}, 0},
+		{"a person Dispatch holds", http.StatusBadRequest, map[string]any{"error": "membership_held", "error_description": held}, 0},
+		{"a broker that answers 503", http.StatusServiceUnavailable, map[string]any{"error": "unavailable"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const person = "ada@example.com"
+			broker := newLoginBroker(t)
+			issuer := loginIssuer(t, person)
+			keyDir := t.TempDir()
+			t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
+			t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+			t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
+			t.Setenv(brokerclient.SessionVar, "")
+			forceMetadataMachine(t)
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "absent.sock"))
+			if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+				t.Fatalf("login: %v", err)
+			}
+			broker.lapse()
+			broker.refuseTrades(tc.status, tc.body)
+
+			_, signer, err := selectSigner(keyDir)
+			if err == nil {
+				_, _, err = newClient(brokeraddr.New(broker.server.URL)).Self(context.Background(), signer)
+			}
+			if err == nil {
+				t.Fatal("a call whose trade the broker refused succeeded")
+			}
+			got := err.Error()
+			if told := strings.Count(got, brokerclient.SignInCommand); told != tc.logins {
+				t.Fatalf("the error reads %q; it names %s %d times, want %d", got, brokerclient.SignInCommand, told, tc.logins)
+			}
+			if strings.Contains(got, "run: ") {
+				t.Fatalf("the error reads %q; want the broker's words and no hint added to them", got)
+			}
+			if tc.body["error_description"] != nil && !strings.Contains(got, tc.body["error_description"].(string)) {
+				t.Errorf("the error reads %q; want the broker's own words %q", got, tc.body["error_description"])
+			}
+		})
 	}
 }
 
