@@ -88,10 +88,12 @@ func TestAProofNeedsAFreshCalloutDecision(t *testing.T) {
 }
 
 // TestRunProvesAgainWhenAHubsConnectionChanges: Run proves at once and again at each connection
-// event of a hub's client, not only on its period. With the period an hour, Run's first proof makes
-// the admission ready; the hub's restart without the server tag drops the held connection, and Run
-// proves again at that event, so the admission turns not ready within seconds. The hub's refusals
-// cannot show which proof ran: the held client's own reconnects are refused for the tag too.
+// event of a hub's client, not only on its period. With the period an hour, Run's first proof, and
+// the one SetListeners asked for, make the admission ready; both are kept before the hub changes,
+// so no proof is pending then. The hub's restart without the server tag drops the held connection,
+// and Run proves again at that event, so the admission turns not ready within seconds. The hub's
+// refusals cannot show which proof ran: the held client's own reconnects are refused for the tag
+// too.
 //
 // Control: make Run start no follower of the hubs' connections (drop the go a.follow line); the
 // admission stays ready for the hour, and the test fails at its wait.
@@ -106,7 +108,8 @@ func TestRunProvesAgainWhenAHubsConnectionChanges(t *testing.T) {
 	running.Go(func() { a.Run(ctx) })
 	t.Cleanup(func() { cancel(); running.Wait() })
 
-	require.Eventually(t, a.Ready, 30*time.Second, 20*time.Millisecond, "Run's first proof never made the admission ready")
+	require.Eventually(t, func() bool { return a.Ready() && busprojects.KeptProofs(a) >= 2 }, 30*time.Second, 20*time.Millisecond,
+		"Run's first proof and the one SetListeners asked for never both ended ready")
 	hub.Retag(t, false)
 	require.Eventually(t, func() bool { return !a.Ready() }, 30*time.Second, 20*time.Millisecond,
 		"the hub's connection changed and Run did not prove again: the admission is still ready with the hub untagged")

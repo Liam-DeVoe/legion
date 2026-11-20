@@ -15,3 +15,11 @@ func SetLookup(a *HubAdmission, lookup func(ctx context.Context, host string) ([
 func SetPeriod(a *HubAdmission, period time.Duration) {
 	a.period = period
 }
+
+// KeptProofs is the number of the proof whose result a holds: 0 before any, and n once its nth
+// proof has ended and been kept.
+func KeptProofs(a *HubAdmission) uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.kept
+}
