@@ -147,17 +147,17 @@ const ownClaim = "OWN_CLAIM"
 // so a role this check takes can never name it.
 func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (claimTarget, bool) {
 	var req ClaimRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"role", req.Role}) {
 		return claimTarget{}, false
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
 		return claimTarget{}, false
 	}
 	role := claim.Role(req.Role)
 	if !claim.IsRole(role) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ROLE", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ROLE", fmt.Sprintf(
 			"role must be one of %s; the project's controller is none of them, and %s",
 			roleList(), op.invalidRole))
 		return claimTarget{}, false
@@ -165,7 +165,7 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 	token, err := claim.NewToken(s.project, req.Issue, role)
 	if err != nil {
 		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
-		writeFailure(w, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
 		return claimTarget{}, false
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -186,24 +186,24 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 		}
 		by = supervise.SuspendedByArchitect
 	default:
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED",
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED",
 			op.name+" requires a controller grant, or an architect grant for a claim of an issue it owns")
 		return claimTarget{}, false
 	}
 	m, supervised := s.supervisor.Machine(token)
 	if !supervised {
-		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
+		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return claimTarget{}, false
 	}
 	if by == supervise.SuspendedByArchitect && token == grant.Claim {
-		writeFailure(w, http.StatusForbidden, ownClaim, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusForbidden, ownClaim, fmt.Sprintf(
 			"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's, the operator's and any architect's above it in the tree to recover",
 			token, op.name))
 		return claimTarget{}, false
 	}
 	if by == supervise.SuspendedByArchitect || !op.controllerPassesHold {
 		if err := m.View().HeldAgainst(by); err != nil {
-			s.refuseHold(w, token, op, by, err, nothingChanged)
+			s.refuseHold(w, r, token, op, by, err, nothingChanged)
 			return claimTarget{}, false
 		}
 	}

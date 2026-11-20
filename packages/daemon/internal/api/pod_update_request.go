@@ -137,12 +137,12 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 // a round once open is carried to the replacement of its pod whatever the pod's drift says.
 func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 	var req PodUpdateRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -150,16 +150,16 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", "a pod update requires a controller grant")
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", "a pod update requires a controller grant")
 		return
 	}
 	if !s.ownDispatchIssue(req.Issue) {
-		writeFailure(w, http.StatusNotFound, "NO_CLAIM", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", fmt.Sprintf(
 			"%s is an issue of another project than this daemon's %s, so this daemon runs no claim and no pod of it",
 			req.Issue, s.dispatchProject))
 		return
 	}
-	if s.stopped(w, "the pod update of "+req.Issue) {
+	if s.stopped(w, r, "the pod update of "+req.Issue) {
 		return
 	}
 	if s.refusedForPause(w, r, "the pod update", req.Issue,
@@ -168,7 +168,7 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.requestPodUpdate == nil {
-		writeFailure(w, http.StatusNotFound, "NO_POD", "this daemon runs no pod update rounds, so it replaces no pod")
+		s.writeFailure(w, r, http.StatusNotFound, "NO_POD", "this daemon runs no pod update rounds, so it replaces no pod")
 		return
 	}
 	answer, err := s.requestPodUpdate(r.Context(), req.Issue)
@@ -179,14 +179,14 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 		if refused.RetryAfter > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(refused.RetryAfter.Seconds()))))
 		}
-		writeFailure(w, status, code, refused.Message)
+		s.writeFailure(w, r, status, code, refused.Message)
 		return
 	case err != nil:
 		s.logRequestFailure(r, err, "api: open the update round of an issue's pod", "issue", req.Issue)
-		writeFailure(w, http.StatusInternalServerError, "POD_UPDATE_FAILED", err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "POD_UPDATE_FAILED", err.Error())
 		return
 	}
 	s.log.Info("api: "+callerName(supervise.SuspendedByController)+" asked for the replacement of an issue's pod",
 		"issue", req.Issue, "round", answer.Round, "opened", answer.Opened, "reasons", answer.Reasons, "status", http.StatusOK)
-	writeJSON(w, http.StatusOK, answer)
+	s.writeAnswer(w, r, AnswerPodUpdate, http.StatusOK, answer)
 }

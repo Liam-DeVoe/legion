@@ -31,7 +31,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 	if failedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			if refusal != "" {
-				writeJSON(w, status, errorBody(refusal))
+				s.refuse(w, r, status, refusal)
 				return 0, false
 			}
 			return status, true

@@ -214,7 +214,7 @@ func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	}
 	state := target.machine.View().State
 	if state == supervise.StateWorking {
-		refuseClaimInATurn(w, target.token, retryOp)
+		s.refuseClaimInATurn(w, r, target.token, retryOp)
 		return
 	}
 	if s.refuseStartOfStoppedWork(w, r, target, state, retryOp) {
@@ -224,7 +224,7 @@ func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.answerClaimOperation(w, target, retryOp.did, status)
+	s.answerClaimOperation(w, r, target, retryOp.did, status)
 }
 
 // issueOutOfWorkflow is the refusal of an architect's start of a claim whose issue's work the
@@ -266,7 +266,7 @@ func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request
 		read, err := s.recordedIssue(r.Context(), issue.Tree)
 		if err != nil {
 			s.logRequestFailure(r, err, "api: read the root of the tree of a claim an architect would start", "claim", target.token, "tree", issue.Tree)
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the root of "+issue.Key+"'s tree")
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the root of "+issue.Key+"'s tree")
 			return true
 		}
 		root = read
@@ -274,7 +274,7 @@ func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request
 	if root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false
 	}
-	writeFailure(w, http.StatusConflict, issueOutOfWorkflow, fmt.Sprintf(
+	s.writeFailure(w, r, http.StatusConflict, issueOutOfWorkflow, fmt.Sprintf(
 		"%s is %s, and the daemon has stopped its issue's work: %s. %s by %s would start the claim on that stopped work, so it %s. The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and %s by the controller or the operator reaches the claim meanwhile",
 		target.token, state, stoppedWork(issue, root), capitalized(op.name), callerName(target.by), nothingChanged, op.name))
 	return true
@@ -348,10 +348,10 @@ func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op 
 	if errors.Is(err, supervise.ErrSuspendHeld) {
 		status = http.StatusAccepted
 	} else if err != nil {
-		s.refuseClaimOperation(w, target, err, op)
+		s.refuseClaimOperation(w, r, target, err, op)
 		return
 	}
-	s.answerClaimOperation(w, target, op.did, status)
+	s.answerClaimOperation(w, r, target, op.did, status)
 }
 
 // refuseClaimOperation answers an event of the caller's that the claim's machine refused: a
@@ -359,15 +359,15 @@ func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op 
 // working that the operation does not reach as a claim in a turn (claimOp.refusesATurn,
 // refuseClaimInATurn), and every other refusal as the operator's door answers it, in the
 // machine's own words (operationFailure).
-func (s *server) refuseClaimOperation(w http.ResponseWriter, target claimTarget, err error, op claimOp) {
+func (s *server) refuseClaimOperation(w http.ResponseWriter, r *http.Request, target claimTarget, err error, op claimOp) {
 	var refused *supervise.RefusedError
 	switch {
 	case holdRefusal(err):
-		s.refuseHold(w, target.token, op, target.by, err, nothingChanged)
+		s.refuseHold(w, r, target.token, op, target.by, err, nothingChanged)
 	case op.refusesATurn && errors.As(err, &refused) && refused.State == supervise.StateWorking:
-		refuseClaimInATurn(w, target.token, op)
+		s.refuseClaimInATurn(w, r, target.token, op)
 	default:
-		s.operationFailure(w, target.by, op.request, target.token, err)
+		s.operationFailure(w, r, target.by, op.request, target.token, err)
 	}
 }
 
@@ -391,19 +391,19 @@ func holdRefusal(err error) bool {
 // itsSuspensionTakenOver). An error it does not know is no hold it can name: it is logged and
 // answered 500 in its own words, as the daemon's own failure, rather than given the words of a
 // hold it may not be.
-func (s *server) refuseHold(w http.ResponseWriter, token claim.Token, op claimOp, by supervise.SuspendSource, err error,
-	outcome string) {
+func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.Token, op claimOp, by supervise.SuspendSource,
+	err error, outcome string) {
 	switch code, heldBy, lifts, held := holdSentences(token, err); {
 	case !held:
 		s.logFailure("api: a refusal of a hold that no answer of the claim door decides", "claim", token, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf(
-			"%s by %s of %s met a refusal this daemon has no answer for: %v", op.name, callerName(by), token, err)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf(
+			"%s by %s of %s met a refusal this daemon has no answer for: %v", op.name, callerName(by), token, err))
 	case code == suspendedByDaemon:
-		writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, code, fmt.Sprintf(
 			"%s is %s, and %s by %s does not reach the daemon's suspension, so it %s. %s",
 			token, heldBy, op.name, callerName(by), outcome, lifts))
 	default:
-		writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, code, fmt.Sprintf(
 			"%s is %s, so %s by %s %s. %s", token, heldBy, op.name, callerName(by), outcome, lifts))
 	}
 }
@@ -440,15 +440,16 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 // door refuses that claim in the hold's code before any operation reads its state, so it too
 // takes one code whichever operation was asked (claimDoor). The sentence names the states the
 // operation reaches and sends the caller to the state (askAgainLater).
-func refuseClaimInATurn(w http.ResponseWriter, token claim.Token, op claimOp) {
-	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
+func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, token claim.Token, op claimOp) {
+	s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working, and %s reaches no claim in a turn. %s. %s", token, op.name, op.reaches, askAgainLater))
 }
 
 // answerClaimOperation writes the claim as the caller's operation left it
-// (ClaimOperationResponse) under status, and logs what the caller did to which claim, as the
-// caller named it.
-func (s *server) answerClaimOperation(w http.ResponseWriter, target claimTarget, did string, status int) {
+// (ClaimOperationResponse) under status, as the answer the claim operations' row of the table
+// names (AnswerClaimOperation), and logs what the caller did to which claim, as the caller named
+// it.
+func (s *server) answerClaimOperation(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
 	view := target.machine.View().Claim
 	answer := ClaimOperationResponse{
 		State:            string(view.State),
@@ -460,5 +461,5 @@ func (s *server) answerClaimOperation(w http.ResponseWriter, target claimTarget,
 	}
 	s.log.Info("api: "+callerName(target.by)+" "+did+" a claim", "claim", target.token, "issue", target.issue, "role", target.role,
 		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status)
-	writeJSON(w, status, answer)
+	s.writeAnswer(w, r, AnswerClaimOperation, status, answer)
 }
