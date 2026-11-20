@@ -6,9 +6,12 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -22,16 +25,6 @@ const brokerEventInsert = "internal/dispatch/events/broker.go"
 // (events.Broker.QueueAppendWithLogins). It keeps the invariants below, and the count is here so
 // that an insert moving out of this scan's reach reds rather than passing unseen.
 const brokerEventInserts = 1
-
-// eventsTable names events in each spelling Postgres resolves to it: bare, schema-qualified, and
-// either part quoted. The statements the scan reads are lowercased with their whitespace collapsed
-// (sqlStatements), so one optional space stands for any.
-const eventsTable = `(?:"?public"? ?\. ?)?"?events\b`
-
-// eventInsertStatement is a statement that writes rows into events: an insert, a merge, or a copy
-// from a client or a file, with the table in each of its spellings (eventsTable). A copy to a
-// client reads, and is not one.
-var eventInsertStatement = regexp.MustCompile(`\b(?:insert into|merge into) ` + eventsTable + `|\bcopy ` + eventsTable + `"?(?: ?\([^)]*\))? from\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
 // row of it is written by events.Broker.Append, which keeps two invariants no other insert would.
@@ -58,7 +51,7 @@ var eventInsertStatement = regexp.MustCompile(`\b(?:insert into|merge into) ` + 
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
-	t.Run("the pattern reads every statement that writes rows into events", func(t *testing.T) {
+	t.Run("the parser reads every statement that writes rows into events", func(t *testing.T) {
 		for _, row := range []struct {
 			statement string
 			writes    bool
@@ -74,7 +67,12 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			{"insert into events_archive (id) values (1)", false},
 			{"select id from events where id > $1", false},
 		} {
-			if got := eventInsertStatement.MatchString(row.statement); got != row.writes {
+			analysis, err := eventidtest.Analyze(row.statement)
+			if err != nil {
+				t.Errorf("%s: parse: %v", row.statement, err)
+				continue
+			}
+			if got := analysis.EventInserts > 0; got != row.writes {
 				t.Errorf("%s: read as a write into events: %t, want %t", row.statement, got, row.writes)
 			}
 		}
@@ -89,15 +87,16 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	broker := 0
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
-		for _, statement := range sqlStatements(source.file, constants) {
-			if !eventInsertStatement.MatchString(statement) {
+		for _, statement := range sqlTemplatesByFunction(source.file, constants) {
+			analysis, err := eventidtest.Analyze(statement.statement)
+			if err != nil || analysis.EventInserts == 0 {
 				continue
 			}
 			if strings.HasSuffix(path, brokerEventInsert) {
-				broker++
+				broker += analysis.EventInserts
 				continue
 			}
-			offences = append(offences, path+": "+statement)
+			offences = append(offences, path+": "+statement.statement)
 		}
 	}
 	if len(offences) > 0 {
@@ -115,92 +114,41 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	}
 }
 
-// eventInsertColumns is an insert into events, in each of its spellings (eventsTable), and its
-// column list when it has one.
-var eventInsertColumns = regexp.MustCompile(`\binsert into ` + eventsTable + `"? ?(\(([^)]*)\))?`)
-
-// eventIDSequence names the sequence the events id default draws from, in each spelling
-// eventidtest.SequencePattern reads. The migrations' guard compiles the same pattern.
-var eventIDSequence = regexp.MustCompile(eventidtest.SequencePattern)
-
-// eventIDCurrval is pg_catalog.currval of the events id sequence, the one read of it that draws no
-// id (eventidtest.CurrvalPattern says which spellings are that read and why no other is):
-// eventIDOffences reads a statement with each such read taken out. The migrations' guard compiles
-// the same pattern.
-var eventIDCurrval = regexp.MustCompile(eventidtest.CurrvalPattern)
-
-// eventDynamicSQL is a construct that runs SQL text the guard cannot read; triggerExecute is its
-// one safe execute spelling.
-
-// eventSQLStatement is a source-scanned string that is SQL rather than an error, flag or other
-// program text that happens to name a dynamic-SQL construct. SQL text a Go source executes starts
-// with one of these clauses; a text guard need not and cannot reason from a word in an error such
-// as "execute migration".
-var eventSQLStatement = regexp.MustCompile(`^\s*(?:alter|create|delete|do|insert|select|update|with)\b`)
-var eventDynamicSQL = regexp.MustCompile(eventidtest.DynamicSQLPattern)
-var triggerExecute = regexp.MustCompile(eventidtest.TriggerExecutePattern)
-
-// eventIDPatterns are the shared patterns' own text as the scan reads a string: lowercased, with
-// its whitespace collapsed. eventidtest declares them in a file that is no test, so the scan reads
-// each declaration as a statement. A statement that is exactly one of these patterns, and nothing
-// more, is a pattern rather than SQL Postgres can run, so eventIDOffences finds no offence in it.
-var eventIDPatterns = map[string]bool{
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.SequencePattern), " "):       true,
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.DynamicSQLPattern), " "):     true,
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.TriggerExecutePattern), " "): true,
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.CurrvalPattern), " "):        true,
-}
-
-// eventDerivedTable is a table made from events: one that inherits from it (inherits (...), or
-// alter table ... inherit events) or is a partition of it (partition of events, or alter table
-// events attach partition ...), whose rows are rows of events written under a lock on that table
-// and not on events, or one made like events, alone or after other columns, which can take
-// events' id default. An attach partition names its parent, so another table's attach is no
-// offence. The migrations' schema is held to the same by
-// store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence, which reads the catalog.
-var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\binherit ` + eventsTable + `|\bpartition of ` + eventsTable +
-	`|\balter table (?:if exists )?` + eventsTable + `"? attach partition\b|[(,] ?like ` + eventsTable)
-
-// seedSequenceReset is the one source file allowed to name events_id_seq: dispatch-seed's setval
-// after it fills an empty database offline, with no Dispatch serving it (cmd/dispatch-seed).
+// seedSequenceReset is the one source file allowed to reset events_id_seq after it fills an empty
+// database offline, with no Dispatch serving it (cmd/dispatch-seed).
 const seedSequenceReset = "cmd/dispatch-seed/write_events.go"
 
-// seedTool is dispatch-seed's directory, the one place allowed to copy rows into events: it fills
-// an empty database offline, copying each event with its id, and then sets the sequence past them.
+// seedTool is the one place allowed to copy rows into events: it fills an empty database offline.
 const seedTool = "cmd/dispatch-seed/"
 
-// eventIDOffences is what a statement of the file at path does that draws or writes an event id
-// outside the column default of the insert that writes its row, and how many column lists of an
-// insert into events it holds.
+// eventIDOffences reads a complete SQL string with the PostgreSQL parser. It returns each draw or
+// unsafe construct outside the broker's insert path and the number of event inserts with columns.
 func eventIDOffences(path, statement string) (offences []string, lists int) {
-	if eventIDPatterns[statement] {
-		return nil, 0
+	analysis, err := eventidtest.Analyze(statement)
+	if err != nil {
+		return []string{path + ": cannot parse SQL (sha256=" + sqlDigest(statement) + "): " + statement}, 0
 	}
-	dynamicSQL := eventSQLStatement.MatchString(statement) && eventDynamicSQL.MatchString(triggerExecute.ReplaceAllString(statement, ""))
-	if !dynamicSQL && eventIDSequence.MatchString(eventIDCurrval.ReplaceAllStringFunc(statement, eventidtest.CurrvalReadKept)) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
-		offences = append(offences, path+": names the events id sequence: "+statement)
-	}
-	if dynamicSQL {
-		offences = append(offences, path+": runs SQL a text guard cannot read: "+statement)
-	}
-	if eventDerivedTable.MatchString(statement) {
-		offences = append(offences, path+": makes a table from events, which takes its id default or holds its rows: "+statement)
-	}
-	for _, insert := range eventInsertColumns.FindAllStringSubmatch(statement, -1) {
-		if insert[1] == "" {
-			// An alias between the table and its list (insert into events as e (...)) reads as
-			// no list too, and is refused with it.
-			offences = append(offences, path+": inserts into events with no column list, which fills id by position: "+statement)
-			continue
-		}
-		lists++
-		for _, column := range strings.Split(insert[2], ",") {
-			if strings.Trim(strings.TrimSpace(column), `"`) == "id" {
-				offences = append(offences, path+": inserts an explicit event id: "+statement)
+	for _, finding := range analysis.Findings {
+		switch finding.Kind {
+		case eventidtest.SequenceCall:
+			if finding.Name == "setval" && strings.Contains(path, seedSequenceReset) {
+				continue
 			}
+			if finding.Name == "currval" && strings.Contains(strings.ToLower(statement), "pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))") {
+				continue
+			}
+			offences = append(offences, path+": calls "+finding.Name+" outside the broker's event insert path: "+statement)
+		case eventidtest.DynamicSQL:
+			offences = append(offences, path+": runs SQL a static guard cannot read ("+finding.Name+"): "+statement)
+		case eventidtest.EventInsertWithoutColumns:
+			offences = append(offences, path+": inserts into events with no column list, which fills id by position: "+statement)
+		case eventidtest.EventInsertExplicitID:
+			offences = append(offences, path+": inserts an explicit event id: "+statement)
+		case eventidtest.DerivedEventTable:
+			offences = append(offences, path+": makes a table from events, which takes its id default or holds its rows: "+statement)
 		}
 	}
-	return offences, lists
+	return offences, analysis.EventInsertColumnLists
 }
 
 // eventCopies counts the pgx.Identifier literals in file whose table is events, as a CopyFrom into
@@ -229,146 +177,151 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 	return copies
 }
 
-// TestOnlyAnEventInsertsDefaultDrawsAnEventID enforces the other half of what the safe horizon's
-// proof rests on (events/horizon.go, "Safe horizon"): an event id is drawn only by the column
-// default of the insert that writes its row, so the writer holds RowExclusiveLock on events
-// before it holds the id. Postgres takes that lock when the insert is parsed or its cached plan
-// locked, before the executor calls nextval, and the horizon dates a writer by the transaction
-// holding that lock. A writer that drew its id first (a select of nextval('events_id_seq'), then
-// an insert naming the id) would hold an id the lock table cannot yet show, and the horizon would
-// pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
-// setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may use
-// nextval or setval but in a call of one string literal of a sequence's name (one of digits alone
-// is an OID), or their C code, which can draw from events_id_seq without spelling it, no SQL
-// statement runs text a reader cannot see (execute of a built string, query_to_xml, cursor_to_xml;
-// a trigger's execute function is not that), and every
-// insert into events lists its columns, without id: a list that leaves id out leaves it to the
-// default, and an insert with no list fills id by position. No source but dispatch-seed's copies
-// rows into events, which writes them through no insert at all. And no statement makes a table
-// from events (inherits, partition of, like): a child's or a partition's rows are rows of events
-// written under a lock on another table, and a table made like events can take its id default.
-//
-// Its reach is TestOnlyTheBrokerInsertsEvents's: the module's non-test Go sources as the scan
-// assembles their statements. The migrations' SQL, which the server also runs, is
-// store.TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault's, and the schema they build is
-// store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence's. Other SQL is outside all three:
-// loadtest/stack.sh's extend_events lists its columns without id and runs only on a database no
-// Dispatch serves (the seed template, or after the seed stopped Dispatch).
+func scratchSourceEventIDOffences(t *testing.T, sql string) []string {
+	t.Helper()
+	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go", "package scratch\nfunc planted() { database.Query(ctx, `"+sql+"`) }\n", 0)
+	if err != nil {
+		t.Fatalf("parse scratch source: %v", err)
+	}
+	templates := sqlTemplatesByFunction(source, map[string]string{})
+	if len(templates) != 1 {
+		t.Fatalf("the scratch source held %d query templates, want one", len(templates))
+	}
+	offences, _ := eventIDOffences("scratch.go:planted", templates[0].statement)
+	return offences
+}
+
+// sqlLooking identifies the SQL statements that can create an event-id draw. A source string is
+// SQL-looking when it starts with a query form or one of the structural forms below; set, create
+// and alter require their SQL-only second word so CLI help and prose do not enter the reader.
+func sqlLooking(statement string) bool {
+	words := strings.Fields(strings.ToLower(statement))
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "begin", "copy", "delete", "do", "explain", "insert", "merge", "select", "update", "values":
+		return true
+	case "with":
+		return len(words) > 1 && (words[1] == "recursive" || strings.Contains(statement, "select "))
+	case "create":
+		return len(words) > 1 && (words[1] == "function" || words[1] == "procedure" || words[1] == "table" || words[1] == "trigger" || words[1] == "view")
+	case "alter":
+		return len(words) > 1 && (words[1] == "function" || words[1] == "procedure" || words[1] == "table")
+	case "set":
+		return len(words) > 1 && (words[1] == "local" || words[1] == "session" || words[1] == "transaction" || words[1] == "constraints" || words[1] == "role" || words[1] == "search_path" || words[1] == "standard_conforming_strings")
+	case "prepare":
+		return strings.Contains(statement, " as ")
+	}
+	return false
+}
+
+// eventIDSQLLooking narrows the parsed source strings to this guard's risk: a sequence or dynamic
+// SQL function, or a fmt.Sprintf query. The latter is always unreadable at compile time, even if
+// the format contains no sequence name, and so must be recorded or refused.
+func eventIDSQLLooking(statement string, complete bool) bool {
+	lower := strings.ToLower(statement)
+	for _, name := range []string{"nextval", "setval", "currval", "query_to_xml", "cursor_to_xml"} {
+		if strings.Contains(lower, name) {
+			return true
+		}
+	}
+	return strings.Contains(lower, "insert into events") || (!complete && strings.Contains(statement, "%"))
+}
+
+// unreadableEventIDSQL is the checked-in account of SQL-looking strings a static reader cannot
+// parse. A string assembled from run-time values is unreadable to a static check; it must stay here
+// with its file, function and review reason. The test fails both for an unlisted parse error and
+// for a stale entry.
+type unreadableEventIDSQL struct {
+	file, function, digest, reason string
+}
+
+var knownUnreadableEventIDSQL = []unreadableEventIDSQL{
+	{"../../../internal/dispatch/api/comment_queries.go", "loadOwnerComments", "f9cc6c9af72d4cd418a4d0569f0001b0f3f050c4018aad2bcacdff5096e6e69e", "ownerColumn comes only from the closed issue_key/artifact_id switch"},
+	{"../../../internal/dispatch/api/comment_queries.go", "loadReplyChain", "2cf132bbeff0915d8bc5b319c9c3bed1b0ce69b8198b0a18c07d03e7dd934549", "the reply owner column comes only from the closed reply-chain selector"},
+	{"../../../internal/dispatch/api/duplicates.go", "readDuplicateCandidates", "296514f180e5344466c912468f1abe88fbae6fa9eb49201d6fc81fe78286620d", "the timeout format is an integer millisecond value"},
+	{"../../../internal/dispatch/docs/anchor_blocks.go", "anchorBlockCandidates", "f76465317b0ad434e9dfe1c910c53ccf53863951a0009760f2b35db17bd19742", "table comes from the closed anchor target set"},
+	{"../../../internal/dispatch/docs/anchor_blocks.go", "backfillAnchorBlock", "26e1d2ef880961709520fc7890e8bd858b68ee156c14500b5741807f957b4283", "table comes from the closed anchor target set"},
+	{"../../../internal/dispatch/docs/anchor_blocks.go", "backfillAnchorBlock", "fd2688abb569be5d3d1e8bf1bb0c1a9ced2a342da1568946ffb50ef595c2f30c", "table comes from the closed anchor target set"},
+	{"../../../internal/dispatch/docs/anchor_refresh.go", "refreshAnchors", "1b6941263ffee2016536d24837d4879585ce54f5b10c59ff6ccc469033032861", "table and predicates come from each closed anchor target"},
+	{"../../../internal/dispatch/events/broker.go", "QueueAppendWithLogins", "13f336feaef55cb2a2f23a01bcaa79c98e1818c3822eb700becd8b594ac9e63e", "stored payload and logins are built only by the broker's fixed write paths"},
+}
+
+func sqlDigest(statement string) string {
+	sum := sha256.Sum256([]byte(statement))
+	return hex.EncodeToString(sum[:])
+}
+
+func unreadableEventIDSQLIndex(path, function, statement string) int {
+	digest := sqlDigest(statement)
+	for index, known := range knownUnreadableEventIDSQL {
+		if known.file == path && known.function == function && known.digest == digest {
+			return index
+		}
+	}
+	return -1
+}
+
+func unreadableSQLTemplate(path, function string, template sqlTemplate) (index int, offence string) {
+	index = unreadableEventIDSQLIndex(path, function, template.statement)
+	if !template.complete && index < 0 {
+		offence = path + ":" + function + ": cannot statically read SQL assembled at run time (sha256=" + sqlDigest(template.statement) + "): " + template.statement
+	}
+	return index, offence
+}
+
+func staleUnreadableSQL(used []bool) []string {
+	var stale []string
+	for index, known := range knownUnreadableEventIDSQL {
+		if !used[index] {
+			stale = append(stale, known.file+":"+known.function+": stale unreadable SQL entry: "+known.reason)
+		}
+	}
+	return stale
+}
+
+// TestOnlyAnEventInsertsDefaultDrawsAnEventID enforces the other half of the safe horizon's proof:
+// the event insert holds RowExclusiveLock before its default draws the id. It parses every
+// SQL-looking source string and every substatement, including SQL in routine bodies.
 func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
-	t.Run("the patterns read every spelling of the table and of its sequence", func(t *testing.T) {
-		// The two patterns as the scan reads eventidtest's declarations of them.
-		sequencePattern := sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.SequencePattern), " ")
-		currvalPattern := sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.CurrvalPattern), " ")
+	t.Run("the parser reads sequence calls and nested statements", func(t *testing.T) {
 		for _, row := range []struct {
-			path, statement string
-			refused         []string
+			statement string
+			want      int
 		}{
-			{"a.go", "select nextval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", `select nextval('"public"."events_id_seq"'::regclass)`, []string{"names the events id sequence"}},
-			{"a.go", "select nextval(pg_get_serial_sequence('events', 'id'))", []string{"names the events id sequence"}},
-			{"a.go", `select nextval(pg_get_serial_sequence('"events"', 'id'))`, []string{"names the events id sequence"}},
-			{"a.go", `select nextval(pg_get_serial_sequence( ' "public" . "events" ' , 'id'))`, []string{"names the events id sequence"}},
-			{"a.go", "select setval('events_id_seq', 1)", []string{"names the events id sequence"}},
-			{"a.go", "insert into events (id, seq, type) values ($1, 0, 't')", []string{"inserts an explicit event id"}},
-			{"a.go", "insert into public.events (id, seq, type) values ($1, 0, 't')", []string{"inserts an explicit event id"}},
-			{"a.go", `insert into "events" (id, seq, type) values ($1, 0, 't')`, []string{"inserts an explicit event id"}},
-			{"a.go", `insert into "public"."events" ("id", seq) values ($1, 0)`, []string{"inserts an explicit event id"}},
-			{"a.go", "insert into public . events (id, seq) values ($1, 0)", []string{"inserts an explicit event id"}},
-			{"a.go", "insert into events select * from staged", []string{"no column list"}},
-			{"a.go", "insert into events as e (seq, type) values (0, 't')", []string{"no column list"}},
-			{"a.go", "with d as (select nextval('events_id_seq') as id) insert into events (id, seq) select d.id, 0 from d",
-				[]string{"names the events id sequence", "inserts an explicit event id"}},
-			{"a.go", "insert into events (issue_key, seq, type, actor, payload, notify) select issue_key, seq, type, actor, payload, notify from unnest($1::text[])", nil},
-			{"a.go", "insert into events_archive (id, seq) values ($1, 0)", nil},
-			{"a.go", "select id, seq from events where id > $1", nil},
-			{"../../../" + seedSequenceReset, "select setval('events_id_seq', $1)", nil},
-			{"a.go", "select nextval(pg_get_serial_sequence($1, 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select nextval(pg_get_serial_sequence($$events$$, 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select pg_get_serial_sequence(table_name, 'id') from targets", []string{"names the events id sequence"}},
-			{"a.go", "select pg_get_serial_sequence('issues', 'id')", nil},
-			{"a.go", "create table event_children () inherits (events)", []string{"makes a table from events"}},
-			{"a.go", `create table staged (note text) inherits (issues, "public"."events")`, []string{"makes a table from events"}},
-			{"a.go", "create table events_2027 partition of events for values from (1) to (2)", []string{"makes a table from events"}},
-			{"a.go", "create table staged (like events including defaults)", []string{"makes a table from events"}},
-			{"a.go", "create table staged (like public.events including all)", []string{"makes a table from events"}},
-			{"a.go", "create table staged (like events_archive including all)", nil},
-			{"a.go", "select count(*) from events where type like 'events.%'", nil},
-			{"a.go", "alter table rt_x inherit events", []string{"makes a table from events"}},
-			{"a.go", `alter table rt_x inherit "public"."events"`, []string{"makes a table from events"}},
-			{"a.go", "create table rt_x (note text, like events including defaults)", []string{"makes a table from events"}},
-			{"a.go", "alter table events attach partition rt_x for values from (1) to (2)", []string{"makes a table from events"}},
-			{"a.go", `alter table "public"."events" attach partition rt_x for values from (1) to (2)`, []string{"makes a table from events"}},
-			{"a.go", "alter table if exists events attach partition rt_x for values from (1) to (2)", []string{"makes a table from events"}},
-			{"a.go", "alter table delivery_log attach partition delivery_log_2027 for values from (1) to (2)", nil},
-			{"a.go", "alter table rt_x no inherit events_archive", nil},
-			{"a.go", "update events set payload = jsonb_set(payload, '{opened_event_id}', to_jsonb(id)) where id = pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))", nil},
-			{"a.go", "select pg_catalog.currval('events_id_seq')", nil},
-			{"a.go", `select pg_catalog . currval( '"public"."events_id_seq"' )`, nil},
-			{"a.go", `select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('"public"."events"', 'id'))`, nil},
-			{"a.go", "pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))", nil},
-			{"a.go", "where id=pg_catalog.currval('events_id_seq')", nil},
-			{"a.go", "select nextval('events_id_seq'), pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select setval('events_id_seq', pg_catalog.currval('events_id_seq'))", []string{"names the events id sequence"}},
-			{"a.go", "select pg_catalog.currval(pg_get_serial_sequence($1, 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "where id = currval(pg_get_serial_sequence('events', 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select pg_catalog.currval(pg_get_serial_sequence('events', 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select pg_catalog.currval('events_id_seq'::regclass)", []string{"names the events id sequence"}},
-			{"a.go", "select draw_currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select util.currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", `select "util".currval(pg_get_serial_sequence('events', 'id'))`, []string{"names the events id sequence"}},
-			{"a.go", "select util. currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select util./**/currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select util.\ncurrval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select draw$currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select \u00e9currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select a$pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select util.pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", `select "pg_catalog".currval('events_id_seq')`, []string{"names the events id sequence"}},
-			{"a.go", "select nextval('events_' || 'id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select nextval(('events_' || 'id_seq')::regclass)", []string{"names the events id sequence"}},
-			{"a.go", `select nextval(e'events\x5fid\x5fseq')`, []string{"names the events id sequence"}},
-			{"a.go", `select nextval(u&'events\005fid\005fseq')`, []string{"names the events id sequence"}},
-			{"a.go", "select nextval(format('%s_id_seq', 'events'))", []string{"names the events id sequence"}},
-			{"a.go", "select nextval(pg_get_serial_sequence('event' || 's', 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "select setval('events_' || 'id_seq', 1)", []string{"names the events id sequence"}},
-			{"a.go", "select nextval('events_id' || '_seq'::text)", []string{"names the events id sequence"}},
-			{"a.go", "select nextval($1)", []string{"names the events id sequence"}},
-			{"a.go", "select nextval('16402')", []string{"names the events id sequence"}},
-			{"a.go", "select nextval('16402'::regclass)", []string{"names the events id sequence"}},
-			{"a.go", "select setval( ' 16402 ' , 1)", []string{"names the events id sequence"}},
-			{"a.go", "select nextval('other_seq'::text)", []string{"names the events id sequence"}},
-			{"a.go", `select "nextval"('16402')`, []string{"names the events id sequence"}},
-			{"a.go", `select "pg_catalog"."setval"('16402', 1)`, []string{"names the events id sequence"}},
-			{"a.go", "select nextval/**/('16402')", []string{"names the events id sequence"}},
-			{"a.go", "select nextval -- a comment ('16402')", []string{"names the events id sequence"}},
-			{"a.go", `select u&"\006eextval"('16402')`, []string{"names the events id sequence"}},
-			{"a.go", "select nextval(pg_catalog.currval('events_id_seq') * 0 + 16402)", []string{"names the events id sequence"}},
-			{"a.go", "create function draw(regclass) returns bigint language internal as 'nextval_oid'", []string{"names the events id sequence"}},
-			{"a.go", `do $$ begin execute 'select nextval(' || 16402 || ')'; end $$`, []string{"runs SQL a text guard cannot read"}},
-			{"a.go", `set local standard_conforming_strings = off; select nextval('events\137id\137seq')`, []string{"names the events id sequence"}},
-			{"a.go", `select query_to_xml('select next' || 'val(16402)', false, false, '')`, []string{"runs SQL a text guard cannot read"}},
-			{"a.go", `create trigger rt before insert on events for each row execute function rt_trigger()`, nil},
-			{"a.go", "select nextval('other_seq')", nil},
-			{"a.go", "select nextval('other_seq'::regclass)", nil},
-			{"a.go", "select nextval ( 'other_seq' :: regclass )", nil},
-			{"a.go", "select setval('other_seq', 1), setval('other_seq', 1, false)", nil},
-			{"a.go", sequencePattern, nil},
-			{"a.go", currvalPattern, nil},
-			{"a.go", currvalPattern + " select nextval('events_id_seq')", []string{"names the events id sequence"}},
+			{"select nextval('events_id_seq')", 1},
+			{`select "pg_catalog"."setval"('16402', 1)`, 1},
+			{`select pg_catalog.currval('other_seq')`, 1},
+			{"insert into events (id, seq) values ($1, 0)", 1},
+			{"insert into events select $1, 0", 1},
+			{"create table event_children () inherits (events)", 1},
+			{"alter table events attach partition event_children for values from (1) to (2)", 1},
+			{"select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))", 0},
+			{`create trigger events_before before insert on events for each row execute function f()`, 0},
+			{`select query_to_xml('select next' || 'val(16402)', false, false, '')`, 1},
+			{`select query_to_xmlschema('select 1', false, false, '', '')`, 1},
+			{`select cursor_to_xml('cursor', 1, false, false, '')`, 1},
+			{`select cursor_to_xmlschema('cursor', 1, false, false, '', '')`, 1},
+			{`do $$ begin execute 'select nextval(''events_id_seq'')'; end $$`, 1},
+			{`do $$ declare query text := 'select 1'; begin execute query; end $$`, 1},
+			{"prepare read_events as select 1; execute read_events", 0},
+			{"explain (format json) execute list_open_asks('nonexistent-issue')", 0},
+			{"explain (format json) execute owed_keyed_sends(60, 86400, 100)", 0},
+			{"explain (costs off) execute recorded_marks('00000000-0000-4000-8000-00000000000a')", 0},
+			{"explain execute session_answers('session-1', now() - interval '72 hours', 'notifications.agent.session-1')", 0},
+			{"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '{}', false, null, null, '{}', false, false, true)", 0},
 		} {
-			offences, _ := eventIDOffences(row.path, row.statement)
-			if len(offences) != len(row.refused) {
-				t.Errorf("%s: %d offences %q, want %d (%q)", row.statement, len(offences), offences, len(row.refused), row.refused)
-				continue
-			}
-			for i, reason := range row.refused {
-				if !strings.Contains(offences[i], reason) {
-					t.Errorf("%s: offence %q, want one that %s", row.statement, offences[i], reason)
-				}
+			offences, _ := eventIDOffences("a.go", row.statement)
+			if len(offences) != row.want {
+				t.Errorf("%s: %d offences %q, want %d", row.statement, len(offences), offences, row.want)
 			}
 		}
 	})
+
+	t.Run("the scratch Go source refuses every wrapped dynamic statement", testEventIDGuardReadsWrappedDynamicSQL)
+	t.Run("an unlisted Sprintf query fails closed", testEventIDGuardRefusesAnUnlistedFormattedQuery)
+	t.Run("a stale unreadable SQL entry fails closed", testEventIDGuardRefusesAStaleUnreadableSQLEntry)
 
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
@@ -378,17 +331,44 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 	var offences []string
 	seen := map[string]bool{}
 	offend := func(offence string) {
-		// A declared constant reaches the scan twice, by its name and by its value.
 		if !seen[offence] {
 			seen[offence] = true
 			offences = append(offences, offence)
 		}
 	}
+	usedUnreadable := make([]bool, len(knownUnreadableEventIDSQL))
 	lists, seedCopies := 0, 0
+	// The event-id proof applies to the Dispatch database. Other module packages keep separate
+	// stores; dispatch-seed is the one command that intentionally resets this database's sequence.
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
-		for _, statement := range sqlStatements(source.file, constants) {
-			found, held := eventIDOffences(path, statement)
+		if !strings.Contains(path, "/internal/dispatch/") && !strings.HasSuffix(path, seedSequenceReset) {
+			continue
+		}
+		for _, located := range sqlTemplatesByFunction(source.file, constants) {
+			if !sqlLooking(located.statement) || !eventIDSQLLooking(located.statement, located.complete) {
+				continue
+			}
+			function := located.function
+			if function == "" {
+				function = located.value
+			}
+			if function == "" {
+				function = "<package>"
+			}
+			index, unreadable := unreadableSQLTemplate(path, function, located)
+			if unreadable != "" {
+				offend(unreadable)
+			} else if index >= 0 {
+				usedUnreadable[index] = true
+			}
+			found, held := eventIDOffences(path+":"+function, located.statement)
+			if len(found) == 1 && strings.Contains(found[0], "cannot parse SQL") {
+				if index >= 0 {
+					usedUnreadable[index] = true
+					continue
+				}
+			}
 			for _, offence := range found {
 				offend(offence)
 			}
@@ -402,12 +382,14 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			}
 		}
 	}
+	for _, stale := range staleUnreadableSQL(usedUnreadable) {
+		offend(stale)
+	}
 	if len(offences) > 0 {
 		t.Fatalf("an event id is drawn outside the column default of the insert that writes its row:\n\t%s\n"+
-			"Let the insert's default draw the id (events.Broker.Append): the insert holds RowExclusiveLock "+
-			"on events before its default draws, and the safe horizon dates a writer by that lock "+
-			"(events/horizon.go). An id drawn before the insert is held where the lock table cannot show it, "+
-			"and the horizon would pass it while it is open.", strings.Join(offences, "\n\t"))
+			"Let the insert's default draw every event id (events.Broker.Append): the safe horizon dates a "+
+			"writer by the RowExclusiveLock its insert takes before the default draws (events/horizon.go), "+
+			"and an id drawn any other way is held where the lock table cannot show it.", strings.Join(offences, "\n\t"))
 	}
 	if lists == 0 {
 		t.Fatal("the scan saw no column list of an insert into events: if the broker's insert moved or " +
@@ -416,5 +398,60 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 	if seedCopies == 0 {
 		t.Fatalf("the walk saw no pgx.Identifier naming events, not even %s's offline copies: if those "+
 			"moved or name the table another way, the copy check now passes by seeing nothing", seedTool)
+	}
+}
+
+// testEventIDGuardReadsWrappedDynamicSQL plants each review spelling in a Go source string. The
+// migration guard has the same cases in its scratch-migration table.
+func testEventIDGuardReadsWrappedDynamicSQL(t *testing.T) {
+	for _, sql := range []string{
+		`explain analyze select query_to_xml('select next' || 'val(16402)', false, false, '')`,
+		`set local statement_timeout = '1s'; select query_to_xml('select next' || 'val(16402)', false, false, '')`,
+		`values (query_to_xml('select next' || 'val(16402)', false, false, ''))`,
+		`copy (select query_to_xml('select next' || 'val(16402)', false, false, '')) to stdout`,
+		`begin; do $$ declare query text := 'select 1'; begin execute query; end $$; commit`,
+		`do $$ begin execute 'select nextval(' || 16402 || ')'; end $$`,
+		`set local standard_conforming_strings = off; select nextval('events\137id\137seq')`,
+		`select query_to_xml('select next' || 'val(16402)', false, false, '')`,
+	} {
+		if offences := scratchSourceEventIDOffences(t, sql); len(offences) == 0 {
+			t.Errorf("the guard did not refuse dynamic SQL wrapped in %q", sql)
+		}
+	}
+
+	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go", "package scratch\nfunc planted() { query := `select query_to_xml('select next' || 'val(16402)', false, false, '')`; database.Query(ctx, query) }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates := sqlTemplatesByFunction(source, map[string]string{})
+	if len(templates) != 1 {
+		t.Fatalf("the local SQL source held %d query templates, want one", len(templates))
+	}
+	if offences, _ := eventIDOffences("scratch.go:planted", templates[0].statement); len(offences) == 0 {
+		t.Fatal("the guard did not read a SQL string held in a local query variable")
+	}
+}
+
+func testEventIDGuardRefusesAnUnlistedFormattedQuery(t *testing.T) {
+	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go", "package scratch\nfunc planted() { database.Query(ctx, fmt.Sprintf(`select %s`, column)) }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates := sqlTemplatesByFunction(source, map[string]string{})
+	if len(templates) != 1 {
+		t.Fatalf("the scratch source held %d query templates, want one", len(templates))
+	}
+	if !sqlLooking(templates[0].statement) || !eventIDSQLLooking(templates[0].statement, templates[0].complete) {
+		t.Fatalf("the Sprintf query did not read as SQL-looking: %#v", templates[0])
+	}
+	if _, offence := unreadableSQLTemplate("scratch.go", "planted", templates[0]); offence == "" {
+		t.Fatal("the unlisted Sprintf query passed the fail-closed reader")
+	}
+}
+
+func testEventIDGuardRefusesAStaleUnreadableSQLEntry(t *testing.T) {
+	stale := staleUnreadableSQL(make([]bool, len(knownUnreadableEventIDSQL)))
+	if len(stale) != len(knownUnreadableEventIDSQL) {
+		t.Fatalf("removing every listed source left %d stale entries, want %d", len(stale), len(knownUnreadableEventIDSQL))
 	}
 }

@@ -332,3 +332,150 @@ func literalsWithin(expression ast.Expr) string {
 	})
 	return strings.Join(parts, " ")
 }
+
+// sqlTemplate is a source string the SQL parser can read. Complete reports whether every byte was
+// known from literals and constants; false means a run-time expression supplied one or more gaps.
+type sqlTemplate struct {
+	locatedStatement
+	complete bool
+}
+
+// sqlTemplatesByFunction reads SQL where a parsed source tree passes it to a pgx query or batch
+// call, and where it assigns a source string to a local value that a later query can use. Other
+// strings are not candidate SQL merely because they happen to begin with a database word.
+func sqlTemplatesByFunction(file *ast.File, constants map[string]string) []sqlTemplate {
+	var statements []sqlTemplate
+	for _, declared := range file.Decls {
+		function, ok := declared.(*ast.FuncDecl)
+		if !ok || function.Body == nil {
+			continue
+		}
+		appendTemplate := func(expression ast.Expr) {
+			text, found, complete := sqlTemplateText(expression, file.Name.Name, constants)
+			if !found {
+				return
+			}
+			statements = append(statements, sqlTemplate{
+				locatedStatement: locatedStatement{
+					function:  function.Name.Name,
+					statement: strings.TrimSpace(text),
+				},
+				complete: complete,
+			})
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.CallExpr:
+				if query, ok := queryArgument(node); ok {
+					appendTemplate(query)
+					return false
+				}
+			case *ast.AssignStmt:
+				assigned := false
+				for index, name := range node.Lhs {
+					identifier, ok := name.(*ast.Ident)
+					if !ok || index >= len(node.Rhs) || !sqlVariable(identifier.Name) {
+						continue
+					}
+					appendTemplate(node.Rhs[index])
+					assigned = true
+				}
+				return !assigned
+			case *ast.DeclStmt:
+				declaration, ok := node.Decl.(*ast.GenDecl)
+				if !ok {
+					return true
+				}
+				assigned := false
+				for _, spec := range declaration.Specs {
+					values, ok := spec.(*ast.ValueSpec)
+					if !ok || len(values.Names) != len(values.Values) {
+						continue
+					}
+					for index, name := range values.Names {
+						if !sqlVariable(name.Name) {
+							continue
+						}
+						appendTemplate(values.Values[index])
+						assigned = true
+					}
+				}
+				return !assigned
+			}
+			return true
+		})
+	}
+	return statements
+}
+
+func sqlVariable(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "query") || strings.Contains(name, "sql") || strings.Contains(name, "statement")
+}
+
+func queryArgument(call *ast.CallExpr) (ast.Expr, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil, false
+	}
+	switch selector.Sel.Name {
+	case "Exec", "Query", "QueryRow":
+		if len(call.Args) > 1 {
+			return call.Args[1], true
+		}
+	case "Queue":
+		if len(call.Args) > 1 {
+			return call.Args[1], true
+		}
+	}
+	return nil, false
+}
+
+func sqlTemplateText(expression ast.Expr, pkg string, constants map[string]string) (text string, found, complete bool) {
+	switch node := expression.(type) {
+	case *ast.BasicLit:
+		if node.Kind != token.STRING {
+			return "", false, false
+		}
+		text, err := strconv.Unquote(node.Value)
+		return text, err == nil, err == nil
+	case *ast.Ident:
+		text, found = constants[pkg+"."+node.Name]
+		return text, found, found
+	case *ast.SelectorExpr:
+		qualifier, ok := node.X.(*ast.Ident)
+		if !ok {
+			return "", false, false
+		}
+		text, found = constants[qualifier.Name+"."+node.Sel.Name]
+		return text, found, found
+	case *ast.CallExpr:
+		selector, ok := node.Fun.(*ast.SelectorExpr)
+		if !ok || len(node.Args) == 0 || selector.Sel.Name != "Sprintf" {
+			return "", false, false
+		}
+		qualifier, ok := selector.X.(*ast.Ident)
+		if !ok || qualifier.Name != "fmt" {
+			return "", false, false
+		}
+		text, found, _ = sqlTemplateText(node.Args[0], pkg, constants)
+		return text, found, false
+	case *ast.BinaryExpr:
+		if node.Op != token.ADD {
+			return "", false, false
+		}
+		left, leftFound, leftComplete := sqlTemplateText(node.X, pkg, constants)
+		right, rightFound, rightComplete := sqlTemplateText(node.Y, pkg, constants)
+		if !leftFound && !rightFound {
+			return "", false, false
+		}
+		if !leftFound {
+			left = " null "
+		}
+		if !rightFound {
+			right = " null "
+		}
+		return left + right, true, leftComplete && rightComplete
+	}
+	return "", false, false
+}
