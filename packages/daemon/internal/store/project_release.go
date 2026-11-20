@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -61,6 +62,13 @@ type ProjectRelease struct {
 	Result     json.RawMessage
 }
 
+// Runs is whether the release's acts still run: it has not finished them and no boot has ended
+// it. A release reads each pod's unpushed work through a running role and asks its roles to push
+// until it finishes; from then on it reads, asks, stops and deletes nothing more, and only its
+// mark, which holds every start until the next boot, stands (internal/daemon's projectRelease). A
+// pause is refused while a release runs (ProjectReleasingError) and taken once it finished.
+func (r ProjectRelease) Runs() bool { return r.FinishedAt.IsZero() && r.EndedAt.IsZero() }
+
 // TakenOverIdleRelease is one idle release the project release took over as it started
 // (StartProjectRelease): the issue whose pod it was releasing, and the roles whose claims its own
 // stops had already suspended as `released` (issue_releases.suspended), in the order they were
@@ -108,7 +116,11 @@ type ProjectReleaseClaim struct {
 //
 // The transaction takes the shared serializer first, as every writer of an idle release's mark
 // does (ReleaseIdleIssue, CancelIssueRelease, IssueRelease), so the take-over and a mark being
-// written or cancelled commit in a line and none is half taken over.
+// written or cancelled commit in a line and none is half taken over. The pause's transaction takes
+// it too (Pause), so the read of the project's pause that comes next (releasePauseRefusal) and a
+// pause commit in a line: a pause that committed first refuses this release with a
+// *ProjectPausedError before anything is written, and a pause that comes after it reads this
+// release's record and is refused (ProjectReleasingError).
 func (s *Store) StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (ProjectRelease, []TakenOverIdleRelease, []ProjectReleaseClaim, error) {
 	if project == "" {
 		return ProjectRelease{}, nil, nil, errors.New("a project release needs its project")
@@ -127,6 +139,11 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
+		if refused, err := releasePauseRefusal(ctx, tx, project); err != nil {
+			return err
+		} else if refused != nil {
+			return refused
+		}
 		var err error
 		release, err = scanProjectRelease(tx.QueryRow(ctx, `insert into project_releases (project, started_at, bound_at)
 			values ($1, $2, $3) returning `+projectReleaseColumns, project, startedAt, boundAt))
@@ -143,6 +160,127 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		return ProjectRelease{}, nil, nil, fmt.Errorf("start the project release of %s: %w", project, err)
 	}
 	return release, takenOver, stop, nil
+}
+
+// ProjectPausedError is a project release refused because a pause holds the project
+// (dispatch://INFRA-3583 R13, and departure 1 of the plan of dispatch://INFRA-3759): the project is
+// paused, or a pod whose roles a pause stopped is still held after the resume
+// (project_pause_pod_holds), or both. A release reads a pod's unpushed work only through a running
+// role, and deletes a pod in which no role runs with no read. A pod a pause stopped is such a pod,
+// with the work its roles did not push on its disk, until a role of it runs again. So the release
+// is refused before it records, stops or deletes anything.
+type ProjectPausedError struct {
+	// Project is the release's project, in the claim token's spelling.
+	Project string
+	// Pause is the project's open pause, and Paused whether one stands.
+	Pause  Pause
+	Paused bool
+	// Held is each pod a pause still holds, in issue order.
+	Held []HeldPausePod
+}
+
+// HeldPausePod is one pod a pause still holds, as a refused release names it: the pod's issue,
+// the pause that holds it and since when, and the claims of the issue stored suspended by
+// `released`, the source a pause stops a role by (supervise.SuspendedByReleased), in token order.
+// The hold ends at the first ready of a role of the pod (EndLivePausePodHold), so an operator who
+// resumes one of those claims (`legion claims resume --claim <token>`) ends it.
+type HeldPausePod struct {
+	Issue  string
+	Pause  int64
+	HeldAt time.Time
+	Claims []claim.Token
+}
+
+func (e *ProjectPausedError) Error() string {
+	var why []string
+	if e.Paused {
+		why = append(why, fmt.Sprintf("the project is paused (pause %d)", e.Pause.ID))
+	}
+	if len(e.Held) > 0 {
+		issues := make([]string, len(e.Held))
+		for i, held := range e.Held {
+			issues[i] = held.Issue
+		}
+		why = append(why, "a pause holds the pods of "+strings.Join(issues, ", "))
+	}
+	return fmt.Sprintf("a project release of %s is refused: %s", e.Project, strings.Join(why, ", and "))
+}
+
+// PauseRefusesProjectRelease is the *ProjectPausedError with which the project's pause refuses a
+// project release of project, the claim token's spelling, read on the pool, and nil while neither
+// the pause nor a pod hold stands (releasePauseRefusal). The release asks it before it sets its
+// mark, and a dry run before it reads anything; StartProjectRelease asks the same again inside its
+// own transaction, across which no pause commits.
+func (s *Store) PauseRefusesProjectRelease(ctx context.Context, project string) error {
+	refused, err := releasePauseRefusal(ctx, s.pool, project)
+	if err != nil {
+		return err
+	}
+	if refused != nil {
+		return refused
+	}
+	return nil
+}
+
+// pauseReader is the part of a pool and of a transaction a read of the project's pause goes
+// through: one row, and many.
+type pauseReader interface {
+	queryRower
+	rowsQuerier
+}
+
+// releasePauseRefusal reads through db what of the project's pause refuses a project release of
+// project, the claim token's spelling: the open pause (readOpenPauseByToken), and each pod hold
+// that stands, with the claims of its issue a pause stopped. It answers nil while neither stands.
+// The pause's tables hold the Dispatch key, which the token lowercases, so the holds are read by
+// lower(project), as readOpenPauseByToken reads the pause.
+func releasePauseRefusal(ctx context.Context, db pauseReader, project string) (*ProjectPausedError, error) {
+	open, paused, err := readOpenPauseByToken(ctx, db, project, "")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(ctx, `select h.issue, h.pause_id, h.held_at,
+		coalesce(array_agg(c.token order by c.token) filter (where c.token is not null), '{}')
+		from project_pause_pod_holds h
+		left join claims c on c.project = $1 and c.issue = h.issue and c.state = $2 and c.suspended_by = $3
+		where lower(h.project) = $1 and h.ended_at is null
+		group by h.id order by h.issue`, project, string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
+	if err != nil {
+		return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
+	}
+	defer rows.Close()
+	var held []HeldPausePod
+	for rows.Next() {
+		var pod HeldPausePod
+		var tokens []string
+		if err := rows.Scan(&pod.Issue, &pod.Pause, &pod.HeldAt, &tokens); err != nil {
+			return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
+		}
+		pod.Claims = make([]claim.Token, len(tokens))
+		for i, token := range tokens {
+			pod.Claims[i] = claim.Token(token)
+		}
+		held = append(held, pod)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
+	}
+	if !paused && len(held) == 0 {
+		return nil, nil
+	}
+	return &ProjectPausedError{Project: project, Pause: open, Paused: paused, Held: held}, nil
+}
+
+// runningProjectReleaseTx is project's release whose acts still run (ProjectRelease.Runs), read
+// in the caller's transaction, and whether one runs. The pause's transaction reads it under the
+// shared serializer, which StartProjectRelease takes too, so a release whose record committed
+// before that read is found, and one that starts after it reads the pause (releasePauseRefusal).
+func runningProjectReleaseTx(ctx context.Context, tx pgx.Tx, project string) (ProjectRelease, bool, error) {
+	release, found, err := readProjectRelease(tx.QueryRow(ctx, newestProjectRelease, project), project)
+	if err != nil || !found || !release.Runs() {
+		return ProjectRelease{}, false, err
+	}
+	return release, true, nil
 }
 
 // takeOverIdleReleases deletes every idle release mark of project and finishes the rows of each

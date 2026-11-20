@@ -8,4 +8,6 @@ body: |-
   `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`, each held to the daemon's own
   list in `fixtures/daemon-api/project-release-words.json`. A claim's `suspendedBy` gains
   `project_release`, a claim the project release stopped, which the daemon's next boot starts
-  again.
+  again. The release's refusal while the project is paused or a pod a pause stopped is still held
+  is `PROJECT_PAUSED` with `heldPods` (fixture `project-release-paused.json`), and a pause while a
+  project release runs is refused `PROJECT_RELEASING` (fixture `project-pause-releasing.json`).

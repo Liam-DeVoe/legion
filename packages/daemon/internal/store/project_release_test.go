@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -321,6 +322,131 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 	theOther, _, err := st.ReadProjectRelease(ctx, "other")
 	if err != nil || theOther.ID != other.ID || !theOther.EndedAt.IsZero() || theOther.EndedBy != "" {
 		t.Fatalf("the other project's release after this project's boot = %+v, %v; want it running, unended", theOther, err)
+	}
+}
+
+// dispatch://INFRA-3583 R13: a pause that holds the project refuses a project release before it
+// records anything. While the project is paused, the refusal names the pause that stands and each
+// pod a pause holds, with the claims of the pod a pause stopped (stored suspended by `released`)
+// in token order. Once the resume has ended the pause, a pod whose hold still stands — no role of
+// it has run again — still refuses the release, naming that pod and no pause. Once that hold has
+// ended at a role's ready, the release is recorded. The refusal reads alike on the pool, where the
+// release asks it before it sets its mark, and in the release's own transaction, which then
+// records nothing: no release, and no take-over of the idle release in flight.
+func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	seedPauseClaims(t, st)
+	paused, _ := pauseLegion(t, st, pausedAt)
+	// The pause's stop of LEGION-208's implementer, as its stop transaction leaves it: the claim
+	// stored suspended by `released` beside the architect an idle release left so, and its pod
+	// held.
+	implementer := claim.Token("legion-legion-legion-208-implementer")
+	if err := st.PutClaim(ctx, supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatal(err)
+	}
+	heldAt := pausedAt.Add(time.Second)
+	if opened, err := holdPod(st, paused, "LEGION-208", heldAt); err != nil || !opened {
+		t.Fatalf("hold the pod of LEGION-208 = %t, %v; want it held", opened, err)
+	}
+	markIdleRelease(t, st, "legion", "LEGION-210", releaseKindIdle, 1, 1)
+	held := HeldPausePod{Issue: "LEGION-208", Pause: paused.ID, HeldAt: heldAt,
+		Claims: []claim.Token{"legion-legion-legion-208-architect", implementer}}
+
+	refuses := func(when string, wantPaused bool) {
+		t.Helper()
+		for _, read := range []struct {
+			name string
+			err  func() error
+		}{
+			{"the read on the pool", func() error { return st.PauseRefusesProjectRelease(ctx, "legion") }},
+			{"the release's transaction", func() error {
+				_, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+				return err
+			}},
+		} {
+			var refused *ProjectPausedError
+			if err := read.err(); !errors.As(err, &refused) {
+				t.Fatalf("%s %s = %v, want a *ProjectPausedError", when, read.name, err)
+			}
+			if refused.Paused != wantPaused || wantPaused && refused.Pause.ID != paused.ID || len(refused.Held) != 1 ||
+				refused.Held[0].Issue != held.Issue || refused.Held[0].Pause != held.Pause || !refused.Held[0].HeldAt.Equal(held.HeldAt) ||
+				!slices.Equal(refused.Held[0].Claims, held.Claims) {
+				t.Fatalf("%s %s refused %+v, want paused %t (pause %d) and LEGION-208's hold %+v", when, read.name, refused, wantPaused, paused.ID, held)
+			}
+		}
+		if n := pauseCount(t, st, `select count(*) from project_releases`); n != 0 {
+			t.Fatalf("%s the refused release left %d records, want none", when, n)
+		}
+		if n := pauseCount(t, st, `select count(*) from issue_releases where issue = 'LEGION-210'`); n != 1 {
+			t.Fatalf("%s the refused release took over the idle release in flight (%d marks left), want it untouched", when, n)
+		}
+	}
+	refuses("while the project is paused,", true)
+
+	if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator}, At: pausedAt.Add(time.Minute)}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	refuses("after the resume, with the pod still held,", false)
+
+	if ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", PausePodHoldReady, pausedAt.Add(2*time.Minute)); err != nil || !ended {
+		t.Fatalf("end the hold of LEGION-208 at a role's ready = %t, %v", ended, err)
+	}
+	if err := st.PauseRefusesProjectRelease(ctx, "legion"); err != nil {
+		t.Fatalf("the read once the last hold ended = %v, want no refusal", err)
+	}
+	release, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	if err != nil || release.ID == 0 {
+		t.Fatalf("the release once the last hold ended = %+v, %v; want it recorded", release, err)
+	}
+}
+
+// dispatch://INFRA-3583 R13: while a project release runs — recorded, not finished and not ended
+// by a boot — a pause is refused with a *ProjectReleasingError naming the release, and writes
+// nothing: no pause, no stop and no `pause_stop` row of the live roles. A pause is taken once the
+// release has finished, and once a boot ended a release that had not.
+func TestAPauseIsRefusedWhileAProjectReleaseRuns(t *testing.T) {
+	ctx := context.Background()
+	for _, end := range []struct {
+		name string
+		end  func(st *Store, id int64) error
+	}{
+		{"finished", func(st *Store, id int64) error {
+			return st.FinishProjectRelease(ctx, id, json.RawMessage(`{"sandboxes":[],"claims":[]}`), releaseStart.Add(time.Minute))
+		}},
+		{"ended by a boot", func(st *Store, _ int64) error {
+			_, err := st.EndProjectReleasesAtBoot(ctx, "legion", releaseStart.Add(time.Minute))
+			return err
+		}},
+	} {
+		t.Run(end.name, func(t *testing.T) {
+			st := migratedStore(t)
+			seedPauseClaims(t, st)
+			release, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+			if err != nil {
+				t.Fatalf("record the release: %v", err)
+			}
+			_, _, err = st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
+				Reason: "the model provider is down", At: pausedAt, StopRow: pauseStopRow, Notice: pauseNoticeRow(record.ProjectPausedNotice)})
+			var releasing *ProjectReleasingError
+			if !errors.As(err, &releasing) || releasing.Release.ID != release.ID || !strings.Contains(err.Error(), "runs") {
+				t.Fatalf("a pause while release %d runs = %v, want a *ProjectReleasingError naming it", release.ID, err)
+			}
+			for _, table := range []string{"project_pauses", "project_pause_stops", "outbox"} {
+				if n := pauseCount(t, st, `select count(*) from `+table); n != 0 {
+					t.Fatalf("the refused pause left %d rows of %s, want none", n, table)
+				}
+			}
+
+			if err := end.end(st, release.ID); err != nil {
+				t.Fatalf("end the release: %v", err)
+			}
+			pause, stops := pauseLegion(t, st, pausedAt.Add(time.Hour))
+			if pause.ID == 0 || len(stops) != 2 {
+				t.Fatalf("the pause once the release %s = %+v asking %d stops, want it taken and the two live roles asked", end.name, pause, len(stops))
+			}
+		})
 	}
 }
 

@@ -6565,13 +6565,25 @@ A move made without the release, with the daemon stopped and the Sandboxes delet
 The command finds the daemon as every operator command does (`--config`, `--port`) and starts the release with `POST /legion/v1/operator/project/release`.
 `GET` on the same route answers the newest release of the project, with its progress while it runs and its result once it finished, and `404` when none ran.
 A second `POST` to the same daemon process, a dry run's included, answers the release that process ran and starts no other, so the command run again reads the release.
+
+While the project is paused, and while a pod that a pause stopped is still held after the resume ([Pausing a project](#pausing-a-project)), the release answers `409 PROJECT_PAUSED`, its dry run included, and records, stops and deletes nothing.
+A release deletes a pod in which no role process runs with no read, and a pod whose roles a pause stopped is such a pod, with the work its roles did not push on its disk, until a role of it runs again.
+The refusal names the pause that stands under `pause`, and under `heldPods` each pod a pause still holds: its issue, the pause that holds it, when the hold began (`heldAt`), and the claims of the pod stored suspended by `released`, the source a pause stops a role by.
+The command prints the refusal and exits 1.
+Resume the project (`legion project resume`), then end each pod's hold by resuming one claim of the pod (`legion claims resume --operator-token-file <file> --claim <token>`): the hold ends at that role's ready.
+A worker of an open phase comes back on its own within the idle release's backstop, and its ready ends its pod's hold as well; a pod with no such worker stays held until its next wake.
+Then run the release again.
+The daemon reads the pause before the release sets its mark, and again in the transaction that records the release, which takes the same lock as the pause's own transaction, so of a pause and a release asked at the same moment one is refused.
+The refusal comes before the answer of a release this process already ran, so while a pause holds the project that answer is the refusal too, and `GET` still reads the release.
+
 The release does five things, in this order:
 
 1. It sets a mark in the daemon's memory, and then records itself in the daemon's database.
    The mark comes first, before the record and before the release reads which claims it stops, and every role start reads the mark once more just before its role starts, so a start either sees the mark or is among the claims the release stops.
-   A record that does not commit clears the mark again, and the command prints the daemon's refusal.
+   A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
    From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
    The operator's spawn, retry, resume and deliver, and a fresh session and a compaction, are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`).
+   A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
    A project that is paused as well gets the same refusal, not the pause's `PROJECT_PAUSED`, because each of those routes asks the release's refusal first ([Pausing a project](#pausing-a-project)).
    A task, notice, message, backstop or start that comes due waits in the database until after the next boot.
    An idle release still in flight is taken over and stops nothing more.
@@ -6778,6 +6790,7 @@ Then move the pods in this order:
 1. Release the project: `legion project release --operator-token-file <file>`.
    The release must end with no pod of the project left: the command exits 0, or `GET /legion/v1/operator/project/release` answers a `finishedAt`, no `endedAt`, no `result.failure`, and every line of `result.sandboxes` deleted.
    Recover a pod it left first ([Releasing a project's pods](#releasing-a-projects-pods)).
+   A project that is paused, or whose pause still holds a pod, refuses the release `409 PROJECT_PAUSED` and moves nothing: resume it and end each pod's hold first, as that section says.
 
 2. Run `legion probe-boot --config <the configuration that names the other cluster>` as the daemon's identity ([Probing a configuration before the daemon boots on it](#probing-a-configuration-before-the-daemon-boots-on-it)).
    It refuses, as the boot would, a pod the other cluster would not admit, mount or start.
@@ -7011,9 +7024,15 @@ The daemon logs four messages, each with the claim it is about where it has one:
   These are the controller's `compact` and `fresh_session`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
   While a project release holds every start as well ([Releasing a project's pods](#releasing-a-projects-pods)), each of them answers 409 `PROJECT_RELEASED` instead, because each route asks the release's refusal before the pause's (`releaseRefused` and `refusedWhilePaused`, `internal/api/server.go`).
 
-`legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) is in this release, and it does not yet refuse while the project is paused or while a pause's hold stands on a pod: that refusal is a later change of dispatch://INFRA-3583.
-A release made then deletes each held pod in which no role process runs with no read and no ask, so the work its roles did not push goes with the pod.
-Resume the project first, and end each pod's hold by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs.
+- While a project release runs ([Releasing a project's pods](#releasing-a-projects-pods)), a pause answers 409 `PROJECT_RELEASING`, at both doors, and writes nothing and stops no role; its sentence names the release, when it started and its bound.
+  The release reads each pod's unpushed work through a running role and asks those roles to push it, so a pause that stopped them would have the release delete their pods unread.
+  A release runs from its record until it has finished its acts, or until a boot ended it: its record has no `finishedAt` and no `endedAt` (`ProjectRelease.Runs`, `internal/store/project_release.go`).
+  The pause's transaction reads the release's record under the same lock as the release's own transaction, so of a pause and a release asked at the same moment one is refused.
+  A pause once the release has finished is taken, although the release's mark still holds every start until the daemon's next boot: a finished release reads, asks, stops and deletes nothing more, and every role it stopped is stored suspended by `project_release`, so the pause stops no role then, and the next boot comes up paused, holding the start of each of those claims as a held `start` row until the resume.
+
+`legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) answers 409 `PROJECT_PAUSED` while the project is paused and while a pause's hold stands on a pod, its dry run included, and records, stops and deletes nothing: a release deletes a held pod in which no role process runs with no read and no ask, so the work its roles did not push would go with the pod.
+The refusal names the pause that stands and each pod a pause still holds (`heldPods`), with the claims of the pod that a pause stopped.
+Resume the project first, then end each pod's hold by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs, and run the release again.
 
 **A rolling restart.**
 The daemon reads the open pause at boot, before it restores any claim, and again at every outbox sweep, which runs every 30 seconds.

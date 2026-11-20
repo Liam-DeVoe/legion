@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -37,7 +38,10 @@ type ProjectRelease interface {
 	// Start starts the release with bound, or the daemon's pod_update_grace_minutes when bound
 	// is zero, or runs a dry run of it. While a release of this process runs, or after it finished,
 	// it starts nothing and answers that release with started false; a dry run answers its report
-	// with started false. A runtime that runs no pod answers ErrProjectReleaseRunsNoPod.
+	// with started false. A runtime that runs no pod answers ErrProjectReleaseRunsNoPod. A pause
+	// that holds the project — the project paused, or a pod a pause stopped still held — answers
+	// a *store.ProjectPausedError, a dry run's included, before anything of the release acts and
+	// whatever release ran here (dispatch://INFRA-3583 R13).
 	Start(ctx context.Context, bound time.Duration, dryRun bool) (view ProjectReleaseResponse, started bool, err error)
 	// Read is the newest release of the project as its record holds it, and whether one ran.
 	Read(ctx context.Context) (ProjectReleaseResponse, bool, error)
@@ -265,7 +269,8 @@ func (r ProjectReleaseResult) Listed() ProjectReleaseResult {
 // startProjectRelease is `POST /legion/v1/operator/project/release`: 202 with the release's record
 // once it is recorded, 200 with the report of a dry run, and 200 with this process's release, which
 // starts nothing, once one ran here. A bound that is no positive Go duration is refused 400 before
-// anything starts.
+// anything starts, and a release while a pause holds the project 409 PROJECT_PAUSED
+// (releasePausedFailure).
 func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if s.projectRelease == nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the project release is not served by this daemon"))
@@ -285,9 +290,19 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 		bound = parsed
 	}
 	view, started, err := s.projectRelease.Start(r.Context(), bound, req.DryRun)
+	var paused *store.ProjectPausedError
 	switch {
 	case errors.Is(err, ErrProjectReleaseRunsNoPod):
 		writeFailure(w, http.StatusConflict, projectReleaseNoPod, ProjectReleaseRunsNoPod)
+		return
+	case errors.As(err, &paused):
+		held := make([]string, len(paused.Held))
+		for i, pod := range paused.Held {
+			held[i] = pod.Issue
+		}
+		s.log.Info("api: refused a project release: a pause holds the project", "dry_run", req.DryRun,
+			"paused", paused.Paused, "pause", paused.Pause.ID, "held", held)
+		writeJSON(w, http.StatusConflict, releasePausedFailure(paused))
 		return
 	case err != nil:
 		s.logRequestFailure(r, err, "api: the project release could not start")
@@ -299,6 +314,57 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusAccepted
 	}
 	writeJSON(w, status, view)
+}
+
+// releasePausedFailure is the refusal of a project release a pause holds (store.ProjectPausedError,
+// dispatch://INFRA-3583 R13): PROJECT_PAUSED, naming the pause that stands where one does, and each
+// pod a pause still holds with the claims of it a pause stopped. Its sentence says why the release
+// waits — it deletes a pod in which no role runs without reading the work its roles did not push —
+// that nothing was recorded, stopped or deleted, and how an operator ends each hold: the resume of
+// the project, then `legion claims resume --claim <token>` of one role of each held pod, whose
+// ready ends that pod's hold.
+func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
+	body := PauseFailure{Failure: Failure{Code: projectPaused}}
+	var why []string
+	if refused.Paused {
+		view := pauseViewOf(refused.Pause)
+		body.Pause = &view
+		why = append(why, "the project is paused ("+describePause(refused.Pause)+")")
+	}
+	if len(refused.Held) > 0 {
+		body.HeldPods = make([]PauseHeldPodView, len(refused.Held))
+		pods := make([]string, len(refused.Held))
+		for i, held := range refused.Held {
+			claims := slices.Clone(held.Claims)
+			if claims == nil {
+				claims = []claim.Token{}
+			}
+			body.HeldPods[i] = PauseHeldPodView{Issue: held.Issue, Pause: held.Pause, HeldAt: held.HeldAt.UTC(), Claims: claims}
+			pods[i] = held.Issue + " (" + heldPodClaimsWords(claims) + ")"
+		}
+		why = append(why, fmt.Sprintf("a pause still holds %d pod(s) whose roles it stopped: %s", len(pods), strings.Join(pods, "; ")))
+	}
+	end := "End each pod's hold by resuming one role of the pod (legion claims resume --claim <token>), whose ready ends the hold, then run the release again"
+	if refused.Paused {
+		end = "Resume the project first (legion project resume); then end the hold of each pod the pause stopped by resuming one role of the pod (legion claims resume --claim <token>), whose ready ends the hold, and run the release again"
+	}
+	body.Error = "project release refused: " + strings.Join(why, ", and ") +
+		". A release deletes a pod in which no role runs without reading the work its roles did not push, so it does not run while a pause holds the project; nothing was recorded, stopped or deleted. " + end
+	return body
+}
+
+// heldPodClaimsWords is the claims of a held pod as the release's refusal names them: the ones
+// whose resume ends the hold, or, where the store holds none of the pod's claims stopped by a
+// pause, where to find the pod's claims.
+func heldPodClaimsWords(claims []claim.Token) string {
+	if len(claims) == 0 {
+		return "no claim of it is stored stopped by a pause; legion claims list names its claims"
+	}
+	tokens := make([]string, len(claims))
+	for i, token := range claims {
+		tokens[i] = string(token)
+	}
+	return "resume one of " + strings.Join(tokens, ", ")
 }
 
 // readProjectRelease is `GET /legion/v1/operator/project/release`: 200 with the newest release of

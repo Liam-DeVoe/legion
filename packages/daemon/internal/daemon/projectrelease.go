@@ -84,12 +84,13 @@ const releaseNoMachine = "the daemon supervises no machine for it"
 // them (api.ReleasedSandbox): leave and takeOthers join what they build.
 const reasonSeparator = "; "
 
-// projectReleaseStore is what the project release reads and writes of the daemon's store: its
-// record, the stop set a dry run reads as the release's own transaction reads it, each claim it
-// stops or holds as the store holds it, which is what decides that the claim is stored suspended
-// (awaitSettled), and every claim as the store holds it, which is where each claim's line of the
-// result is read from at the end.
+// projectReleaseStore is what the project release reads and writes of the daemon's store: whether
+// the project's pause refuses it, its record, the stop set a dry run reads as the release's own
+// transaction reads it, each claim it stops or holds as the store holds it, which is what decides
+// that the claim is stored suspended (awaitSettled), and every claim as the store holds it, which
+// is where each claim's line of the result is read from at the end.
 type projectReleaseStore interface {
+	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
 	RecordProjectRelease(ctx context.Context, id int64, result json.RawMessage) error
 	FinishProjectRelease(ctx context.Context, id int64, result json.RawMessage, at time.Time) error
@@ -103,7 +104,9 @@ type projectReleaseStore interface {
 // `legion project release` starts it through the API (api.ProjectRelease), and it runs as one
 // goroutine of this process, since R7 ends a release at the next boot and never resumes one, so
 // nothing of its acts needs a durable retry. Its record is durable; its acts are not. One release
-// runs per process: a second start answers the first.
+// runs per process: a second start answers the first. A pause that holds the project refuses every
+// start, a dry run's included, before anything of the release acts (R13,
+// store.ProjectPausedError).
 //
 // The release does its acts in this order. It sets the daemon-wide mark and records itself
 // (Start), from when on the daemon starts nothing of the project (R7). Its goroutine arms the
@@ -270,6 +273,16 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	}
 	if bound <= 0 {
 		bound = r.defaultBound
+	}
+	// A pause that holds the project refuses the release, its dry run included, before the mark,
+	// a list, a read or a record (dispatch://INFRA-3583 R13): the project paused, or a pod a pause
+	// stopped still held, which the release would delete unread. It is asked before the release
+	// this process ran is answered, so a pause taken once that release finished refuses the
+	// command too. StartProjectRelease asks it again in the release's own transaction, which a
+	// pause cannot commit across, and refuses a pause that committed between the two reads; the
+	// mark is then cleared below.
+	if err := r.store.PauseRefusesProjectRelease(ctx, r.project); err != nil {
+		return api.ProjectReleaseResponse{}, false, err
 	}
 	r.mu.Lock()
 	if r.run != nil {

@@ -2483,7 +2483,14 @@ package api
 // running release's round to the release, which records it on its own record and none of the
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
-// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the lowest
+// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The release and 178's
+// project pause refuse each other: while the project is paused, or a pod a pause stopped is still
+// held after the resume, `POST /legion/v1/operator/project/release`, a dry run's included,
+// answers 409 `PROJECT_PAUSED` with api.PauseFailure, which gains `heldPods`, each such pod's
+// `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the `pause` that stands
+// where one does, and records, stops and deletes nothing; while a release runs (its record neither
+// finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
+// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The number is the lowest
 // above main's 168 that no other open pull request declared at 2026-11-19T22:35:55Z.
 // `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this pull
 // request, passed 171 then, but a reading of `const DaemonAPIVersion` at the head of every open

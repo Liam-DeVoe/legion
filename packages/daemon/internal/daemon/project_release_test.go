@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -40,6 +43,116 @@ func TestProjectReleaseRefusesARuntimeThatRunsNoPod(t *testing.T) {
 	}
 }
 
+// pausePreCheckSkipped is the real store with the release's first read of the pause answering no
+// refusal, as when a pause commits between that read and the release's own transaction: what then
+// refuses the release is the transaction's read (store.StartProjectRelease).
+type pausePreCheckSkipped struct{ *store.Store }
+
+func (pausePreCheckSkipped) PauseRefusesProjectRelease(context.Context, string) error { return nil }
+
+// dispatch://INFRA-3583 R13, over the real store: the release, a dry run included, answers a
+// *store.ProjectPausedError while the project is paused, and again after the resume while the pod
+// the pause stopped is still held, naming that pod and the claim of it the pause stopped. Each
+// refusal comes before anything of the release acts: the mark is not set, no Sandbox is listed,
+// read, stopped or deleted, no release is recorded, and the stopped claim stays as the pause left
+// it. A pause that commits between the release's first read and its transaction is refused there,
+// and the mark the release set is cleared again. Once the last hold has ended at a role's ready,
+// the release is taken, and deletes the pod.
+func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	st := outboxTreeStore(t, isolatedOutboxPool(t))
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	running := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+		Generation: 1, Session: "ses_implementer", State: supervise.StateIdle}
+	if err := st.PutClaim(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	paused, asked, err := st.Pause(ctx, store.PauseRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator},
+		Reason: "a provider outage", At: time.Now(), StopRow: pause.StopRow})
+	if err != nil || len(asked) != 1 {
+		t.Fatalf("pause = %d stops asked, %v; want the implementer's", len(asked), err)
+	}
+	// The pause's stop of the implementer, as its stop transaction leaves it: the claim stored
+	// suspended by `released`, and its pod held.
+	stopped := running
+	stopped.State, stopped.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+	if err := st.PutClaim(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockIssueForPause(ctx, tx, "LEGION-208"); err != nil {
+			return err
+		}
+		_, err := store.OpenPausePodHoldTx(ctx, tx, paused, "LEGION-208", time.Now())
+		return err
+	}); err != nil {
+		t.Fatalf("hold the pod of LEGION-208: %v", err)
+	}
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
+		Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
+	mark := &projectRelease{}
+	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: st, machines: sup, pods: pods,
+		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
+		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
+
+	refused := func(when string, wantPaused bool, dryRuns ...bool) {
+		t.Helper()
+		for _, dryRun := range dryRuns {
+			_, started, err := r.Start(ctx, time.Second, dryRun)
+			var held *store.ProjectPausedError
+			if !errors.As(err, &held) || started || held.Paused != wantPaused || wantPaused && held.Pause.ID != paused.ID ||
+				len(held.Held) != 1 || held.Held[0].Issue != "LEGION-208" || !slices.Equal(held.Held[0].Claims, []claim.Token{token}) {
+				t.Fatalf("%s, Start(dryRun %v) = started %v, %v (%+v); want the pause's refusal naming LEGION-208 and %s, paused %t",
+					when, dryRun, started, err, held, token, wantPaused)
+			}
+		}
+		if mark.held() {
+			t.Fatalf("%s, the refused release set the mark", when)
+		}
+		pods.mu.Lock()
+		touched := pods.storeLists + pods.lists + len(pods.deleted) + len(pods.removed) + len(pods.released)
+		pods.mu.Unlock()
+		if touched != 0 {
+			t.Fatalf("%s, the refused release listed, stopped or deleted Sandboxes: %d acts of the runtime's pods, want none", when, touched)
+		}
+		if release, found, err := st.ReadProjectRelease(ctx, "legion"); err != nil || found {
+			t.Fatalf("%s, the refused release left the record %+v (%v), want none", when, release, err)
+		}
+		if c, ok, err := st.ClaimByToken(ctx, token); err != nil || !ok || c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByReleased {
+			t.Fatalf("%s, the claim the pause stopped is stored %s by %q (%t, %v), want it as the pause left it", when, c.State, c.SuspendedBy, ok, err)
+		}
+	}
+	refused("while the project is paused", true, true, false)
+
+	// A dry run records nothing, so only the release's own transaction reads the pause again.
+	r.store = pausePreCheckSkipped{st}
+	refused("with a pause committed after the release's first read", true, false)
+	r.store = st
+
+	if _, err := st.Resume(ctx, store.ResumeRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator}, At: time.Now()}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	refused("after the resume, with the pod still held", false, true, false)
+
+	if ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", store.PausePodHoldReady, time.Now()); err != nil || !ended {
+		t.Fatalf("end the hold of LEGION-208 at a role's ready = %t, %v", ended, err)
+	}
+	if view, started, err := r.Start(ctx, time.Second, false); err != nil || !started || view.ID == 0 {
+		t.Fatalf("Start once the last hold ended = %+v, started %v, %v; want the release recorded", view, started, err)
+	}
+	testwait.Eventually(t, "the release taken once the last hold ended finished", func() bool {
+		release, found, err := st.ReadProjectRelease(ctx, "legion")
+		return err == nil && found && !release.FinishedAt.IsZero()
+	})
+	pods.mu.Lock()
+	defer pods.mu.Unlock()
+	if !slices.Equal(pods.deleted, []string{"LEGION-208"}) {
+		t.Fatalf("the release taken once the last hold ended deleted the pods of %v, want LEGION-208's", pods.deleted)
+	}
+}
+
 // releaseRecord is a project release's store with the release's own record in memory: the start
 // records release 1 with the stop set it is given and answers takenOver as the idle releases it
 // took over, the finish hands its result to finished, and the claims are the ones the machines
@@ -62,6 +175,11 @@ type releaseRecord struct {
 	taken    bool
 	reads    int
 }
+
+// PauseRefusesProjectRelease answers that no pause holds the project: the release's refusal is
+// the store's own, which TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject runs over a real
+// one.
+func (*releaseRecord) PauseRefusesProjectRelease(context.Context, string) error { return nil }
 
 func (s *releaseRecord) StartProjectRelease(_ context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
 	return store.ProjectRelease{ID: 1, Project: project, StartedAt: startedAt, BoundAt: boundAt}, s.takenOver, s.stop, nil

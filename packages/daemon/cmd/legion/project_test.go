@@ -250,6 +250,34 @@ func TestPauseCommands(t *testing.T) {
 		}
 	})
 
+	// dispatch://INFRA-3583 R13: while a project release runs, `legion project pause` prints the
+	// daemon's 409 naming the release and exits 1, and nothing is paused; once the release has
+	// finished, the pause is taken.
+	t.Run("a pause while a project release runs is refused", func(t *testing.T) {
+		d := newPauseCommandDaemon(t)
+		ctx := context.Background()
+		reach := []string{"--operator-token-file", d.tokenFile}
+		started := d.clock.now().Add(-time.Minute)
+		release, _, _, err := d.store.StartProjectRelease(ctx, "legion", started, started.Add(30*time.Minute))
+		if err != nil {
+			t.Fatalf("record the release: %v", err)
+		}
+		code, _, errb := d.legion(append([]string{"project", "pause", "--reason", "an outage"}, reach...)...)
+		if code != 1 || !strings.Contains(errb, "409") || !strings.Contains(errb, "project release "+strconv.FormatInt(release.ID, 10)+" runs") ||
+			!strings.Contains(errb, "nothing was paused") {
+			t.Fatalf("legion project pause while release %d runs = %d, stderr %q; want 1 and the daemon's 409 naming the release", release.ID, code, errb)
+		}
+		if n := d.pauses(); n != 0 {
+			t.Fatalf("the refused pause left %d pauses, want none", n)
+		}
+		if err := d.store.FinishProjectRelease(ctx, release.ID, []byte(`{}`), d.clock.now()); err != nil {
+			t.Fatalf("finish the release: %v", err)
+		}
+		if paused := d.succeed(append([]string{"project", "pause", "--reason", "an outage"}, reach...)...); !strings.HasPrefix(paused, "project paused: ") {
+			t.Fatalf("legion project pause once the release finished printed %q, want the pause", paused)
+		}
+	})
+
 	// `legion config check` names the gap under each setting that turns the pause off, and says
 	// nothing of the pause for a file that can hold one; the exit stays 0 either way.
 	t.Run("config check names the setting that turns the pause off", func(t *testing.T) {
@@ -287,8 +315,10 @@ func TestPauseCommands(t *testing.T) {
 // real release is internal/daemon's, whose own tests run it; this is what the command prints and
 // how it exits.
 type scriptedRelease struct {
-	mu     sync.Mutex
-	noPod  bool
+	mu    sync.Mutex
+	noPod bool
+	// paused is the refusal every start answers while a pause holds the project.
+	paused error
 	ran    bool
 	views  []api.ProjectReleaseResponse
 	dry    api.ProjectReleaseResponse
@@ -317,6 +347,8 @@ func (r *scriptedRelease) Start(ctx context.Context, bound time.Duration, dryRun
 	switch {
 	case r.noPod:
 		return api.ProjectReleaseResponse{}, false, api.ErrProjectReleaseRunsNoPod
+	case r.paused != nil:
+		return api.ProjectReleaseResponse{}, false, r.paused
 	case r.ran:
 		return r.views[0], false, nil
 	case dryRun:
@@ -633,6 +665,29 @@ func TestProjectReleaseExitsOneWhenTheDaemonRefuses(t *testing.T) {
 	code, _, errb := d.projectRelease(d.reach()...)
 	if code != 1 || !strings.Contains(errb, "409") || !strings.Contains(errb, api.ProjectReleaseRunsNoPod) {
 		t.Fatalf("legion project release on tmux = %d, stderr %q; want 1 with the daemon's 409 and its sentence", code, errb)
+	}
+}
+
+// dispatch://INFRA-3583 R13: a daemon whose release a pause refuses — the project paused, or a pod
+// a pause stopped still held — makes the command exit 1, its dry run too, printing the daemon's 409
+// with the held pod, its claim to resume and the resume that ends the hold, and reading no
+// release after it.
+func TestProjectReleaseExitsOneWhenAPauseHoldsTheProject(t *testing.T) {
+	refused := &store.ProjectPausedError{Project: "legion", Held: []store.HeldPausePod{{Issue: "LEGION-208", Pause: 7,
+		HeldAt: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC), Claims: []legionclaim.Token{"legion-legion-legion-208-implementer"}}}}
+	release := &scriptedRelease{paused: refused}
+	d := releaseDaemon(t, release)
+	for _, flags := range [][]string{{"--dry-run"}, nil} {
+		code, out, errb := d.projectRelease(append(d.reach(), flags...)...)
+		if code != 1 || out != "" || !strings.Contains(errb, "409") || !strings.Contains(errb, "project release refused: a pause still holds 1 pod(s)") ||
+			!strings.Contains(errb, "LEGION-208 (resume one of legion-legion-legion-208-implementer)") || !strings.Contains(errb, "legion claims resume --claim <token>") {
+			t.Fatalf("legion project release %v while a pause holds a pod = %d, stdout %q, stderr %q; want 1 with the daemon's 409 naming the held pod", flags, code, out, errb)
+		}
+	}
+	release.mu.Lock()
+	defer release.mu.Unlock()
+	if release.reads != 0 {
+		t.Fatalf("the refused command read the release %d times, want none", release.reads)
 	}
 }
 

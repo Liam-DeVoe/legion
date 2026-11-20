@@ -119,6 +119,9 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
+  // Contract 180 adds the two refusals between the pause and the project release: a pause while a
+  // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
+  // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
   "project-resume.json": LegionProjectResumeResponse,
   "project-pause-reason-required.json": LegionErrorResponse,
@@ -127,6 +130,8 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  "project-pause-releasing.json": LegionPauseFailureResponse,
+  "project-release-paused.json": LegionPauseFailureResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -2454,7 +2459,11 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // out; a body that names no end is no resume's answer. Each refusal names what its code names
 // beside its sentence, and nothing else: the setting that turns the pause off, the pause that
 // stands, or the last pause. The daemon client reads a refusal through the plain refusal shape,
-// which keeps the code and the sentence of every one of them.
+// which keeps the code and the sentence of every one of them. Contract 180's two refusals between
+// the pause and the project release are among them: a pause while a release runs names nothing
+// beside its sentence, and a release while a pause holds the project names the pause that stands
+// and each pod a pause still holds, with the claims of it a pause stopped; a held pod that names
+// no issue key, or no list of claims, is no such pod.
 test("the pause goldens answer the pause begun and the pause ended, and each refusal names what its code names", () => {
   const pause = {
     id: 7,
@@ -2479,12 +2488,23 @@ test("the pause goldens answer the pause begun and the pause ended, and each ref
       .success
   ).toBeFalse();
 
+  const heldPods = [
+    {
+      issue: "LEGION-208",
+      pause: 7,
+      heldAt: "2026-11-15T09:00:04Z",
+      claims: ["legion-legion-legion-208-implementer"],
+    },
+    { issue: "LEGION-209", pause: 7, heldAt: "2026-11-15T09:00:06Z", claims: [] },
+  ];
   const refusals: ReadonlyArray<readonly [string, string, Record<string, unknown>]> = [
     ["project-pause-unavailable.json", "PAUSE_UNAVAILABLE", { setting: "runtime: tmux" }],
     ["project-pause-no-workflow.json", "PAUSE_UNAVAILABLE", {}],
     ["project-pause-refused.json", "PROJECT_ALREADY_PAUSED", { pause }],
     ["project-paused.json", "PROJECT_PAUSED", { pause }],
     ["project-resume-refused.json", "PROJECT_NOT_PAUSED", { lastPause: ended }],
+    ["project-pause-releasing.json", "PROJECT_RELEASING", {}],
+    ["project-release-paused.json", "PROJECT_PAUSED", { pause, heldPods }],
   ];
   for (const [name, code, named] of refusals) {
     const { code: refusedWith, error, ...rest } = LegionPauseFailureResponse.parse(fixture(name));
@@ -2496,6 +2516,16 @@ test("the pause goldens answer the pause begun and the pause ended, and each ref
   expect(LegionErrorResponse.parse(fixture("project-pause-reason-required.json")).code).toBe(
     "PAUSE_REASON_REQUIRED"
   );
+  const released = fixtureBody("project-release-paused.json");
+  for (const held of [
+    { ...heldPods[0], issue: "legion-legion-legion-208" },
+    { issue: "LEGION-208", pause: 7, heldAt: "2026-11-15T09:00:04Z" },
+  ]) {
+    expect(
+      LegionPauseFailureResponse.safeParse({ ...released, heldPods: [held] }).success,
+      JSON.stringify(held)
+    ).toBeFalse();
+  }
 });
 
 // A pause says why: the daemon refuses a blank reason (`PAUSE_REASON_REQUIRED`), and neither the

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,6 +25,9 @@ type fakeProjectRelease struct {
 	mu sync.Mutex
 	// noPod is a daemon on a runtime that runs no pod.
 	noPod bool
+	// paused is what every start answers while it is set, before anything of the release acts, as
+	// the daemon's release answers a *store.ProjectPausedError while a pause holds the project.
+	paused error
 	// started is this process's release once one started.
 	started *ProjectReleaseResponse
 	// starts is every bound a start recorded a release with, and dryRuns how many dry runs ran.
@@ -49,6 +55,9 @@ func (f *fakeProjectRelease) Start(_ context.Context, bound time.Duration, dryRu
 	defer f.mu.Unlock()
 	if f.noPod {
 		return ProjectReleaseResponse{}, false, ErrProjectReleaseRunsNoPod
+	}
+	if f.paused != nil {
+		return ProjectReleaseResponse{}, false, f.paused
 	}
 	if f.started != nil {
 		return *f.started, false, nil
@@ -226,6 +235,54 @@ func TestProjectReleaseRouteRefusesOnTheTmuxRuntime(t *testing.T) {
 		if failure.Code != projectReleaseNoPod || failure.Error != ProjectReleaseRunsNoPod {
 			t.Fatalf("POST %+v on tmux answered %+v, want %s and %q", body, failure, projectReleaseNoPod, ProjectReleaseRunsNoPod)
 		}
+	}
+}
+
+// dispatch://INFRA-3583 R13: a release the daemon's release refuses because a pause holds the
+// project (store.ProjectPausedError) is answered 409 PROJECT_PAUSED, a dry run's included: the
+// body names the pause that stands and each pod a pause still holds, with the claims of it a pause
+// stopped, and the sentence names those pods and the resume that ends each hold. A refusal that
+// names only held pods, once the project runs again, names no pause and tells the operator to
+// resume a role of each pod rather than the project. The daemon's own release over a real store is
+// TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject (internal/daemon).
+func TestProjectReleaseRouteAnswersPausedWhileAPauseHoldsTheProject(t *testing.T) {
+	held := store.HeldPausePod{Issue: "LEGION-208", Pause: 7, HeldAt: fakeReleaseStarted, Claims: []claim.Token{"legion-legion-legion-208-implementer"}}
+	standing := store.Pause{ID: 7, Project: "LEGION", Since: fakeReleaseStarted, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "an outage"}
+	for _, tc := range []struct {
+		name    string
+		refused *store.ProjectPausedError
+		want    []string
+	}{
+		{"paused", &store.ProjectPausedError{Project: "legion", Pause: standing, Paused: true, Held: []store.HeldPausePod{held}},
+			[]string{"the project is paused (pause 7", "LEGION-208 (resume one of legion-legion-legion-208-implementer)", "Resume the project first (legion project resume)"}},
+		{"held after the resume", &store.ProjectPausedError{Project: "legion", Held: []store.HeldPausePod{held}},
+			[]string{"a pause still holds 1 pod(s)", "LEGION-208 (resume one of legion-legion-legion-208-implementer)", "legion claims resume --claim <token>"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := &fakeProjectRelease{paused: fmt.Errorf("start the project release of legion: %w", tc.refused)}
+			h := projectReleaseRouteHarness(t, release)
+			for _, body := range []ProjectReleaseRequest{{DryRun: true}, {}} {
+				recorder := h.operator(http.MethodPost, ProjectReleaseRoute, body)
+				if recorder.Code != http.StatusConflict {
+					t.Fatalf("POST %+v = %d, want 409; body %s", body, recorder.Code, recorder.Body)
+				}
+				var refused PauseFailure
+				decodeInto(t, recorder, &refused)
+				if refused.Code != projectPaused || len(refused.HeldPods) != 1 || refused.HeldPods[0].Issue != "LEGION-208" ||
+					!slices.Equal(refused.HeldPods[0].Claims, held.Claims) || (refused.Pause != nil) != tc.refused.Paused {
+					t.Fatalf("POST %+v answered %+v, want PROJECT_PAUSED naming LEGION-208's hold and its claim, and the pause only while one stands", body, refused)
+				}
+				for _, want := range append(tc.want, "nothing was") {
+					if !strings.Contains(refused.Error, want) {
+						t.Fatalf("POST %+v answered the sentence %q, which does not say %q", body, refused.Error, want)
+					}
+				}
+			}
+			if len(release.starts) != 0 || release.dryRuns != 0 {
+				t.Fatalf("a refused release started %d releases and %d dry runs, want none", len(release.starts), release.dryRuns)
+			}
+			wantRefusal(t, h.operator(http.MethodGet, ProjectReleaseRoute, nil), http.StatusNotFound, "no project release of this project was recorded")
+		})
 	}
 }
 
