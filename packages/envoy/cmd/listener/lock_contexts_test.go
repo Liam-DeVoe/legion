@@ -167,6 +167,14 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 		// wrapper's fallback would bind to a fresh context under no mark (bus.callContext).
 		plantContext(t, overlay, "../../internal/bus/takeover.go", "&nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))",
 			"&nats.StreamInfoRequest{SubjectsFilter: filter})")
+		// S6 and S7: a guarded JetStream call made through a plain function, and through a function
+		// value, that takes the options and passes them on, called with none.
+		plantContext(t, overlay, "../../internal/bus/takeover.go", "func (c *Client) SessionReadFloor(",
+			"func plantedForward(js nats.JetStreamContext, opts ...nats.JSOpt) { _, _ = js.StreamInfo(Stream, opts...) }\n\nvar plantedForwardValue = plantedForward\n\nfunc (c *Client) SessionReadFloor(")
+		plantContext(t, overlay, "../../internal/bus/takeover.go", "\tname, err := sessionConsumerNameOf(sessionID)\n",
+			"\tplantedForward(c.JS())\n\tname, err := sessionConsumerNameOf(sessionID)\n")
+		plantContext(t, overlay, "../../internal/bus/stored.go", "func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {\n",
+			"func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {\n\tplantedForwardValue(c.JS())\n")
 		plantContext(t, overlay, "role_keep_sweep.go", "head, err = readKeptLaneHead(locked, cfg.client, role)",
 			"head, err = readKeptLaneHead(context.Background(), cfg.client, role)\n\t\t\t_ = locked")
 		plantContext(t, overlay, "role_keep.go", "stored, err := cfg.client.NextStoredMessage(ctx, keptSubject, kept+1)",
@@ -186,6 +194,8 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			{"the sweep's lane-head read, under a guard tryHold took", listenerPackage + ".sweptLaneHead"},
 			{"the walk's next-copy read, under a context kept in a package variable", listenerPackage + ".walkKeptRole"},
 			{"the takeover records' stream read with no nats.Context among its options (S2)", "(*github.com/sjawhar/envoy/internal/bus.Client).TakeoverRecords"},
+			{"a guarded JetStream call through a plain function that passes its options on, called with none (S6)", "(*github.com/sjawhar/envoy/internal/bus.Client).SessionReadFloor"},
+			{"a guarded JetStream call through a function value that passes its options on, called with none (S7)", "(*github.com/sjawhar/envoy/internal/bus.Client).LastStoredMessage"},
 		} {
 			named := slices.ContainsFunc(found, func(fresh freshContext) bool { return fresh.caller == want.caller })
 			if !named {
@@ -611,12 +621,19 @@ type jetStreamCall struct {
 	pos    token.Pos
 }
 
-// jetStreamCallsWithoutContext is every call fn makes of a method whose last parameter is a
-// variadic JSOpt or PubOpt, where the options fn passes carry no nats.Context: none at all, or a
-// list fn builds with no nats.Context in it, or a list the check cannot read. A list fn was handed
-// (its own parameter, passed on) is the list its own caller built, and that caller's call is read
-// where the walk reaches it. A method of *nats.Conn (its JetStream context's open) makes no request,
-// and is not read.
+// jetStreamConstructors open a JetStream context, which sends no request: their options say how
+// the context's own calls wait, and carry no call's context.
+var jetStreamConstructors = []string{
+	"(*github.com/nats-io/nats.go.Conn).JetStream",
+	"github.com/sjawhar/envoy/internal/bus.JetStream",
+}
+
+// jetStreamCallsWithoutContext is every call fn makes whose last parameter is a variadic JSOpt or
+// PubOpt list - a method, a plain function or a function value, all but jetStreamConstructors -
+// where the options fn passes carry no nats.Context: none at all, or a list fn builds with no
+// nats.Context in it, or a list the check cannot read. A list fn was handed (its own parameter,
+// passed on) is the list its own caller built, and that caller's call is read here where the walk
+// reaches it, whatever it calls.
 func jetStreamCallsWithoutContext(fn *ssa.Function) []jetStreamCall {
 	var calls []jetStreamCall
 	for _, block := range fn.Blocks {
@@ -638,17 +655,21 @@ func jetStreamCallsWithoutContext(fn *ssa.Function) []jetStreamCall {
 			if !ok || !slices.Contains(contextOptionTypes, types.TypeString(slice.Elem(), nil)) {
 				continue
 			}
-			callee := ""
+			if _, builtin := common.Value.(*ssa.Builtin); builtin {
+				// append builds a list; the list is read where a call passes it.
+				continue
+			}
+			var callee string
 			switch {
 			case common.IsInvoke():
 				callee = types.TypeString(common.Value.Type(), nil) + "." + common.Method.Name()
-			case common.StaticCallee() != nil && common.StaticCallee().Signature.Recv() != nil:
+			case common.StaticCallee() != nil:
 				callee = common.StaticCallee().String()
-				if types.TypeString(common.StaticCallee().Signature.Recv().Type(), nil) == "*github.com/nats-io/nats.go.Conn" {
+				if slices.Contains(jetStreamConstructors, callee) {
 					continue
 				}
 			default:
-				continue
+				callee = "a function value of type " + types.TypeString(common.Value.Type(), nil)
 			}
 			if !optionsCarryContext(options) {
 				calls = append(calls, jetStreamCall{callee: callee, pos: instruction.Pos()})
