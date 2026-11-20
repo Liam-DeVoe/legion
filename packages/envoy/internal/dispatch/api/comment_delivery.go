@@ -1541,7 +1541,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		refs.QueueStamp(b, graphstore.KindComment, reply.ID)
-		if err := plan.stored.caused(r.Context(), b, event.ID); err != nil {
+		if err := plan.stored.caused(b, event.ID); err != nil {
 			return err
 		}
 		if !plan.stored.unprojected {
@@ -1550,11 +1550,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if plan.thread.AskID != nil {
-			if _, err := follow.Queue(r.Context(), b, event.ID); err != nil {
+			if _, err := follow.Queue(b, event.ID); err != nil {
 				return err
 			}
 		}
-		return queueAnsweredDelivery(r.Context(), b, answered, actor, event.CreatedAt, event.ID)
+		return queueAnsweredDelivery(b, answered, actor, event.CreatedAt, event.ID)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1606,7 +1606,7 @@ type answeredDelivery struct {
 // session recorded here is that same session, so taking it first would be the pair in the other
 // order, which is the cycle R17's node order exists to keep out.
 func queueAnsweredDelivery(
-	ctx context.Context, b *store.WriteBatch, answered answeredDelivery, actor model.Actor, at time.Time, event int64,
+	b *store.WriteBatch, answered answeredDelivery, actor model.Actor, at time.Time, event int64,
 ) error {
 	session := strings.TrimSpace(answered.session)
 	if session == "" {
@@ -1618,7 +1618,7 @@ func queueAnsweredDelivery(
 	if answered.itemID == "" || model.DeliveryTaken(answered.was) || !graphstore.AddressFits(session) {
 		return nil
 	}
-	if err := graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{{
+	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
 		FromKind: answered.itemKind, FromID: answered.itemID, Kind: graphstore.TupleDeliveredTo,
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,

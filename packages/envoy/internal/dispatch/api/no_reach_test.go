@@ -531,7 +531,7 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //
 //   - An unauthorized actor: an anonymous request, which every row but a public one refuses.
 //   - An identifier of another project: a route addressing one project's object under another
-//     project's key, which answers that object to nobody. Each route of dispatch://INFRA-1950
+//     project's key, which answers that object to nobody. Each route of cybermonklabs/legion#4193
 //     under /issues/{key} is sent a request it would take whole under the object's own issue
 //     (reasoningCrossProject), so its refusal is the issue comparison's 404; one that names no
 //     object of any project answers under the other issue, naming nothing of this project.
@@ -702,7 +702,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
-		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue, spec}}.Encode(),
 		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/lenses":               url.Values{"on": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
@@ -842,7 +842,7 @@ type crossProject struct {
 	priority string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
-	// The nodes of dispatch://INFRA-1950's kinds under the project's issue, each by its
+	// The nodes of the reasoning kinds under the project's issue, each by its
 	// dispatch:// address and its store id: a trade-off analysis on the spec, at proposed; a
 	// pre-mortem on the spec; and a constraint under the issue.
 	tradeoff, premortem, constraint lensOrConstraint
@@ -857,9 +857,9 @@ func (node lensOrConstraint) storeAddress() string {
 }
 
 // seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
-// project document and a block of each document, a lens of each of two kinds and a constraint, and
-// the Legion daemon it names with a read of it; a second project the probe addresses them under;
-// and one priority, which belongs to neither project and is read at its own id.
+// project document and a block of each document, a lens of each of two kinds and a constraint,
+// and the Legion daemon it names with a read of it; a second project the probe addresses them
+// under; and one priority, which belongs to neither project and is read at its own id.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -911,7 +911,7 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		t.Fatalf("the project's creates left no near-copy check record, so its read by id has no row to answer")
 	}
 	owned.nearCopyCheck = checks.Checks[0].ID
-	// The nodes of dispatch://INFRA-1950's kinds, which its routes name by their address in the
+	// The nodes of the reasoning kinds, which their routes name by their address in the
 	// path or in the body: a trade-off analysis on the spec, proposed so that a settle has a
 	// proposal to settle, a pre-mortem a risk may stand under, and a constraint of the issue.
 	reasoned := func(path string, body map[string]any) lensOrConstraint {
@@ -999,7 +999,7 @@ func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 	return pattern, true
 }
 
-// crossProjectRequest is one request a route of dispatch://INFRA-1950 is sent under another
+// crossProjectRequest is one request a route of cybermonklabs/legion#4193 is sent under another
 // project's issue: its target and its body, and what it must answer.
 type crossProjectRequest struct {
 	target string
@@ -1013,9 +1013,9 @@ type crossProjectRequest struct {
 	refused string
 }
 
-// reasoningCrossProject is the request each route of dispatch://INFRA-1950 under /issues/{key}
+// reasoningCrossProject is the request each route of cybermonklabs/legion#4193 under /issues/{key}
 // is sent under the other project's issue, about owned's objects. Every route
-// dispatch://INFRA-1950 adds gets one, so each gets all three of threeBadRequests' requests
+// that pull request adds gets one, so each gets all three of threeBadRequests' requests
 // (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
 // and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
 // compared. Each request here is well formed and names a node or a document that exists - a node
@@ -1080,7 +1080,7 @@ func probeAcrossProjects(t *testing.T, handler http.Handler, route string, reque
 }
 
 // ownedNamed is the first thing of owned's project an answer names - its issue, or one of its
-// nodes of dispatch://INFRA-1950's kinds - and empty where it names none of them.
+// nodes of the reasoning kinds - and empty where it names none of them.
 func ownedNamed(answer string, owned crossProject) string {
 	for _, named := range []string{owned.issue, owned.tradeoff.id, owned.premortem.id, owned.constraint.id} {
 		if strings.Contains(answer, named) {

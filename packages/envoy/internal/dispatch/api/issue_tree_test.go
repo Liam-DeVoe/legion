@@ -62,7 +62,7 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 		// What the two node writes stated is appended after them in the same write phase, as the
 		// create queues it; the ledger's commit runs that phase and commits tx.
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			return graphstore.QueueCaused(ctx, b, graphstore.Joined(written, versionNode), graphstore.NoEvent)
+			return graphstore.QueueCaused(b, graphstore.Joined(written, versionNode), graphstore.NoEvent)
 		}); err != nil {
 			t.Fatalf("queue what the tree's node writes stated: %v", err)
 		}

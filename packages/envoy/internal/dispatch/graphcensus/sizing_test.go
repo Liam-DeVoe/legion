@@ -776,9 +776,11 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// The backfill's fill of the project of a node an earlier build stored with none: the
 		// comment's, which the comment pass above wrote with its project, is put back as a build
 		// before the project stored it - no project on its row and no project tuple in its log, as
-		// the column is the projection of its tuples - and the fill states its project. The
-		// comment row stays, so the sized window holds the writes it held.
-		Name: scopeBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeScopeBatch", "graphstore/scope.go#FillScopes"},
+		// the column is the projection of its tuples - and the fill states its project, in the lock
+		// and fill FillScopes runs as one batch of its own (store.RunWrite), which calls no other
+		// writer of the store, so the site is writeScopeBatch alone. The comment row stays, so the
+		// sized window holds the writes it held.
+		Name: scopeBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeScopeBatch"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -856,8 +858,9 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the seed (seedRunDrives), the
-// backfill's other passes, the catalogue's, the pointer's and the rebuild's writers and the
+// (graphstoreDrives), the lens catalogue's writer and the backfill's passes over a run and a
+// prevented_by (runAndCatalogueDrives), the boot step's ask passes (askBackfillDrives), the seed
+// (seedRunDrives), the backfill's other passes, the pointer's and the rebuild's writers and the
 // architecture import (internalDrives), and the drives of the sites whose packages import this
 // one, which this package's external test registers (ImportedDrives). It holds them to driving
 // every site the register of the store's writers lists (requireEveryListedSiteDriven). Each drive
@@ -868,7 +871,8 @@ func seededDrives(database *store.Store) []StoreDrive {
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), seedRunDrives(t), internalDrives(t))
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), runAndCatalogueDrives(t), askBackfillDrives(t),
+		seedRunDrives(t), internalDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {
@@ -1193,6 +1197,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"frame":            {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
 		"interaction_gone": {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"lens":             {tuples: 10, writes: 2 * sizingWindowDays, assumed: true},
+		"document_move":    {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
 		"lens_finding":     {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
 		"lens_kind":        {tuples: 8, writes: 22, assumed: true},
 		"constraint":       {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},

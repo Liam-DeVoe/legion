@@ -183,13 +183,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
 //
-// A settlement is made for no run of the command bar (graphstore.WithRun): it saves what the
-// room's writers left in it, whoever they were, so it carries no run even when a request's context
-// starts it - an issue's close settles its documents first on the closer's (api's
+// A settlement is made for no run of the command bar (store.WithRun): it saves what the room's
+// writers left in it, whoever they were, so it carries no run even when a request's context starts
+// it - an issue's close settles its documents first on the closer's (api's
 // settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
-// timer's settlement on a background context appends none.
+// timer's settlement on a background context appends none: its write phase's batch is built for
+// that context (store.NewWriteBatch), which carries no run.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
-	parent = graphstore.WithRun(parent, "")
+	parent = store.WithRun(parent, "")
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
@@ -725,7 +726,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
 			for _, stated := range caused[index] {
-				if err := graphstore.QueueCaused(ctx, b, *stated, graphstore.LatestEvent); err != nil {
+				if err := graphstore.QueueCaused(b, *stated, graphstore.LatestEvent); err != nil {
 					return err
 				}
 			}

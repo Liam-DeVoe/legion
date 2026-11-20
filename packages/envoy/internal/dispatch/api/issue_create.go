@@ -525,7 +525,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
-	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// (R16 of this branch's spec); what that write states waits for the issue.created event
 	// below (graphstore.QueueCaused). It is one of the create's inline writes, before the
 	// ledger's: the spec's version and block index run at Commit, and the index's projection rows
 	// name the spec's node. Each row names its node in the same transaction. Both are nodes this
@@ -682,10 +682,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if room.tree != "" {
 			refs.QueueStamp(b, "artifact", room.tree)
 		}
-		if err := graphstore.QueueCaused(r.Context(), b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent); err != nil {
+		if err := graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent); err != nil {
 			return err
 		}
-		if err := graphstore.QueueCaused(r.Context(), b, specBlocks, graphstore.LatestEvent); err != nil {
+		if err := graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent); err != nil {
 			return err
 		}
 		return queueIssueRelations(b, relations, actor)

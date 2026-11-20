@@ -1,15 +1,15 @@
 //go:build basebuild
 
-// Three tests of this tag are this change's acceptance runs:
+// Three tests of this tag are cybermonklabs/legion#3178's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. The fourth is the predicate and lens
-// reads' TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go), which
-// shares it too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at the
-// commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so
-// each needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue
-// pod. They carry a build tag of their own and no CI job runs it: they are run on the pod, one at
-// a time and by name, as
+// (read_cost_test.go), which share graph_cost_test.go. The fourth is cybermonklabs/legion#4193's
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go), which shares it
+// too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at the commit
+// BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
+// needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
+// They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
+// time and by name, as
 //
 //	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
@@ -290,13 +290,15 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // baseBuild builds `./cmd/dispatch` at the commit this build is compared with and answers the
 // binary. The commit is the one BASELINE_SHA names (testbaseline.Commit): the fork point with
-// main for a branch that lands on main, the parent's head for a child stacked on it. The source is
-// that commit's own tree, taken out of the repository with `git archive` into a directory of this
-// test's own, so the build is that commit's and not this working copy's. The binary is stamped
-// with that commit as the image build stamps one, `-ldflags "-X main.buildCommit=<commit>"`, so
-// the process registers and reports the build it is (processes.Live reads two unstamped builds as
-// one fleet). The directory and the binary go when the test ends, so every run extracts and
-// builds again, which is about a minute.
+// main for a branch that lands on main, the parent's head for a child stacked on it, and for a
+// check whose branch builds on branches that have not merged yet, a commit holding every such
+// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). The source is that commit's own
+// tree, taken out of the repository with `git archive` into a directory of this test's own, so the
+// build is that commit's and not this working copy's. The binary is stamped with that commit as
+// the image build stamps one, `-ldflags "-X main.buildCommit=<commit>"`, so the process registers
+// and reports the build it is (processes.Live reads two unstamped builds as one fleet). The
+// directory and the binary go when the test ends, so every run extracts and builds again, which is
+// about a minute.
 func baseBuild(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
@@ -335,7 +337,7 @@ func baseBuild(t *testing.T) string {
 		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
 		Env:    os.Environ(),
 	})
-	t.Logf("the older build is %s, from %s, stamped with that commit", binary, commit)
+	t.Logf("the older build is %s, from %s, the commit %s names, stamped with that commit", binary, commit, testbaseline.Variable)
 	return binary
 }
 
@@ -1408,9 +1410,10 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
-		case slices.Contains(decisionCensusKinds, kind.kind):
-			// The decision tie kinds, which this run writes no decision for and which a store
-			// may hold none of: no row and no node of one is no refusal, and a difference is.
+		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind):
+			// The decision tie kinds and graph_edges' answers of them, which this run writes no
+			// decision for and which a store may hold none of: no row and no node of one is no
+			// refusal, and a difference is.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
 					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)

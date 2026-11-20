@@ -48,8 +48,8 @@ const (
 // block holds.
 const TupleInDocument = "in_document"
 
-// BlockRefKindsSQL is a select of every tuple kind IndexBlocks writes into block_refs, one row
-// each, so of every kind of tuple out of a block that a block_refs row is the projection of: a
+// BlockRefKindsSQL is a select of every tuple kind the block index writes into block_refs, one
+// row each, so of every kind of tuple out of a block that a block_refs row is the projection of: a
 // block's mention (blockPairs) and the name of every `block[]` attribute the store's type nodes
 // declare, the kind of each pointer that attribute makes (pointerPairs: a pointer's kind is its
 // attribute's name as a document writes it, pmdoc.BlockPointer's Attribute, and never its
@@ -104,66 +104,6 @@ func (v Versions) Newest(artifactID string) (string, Version) {
 		}
 	}
 	return lead, version
-}
-
-// retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
-// leaves behind: each asserted prevented_by whose far end is one of the blocks at addresses, a
-// check that covered a risk, and each asserted constrained_by whose near end is one of them, a
-// requirement held to a constraint. A constrained_by points at a constraint, never at a block, so
-// the one a gone block takes with it starts there. Each retraction is dated at, the version's
-// time, and signed by writer, as a dropped pair of block_refs is, and rides with the facts the
-// pass states for the version's event (PlanBlocks' Stated). It reads the store through q, in the
-// plan's read phase: a second indexing of the document in the same transaction drops no block the
-// first one dropped, since the first's Held no longer holds it, so it never retracts the same
-// pointers twice.
-//
-// It logs how many it retracts at each block, with the block's address, and answers the number to
-// no reader: the risk a check covered may be one only its author may see, and a count served
-// beside the block would tell another reader it is there.
-func retractGonePointers(ctx context.Context, q Queryer, addresses []string, at time.Time, writer model.Actor) ([]graphstore.UncausedTuple, error) {
-	if len(addresses) == 0 {
-		return nil, nil
-	}
-	const columns = `t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`
-	rows, err := q.Query(ctx, `
-		select checked.from_kind, checked.from_id, checked.kind, checked.to_kind, checked.to_id, checked.to_id
-		from (
-			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`, columns,
-		`t.to_kind = '`+BlockNodeKind+`' and t.to_id = any($1) and t.kind = '`+graphstore.TuplePreventedBy+`'`)+`
-		) checked
-		where checked.asserted
-		union all
-		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id, held.from_id
-		from (
-			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, columns,
-		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = any($1) and t.kind = '`+graphstore.TupleConstrainedBy+`'
-				and t.to_kind <> '`+graphstore.KindValue+`'`)+`
-		) held
-		where held.asserted
-	`, addresses)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var retracted []graphstore.UncausedTuple
-	perBlock := map[string]int{}
-	for rows.Next() {
-		tuple := graphstore.Tuple{At: at, Who: writer, Asserted: false}
-		var block string
-		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &block); err != nil {
-			return nil, err
-		}
-		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
-		perBlock[block]++
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, block := range slices.Sorted(maps.Keys(perBlock)) {
-		slog.Info("dispatch: a block the version no longer holds takes its pointers with it",
-			"block", block, "retracted", perBlock[block])
-	}
-	return retracted, nil
 }
 
 // BlockIndex is what a document's block index holds: each block's row - the sha256 of its text,
@@ -609,10 +549,11 @@ func (b BlockIndexing) versionOf(blockID string) Version {
 // - each block's text sum, its excerpt, the links its mentions and its pointers write, and what
 // the node and tuple store is told of them - and reads, through q, only what the store itself
 // holds where the plan compares the render against it: each block's parent, values and authors,
-// where its authored nodes stand, the document's own references on its first indexing, and the
-// store's statement of the document where that is stale. A version writer plans the indexing in
-// its read phase and queues it in its write phase (docs.indexDocument). now is the transaction's
-// now(), which a row the indexing inserts takes from its column's default.
+// where its authored nodes stand, the document's own references on its first indexing, the
+// store's statement of the document where that is stale, and the pointer tuples at each block it
+// states gone (retractGonePointers). A version writer plans the indexing in its read phase and
+// queues it in its write phase (docs.indexDocument). now is the transaction's now(), which a row
+// the indexing inserts takes from its column's default.
 //
 // The plan makes the version's blocks graph nodes, and each mention written inside a block an edge
 // out of the innermost block holding its start. blocks are the version's rendered blocks in
@@ -638,12 +579,9 @@ func (b BlockIndexing) versionOf(blockID string) Version {
 // requirement, is retracted beside the facts the pass states (retractGonePointers), and a version
 // that restores the block restores none of them. A block the version holds keeps the state and the
 // visibility its node has, unless it was gone, when it comes back live (blockNode restates every
-// node it writes). Each block whose words the version added, changed or restored, and each it
-// dropped, is marked changed (graphstore.Node's Changed), so where the caller appends the write on
-// a context holding a run each of them, and no other block, carries that run's changed_by_run. The
-// windows the version's blocks are embedded in are not planned here and not written by this index:
-// the row it records marks the document owed them, and the block-index tick's window arm writes
-// them (Queue, DocumentsOwedWindows).
+// node it writes). The windows the version's blocks are embedded in are not planned here and not
+// written by this index: the row it records marks the document owed them, and the block-index
+// tick's window arm writes them (Queue, DocumentsOwedWindows).
 //
 // A block whose row the pass writes first is made by the first author of the version that first
 // holds it, its text's since (textSince), at that version's time. Every block of the version whose
@@ -692,7 +630,11 @@ func (b BlockIndexing) versionOf(blockID string) Version {
 // stated gone by a version carries the event that deleted it, and a block_refs row the pass
 // inserts outside a first indexing takes that event as its tuple's legacy_source_seq
 // (graphstore.UncausedTuple). A pass that lost the revision fence states nothing and answers the
-// zero write, for which graphstore.QueueCaused writes nothing.
+// zero write, for which graphstore.QueueCaused writes nothing. Each block whose words the version
+// added, changed or restored, and each it dropped, is marked changed (graphstore.Node's Changed),
+// so where the caller appends the write on a write phase made for a run of the command bar
+// (store.NewWriteBatch over a context store.WithRun gave the run), each of them, and no other
+// block, carries that run's changed_by_run (graphstore.QueueCaused).
 //
 // The revision fence (queueStand) is decided here on the stands the index holds: a pass over one
 // document wins where its document's row admits its version (blockStand.admits), and a pass over
@@ -721,12 +663,13 @@ func (b BlockIndexing) versionOf(blockID string) Version {
 // stated: each block the store holds present that the version does not hold, gone with its
 // pointers (goneSinceStated, retractGonePointers), and each link the store asserts out of a block
 // of the document, of a kind a pair of a version writes (heldLinkKinds), that no pair of the
-// version writes, retracted (unheldLinks). And since that release rewrote the row of each block
-// whose text its version moved and stated no text value, the pass states the text of every block
-// it places (planBlockValues). That is no repair: what decides each statement is the version's
-// render, and the store is read only for what it would go on asserting against it, as
-// planBlockParents reads it for the parents. A pass over a document only this release indexed
-// reads none of it.
+// version writes, retracted (unheldLinks). A tuple another writer states out of a block - a
+// requirement's constrained_by, a changed_by_run - is no such link, and the pass leaves it where
+// it stands. And since that release rewrote the row of each block whose text its version moved
+// and stated no text value, the pass states the text of every block it places (planBlockValues).
+// That is no repair: what decides each statement is the version's render, and the store is read
+// only for what it would go on asserting against it, as planBlockParents reads it for the
+// parents. A pass over a document only this release indexed reads none of it.
 //
 // beside is what the caller states under the same event and has the pass write with its own (the
 // person who removed an answered ask, and the removal's facts): a write planned with
@@ -1005,7 +948,7 @@ func PlanBlocks(
 	// proposed requirement's words leaves it proposed, and comes back live only from gone. A
 	// block whose words this version wrote and a block it dropped are what the version changed,
 	// so each is marked changed, and a version written for a run names it as changed by that run
-	// (graphstore.TupleChangedByRun) where its cause is appended.
+	// (graphstore.TupleChangedByRun) where its cause is appended (graphstore.QueueCaused).
 	blockNodes := make([]graphstore.Node, 0, len(indexing.ids)+len(dropped)+len(nodeless))
 	// The authors of the version each block whose row this pass writes first stands since, by id:
 	// that version first holds it, and no document_block_texts row says so before this pass
@@ -1108,6 +1051,9 @@ func PlanBlocks(
 	indexing.stated = graphstore.PlanUncaused(append(written, unwritten(beside.Nodes, written)...), nil)
 	indexing.stated.Tuples = append(indexing.stated.Tuples, memberships...)
 	indexing.stated.Tuples = append(indexing.stated.Tuples, authored...)
+	// The pointer tuples at the blocks it states gone go with them (retractGonePointers): read
+	// here, in the plan, and appended beside the facts that node write states, under the same
+	// cause, in the same write phase as the node write that states each block gone.
 	retracted, err := retractGonePointers(ctx, q, gone, versionAt, writer)
 	if err != nil {
 		return BlockIndexing{}, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", version, artifactID, err)
@@ -1679,6 +1625,125 @@ func IndexBlocks(
 		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	return slices.Concat(indexing.Moved(), cited), indexing.Won(), indexing.Stated(), indexing.Marked(), nil
+}
+
+// CurrentPreventionsSQL is the read of every prevented_by tuple the store asserts now at a block
+// whose id is one of the SQL array blocks, each a check that covers a risk, as checked: the newest
+// tuple of each relation into those blocks, kept while it asserts (graphstore.CurrentTupleRead).
+// columns is what it answers, written over checked's from_kind, from_id, kind, to_kind and to_id.
+// Every retraction of such a tuple reads them through PreventionRetractions.
+func CurrentPreventionsSQL(columns, blocks string) string {
+	return `select ` + columns + `
+		from (
+			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`,
+		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.to_kind = '`+BlockNodeKind+`' and t.to_id = any(`+blocks+`) and t.kind = '`+graphstore.TuplePreventedBy+`'`) + `
+		) checked
+		where checked.asserted`
+}
+
+// PreventionRetractions is the retraction of every prevented_by tuple the store asserts now at a
+// block of the SQL array blocks, whose parameters are args (CurrentPreventionsSQL), read in the
+// writer's transaction tx, before its write phase: each dated at, signed by writer and caused by
+// cause, in the order of its check and then of its risk. It is a writer's read, which answers no
+// reader and so binds no visibility predicate: the one read of the three writers that retract such
+// tuples, each under the owner lock (store.LockOwner) of the checks' document it took first - the
+// index pass at the blocks a version drops (retractGonePointers, through the plan's own reader), a
+// retirement at the blocks of the document it retires (docs' retiredPreventions), and the
+// backfill at the checks a process of the release before dropped or retired without retracting
+// them (graphcensus' writeEndedPreventions). Each logs what it retracts in its own words, and
+// appends the retractions in its write phase, after the read.
+func PreventionRetractions(ctx context.Context, tx pgx.Tx, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
+	return preventionRetractions(ctx, tx, blocks, args, at, writer, cause)
+}
+
+// preventionRetractions is PreventionRetractions read through q, the reader of the plan that calls
+// it (PlanBlocks' retractGonePointers).
+func preventionRetractions(ctx context.Context, q Queryer, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
+	rows, err := q.Query(ctx, CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`, blocks)+`
+		order by checked.to_id, checked.from_kind, checked.from_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks: %w", err)
+	}
+	retracted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		tuple := graphstore.Tuple{
+			Kind: graphstore.TuplePreventedBy, ToKind: BlockNodeKind,
+			At: at, Who: writer, SourceEvent: cause, Asserted: false,
+		}
+		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID)
+		return tuple, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks: %w", err)
+	}
+	return retracted, nil
+}
+
+// retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
+// leaves behind (spec requirement r-constraint-risk): each asserted prevented_by whose
+// far end is one of the blocks at addresses, a check that covered a risk (PreventionRetractions),
+// and each asserted constrained_by whose near end is one of them, a requirement held to a
+// constraint. A constrained_by points at a constraint, never at a block, so the one a gone block
+// takes with it starts there. Each retraction is dated at, the version's time, and signed by
+// writer, as a dropped pair of block_refs is.
+//
+// The read is the plan's own (PlanBlocks), through q in the version writer's read phase, and the
+// retractions ride with the facts the pass states for the version's event (BlockIndexing.Stated),
+// which the writer appends in the same write phase as the node write that states each block gone
+// (graphstore.QueueCaused after Queue's graphstore.QueueNodes), so no result is read back between
+// two statements of that phase. Nothing writes a pointer at those blocks between the read and the
+// write phase: the pass holds the document's owner lock (store.LockOwner) from before its read,
+// and a prevented_by write takes the owner lock of its check's document before it reads that
+// document (api's lockReasoningOwners). A second indexing of the document in the same transaction
+// drops no block the first one dropped, since the first's Held no longer holds it, so it never
+// retracts the same pointers twice.
+//
+// It logs how many it retracts at each block, with the block's address, and answers the number to
+// no reader: the risk a check covered may be one only its author may see, and a count served
+// beside the block would tell another reader it is there.
+func retractGonePointers(ctx context.Context, q Queryer, addresses []string, at time.Time, writer model.Actor) ([]graphstore.UncausedTuple, error) {
+	if len(addresses) == 0 {
+		return nil, nil
+	}
+	prevented, err := preventionRetractions(ctx, q, `$1`, []any{addresses}, at, writer, graphstore.NoEvent)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `
+		select held.from_kind, held.from_id, held.to_kind, held.to_id
+		from (
+			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_kind, t.from_id, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = any($1) and t.kind = '`+graphstore.TupleConstrainedBy+`'
+				and t.to_kind <> '`+graphstore.KindValue+`'`)+`
+		) held
+		where held.asserted
+	`, addresses)
+	if err != nil {
+		return nil, err
+	}
+	constrained, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		tuple := graphstore.Tuple{Kind: graphstore.TupleConstrainedBy, At: at, Who: writer, Asserted: false}
+		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToKind, &tuple.ToID)
+		return tuple, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	retracted := make([]graphstore.UncausedTuple, 0, len(prevented)+len(constrained))
+	perBlock := map[string]int{}
+	for _, tuple := range prevented {
+		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
+		perBlock[tuple.ToID]++
+	}
+	for _, tuple := range constrained {
+		retracted = append(retracted, graphstore.UncausedTuple{Tuple: tuple})
+		perBlock[tuple.FromID]++
+	}
+	for _, block := range slices.Sorted(maps.Keys(perBlock)) {
+		slog.Info("dispatch: a block the version no longer holds takes its pointers with it",
+			"block", block, "retracted", perBlock[block])
+	}
+	return retracted, nil
 }
 
 // OwedBlockIndexDebts is one row per document owed a block index - its version null, or this
@@ -2901,16 +2966,18 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	var removedBy []byte
 	var removedAt *time.Time
 	var held *int
-	var stored []string
+	var stored StoredNode
 	documentID := document.ID
+	storedJoin, storedColumns := storedNode(BlockNodeKind, "$4")
 	if err := q.QueryRow(ctx, `
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
 		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3),
-		       `+storedNode(BlockNodeKind, "$4")+`
+		       `+storedColumns+`
 		from (select $1::uuid as artifact_id, `+DocumentRoomSQL("$1::uuid")+` as room, $2::text as block_id) b
 		`+blockFirstVersionOr("first", "b.room", "b.block_id", "b.artifact_id")+`
 		left join artifact_versions removed on removed.artifact_id = b.artifact_id and removed.number = $3
-	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored)...); err != nil {
+		`+storedJoin+`
+	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored.State, &stored.Visibility)...); err != nil {
 		return model.GraphNode{}, fmt.Errorf("read the facts of removed block %q of %s: %w", blockID, documentID, err)
 	}
 	madeBy, madeAt, err := first.maker()
@@ -2936,9 +3003,7 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 		Parent:        &model.NodeParent{Kind: "artifact", ID: documentID, Ref: document.Ref},
 		ParentVersion: held,
 	}
-	if err := setStored(&node, stored); err != nil {
-		return model.GraphNode{}, err
-	}
+	setStored(&node, stored)
 	return node, nil
 }
 

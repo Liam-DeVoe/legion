@@ -53,7 +53,7 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 //
-// No arm holds its nodes to the types the store holds, as queueNodes does (missingSupertagsSQL):
+// No arm holds its nodes to the types the store holds, as queueNodes does (queueSupertagCheck):
 // the arms are spliced into their caller's one statement - the publisher's record of a batch
 // above all - and a refusal decided before that statement runs has no statement of its own to run
 // in, while one decided inside it would end the record of a batch already sent. Every node an arm
@@ -80,13 +80,12 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 }
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
-// it makes, or marks it for the cause that comes later. A node, a value tuple or a claim stating a
-// state or a visibility at a value that attribute does not take is refused before any arm is
+// it makes, or marks it for the cause that comes later. A node, a value tuple or a claim stating
+// a state or a visibility at a value that attribute does not take is refused before any arm is
 // built (checkBaseValues), and so is a node reserved for its author whose kind takes no such node
 // (CheckVisibilityAdmitted), so the caller's statement never runs it; so is a relation or a claim
 // whose kind the pointer type rules hold (pointerRules): an arm reads none of the nodes such a
-// rule names, so that relation is appended through QueueWrite or QueueCaused alone
-// (refusePointersInArms).
+// rule names, so that relation is appended through Write or Caused alone (refusePointersInArms).
 func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, Uncaused, error) {
 	if err := checkBaseValues(nodes, tuples, claims); err != nil {
 		return "", nil, Uncaused{}, err

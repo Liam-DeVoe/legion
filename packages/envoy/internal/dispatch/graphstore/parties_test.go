@@ -39,7 +39,7 @@ func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 		}
 		node := MessageNode("m-bad", "", []string{party}, who, at)
 		var batch store.WriteBatch
-		if err := QueueWrite(context.Background(), &batch, []Node{node}, nil); !errors.Is(err, ErrBadParty) {
+		if err := QueueWrite(&batch, []Node{node}, nil); !errors.Is(err, ErrBadParty) {
 			t.Errorf("QueueWrite of a node between %q answered %v, want ErrBadParty", party, err)
 		}
 		if _, _, err := WriteArms(1, []Node{node}, nil, nil); !errors.Is(err, ErrBadParty) {

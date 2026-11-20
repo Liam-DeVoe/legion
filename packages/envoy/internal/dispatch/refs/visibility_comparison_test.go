@@ -16,7 +16,7 @@ import (
 
 // The two kinds the tests below register, one through each constructor of a kind that takes
 // `author`, so each comparison and the flag are held to what they do before any kind
-// dispatch://INFRA-1950 adds is registered: a kind of that child registers through one of the two
+// cybermonklabs/legion#4193 adds is registered: a kind of that child registers through one of the two
 // in the commit that adds it. Neither is a kind of the store, so each is registered only for the
 // test that reads it (registerForTest), and the census of the registry
 // (TestEveryNodeKindAnswersAVisibilityPredicate) never meets it.
@@ -32,7 +32,7 @@ func init() {
 	graphstore.AdmitAuthorOnly(authorComparedTestKind, credentialComparedTestKind)
 }
 
-// thisChildsAuthorKinds are the kinds dispatch://INFRA-1950 adds that take a node reserved for its
+// thisChildsAuthorKinds are the kinds cybermonklabs/legion#4193 adds that take a node reserved for its
 // author (R1): the kinds whose registry entry carries the flag, each once that child registers
 // it. A lens_kind is a kind of that child too, and is always project-visible.
 var thisChildsAuthorKinds = []string{
@@ -60,7 +60,7 @@ func registerForTest(t *testing.T, entries map[string]nodeKind) {
 
 // TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds holds the registry's flag - every read of
 // the kind binds its predicate, so the kind may hold a node reserved for its author - and the
-// kinds dispatch://INFRA-1950 registers to one list: the flagged kinds are exactly that child's
+// kinds cybermonklabs/legion#4193 registers to one list: the flagged kinds are exactly that child's
 // author kinds the registry holds, so a flag on any other kind and a registered author kind with
 // no flag each fail here, named, and neither list grows alone. A lens_kind is never flagged. The
 // registry's init handed the store every flagged kind (graphstore.AdmitAuthorOnly), and the store
@@ -85,7 +85,7 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 	}
 	// The kinds of that child registered so far, each as R1 and R19 have it: a constraint, a lens,
 	// a finding of a lens and a risk are flagged and compare the author a credential proved, the
-	// one rule of dispatch://INFRA-1149, an interaction is flagged and compares the whole
+	// one rule of cybermonklabs/legion#3178, an interaction is flagged and compares the whole
 	// credential, and a lens kind of the catalogue is registered unflagged. The first two are
 	// written by migration 20261116123354, the next three by the reasoning write and an
 	// interaction by the going POST, which is where they register. A finding is stored as a
@@ -142,9 +142,9 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 }
 
 // TestAKindComparesTheAuthorOrTheCredentialItsEntryStates holds each rendered predicate to the
-// comparison the kind's registry entry states (dispatch://INFRA-1950/spec#b-r-author, R19). A kind
+// comparison the kind's registry entry states (spec requirement r-author, R19). A kind
 // that compares the author a credential proved (authoredKind), the one rule every kind
-// dispatch://INFRA-1149 registers compares too (graphstore.AuthorIsSQL), answers a node reserved
+// cybermonklabs/legion#3178 registers compares too (graphstore.AuthorIsSQL), answers a node reserved
 // for its author to every credential of that author and to no other: to each credential that
 // proves the person who wrote it - alice's cookie, her personal token and a session the broker
 // verified as hers read what any of them wrote, under any spelling of her login, a capital outside
@@ -255,7 +255,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 		{"the credential kind, written by a session only a body named", node(credentialComparedTestKind, "by-body-named", graphstore.VisibilityAuthor, bodyNamed), nil},
 		{"the credential kind, written by nobody", node(credentialComparedTestKind, "by-nobody", graphstore.VisibilityAuthor, shared), nil},
 		{"a comment, written by alice's cookie", node(graphstore.KindComment, "11111111-1111-4111-8111-111111111111", graphstore.VisibilityAuthor, aliceCookie), alices},
-		// The kinds of dispatch://INFRA-1950 this build registers with the author comparison, a
+		// The kinds of cybermonklabs/legion#4193 this build registers with the author comparison, a
 		// finding among them, which the store keys as a block and every predicate reads under that
 		// kind, so a finding reserved for its author is no more visible than a lens.
 		{"a lens, written by alice's personal token", node(graphstore.KindLens, "22222222-2222-4222-8222-222222222222", graphstore.VisibilityAuthor, aliceToken), alices},

@@ -328,12 +328,12 @@ func PlanMissingVersionNodes(ctx context.Context, q graphstore.Queryer, artifact
 }
 
 // Queue queues on b the write of the version nodes the drain planned and their facts
-// (graphstore.QueueWrite), for the run ctx carries; a drain that found none queues nothing.
-func (m MissingVersionNodes) Queue(ctx context.Context, b *store.WriteBatch) error {
+// (graphstore.QueueWrite), for the run b carries; a drain that found none queues nothing.
+func (m MissingVersionNodes) Queue(b *store.WriteBatch) error {
 	if len(m.nodes) == 0 {
 		return nil
 	}
-	if err := graphstore.QueueWrite(ctx, b, m.nodes, m.tuples); err != nil {
+	if err := graphstore.QueueWrite(b, m.nodes, m.tuples); err != nil {
 		return fmt.Errorf("write the missing version nodes: %w", err)
 	}
 	return nil

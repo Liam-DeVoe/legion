@@ -272,7 +272,7 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 				return fmt.Errorf("append anchor refresh event: %w", err)
 			}
 			if tuple, held := anchoredIn[index]; held {
-				if err := stateRefreshedAnchoredIn(ctx, b, tuple); err != nil {
+				if err := stateRefreshedAnchoredIn(b, tuple); err != nil {
 					return err
 				}
 			}
@@ -385,8 +385,8 @@ func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor
 // stateRefreshedAnchoredIn queues on b the anchored_in refreshedAnchoredIn read of one refreshed
 // comment, right after that comment's comment.anchor_refreshed, whose id it carries
 // (graphstore.LatestEvent): nothing is appended between the two.
-func stateRefreshedAnchoredIn(ctx context.Context, b *store.WriteBatch, tuple graphstore.Tuple) error {
-	if err := graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{tuple}); err != nil {
+func stateRefreshedAnchoredIn(b *store.WriteBatch, tuple graphstore.Tuple) error {
+	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{tuple}); err != nil {
 		return fmt.Errorf("state the anchored_in of a refreshed comment anchor: %w", err)
 	}
 	return nil

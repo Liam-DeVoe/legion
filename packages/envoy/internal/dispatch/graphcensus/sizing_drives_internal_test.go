@@ -30,8 +30,8 @@ import (
 )
 
 // The drives of the sites of the register of the store's writers that this package's own passes,
-// the architecture importer, graphstore's catalogue and pointer writers and the rebuild of the
-// references hold, and that no drive before them runs (internalDrives).
+// the architecture importer, graphstore's pointer writer and the rebuild of the references hold,
+// and that no drive before them runs (internalDrives).
 const (
 	versionBatchDrive          = "graphcensus/census_versions.go#writeVersionBatch"
 	missingVersionsDrive       = "graphcensus/census_versions.go#Queue, a block-index drain's"
@@ -43,10 +43,6 @@ const (
 	componentBatchDrive        = "graphcensus/census_components.go#writeComponentBatch"
 	componentDependsBatchDrive = "graphcensus/census_components.go#writeComponentDependsBatch"
 	memberBatchDrive           = "graphcensus/census_components.go#writeIssueComponentMemberBatch"
-	runNodeDrive               = "graphcensus/interactions.go#writeRun"
-	runFramesDrive             = "graphcensus/backfill.go#writeRunFrames"
-	goneRunDrive               = "graphcensus/backfill.go#writeGoneRun"
-	lensKindDrive              = "graphstore/lens_catalogue.go#AddLensKind"
 	retargetDrive              = "graphstore/reasoning.go#Retarget"
 	rebuildDrive               = "refs/rebuild.go#replaceInTx"
 	importDrive                = "architecture/importer.go#stateComponents"
@@ -69,10 +65,9 @@ const (
 var drivenAuthor = model.Actor{Kind: "user", ID: "alice"}
 
 // internalDrives are the drives of the register's sites the drives before them leave: the
-// backfill's passes over what a build before the store wrote (passDrives), the catalogue's add of
-// a lens kind, a retarget of a lens's has_kind and the rebuild of a document's references, over a
-// database of their own, and the architecture import and a source's removal over another
-// (archDrives).
+// backfill's passes over what a build before the store wrote (passDrives), a retarget of a lens's
+// has_kind and the rebuild of a document's references, over a database of their own, and the
+// architecture import and a source's removal over another (archDrives).
 func internalDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	return slices.Concat(passDrives(t), archDrives(t))
@@ -167,9 +162,9 @@ func resultKindsCounted() map[StoredKind][]string {
 }
 
 // passDrives are the drives of the backfill's passes this package holds, each over the rows a
-// build before the store wrote and a drive's Ready stands up by SQL, and of the catalogue, the
-// pointer and the rebuild writers, over one database of their own. That database holds project
-// DRIVE, its two issues, each its node and a row naming it, and alice's person node. Each pass
+// build before the store wrote and a drive's Ready stands up by SQL, and of the pointer and the
+// rebuild writers, over one database of their own. That database holds project DRIVE, its two
+// issues, each its node and a row naming it, and alice's person node. Each pass
 // reads every row of its kind its marker does not mark, so the drives run in an order in which no
 // pass reads a row a drive before it stood up: the rebuild, which reads every document, comes
 // last, and none of the passes reads a row of another's table.
@@ -195,7 +190,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		`, drivenIssue, drivenTarget, drivenProject)
 		return err
 	})
-	var drained, result, run string
+	var drained, result string
 	return []StoreDrive{{
 		// The version pass (backfillVersions) over the one version a build before the store wrote
 		// of a document of DRIVE-1: the version's node and its facts, which the term version
@@ -232,7 +227,7 @@ func passDrives(t *testing.T) []StoreDrive {
 				if !whole || len(missing.nodes) != 1 {
 					return fmt.Errorf("the drain planned %d version node(s), whole %t, want drained-md's one", len(missing.nodes), whole)
 				}
-				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return missing.Queue(ctx, b) })
+				return store.RunWrite(ctx, tx, missing.Queue)
 			})
 		},
 		Counts: versionKindsCounted(),
@@ -406,79 +401,6 @@ func passDrives(t *testing.T) []StoreDrive {
 		},
 		Drive:  drivenPass(database, backfillIssueComponentMembers),
 		Counts: map[StoredKind][]string{{graphstore.KindIssue, graphstore.TupleAffects}: {"component_relation"}},
-	}, {
-		// The run pass (backfillRuns) over a run of the command bar a process of the release before
-		// recorded, alice's in DRIVE, with one frame and no node (WriteRun): the run's node with its
-		// base attributes, its words, its ends_at and her authored_by, which the term interaction
-		// counts, and its frame's value, which frame counts.
-		Name: runNodeDrive, Database: database,
-		Sites: []string{"graphcensus/interactions.go#writeRun", "graphstore/write.go#Write"},
-		Ready: func(t *testing.T) {
-			olderPodRun(t, database, drivenAuthor, drivenProject, "What does the older pod record?", "One frame.")
-		},
-		Drive: drivenPass(database, backfillRuns),
-		Counts: map[StoredKind][]string{
-			{graphstore.KindInteraction, graphstore.AttributeVisibility}: {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.AttributeState}:      {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
-			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {"frame"},
-		},
-	}, {
-		// The frame pass (backfillRunFrames) over a frame a process of the release before appended
-		// to a run this build gave its node: the frame's value, which the term frame counts.
-		Name: runFramesDrive, Database: database,
-		Sites: []string{"graphcensus/backfill.go#writeRunFrames", "graphstore/write.go#Write"},
-		Ready: func(t *testing.T) {
-			run = olderPodRun(t, database, drivenAuthor, drivenProject, "Which frame is owed?", "The first frame.")
-			giveRunItsNode(t, database, run)
-			appendOlderPodFrame(t, database, run, 2, "The frame the older pod appended.")
-		},
-		Drive:  drivenPass(database, backfillRunFrames),
-		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeFrame}: {"frame"}},
-	}, {
-		// The gone run pass (backfillGoneRuns) over a run this build gave its node whose row a
-		// process of the release before deleted an hour old: the node stated gone, which the term
-		// interaction_gone counts.
-		Name: goneRunDrive, Database: database,
-		Sites: []string{"graphcensus/backfill.go#writeGoneRun", "graphstore/write.go#Write"},
-		Ready: func(t *testing.T) {
-			deleted := olderPodRun(t, database, drivenAuthor, drivenProject, "Asked and deleted an hour on.", "Gone.")
-			giveRunItsNode(t, database, deleted)
-			if _, err := database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, deleted); err != nil {
-				t.Fatalf("delete run %s as an older pod's sweep does: %v", deleted, err)
-			}
-		},
-		Drive:  drivenPass(database, backfillGoneRuns),
-		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {"interaction_gone"}},
-	}, {
-		// The catalogue's add of one lens kind (graphstore.AddLensKind), as `envoy-dispatch
-		// lens-kind-add` adds one in a transaction of its own: the lens_kind node with its
-		// visibility, state and words and its constrained_by, and its source's constraint node with
-		// that node's visibility, state, standard and reference, which the term lens_kind counts.
-		Name: lensKindDrive, Database: database,
-		Sites: []string{"graphstore/lens_catalogue.go#AddLensKind", "graphstore/write.go#Write"},
-		Drive: func(t *testing.T) {
-			drivenTx(t, database, "add the lens kind sizing-drive", func(tx pgx.Tx) error {
-				_, err := graphstore.AddLensKind(ctx, tx, graphstore.LensKind{
-					ID: "sizing-drive", Words: "Drive every writer the sizing counts.",
-					Source: "The register of the store's writers", Reference: "lockstep.StoreWriteCallSites",
-				}, time.Now().UTC())
-				return err
-			})
-		},
-		Counts: map[StoredKind][]string{
-			{graphstore.KindLensKind, graphstore.AttributeVisibility}:   {"lens_kind"},
-			{graphstore.KindLensKind, graphstore.AttributeState}:        {"lens_kind"},
-			{graphstore.KindLensKind, graphstore.AttributeWords}:        {"lens_kind"},
-			{graphstore.KindLensKind, graphstore.TupleConstrainedBy}:    {"lens_kind"},
-			{graphstore.KindConstraint, graphstore.AttributeVisibility}: {"lens_kind"},
-			{graphstore.KindConstraint, graphstore.AttributeState}:      {"lens_kind"},
-			{graphstore.KindConstraint, graphstore.AttributeStandard}:   {"lens_kind"},
-			{graphstore.KindConstraint, graphstore.AttributeReference}:  {"lens_kind"},
-		},
 	}, {
 		// A retarget of a lens's has_kind from trade-off to inversion, two kinds the catalogue's
 		// seed holds, as the pointer route makes one (api's writeReasoningPointer, through

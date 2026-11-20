@@ -52,9 +52,11 @@ var blockProjections = []projection{{
 		join artifacts a on a.id = d.artifact_id
 		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
 		where octet_length(d.node_id) <= ` + addressBound + ` and not (a.kind = 'tree' and ` + roomOwed("d.artifact_id") + `)`,
+	// A finding of a lens is a block no document holds, so no document_blocks row projects it
+	// (graphstore.FindingIDSQL).
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
@@ -93,12 +95,13 @@ var blockProjections = []projection{{
 	// side that began at the rows could never find it. A block whose only links are its
 	// placement, its shaped, its from_ask, its decided_by, or tuples no block_refs row projects -
 	// its authored_by among them, which the block index states through graphstore.AuthorFacts -
-	// states no link here and is no node of this kind; the block kind holds its placement.
+	// states no link here and is no node of this kind; the block kind holds its placement. A
+	// finding of a lens is a block no document holds, so no block_refs row names it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
 			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
@@ -123,7 +126,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(left(` + currentValue(refs.AttributeRank) + `, 1), ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
@@ -153,7 +156,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(encode(sha256(convert_to(` + currentValue(graphstore.AttributeText) + `, 'UTF8')), 'hex'), ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
@@ -175,7 +178,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,

@@ -469,7 +469,7 @@ func (s *server) createStoredMessage(
 		if issueKey != nil {
 			refs.QueueStamp(b, "message", message.ID)
 		}
-		if err := graphstore.QueueCaused(ctx, b, messageNode, graphstore.LatestEvent); err != nil {
+		if err := graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent); err != nil {
 			return err
 		}
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that

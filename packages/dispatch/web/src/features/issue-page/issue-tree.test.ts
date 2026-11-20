@@ -12,6 +12,7 @@ import type {
   CommentWithTrees,
   Decision,
   DecisionEntry,
+  DecisionLink,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
@@ -369,8 +370,6 @@ function decisions(made: readonly Decision[]): IssueDecisions {
     open_questions: [],
   };
 }
-
-type DecisionLink = NonNullable<Decision["links"]>[number];
 
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
 function linkTo(ref: string, kind: DecisionLink["to"]["kind"]): DecisionLink {

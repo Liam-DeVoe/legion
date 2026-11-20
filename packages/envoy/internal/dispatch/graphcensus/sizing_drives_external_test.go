@@ -1,16 +1,12 @@
 package graphcensus_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -74,7 +70,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Sites: []string{"api/issue_patch.go#patchIssue"},
 		Ready: func(t *testing.T) { r.runWindowAhead(t, run) },
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindIssue),
 	}, {
@@ -88,8 +84,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.runWindowAhead(t, run)
 		},
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/asks/"+ask,
-				map[string]any{"question": "Which words did the run change?"}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+ask,
+				map[string]any{"question": "Which words did the run change?"}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindAsk),
 	}, {
@@ -103,8 +99,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.runWindowAhead(t, run)
 		},
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/comments/"+edited,
-				map[string]any{"body": "A remark the run reworded."}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/comments/"+edited,
+				map[string]any{"body": "A remark the run reworded."}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindComment),
 	}, {
@@ -392,7 +388,7 @@ var anchorBlockCounted = map[graphcensus.StoredKind][]string{
 }
 
 // changedByRunCounted is what a write made for a run appends out of the node of kind it changed:
-// its changed_by_run into the run, which the term interaction counts (graphstore.WithRun).
+// its changed_by_run into the run, which the term interaction counts (store.WithRun).
 func changedByRunCounted(kind string) map[graphcensus.StoredKind][]string {
 	return map[graphcensus.StoredKind][]string{{kind, graphstore.TupleChangedByRun}: {graphstore.KindInteraction}}
 }
@@ -477,26 +473,6 @@ func (r *writersRig) writeAnchoredIn(t *testing.T, comment, block string, assert
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the anchored_in's write: %v", err)
 	}
-}
-
-// requestForRun sends one request as the person login names made for the run of the command bar
-// run (contracts.GoingRunHeader), failing the test unless the answer is want, and answers the body.
-func (r *writersRig) requestForRun(t *testing.T, method, target string, body any, login, run string, want int) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode %s %s: %v", method, target, err)
-	}
-	request := httptest.NewRequest(method, target, bytes.NewReader(encoded))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", login)
-	request.Header.Set(contracts.GoingRunHeader, run)
-	response := httptest.NewRecorder()
-	r.handler.ServeHTTP(response, request)
-	if response.Code != want {
-		t.Fatalf("%s %s for run %s: status=%d body=%s, want %d", method, target, run, response.Code, response.Body.String(), want)
-	}
-	return response.Body.Bytes()
 }
 
 // runWindowAhead moves the run's window an hour ahead, so a write made for it is accepted however

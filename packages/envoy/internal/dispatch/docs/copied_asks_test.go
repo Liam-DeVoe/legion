@@ -1347,7 +1347,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		), func(model.Event) {}); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
 	}); err != nil {
 		return fmt.Errorf("queue the source's close: %w", err)
 	}

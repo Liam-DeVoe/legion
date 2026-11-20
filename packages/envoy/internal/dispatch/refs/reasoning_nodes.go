@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The nodes a piece of work is reasoned about with (dispatch://INFRA-1950/spec#b-r-lens,
-// #b-r-constraint-risk): a lens, invoked on a node and logged under it, `dispatch://lens/<uuid>`;
+// The nodes a piece of work is reasoned about with (spec requirements r-lens and
+// r-constraint-risk): a lens, invoked on a node and logged under it, `dispatch://lens/<uuid>`;
 // a finding of a lens, a block node whose id names its lens, `dispatch://lens/<uuid>#b-<id>`; and
 // a risk under a pre-mortem, `dispatch://risk/<uuid>`. Each is a node of the store alone, with no
 // projection row, so each is read from graph_nodes, through the predicate of its kind, which
@@ -184,12 +184,12 @@ func StandingKinds() []string { return slices.Clone(standingKinds) }
 // StoreRef is the `dispatch://` address of a node the store addresses by its own id alone - an
 // interaction, a lens, a finding of a lens, a risk, a constraint, a kind of the lens catalogue -
 // from its kind, as the graph addresses it, and its store id: `dispatch://<kind>/<id>`, and for a
-// finding, whose id `lens/<uuid>#<block id>` names its lens, its lens's address with the block id
-// as a document block's reference writes one (`dispatch://lens/<uuid>#b-<id>`).
+// finding, whose id names its lens (graphstore.ParseFindingID), its lens's address with the block
+// id as a document block's reference writes one (`dispatch://lens/<uuid>#b-<id>`).
 func StoreRef(kind, id string) string {
 	if kind == graphstore.KindLensBlock {
-		lens, block, _ := strings.Cut(id, "#")
-		return BlockRef("dispatch://"+lens, block)
+		lens, block, _ := graphstore.ParseFindingID(id)
+		return BlockRef(StoreRef(graphstore.KindLens, lens), block)
 	}
 	return "dispatch://" + kind + "/" + id
 }
@@ -212,47 +212,58 @@ func standingAddressKind(kind, id string) string {
 }
 
 // placedNode is one node read by loadReasoningNodes, with the far end of its current part_of
-// tuple and whether the reader may see that end.
+// tuple, empty where it holds none.
 type placedNode struct {
 	node                 resolvedNode
 	parentKind, parentID string
-	parentSeen           bool
 }
 
 // loadReasoningNodes resolves the nodes of kind - lenses, the findings of lenses (lens_block) or
 // risks - whose store ids are ids, for who, in one statement over graph_nodes, under the kind the
 // store keys them by (StoredKindOf): each row through its kind's predicate over the row the read
-// holds (VisibleKindRow), with its state and visibility, its project, its text (standingText), the
-// far end of its current part_of tuple with that end's own predicate (VisibleNode), so a node
-// standing on one the reader may not see names no parent, and the issue it stands under. That is
+// holds (VisibleKindRow, in heldNodesWhere), with its state and visibility, its project, its text
+// (standingText), the far end of its current part_of tuple, and the issue it stands under. That is
 // the issue its parent stands under or belongs to, so the walk of StandingIssueSQL starts at that
 // far end, the row placed has already read, rather than reading the node's part_of a second time.
 // Its address is the store's (StoreRef).
 //
-// A finding is stored as a block, and of the store's blocks only one whose id names its lens,
-// `lens/<uuid>#<block id>`, is one. A finding is no block of any document, so it answers no
+// A reader who may see the node may see the node it stands on, so its parent is named with no
+// predicate of the parent's own, and no node answers a parent that is missing because it is
+// hidden. The store refuses a part_of out of a node every reader may see at a node reserved for
+// its author (graphstore.VisibilityWiderThanParentError), a route places a node only under one
+// its caller may see, so a node reserved for its author stands only under its author's own or
+// under one every reader sees, and the release before this one wrote no node reserved for its
+// author at all.
+//
+// A finding is stored as a block, and of the store's blocks only one whose id names its lens
+// (graphstore.FindingIDSQL) is one. A finding is no block of any document, so it answers no
 // Document and no version; its BlockID is its own block id, and its text is cut as a document
 // block's stored excerpt is (BlockExcerptRunes), which an edge at it shows whole.
 //
-// Its parent is that far end, as every loader's is the node it belongs to. A parent of a standing
-// kind is named by its kind, its store id and its address; any other parent is resolved through its
-// own kind's loader, in one more read for the whole batch (resolveNodes), so it carries the id and
-// the address that loader answers - an artifact's uuid, a block's node id - and a parent no loader
-// answers, a block no version holds now, names none.
+// Its parent is that far end, as every loader's is the node it belongs to, where the store does
+// not hold that node gone: a lens on a finding its lens took gone with it, or on a lens a person
+// took gone, names no parent, as no read answers that node, while the issue it stands under is
+// still the one the walk reaches through it. A parent of a standing kind is named by its kind, its
+// store id and its address; any other parent is resolved through its own kind's loader, in one more
+// read for the whole batch (resolveNodes), so it carries the id and the address that loader answers
+// - an artifact's uuid, a block's node id - and a parent no loader answers, a block no version
+// holds now, names none.
 func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	where := `held.kind = $1 and held.id = any($2) and held.state <> $3`
-	if kind == graphstore.KindLensBlock {
-		where += ` and held.id like '` + graphstore.KindLens + `/%#%'`
-	}
 	rows, err := q.Query(ctx, `
 		select held.id, held.made_by, held.made_at, state, visibility, held.project_key, `+standingText[kind]("held", "$4")+`,
-		       placed.to_kind, placed.to_id, placed.seen, `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
+		       case when placed_parent.state_held is distinct from $3 then placed.to_kind end,
+		       case when placed_parent.state_held is distinct from $3 then placed.to_id end,
+		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
 		from graph_nodes held
 		left join lateral (
-			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id, `+VisibleNode(`newest.to_kind`, `newest.to_id`, `$4`)+` as seen`,
-		`held.kind`, `held.id`, graphstore.TuplePartOf)+`
+			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TuplePartOf)+`
 		) placed on true
-		where `+where+` and `+VisibleKindRow(kind, "held", "$4"),
+		left join lateral (
+			select parent_row.state as state_held from graph_nodes parent_row
+			where parent_row.kind = `+storedKindSQL(`placed.to_kind`)+` and parent_row.id = placed.to_id
+			offset 0
+		) placed_parent on true
+		where `+heldNodesWhere(kind),
 		StoredKindOf(kind), ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load %s nodes: %w", kind, err)
@@ -263,10 +274,9 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		var madeBy []byte
 		var madeAt time.Time
 		var project, parentKind, parentID *string
-		var parentSeen *bool
 		var body string
 		if err := rows.Scan(&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility, &project, &body,
-			&parentKind, &parentID, &parentSeen, &node.IssueKey); err != nil {
+			&parentKind, &parentID, &node.IssueKey); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan %s node: %w", kind, err)
 		}
@@ -275,7 +285,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 			node.Project = *project
 		}
 		if kind == graphstore.KindLensBlock {
-			_, node.BlockID, _ = strings.Cut(node.ID, "#")
+			_, node.BlockID, _ = graphstore.ParseFindingID(node.ID)
 			body = text.HeadRunes(body, BlockExcerptRunes)
 		}
 		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
@@ -283,8 +293,8 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 			return err
 		}
 		one := placedNode{node: resolvedNode{GraphNode: node, text: body}}
-		if parentKind != nil && parentID != nil && parentSeen != nil && *parentSeen {
-			one.parentKind, one.parentID, one.parentSeen = standingAddressKind(*parentKind, *parentID), *parentID, true
+		if parentKind != nil && parentID != nil {
+			one.parentKind, one.parentID = standingAddressKind(*parentKind, *parentID), *parentID
 		}
 		placed = append(placed, one)
 	}
@@ -295,11 +305,26 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 	return placeReasoningNodes(ctx, q, who, placed, nodes)
 }
 
+// heldNodesWhere is the condition a read of the nodes of kind, whose store ids are a batch, holds
+// each row of graph_nodes to, the row aliased held: of the kind the store keys kind by ($1,
+// StoredKindOf), at one of the ids ($2), not in the state $3 (graphstore.StateGone), and seen by
+// the reader $4 (VisibilityArg) through its kind's predicate over the row (VisibleKindRow). Of
+// the store's blocks only one whose id names its lens (graphstore.FindingIDSQL) is a finding.
+// loadReasoningNodes binds it, and so does BlockTexts for a finding's whole text, so the text of a
+// finding is read off the same rows its name is.
+func heldNodesWhere(kind string) string {
+	where := `held.kind = $1 and held.id = any($2) and held.state <> $3`
+	if kind == graphstore.KindLensBlock {
+		where += ` and ` + graphstore.FindingIDSQL("held.id")
+	}
+	return where + ` and ` + VisibleKindRow(kind, "held", "$4")
+}
+
 // placeReasoningNodes gives each node its parent, as loadReasoningNodes says, and adds it to nodes.
 func placeReasoningNodes(ctx context.Context, q Queryer, who model.Actor, placed []placedNode, nodes map[[2]string]resolvedNode) error {
 	var lookups []edgeRow
 	for _, one := range placed {
-		if one.parentSeen && !slices.Contains(standingKinds, one.parentKind) {
+		if one.parentKind != "" && !slices.Contains(standingKinds, one.parentKind) {
 			lookups = append(lookups, edgeRow{otherKind: one.parentKind, otherID: one.parentID})
 		}
 	}
@@ -313,7 +338,7 @@ func placeReasoningNodes(ctx context.Context, q Queryer, who model.Actor, placed
 	for _, one := range placed {
 		node := one.node
 		switch {
-		case !one.parentSeen:
+		case one.parentKind == "":
 		case slices.Contains(standingKinds, one.parentKind):
 			node.Parent = &model.NodeParent{Kind: one.parentKind, ID: one.parentID, Ref: StoreRef(one.parentKind, one.parentID)}
 		default:

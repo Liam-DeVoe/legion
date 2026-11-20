@@ -171,9 +171,8 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 // and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
 // deployment holds none of until somebody writes one, and the agreeing store holds none: no row
 // and no node of it is no refusal, and the report says so on that kind's own line. So is a kind a
-// deployment may
-// hold none of (dispatch://INFRA-1950's runs, frames and the visibility and state of its kinds),
-// which must pass and say on its own line that it checked no row.
+// deployment may hold none of (the runs, the frames and the visibility and state of the
+// reasoning kinds), which must pass and say on its own line that it checked no row.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)

@@ -181,7 +181,7 @@ func (s *server) specOpenQuestions(
 // itself. kind says whose it is: `person` for an ask, which a person decides, `agent` for a
 // decision, and `declined` for an ask the person declined to answer, which records no decision.
 // state is the node state of its node, which is any state but gone (decisionEntriesRead), so a
-// proposed, settled or overtaken entry is told from a live one (dispatch://INFRA-1950's R5).
+// proposed, settled or overtaken entry is told from a live one (the spec's R5).
 //
 // An ask carries its wording from its row (question, options, urgency, multiple) and its answer
 // from its node (answer_state, answer, selected, answered_by, answered_at, resolution), each null
@@ -903,7 +903,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 		}), func(written model.Event) { event = written }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}

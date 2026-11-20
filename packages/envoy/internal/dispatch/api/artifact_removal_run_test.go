@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -12,54 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// documentRemovalStatement is the removal's delete of the document's own row (removeArtifact),
-// after the rows it clears and the reference rows package refs forgets, none of which writes
-// artifacts.
-const documentRemovalStatement = "delete from artifacts where id = $1"
-
-// artifactRemoval is the removal of an untouched document of the rig's issue (removeArtifact),
-// through its route. It takes the issue's owner lock (beginArtifactWrite), then the
-// document's room, an advisory lock no table shows; it writes the document's node gone
-// (removedDocumentNodes, graphstore.WriteUncaused), deletes the document's row, appends
-// artifact.removed and then appends what the node write states under that event
-// (graphstore.Caused). The document's node exists from its create, so the node step is held as
-// the table it is written to; the document's row is deleted under a key the run holds no lock on
-// before its delete, so it is held as its table too, and no foreign key names the node from it.
-// Each run removes a document of its own, made by typing a title no run has typed.
-func (r *storeWriterRig) artifactRemoval() storeWriter {
-	return storeWriter{
-		name: "removeArtifact",
-		steps: []storeStep{
-			ownerLockStep(store.IssueOwner(r.issue)),
-			{
-				name: "the document's node", order: nodeStep,
-				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
-				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-			},
-			{
-				name: "the document's row", order: projectionStep,
-				hold: holdTableWrites("artifacts"), at: documentRemovalStatement,
-				takes: []tableLock{{"artifacts", rowExclusiveMode}},
-			},
-			eventAppendStep(),
-			tupleAppendStep(),
-		},
-		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
-			document := emptyDocument(t, r.handler, r.issue, r.fresh("lock-removal")+".md")
-			return storeWriterRun{
-				made: graphstore.Node{Kind: graphstore.KindArtifact, ID: document.RefKey},
-				write: func() error {
-					response := dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/artifacts/"+document.ID, nil, "alice")
-					if response.Code != http.StatusNoContent {
-						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
-					}
-					return nil
-				},
-			}
-		},
-	}
-}
 
 // runDocumentRig is an issue of alice's and a run she asked, for a test to make a document under
 // the run's header and then end the document.
@@ -170,7 +121,7 @@ func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
 }
 
 // A document a write made for a run created, and that a person then removed, is no longer the
-// run's (dispatch://INFRA-1950/spec#b-r-interaction, R4). Alice's run makes a blank document on
+// run's (spec requirement r-interaction, R4). Alice's run makes a blank document on
 // her issue, which marks the document's node changed by the run: the run's ?to= lists the
 // document, its count is that list, and the document's ?from= lists the run. Alice removes the
 // document; its node is stated gone and the changed_by_run out of it retracted, so the run counts
@@ -214,15 +165,15 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 }
 
 // A document a write made for a run created, and that was then retired (docs.RetireDocument,
-// dispatch://INFRA-1150 R11), is counted and listed alike by the run, in both directions. Alice's
+// R11 of cybermonklabs/legion#4173), is counted and listed alike by the run, in both directions. Alice's
 // run makes a blank document on her issue, which the run's ?to= lists and its count counts, and
 // whose ?from= lists the run. The document is retired: its node is stated gone, and its row, its
-// slug and its ref_key stay, so no later document takes its node. The retirement retracts nothing,
-// and none is owed: every read of the run's edges goes through graph_edges, whose tuple arm answers
-// no relation out of a node that is gone (migration 20261117020856, `node.state <> 'gone'`), and
-// the run's count holds each tuple only while the node it goes out of is not gone (refs'
-// liveVisibleNodeOf), so the run's ?to= and its count both leave the document out, and its ?from=
-// lists no run.
+// slug and its ref_key stay, so no later document takes its node. The retirement retracts no
+// changed_by_run, and none is owed: every read of the run's edges goes through graph_edges, whose
+// tuple arm answers no relation out of a node that is gone (migration 20261117020856,
+// `node.state <> 'gone'`), and the run's count holds each tuple only while the node it goes out of
+// is not gone (refs' liveVisibleNodeOf), so the run's ?to= and its count both leave the document
+// out, and its ?from= lists no run.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRetired(t *testing.T) {
 	rig := newRunDocumentRig(t, "RETIRED")
 	document := rig.madeForRun(t, "notes.md")

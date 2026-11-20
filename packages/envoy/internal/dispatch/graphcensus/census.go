@@ -27,8 +27,8 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per node of the kind, at any state,
-// digesting the same fields as the store holds them; the census reads those not gone
+// share. nodes is a select of (id, digest): one row per node of the kind, digesting the same
+// fields as the store holds them, of which the census compares those the store holds present
 // (presentNodes). The census holds the two against each other in both directions, so a row with
 // no node and a node with no row are each a difference.
 //
@@ -94,10 +94,11 @@ type projection struct {
 	// that has not run yet rather than missing: such a node is no node-side difference. Empty for
 	// a kind whose every node has its row from the write that stated it.
 	owed string
-	// emptyAgrees says a kind that holds no row, no present node and no unmarked row is no
-	// refusal: one of the tie kinds, a decision's, a reading's and an answered or followed ask's,
-	// which a deployment holds none of until an agent writes a decision or a person answers an
-	// ask. Every other kind is one every store holds rows of, and checking none of it refuses.
+	// emptyAgrees says a kind that holds no row, no present node and no unmarked row is no refusal:
+	// one of the tie kinds, a decision's, a reading's and an answered or
+	// followed ask's, which a deployment holds none of until an agent writes a decision or a
+	// person answers an ask. Every other kind is one every store holds rows of, and checking
+	// none of it refuses.
 	emptyAgrees bool
 	// mayBeEmpty says a deployment can hold no row of this kind - no run of the command bar, no
 	// lens - so a census that checked zero rows of it proves nothing of it and refuses nothing for
@@ -106,7 +107,7 @@ type projection struct {
 	mayBeEmpty bool
 }
 
-// KindReport is one kind's census: how many rows and how many nodes not gone it read, and what
+// KindReport is one kind's census: how many rows and how many present nodes it read, and what
 // the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
@@ -268,12 +269,12 @@ func (r *StoreReport) Refused() bool {
 // reference and a block's rank and text (blockProjections), then a run of the command bar and its
 // frames (runProjections), each a kind a table projects, held to that table; the four after them
 // are the people and the agents, which no table projects (actorProjections); the eight after
-// those are the ties of decisions, readings and asks that block_refs,
-// document_blocks, asks and ask_followers project (decisionProjections); then every other topic's
-// kinds; and last the visibility and the state of each node of the kinds dispatch://INFRA-1950
-// adds, held to the store's own record of them (visibilityStateProjections). The comment kind is
-// read first: TestTheStoreCensusReadsOneSnapshot commits a write after it and before the block
-// kind.
+// those are the ties of decisions, readings and asks that block_refs, document_blocks, asks and
+// ask_followers project, and the six after those the same ties as graph_edges answers them, each
+// one that view answers (decisionProjections); then every other topic's kinds; and last the
+// visibility and the state of each run, lens, finding, risk, constraint and lens kind, held to the
+// store's own record of them (visibilityStateProjections). The comment kind is read first:
+// TestTheStoreCensusReadsOneSnapshot commits a write after it and before the block kind.
 //
 // Each topic of the store keeps its kinds in a list in a file of its own, census_<topic>.go, and
 // projections is those lists one after another, so a kind of one topic is registered in that
@@ -315,20 +316,25 @@ var projections = slices.Concat(
 // passes rest on. The blocks run before the links out of them (blockBackfills). The runs of the
 // command bar run after the comments (runBackfills), and the sessions after both, so that the
 // session pass writes only the sessions neither the comment pass nor the run passes could give a
-// node (backfillSessions). The project passes run after every pass that writes a
+// node (backfillSessions). The retraction of each prevented_by at a check nobody runs runs after
+// the runs (preventionBackfills). The project passes run after every pass that writes a
 // comment's or a block's node, so that such a node takes its project from the pass that wrote it
 // and the fill finds nothing of it to do (projectBackfills). The asks and their followers run
 // after the project passes, whose object pass wrote the node of every ask (decisionBackfills).
 // Every other topic's passes run after those, once every issue, document, ask and message holds
 // its node.
 var backfillPasses = slices.Concat(
-	blockBackfills, commentBackfills, runBackfills, actorBackfills, projectBackfills, decisionBackfills,
-	issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
+	blockBackfills, commentBackfills, runBackfills, preventionBackfills, actorBackfills, projectBackfills,
+	decisionBackfills, issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
 	approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills,
 )
 
 // commentBackfills are the backfill's pass over the comments (backfillComments).
 var commentBackfills = []backfillPass{oneKind(backfillComments)}
+
+// preventionBackfills are the backfill's pass over the prevented_by tuples a process of the
+// release before left asserted at a check nobody runs (backfillEndedPreventions).
+var preventionBackfills = []backfillPass{oneKind(backfillEndedPreventions)}
 
 // actorBackfills are the backfill's passes over the roles and their pages and over the sessions,
 // which no projection row names (backfillRoles, backfillSessions).
@@ -450,20 +456,6 @@ var actorProjections = []projection{{
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
 
-// lensBlock is true of the block node alias whose id names a lens: a block of a lens's finding,
-// addressed under its lens, dispatch://lens/<uuid>, so its id is `lens/<uuid>#<id>`, which no
-// document holds, so no document_blocks row projects it and no block_refs row names it. A
-// document's block is `<ref_key>#<id>` (refs.IndexBlocks), and a ref_key begins with an issue's or
-// a project's key, which is upper case, or with `agent/` (graphstore.ArtifactRefKey), so no
-// document's block reads as one.
-func lensBlock(alias string) string { return lensBlockID(alias + ".id") }
-
-// lensBlockID is lensBlock over the SQL expression id, a block node's id however a statement
-// reaches it: a node's own column, or the from_id of a tuple out of it.
-func lensBlockID(id string) string {
-	return `(` + id + ` like '` + graphstore.KindLens + `/%')`
-}
-
 // The tuple kinds each projection row states of its node, which the census digests against the
 // tuples of those kinds the node states now (currentLinks, placedLinks, heldTuples): a comment's
 // anchor, its owner and its author; a block's document and the block or document holding it;
@@ -511,7 +503,7 @@ func kindIn(column string, kinds []string) string {
 // (graphstore.AnchorBlockAddressSQL), as the erase leaves the comment's anchored_to and its row.
 func DigestedTuple(t string) string {
 	return `((` + t + `.from_kind = '` + graphstore.KindComment + `' and ` + kindIn(t+".kind", commentLinkKinds) + `)
-		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + lensBlockID(t+".from_id") + `
+		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL(t+".from_id") + `
 		    and (` + kindIn(t+".kind", blockPlacementKinds) + ` or ` + kindIn(t+".kind", tieKinds) + `
 		         or ` + t + `.kind in (` + refs.BlockRefKindsSQL + `)))
 		or (` + t + `.from_kind = '` + graphstore.KindInteraction + `' and ` + kindIn(t+".kind", runLinkKinds) + `)
@@ -915,7 +907,7 @@ func provedSessionOwner(actor string) string {
 // bearer, or by a pod on a session its body names, names that session, which is so on both sides;
 // a node whose made_by names only a workload states none, and that workload is on neither.
 var reasoningAuthored = currentAuthors(`(held.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` +
-	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + lensBlock("held") + `))`)
+	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
 
 // goneRunsAuthored is the author every run whose row is gone states now - a process of the release
 // before deleted it an hour old during a roll, and the backfill stated its interaction gone
@@ -1240,18 +1232,18 @@ func currentOutOfNodes(name string, nearKinds, kinds []string) string {
 // storeOnlyRead counts, in one statement, every relation of the three kinds no table projects
 // that the store states now - the newest tuple of each (near end, far end), kept while it asserts
 // - and those of them whose far end does not resolve: a copied_from (a copy's block to the ask it
-// was copied from, graphstore.TupleCopiedFrom) resolves to an ask node the store holds present,
-// at any state but gone (as presentNodes reads one); a moved_to (graphstore.TupleMovedTo) to a
-// block that stands, which is one a document_blocks row holds, reached at once or through more
-// moved_to tuples, a cycle reaching none, or to an ask whose row stands, which ends a chain (the
-// heading of a section that cites an answered ask a person removed from its spec); and a
-// removed_by (graphstore.TupleRemovedBy, an ask's node to the person who took its block out) to a
-// person node of the store. A far end is followed through one tuple fewer than
-// graphstore.MovedToHops, since the tuple that names it is the first of the chain a citation of
-// its near end is read through (graphstore.MovedTo), so a far end that resolves here is one every
-// resolver reaches from that near end. A moved_to from a document's address - the pre-mortem
-// conversion's, from the document it retires to the lens it wrote in its place - resolves to that
-// lens where it is not gone, as graphstore.MovedTo reads it, and moves no further.
+// was copied from, graphstore.TupleCopiedFrom) resolves to an ask node that is not gone; a
+// moved_to (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row
+// holds, reached at once or through more moved_to tuples, a cycle reaching none, or to an ask
+// node that is not gone, as a copied_from does, which ends a chain (the heading of a section that
+// cites an answered ask a person removed from its spec); and a removed_by
+// (graphstore.TupleRemovedBy, an ask's node to the person who took its block out) to a person node
+// of the store. A far end is followed through one tuple fewer than graphstore.MovedToHops, since
+// the tuple that names it is the first of the chain a citation of its near end is read through
+// (graphstore.MovedTo), so a far end that resolves here is one every resolver reaches from that
+// near end. A moved_to from a document's address - the pre-mortem conversion's, from the document
+// it retires to the lens it wrote in its place - resolves to that lens where it is not gone, as
+// graphstore.MovedTo reads it, and moves no further.
 //
 // A moved_to whose chain reaches no block that stands but reaches an address in a document that
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
@@ -1261,10 +1253,10 @@ func currentOutOfNodes(name string, nearKinds, kinds []string) string {
 //
 // The read takes the three kinds' tuples out of every block, ask and document node the log holds
 // (currentOutOfNodes), the near ends their writers state them out of - a copied_from and a
-// moved_to out of a block, a removed_by out of an ask's node, and the pre-mortem conversion's
-// moved_to out of the document it retires - through graph_tuples_current, one probe per node, and
-// a store that holds none of them reads three zero counts. It states that index's to_kind
-// predicate, which leaves out no tuple of any of them, since none of their far ends is a value.
+// moved_to out of a block, a moved_to out of a document's address, a removed_by out of an ask's
+// node - through graph_tuples_current, one probe per node, and a store that holds none of them
+// reads three zero counts. It states that index's to_kind predicate, which leaves out no tuple of
+// any of them, since none of their far ends is a value.
 var storeOnlyRead = `
 	with recursive ` + currentOutOfNodes("stated", []string{refs.BlockNodeKind, graphstore.KindAsk, graphstore.KindArtifact},
 	[]string{graphstore.TupleCopiedFrom, graphstore.TupleMovedTo, graphstore.TupleRemovedBy}) + `,
@@ -1282,8 +1274,8 @@ var storeOnlyRead = `
 		select distinct f.start from followed f
 		where f.kind = '` + refs.BlockNodeKind + `' and exists (select 1 from document_blocks d where d.node_id = f.address)
 		   or f.kind = '` + graphstore.KindAsk + `' and exists (
-			select 1 from asks k
-			where k.id = case when f.address ~ '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' then f.address::uuid end)
+			select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = f.address
+			  and ask.state <> '` + graphstore.StateGone + `')
 	),
 	owing as (
 		select distinct f.start from followed f
@@ -1475,10 +1467,9 @@ func rowDifferences(held projection) string {
 		order by 2, 1`
 }
 
-// nodeDifferences reads the store against the row side: every node of the kind the store holds
-// present that no row projects, named with the state it is at, so a proposed node with no row
-// reads as a proposed one and a live one as `a live node no row projects`, but for a node whose
-// row is owed by a writer that has not run yet (projection.owed).
+// nodeDifferences reads the store against the row side: every node of the kind not gone that no
+// row projects, named with the state it is at, so a live one reads as `a live node no row
+// projects`, but a node whose row is owed by a writer that has not run yet (projection.owed).
 func nodeDifferences(held projection) string {
 	return `
 		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state

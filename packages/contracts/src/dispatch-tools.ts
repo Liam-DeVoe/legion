@@ -138,11 +138,13 @@ const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
  * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's: the
- * API writes the version for every other caller, the Dispatch page's own upload among them.
+ * replaces its text. `force` is what asks for that version. The refusal is the command's; the
+ * API's own guard is the document token, which every replacement names, the Dispatch page's own
+ * upload among them, and without which Dispatch refuses it 400 PRECONDITION_REQUIRED. So the
+ * rule names both, and a writer who follows it is not refused a second time for the token.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
-  "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version.";
+  'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the
@@ -160,6 +162,51 @@ export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dis
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
+
+/** The guard dispatch_doc_edit takes: exactly one of a document token and a set of block
+ *  tokens. An upload takes the document token alone and has a shape of its own
+ *  (uploadPreconditionArgument). */
+function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read.")
+        .optional(),
+      blocks: z
+        .array(
+          z.object({
+            id: z.string({ min: 1 }).describe("Stable block id dispatch doc-read --blocks lists."),
+            token: z
+              .string({ min: 1 })
+              .describe("That block's full-state token, including inline marks."),
+          }),
+          { min: 1 }
+        )
+        .describe(
+          "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
+        )
+        .optional(),
+    })
+    .describe("Optional optimistic-concurrency guard; select exactly one of document or blocks.")
+    .optional();
+}
+
+/** The guard dispatch_artifact takes. An upload rewrites the whole document, so only the
+ *  document token says which text it replaces: the server refuses a blocks guard on an upload
+ *  (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. */
+function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read."),
+    })
+    .describe(
+      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+    )
+    .optional();
+}
 
 /**
  * Whether `--path` would store this name's text as the bytes it was written as: true for every
@@ -797,7 +844,7 @@ function reasoningVisibility<E extends SchemaNode<E>>(z: SchemaApi<E>, what: str
   return z
     .enum(NODE_VISIBILITIES)
     .describe(
-      `Who ${what} for: project (the default), or author, which keeps it to you alone and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author.`
+      `Who ${what} for: project or author. Left out, it is the visibility of the node it is written under or on, and project where there is none; project under or on a node reserved for its author is refused with 400 VISIBILITY_WIDER_THAN_PARENT, naming both nodes. author keeps it to you alone and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author.`
     )
     .optional();
 }
@@ -1610,33 +1657,7 @@ export const dispatchToolSpecs = [
         .describe(
           "Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires."
         ),
-      precondition: z
-        .object({
-          document: z
-            .string({ min: 1 })
-            .describe("Token for the exact canonical document returned by dispatch doc-read.")
-            .optional(),
-          blocks: z
-            .array(
-              z.object({
-                id: z
-                  .string({ min: 1 })
-                  .describe("Stable block id dispatch doc-read --blocks lists."),
-                token: z
-                  .string({ min: 1 })
-                  .describe("That block's full-state token, including inline marks."),
-              }),
-              { min: 1 }
-            )
-            .describe(
-              "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
-            )
-            .optional(),
-        })
-        .describe(
-          "Optional optimistic-concurrency guard; select exactly one of document or blocks."
-        )
-        .optional(),
+      precondition: preconditionArgument(z),
       summary: z.string().describe("Optional named-version summary.").optional(),
     }),
     validation: documentEditValidation,
@@ -1991,8 +2012,9 @@ export const dispatchToolSpecs = [
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
-      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and an upload that names none is refused with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -2016,6 +2038,7 @@ export const dispatchToolSpecs = [
           "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
         )
         .optional(),
+      precondition: uploadPreconditionArgument(z),
       summary: z.string().describe("Optional version summary.").optional(),
     }),
     validation: {
@@ -2555,7 +2578,8 @@ export const dispatchToolSpecs = [
     description:
       "Invoke a lens on one node of an issue: one analysis, of one kind of the lens catalogue, " +
       `logged under the node it looks at. ${LENS_KIND_RULE}, and a call naming no kind with 400 ` +
-      `LENS_KIND_REQUIRED. on is ${NODE_UNDER_ISSUE}. verdict is what the analysis concluded. ` +
+      `LENS_KIND_REQUIRED. on is ${NODE_UNDER_ISSUE}; an on that is gone is refused with 409 ` +
+      "NODE_GONE, naming it. verdict is what the analysis concluded. " +
       "Each findings item is one finding of the lens, in order; add one later with dispatch " +
       "finding. A pre-mortem's findings are its risks: write each with dispatch risk. " +
       "triggered_by is the dispatch://lens/<uuid> address of the lens of the issue whose " +
@@ -2593,7 +2617,8 @@ export const dispatchToolSpecs = [
       "Add one finding to a lens invoked with dispatch lens: one block of the lens's finding, " +
       "after every finding it holds, at an address of its own, dispatch://lens/<uuid>#b-<id>. " +
       "lens is the lens's dispatch://lens/<uuid> address; a lens outside the issue, or one you " +
-      "may not see, is 404 NOT_FOUND, and a node that is no lens is 400 INVALID_POINTER. The " +
+      "may not see, is 404 NOT_FOUND, a gone lens is 409 NODE_GONE, naming it, and a node that " +
+      "is no lens is 400 INVALID_POINTER. The " +
       "finding is for whoever the lens is for, unless visibility is author. A pre-mortem's " +
       "findings are its risks: write each with dispatch risk. The result names the finding's " +
       `address. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
@@ -2628,11 +2653,12 @@ export const dispatchToolSpecs = [
       "other kind is refused with 400 INVALID_POINTER, which says a risk belongs under a " +
       "pre-mortem. prevented_by is the dispatch:// address of a check block that covers the " +
       "risk, of any issue of the issue's project " +
-      "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, and a " +
-      "check of another project, are 400 INVALID_POINTER, the second naming the check. Add a " +
-      "second check, or move one, with dispatch pointer. A lens outside the issue, and a lens " +
-      "or a check you may not see, are 404 NOT_FOUND. The result names the risk's " +
-      "dispatch://risk/<uuid> address. " +
+      "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, a check " +
+      "of another project and a check of a retired document are 400 INVALID_POINTER, the last " +
+      "two naming the check. Add a second check, or move one, with dispatch pointer. A lens " +
+      "outside the issue, and a lens or a check you may not see, are 404 NOT_FOUND, and a gone " +
+      "lens is 409 NODE_GONE, naming it. The result names the risk's dispatch://risk/<uuid> " +
+      "address. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2716,21 +2742,24 @@ export const dispatchToolSpecs = [
     description:
       "Append, retract or retarget one pointer out of a node of an issue. kind is has_kind (a " +
       "lens to its kind, from and to being lens_kind ids such as trade-off), triggered_by (a " +
-      "lens to the lens of the issue whose finding asked for it), constrained_by (a requirement " +
-      "block of the issue's spec to a constraint of the issue or of the catalogue, " +
-      "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it, " +
-      "of any issue of the issue's project). action append adds a pointer at to, retract " +
-      "removes the one at to, and retarget moves the one at from to to in one write. node is " +
-      "the dispatch:// address of the node the pointer goes out of. Dispatch holds every " +
-      "pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
-      "another project (naming the check), a lens triggered by itself and a lens left with no " +
-      "kind are refused with 400 INVALID_POINTER, and a second has_kind on a lens, or a " +
-      "retarget of a pre-mortem's kind away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. " +
-      "A node outside the issue, a far end outside it (but a has_kind's lens_kind, a " +
-      "constrained_by's constraint of the catalogue, which stand under no issue, and a " +
-      "prevented_by's check of another issue of the project), one you may not see, and a " +
-      "pointer to retract or retarget that the node does not hold are 404 NOT_FOUND. No " +
-      `pointer moves a node to another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "lens to a lens of the issue invoked before it, whose finding asked for it), " +
+      "constrained_by (a requirement block of the issue's spec to a constraint of the issue or " +
+      "of the catalogue, dispatch://constraint/<uuid>) or prevented_by (a risk to a check block " +
+      "that covers it, of any issue of the issue's project). action append adds a pointer at to, " +
+      "retract removes the one at to, and retarget moves the one at from to to in one write. " +
+      "node is the dispatch:// address of the node the pointer goes out of. Dispatch holds " +
+      "every pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
+      "another project or of a retired document (naming the check), a triggered_by at the lens " +
+      "itself or at a lens invoked after it (naming both lenses), so no trigger closes a " +
+      "cycle, and a lens left with no kind are refused with 400 INVALID_POINTER, and a second " +
+      "has_kind on a lens, or a retarget of a pre-mortem's kind away from pre-mortem, with 409 " +
+      "POINTER_ALREADY_ASSERTED. A node outside the issue, a far end outside it (but a " +
+      "has_kind's lens_kind, a constrained_by's constraint of the catalogue, which stand under " +
+      "no issue, and a prevented_by's check of another issue of the project), one you may not " +
+      "see, and a pointer to retract or retarget that the node does not hold are 404 NOT_FOUND; " +
+      "a gone far end answers the same, and a gone node, the one the pointer goes out of, is 409 " +
+      "NODE_GONE, naming it. No pointer moves a node to another " +
+      `parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node the pointer goes out of: ${NODE_UNDER_ISSUE}.`),
@@ -2796,17 +2825,23 @@ export const dispatchToolSpecs = [
       "Write the state of one node of an issue. proposed marks it a question still open: a " +
       "proposed requirement raises no coverage gap, and dispatch proposed lists the issue's " +
       "proposed nodes. overtaken marks it outdated by later work, live puts it back, and gone " +
-      "takes a lens, a finding, a risk or a constraint out of every read; a block of a document " +
-      "is removed by editing its document. A state the node cannot take is refused with 409 " +
-      "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
-      "block of a document, an issue, a document, an ask, a comment or a message, any state " +
-      "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
-      "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
-      "settle. A move out of settled, and a move into proposed, take the settle's rule: a " +
-      "person makes either on any node, and an agent only on a node whose author is the " +
-      "author its credential proves; any other is refused with 403 STATE_NOT_PERMITTED, so " +
-      "the deployment's shared agent token makes neither. The result names the node's state " +
-      "before and after. " +
+      "takes a lens, a finding, a risk or a constraint out of every read for good: a lens " +
+      "taken gone takes each finding and each risk under it gone with it, and a block of a " +
+      "document is removed by editing its document. gone is final, so any write on a gone " +
+      "node is refused with 409 NODE_GONE, naming the node. A state the node cannot take is " +
+      "refused with 409 NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the " +
+      "value: gone on a block of a document, an issue, a document, an ask, a comment or a " +
+      "message, and any state on a block of an ask, a comment or a message, which the store " +
+      "keeps no node of and every read answers live. Settle a proposal with dispatch settle. " +
+      "A lens taken gone takes its findings and its risks with it, so a person alone takes a " +
+      "lens to gone: any other caller, the lens's own author included, is refused with 403 " +
+      "STATE_NOT_PERMITTED naming the lens, whatever it holds, and an agent marks a lens it " +
+      "wrote overtaken instead. Any other move into or out of proposed or settled, and a move " +
+      "of a finding, a risk or a constraint into gone, takes the settle's rule: a person makes " +
+      "it on any node, and an agent only on a node whose author is the author its credential " +
+      "proves; any other is refused with 403 STATE_NOT_PERMITTED, naming the node, so the " +
+      "deployment's shared agent token makes no such move, ends no proposal and takes nothing " +
+      "out. The result names the node's state before and after. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2830,7 +2865,8 @@ export const dispatchToolSpecs = [
       "that names a person, the same session for a broker session that names none, the same " +
       "workload for a pod's service-account token. Any other is refused with 403 " +
       "SETTLE_NOT_PERMITTED; the deployment's shared agent token proves no author, so it " +
-      "settles nothing. A node that is not proposed is refused with 409 NODE_NOT_PROPOSED. " +
+      "settles nothing. A gone node is refused with 409 NODE_GONE, and any other node that is " +
+      "not proposed with 409 NODE_NOT_PROPOSED. " +
       "dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
@@ -2868,25 +2904,28 @@ export const dispatchToolSpecs = [
       preview: true,
     },
     description:
-      "Convert a pre-mortem document of an issue into nodes, once: one lens of kind pre-mortem " +
-      "under the issue, whose verdict is the document's verdict followed by its two closing " +
-      'sections, "What a world-class implementation looks like" and "The smallest first slice ' +
-      'that proves the model", word for word, and under it one risk for risk 0 and each ' +
-      "numbered risk, each with its heading, its early warning and its prevention and a " +
-      "prevented_by pointer to each check its entry names. The document is then retired: it " +
-      "leaves the issue's document list and takes no new text, and its address answers the " +
-      "lens. prevented_by holds one entry for each risk the document holds: its number as the " +
+      "Convert a pre-mortem document of an issue into nodes, once, in one transaction. It first " +
+      "retires the document: it leaves the issue's document list and takes no new text, its " +
+      "address answers the lens the conversion then writes, and each prevented_by at a check " +
+      "it holds is removed, since nobody runs its checks. Then it writes one lens of kind " +
+      "pre-mortem under the issue, whose verdict is the document's verdict followed by its two " +
+      'closing sections, "What a world-class implementation looks like" and "The smallest ' +
+      'first slice that proves the model", word for word, and under it one risk for risk 0 ' +
+      "and each numbered risk, each with its heading, its early warning and its prevention, " +
+      "and a prevented_by pointer to each check its entry names. " +
+      "prevented_by holds one entry for each risk the document holds: its number as the " +
       "document numbers it, the dispatch:// addresses of the check blocks that prevent it, of " +
       "any issue of the issue's project ([] for none), and why. An entry for a number the " +
       "document does not hold, a number twice, a risk with no entry, an address that names no " +
       "check block you may see, a blank reason, and an entry of any other shape are refused " +
       "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
-      "and an entry naming a check of another project with 400 INVALID_POINTER, naming the " +
-      "entry, its risk and the check, with preview as without it; nothing is written. " +
-      "preview answers what the conversion would write and writes nothing; run it first. A " +
-      "document converted already is answered as such, naming its lens, and nothing is " +
-      "written. The result names the lens's dispatch://lens/<uuid> address and each risk's " +
-      "dispatch://risk/<uuid> address. The conversion appends one event, the document's " +
+      "and an entry naming a check of another project, of a retired document or of the document " +
+      "itself, which the conversion retires, with 400 INVALID_POINTER, naming the entry, its " +
+      "risk and the check, with preview as without it; nothing is written and the document " +
+      "stays unretired. preview answers what the conversion would write and writes nothing; " +
+      "run it first. A document converted already is answered as such, naming its lens, and " +
+      "nothing is written. The result names the lens's dispatch://lens/<uuid> address and each " +
+      "risk's dispatch://risk/<uuid> address. The conversion appends one event, the document's " +
       "document.retired, whose reason names the lens; a refused call stores nothing. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({

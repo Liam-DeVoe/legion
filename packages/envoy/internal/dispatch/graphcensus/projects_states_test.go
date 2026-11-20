@@ -98,9 +98,11 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 	ctx := context.Background()
 	created := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
 	seedGoneRow(t, database, created, model.Actor{Kind: "user", ID: "alice"})
-	// The removed document's node was reserved for its author before it went: a node of a kind
-	// this build's writers take no such node of (graphstore.CheckVisibilityAdmitted), so it is
-	// seeded as its rows, as the store holds a node a build before this one reserved.
+	// The removed document's node was reserved for its author before it went. The store takes no
+	// node of kind artifact reserved for its author, since not every read of a document binds the
+	// visibility predicate, so the test seeds the reservation as a store that held one would
+	// (graphstoretest.SeedAuthorOnly): what it proves is that the backfill writes the new row's
+	// own visibility, whatever the removed node held.
 	removed, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
 	if err != nil || !held {
 		t.Fatalf("read the removed document's node: held %t, %v", held, err)
@@ -234,17 +236,18 @@ func TestTheObjectBackfillWritesNoNodeForARowReplacedWhileItRead(t *testing.T) {
 	}
 }
 
-// laterObjectState is a state a later release marks a node with, such as a requirement's proposed,
-// which this build never writes.
+// laterObjectState is a state other than live and gone that marks an object's node: proposed,
+// which this build's state route writes on any node (api's writeNodeState), and which a later
+// release may write too.
 const laterObjectState = "proposed"
 
-// A later release can mark the node of an issue, a document, an ask or a message with a state this
-// build never writes, and this build serves beside that release during a roll and alone after a
-// rollback. Every state but gone is a node there, as the store
+// The state route, or a later release, can mark the node of an issue, a document, an ask or a
+// message with a state other than live, and this build serves beside a later release during a
+// roll and alone after a rollback. Every state but gone is a node there, as the store
 // census reads a comment's and a block's (census.go's presentNodes): a row whose node is at such a
 // state is no gone row, and the node of one no row stands behind is orphaned all the same. The
 // backfill writes such a node again only for the project or parties it lacks, and keeps the state
-// the later release gave it (graphstore.Node's Restates).
+// the mark gave it (graphstore.Node's Restates).
 //
 // Its controls, each on its own: the census's gone class read as every state but live, which
 // names both rows gone; the backfill's marker read as a live node, which never marks the issue, so
@@ -270,9 +273,9 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 		t.Fatalf("seed the ask: %v", err)
 	}
 	// The issue's node names its project; the ask's names none, as a build before this one's
-	// writer left it. A later release then marks both, as its build writes a state it owns: with a
-	// write that owns the node's state and so does not restate it (graphstore.Node's Restates),
-	// unlike this build's writers of these kinds.
+	// writer left it. A write of the state then marks both, as the state route writes one: it
+	// states the node's state rather than restating the object, since an object's own writer
+	// keeps the state the store holds (graphstore.Node's Restates).
 	issueNode := graphstore.IssueNode("LATE-1", "LATE", alice, at)
 	askNode := graphstore.AskNode(ask, "", nil, alice, at)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -280,6 +283,7 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 			return err
 		}
 		issueNode.State, askNode.State = laterObjectState, laterObjectState
+		issueNode.Restates, askNode.Restates = false, false
 		issueNode.MadeAt, askNode.MadeAt = at.Add(time.Minute), at.Add(time.Minute)
 		issueNode.Restates, askNode.Restates = false, false
 		return graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil)

@@ -205,7 +205,7 @@ func documentBlockIDs(param string) string {
 // The set itself, tested with `in`, is a semi-join Postgres puts above the union, so every arm
 // first answers every edge into every block of the store - in the tuple arm a sort of them all,
 // and both predicates of each - and only then keeps the few into this document's blocks: 3.5 s
-// for a spec of 40 blocks over the read-cost corpus (dispatch://INFRA-1950's c-read-cost). A
+// for a spec of 40 blocks over the read-cost corpus (check c-read-cost). A
 // ref_key names one document (artifacts_ref_key_key), so each half of documentBlockIDs reads that
 // one document's row by its key, and a document of an issue room has its blocks read in its room.
 func documentBlockIDArray(param string) string {
@@ -403,9 +403,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	return edges, nil
 }
 
-// excerptOf is the excerpt an edge at node shows: the words the node is named by
-// (resolvedNode.name) — a block's stored excerpt with its block id, the head of any other node's
-// own text — and nil for a node that has no text.
+// excerptOf is the excerpt an edge at node shows: its name (resolvedNode.name), a block's stored
+// excerpt with its block id and the head of any other node's own text, and nil for a node that
+// has no text.
 func excerptOf(node resolvedNode) *model.GraphExcerpt {
 	switch {
 	case node.BlockID != "":
@@ -454,8 +454,8 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // had read only small nodes planned the whole view again for every execution, 20 ms (on this pod,
 // for a node with 7 edges into it). With the id read as a value, the custom plan is the generic
 // plan, every connection keeps the generic plan from its sixth execution on, and that plan walks
-// graph_tuples_inbound and the arms' own indexes keyed on the far end, as the custom plan did
-// (dispatch://INFRA-1950's c-read-cost).
+// graph_tuples_as_of_in and the arms' own indexes keyed on the far end, as the custom plan did
+// (check c-read-cost).
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {
 		// A kind no loader resolves is the address of no node this build knows, and the
@@ -705,6 +705,32 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 	return nodes, nil
 }
 
+// TargetNames is the words each of targets is named by where who is shown a reference to it
+// rather than its own text: an issue's title, a document's name, an ask's question, a comment's
+// or a message's body, a component's title, a block's text and any other node's own text, each
+// cut to the bound an edge's excerpt is cut to (resolvedNode.name), which is what GET
+// /api/v1/references already shows beside an edge at that node. The targets are addressed as
+// the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key.
+//
+// One entry per target that resolves for who, as Nodes resolves it: a target with no entry is
+// one nothing addresses now — its node was deleted or is gone, or its kind is one this build
+// cannot address (resolveNodes) — or one who may not see, which each kind's loader leaves out as
+// it leaves out a node that does not exist (visibility.go), a target reserved for an author who
+// is not who among them, which answers as an address nobody holds does (Node). A caller draws
+// either as a reference whose target is gone. Each kind is read in one statement whatever the
+// number of targets, so a batch costs a statement per kind, not per target.
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
+	resolved, err := resolveTargets(ctx, q, who, true, targets)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[Target]string, len(resolved))
+	for key, node := range resolved {
+		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+	}
+	return names, nil
+}
+
 // resolveTargets resolves each target for who through its kind's loader, as Node resolves one.
 func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[[2]string]resolvedNode, error) {
 	rows := make([]edgeRow, len(targets))
@@ -714,37 +740,10 @@ func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 	return resolveNodes(ctx, q, who, byRefKey, rows)
 }
 
-// TargetNames is the words each of targets is named by where who is shown a reference to it
-// rather than its own text: an issue's title, a document's name, an ask's question, a comment's
-// or a message's body, a component's title, a block's text and any other node's own text, each
-// cut to the bound an edge's excerpt is cut to (resolvedNode.name), which is what GET
-// /api/v1/references already shows beside an edge at that node. The targets are addressed as
-// the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key, and each
-// is resolved for who, as Nodes resolves it.
-//
-// One entry per target that resolves for who: a target with no entry is one nothing addresses
-// now — its node was deleted, or its kind is one this build cannot address (resolveNodes) — or
-// one who may not see, which each kind's loader leaves out as it leaves out a node that does not
-// exist (visibility.go), a target reserved for an author who is not who among them, which answers
-// as an address nobody holds does (Node). A caller draws either as a reference whose target is
-// gone. Each kind is read in one statement whatever the number of targets, so a batch costs a
-// statement per kind, not per target.
-func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
-	nodes, err := resolveTargets(ctx, q, who, true, targets)
-	if err != nil {
-		return nil, err
-	}
-	names := make(map[Target]string, len(nodes))
-	for key, node := range nodes {
-		names[Target{Kind: key[0], ID: key[1]}] = node.name()
-	}
-	return names, nil
-}
-
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
 // excerpt, already cut. wholeText says a read of the node's own address answers that text whole
 // as the node's Text (Node), which an interaction's loader says of a run's words
-// (dispatch://INFRA-1950/spec#b-r-interaction): an edge at the run cuts them at excerptRunes, and
+// (spec requirement r-interaction): an edge at the run cuts them at excerptRunes, and
 // the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
@@ -828,15 +827,17 @@ func loadStoreNodes(ctx context.Context, q Queryer, who model.Actor, kind string
 // deploy notice or a comment is no change of it), by that event's actor. It belongs to its parent
 // issue, which has no versions.
 func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, keys []string, nodes map[[2]string]resolvedNode) error {
+	storedJoin, storedColumns := storedNode("issue", "i.key")
 	rows, err := q.Query(ctx, `
 		select i.key, i.project_key, i.title, i.created_by, i.created_at, i.parent_key, change.actor, change.created_at,
-		       `+storedNode("issue", "i.key")+`
+		       `+storedColumns+`
 		from issues i
 		left join lateral (
 			select e.actor, e.created_at from events e
 			where e.issue_key = i.key and e.type = any('{issue.created,issue.updated,issue.closed}')
 			order by e.seq desc limit 1
 		) change on true
+		`+storedJoin+`
 		where i.key = any($1) and `+VisibleKind("issue", "i.key", "$2"), keys, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load issue nodes: %w", err)
@@ -848,17 +849,15 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		var createdAt time.Time
 		var changedAt *time.Time
 		var parentKey *string
-		var stored []string
-		if err := rows.Scan(&key, &project, &title, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt, &stored); err != nil {
+		var stored StoredNode
+		if err := rows.Scan(&key, &project, &title, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt, &stored.State, &stored.Visibility); err != nil {
 			return fmt.Errorf("scan issue node: %w", err)
 		}
 		node := model.GraphNode{Kind: "issue", ID: key, IssueKey: new(key), Project: project, Ref: "dispatch://" + key, Parent: issueParent(parentKey)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, changedBy, changedAt, storedActor); err != nil {
 			return err
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		nodes[[2]string{"issue", key}] = resolvedNode{GraphNode: node, text: title}
 	}
 	return rows.Err()
@@ -881,20 +880,39 @@ const RetiredDecisionsSlug = "decisions-md"
 // its issue any more, and a citation of it stays valid and reaches what took its place, the issue
 // and its reads. The document read by its uuid is the document still, so its versions, its blocks
 // and its own edges stay readable.
+//
+// One artifact is bound as itself, as one block is (blockNodesAddressed): that is what every read
+// of one node asks for - the document a block's address names, read before the block - and an
+// equality on an index each of whose values is one row's (artifacts_ref_key_key for a ref_key,
+// artifacts_id_text for a uuid) is a plan Postgres builds the same whether or not it knows the
+// value, so it keeps one plan for the statement. Bound as an array of one, the plan made for the
+// value in hand, which reads one element, was costed below the generic plan, which reads an array
+// of unknown length as one of ten, so the read of one document was planned again on every
+// execution: 0.5 to 1.0 ms of planning against 0.2 ms to run, over the read-cost corpus (check
+// c-read-cost).
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	predicate := `a.id::text = any($1)`
+	column := `a.id::text`
 	if byRefKey {
-		predicate = `a.ref_key = any($1)`
+		column = `a.ref_key`
 	}
+	var predicate string
+	var addressed any
+	if len(ids) == 1 {
+		predicate, addressed = column+` = $1`, ids[0]
+	} else {
+		predicate, addressed = column+` = any($1)`, ids
+	}
+	storedJoin, storedColumns := storedNode("artifact", "a.ref_key")
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at, latest.authors, latest.created_at, a.retired_at is not null, `+storedNode("artifact", "a.ref_key")+`
+		       a.created_by, a.created_at, latest.authors, latest.created_at, `+storedColumns+`, a.retired_at is not null
 		from artifacts a
 		left join lateral (
 			select v.authors, v.created_at from artifact_versions v
 			where v.artifact_id = a.id order by v.number desc limit 1
 		) latest on true
-		where `+predicate+` and `+VisibleKind("artifact", "a.ref_key", "$2"), ids, VisibilityArg(who))
+		`+storedJoin+`
+		where `+predicate+` and `+VisibleKind("artifact", "a.ref_key", "$2"), addressed, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load artifact nodes: %w", err)
 	}
@@ -908,8 +926,8 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		var createdBy, authors []byte
 		var createdAt time.Time
 		var versionAt *time.Time
-		var stored []string
-		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &retired, &stored); err != nil {
+		var stored StoredNode
+		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &stored.State, &stored.Visibility, &retired); err != nil {
 			return fmt.Errorf("scan artifact node: %w", err)
 		}
 		lookup := id
@@ -927,9 +945,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		if err := setMadeAndChanged(&node, createdBy, createdAt, authors, versionAt, storedActors); err != nil {
 			return err
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		switch {
 		case issueKey != nil:
 			node.Parent = issueParent(issueKey)
@@ -981,11 +997,11 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // of them at once.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
-	storedJoin, storedColumn, seen := visibleStoredKind("block", "d.node_id", "$2")
+	storedJoin, storedColumns, seen := visibleStoredKind("block", "d.node_id", "$2")
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+recordedAuthorsSQL("d.node_id")+`,
-		       `+storedColumn+`
+		       `+storedColumns+`
 		from document_blocks d
 		cross join lateral (select `+BlockDocumentSQL("d")+` as id) owner
 		join artifacts a on a.id = owner.id
@@ -1004,9 +1020,9 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		var changedBy, recorded []byte
 		var document documentParent
 		var first blockFirst
-		var stored []string
+		var stored StoredNode
 		targets := append([]any{&nodeID, &blockID, &excerpt, &changedVersion, &changedAt, &changedBy}, document.targets()...)
-		if err := rows.Scan(append(append(targets, first.targets()...), &recorded, &stored)...); err != nil {
+		if err := rows.Scan(append(append(targets, first.targets()...), &recorded, &stored.State, &stored.Visibility)...); err != nil {
 			return fmt.Errorf("scan block node: %w", err)
 		}
 		changers, err := storedActors(changedBy)
@@ -1036,9 +1052,7 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 				return fmt.Errorf("decode the authors block %s records: %w", nodeID, err)
 			}
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		nodes[[2]string{"block", nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
 	return rows.Err()
@@ -1067,9 +1081,9 @@ func recordedAuthorsSQL(address string) string {
 // and the read stops paying to plan it again: measured on this pod over the read-cost corpus,
 // 2.5 ms a call against 0.2 ms once the plan is the connection's.
 //
-// Two or more arrive as an array, under QueryExecModeDescribeExec so that the statement is
-// planned with its values. An array tells a generic plan nothing about its length, so that
-// plan reads it as an unknown-length scalar-array operation rather than a constant it can
+// More than blockNodesKeptPlan arrive as an array, under QueryExecModeDescribeExec so that the
+// statement is planned with its values. An array tells a generic plan nothing about its length,
+// so that plan reads it as an unknown-length scalar-array operation rather than a constant it can
 // hash: measured on this pod over a document of 8,001 blocks, 460 ms against 90 ms with the
 // values in hand. They are also held to the documents they name (blockDocuments), which every
 // one of them is a block of: IndexBlocks writes a row's node_id as the ref_key of the row's own
@@ -1079,14 +1093,40 @@ func recordedAuthorsSQL(address string) string {
 // a few documents, and keep the node_id index where they are few. Held to node_id alone, the
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
 // once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
-// against 75 ms over the read-cost corpus (dispatch://INFRA-1950's c-read-cost).
+// against 75 ms over the read-cost corpus (check c-read-cost).
+//
+// Two to blockNodesKeptPlan arrive as the same two arrays, each compared as a value Postgres reads
+// once, before the read - `(select $1::text[])::text[]`, the cast making it the array itself
+// rather than a subquery whose rows `any` would read - so the plan made for the ids in hand is the
+// plan made for any of them, Postgres keeps it from the sixth execution on, and the read stops
+// paying to plan it again. That plan reads the ids through the node_id index, as the plan made with
+// the values does for so few: the far ends of the edges into one node, the 7 blocks citing a node
+// of the read-cost corpus, are read in 0.4 ms against 2.3 ms planned each time.
 func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
-	if len(ids) == 1 {
+	switch {
+	case len(ids) == 1:
 		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
+	case len(ids) <= blockNodesKeptPlan:
+		return blockNodesKeptPlanPredicate, []any{ids, VisibilityArg(who), blockDocuments(ids)}
 	}
-	return `d.node_id = any($1) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any($3))`,
-		[]any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
+	return blockNodesDescribedPredicate, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
 }
+
+// blockNodesByIDs is the predicate of a read of two or more blocks: the ids, $1, held to the
+// documents they name, $3 (blockDocuments). blockNodesKeptPlanPredicate reads each array as a
+// value Postgres reads once, before the read; blockNodesDescribedPredicate binds them as they are.
+const blockNodesByIDs = `d.node_id = any(%[1]s) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(%[2]s))`
+
+var (
+	blockNodesKeptPlanPredicate  = fmt.Sprintf(blockNodesByIDs, `(select $1::text[])::text[]`, `(select $3::text[])::text[]`)
+	blockNodesDescribedPredicate = fmt.Sprintf(blockNodesByIDs, `$1`, `$3`)
+)
+
+// blockNodesKeptPlan is the most blocks loadBlockNodes reads under one plan Postgres keeps rather
+// than one it makes for the values in hand (blockNodesAddressed). Measured on this pod over the
+// read-cost corpus, the kept plan read 2, 20 and 50 blocks in 0.3, 0.7 and 2.4 ms against 1.7, 4.6
+// and 6.0 ms planned each time, and the two met at 100: 5.9 ms against 5.6.
+const blockNodesKeptPlan = 100
 
 // blockDocuments is the ref_key of the document each block node id of ids names, each once: the
 // part of the id before its first '#', since a ref_key holds none.
@@ -1140,6 +1180,7 @@ func anchorVersion(alias string) string {
 // prove the partial index serves it.
 func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
+	storedJoin, storedColumns := storedNode("ask", "k.id::text")
 	rows, err := q.Query(ctx, `
 		select k.id::text, k.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), k.question,
 		       k.author, k.created_at, k.edited_at, edit.edited_by, `+documentColumns("doc")+`,
@@ -1147,7 +1188,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		         when `+anchorArtifact+` is not null then `+anchorVersion("k")+`
 		         when k.block_artifact_id is not null then case when first.known then first.version end
 		         else k.written_version
-		       end, `+storedNode("ask", "k.id::text")+`
+		       end, `+storedColumns+`
 		from asks k
 		left join issues i on i.key = k.issue_key
 		left join artifacts a on a.id = k.artifact_id
@@ -1164,6 +1205,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 			order by e.id desc limit 1
 		) edit on k.edited_at is not null
 		`+blockFirstVersion("first", "k.block_artifact_id", "k.block_id")+`
+		`+storedJoin+`
 		where k.id::text = any($1) and `+VisibleKind("ask", "k.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load ask nodes: %w", err)
@@ -1177,18 +1219,16 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		var editedAt *time.Time
 		var document documentParent
 		var version *int
-		var stored []string
+		var stored StoredNode
 		targets := append([]any{&id, &issueKey, &project, &slug, &question, &author, &createdAt, &editedAt, &editedBy}, document.targets()...)
-		if err := rows.Scan(append(targets, &version, &stored)...); err != nil {
+		if err := rows.Scan(append(targets, &version, &stored.State, &stored.Visibility)...); err != nil {
 			return fmt.Errorf("scan ask node: %w", err)
 		}
 		node := model.GraphNode{Kind: "ask", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("ask", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, editedBy, editedAt, storedActor); err != nil {
 			return err
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		node.Parent = issueParent(issueKey)
 		if parent := document.parent(); parent != nil {
 			node.Parent, node.ParentVersion = parent, version
@@ -1207,15 +1247,17 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
 // reference of the block it names, are written under.
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	storedJoin, storedColumns := storedNode("comment", "c.id::text")
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
 		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
 		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end,
-		       `+storedNode("comment", "c.id::text")+`
+		       `+storedColumns+`
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		left join artifacts doc on doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+		`+storedJoin+`
 		where c.id::text = any($1) and `+VisibleKind("comment", "c.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load comment nodes: %w", err)
@@ -1229,18 +1271,16 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		var editedAt *time.Time
 		var document documentParent
 		var version *int
-		var stored []string
+		var stored StoredNode
 		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &replyTo, &replyBlock, &askID}, document.targets()...)
-		if err := rows.Scan(append(targets, &version, &stored)...); err != nil {
+		if err := rows.Scan(append(targets, &version, &stored.State, &stored.Visibility)...); err != nil {
 			return fmt.Errorf("scan comment node: %w", err)
 		}
 		node := model.GraphNode{Kind: "comment", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("comment", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
 			return err
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		switch parent := document.parent(); {
 		case replyBlock != nil:
 			node.Parent = itemBlockParent(issueKey, project, slug, *replyBlock)
@@ -1263,11 +1303,13 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // it answers, which shares its issue, and another message to its issue; a direct message belongs
 // to no node.
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	storedJoin, storedColumns := storedNode("message", "m.id::text")
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block,
-		       `+storedNode("message", "m.id::text")+`
+		       `+storedColumns+`
 		from messages m
 		left join issues i on i.key = m.issue_key
+		`+storedJoin+`
 		where m.id::text = any($1) and `+VisibleKind("message", "m.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load message nodes: %w", err)
@@ -1278,17 +1320,15 @@ func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		var issueKey, inReplyTo, replyBlock *string
 		var author []byte
 		var createdAt time.Time
-		var stored []string
-		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &inReplyTo, &replyBlock, &stored); err != nil {
+		var stored StoredNode
+		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &inReplyTo, &replyBlock, &stored.State, &stored.Visibility); err != nil {
 			return fmt.Errorf("scan message node: %w", err)
 		}
 		node := model.GraphNode{Kind: "message", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("message", issueKey, project, "", id)}
 		if err := setMadeAndChanged(&node, author, createdAt, nil, nil, storedActor); err != nil {
 			return err
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		switch {
 		case replyBlock != nil:
 			node.Parent = itemBlockParent(issueKey, project, "", *replyBlock)
@@ -1309,11 +1349,13 @@ func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // times were never recorded, has none. A component belongs to its parent component while the
 // model holds it.
 func loadComponentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	storedJoin, storedColumns := storedNode("component", "c.project_key || '/' || c.id")
 	rows, err := q.Query(ctx, `
-		select c.project_key, c.id, c.title, f.made_at, f.changed_at, p.id, `+storedNode("component", "c.project_key || '/' || c.id")+`
+		select c.project_key, c.id, c.title, f.made_at, f.changed_at, p.id, `+storedColumns+`
 		from components c
 		left join component_facts f on f.project_key = c.project_key and f.id = c.id
 		left join components p on p.project_key = c.project_key and p.id = c.parent
+		`+storedJoin+`
 		where c.project_key || '/' || c.id = any($1)
 		and `+VisibleKind("component", "c.project_key || '/' || c.id", "$2"), ids, VisibilityArg(who))
 	if err != nil {
@@ -1324,8 +1366,8 @@ func loadComponentNodes(ctx context.Context, q Queryer, who model.Actor, _ strin
 		var project, id, title string
 		var madeAt, changedAt *time.Time
 		var parent *string
-		var stored []string
-		if err := rows.Scan(&project, &id, &title, &madeAt, &changedAt, &parent, &stored); err != nil {
+		var stored StoredNode
+		if err := rows.Scan(&project, &id, &title, &madeAt, &changedAt, &parent, &stored.State, &stored.Visibility); err != nil {
 			return fmt.Errorf("scan component node: %w", err)
 		}
 		address := project + "/" + id
@@ -1333,9 +1375,7 @@ func loadComponentNodes(ctx context.Context, q Queryer, who model.Actor, _ strin
 			Kind: "component", ID: address, Project: project, Ref: componentRef(project, id),
 			MadeBy: []model.Actor{}, MadeAt: madeAt, ChangedBy: []model.Actor{}, ChangedAt: changedAt,
 		}
-		if err := setStored(&node, stored); err != nil {
-			return err
-		}
+		setStored(&node, stored)
 		if parent != nil {
 			node.Parent = &model.NodeParent{Kind: "component", ID: project + "/" + *parent, Ref: componentRef(project, *parent)}
 		}

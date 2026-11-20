@@ -1829,7 +1829,7 @@ func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.
 		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, stated, graphstore.LatestEvent)
+		return graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
 	})
 	return appended, err
 }

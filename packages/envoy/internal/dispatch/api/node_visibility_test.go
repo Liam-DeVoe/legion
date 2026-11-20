@@ -93,7 +93,7 @@ func (f privateNodeFixture) sharedCommentPrefix() string {
 // absent from every read a second person makes, and present in each of them for its author.
 //
 // The store's writer takes a node reserved for its author of no kind these reads answer - the
-// kinds dispatch://INFRA-1149 registers, none of which every read binds the predicate of
+// kinds cybermonklabs/legion#3178 registers, none of which every read binds the predicate of
 // (graphstore.ErrVisibilityNotAdmitted) - so the seed writes the rows such a write would store
 // straight into the store (graphstoretest.SeedAuthorOnly): the rule under test is the read, not
 // the write that asks for it.

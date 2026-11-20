@@ -284,7 +284,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			return repair, err
 		}
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, ledger, issueKey, planned, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(ledger, issueKey, planned, closer)
 		if err != nil {
 			return repair, err
 		}

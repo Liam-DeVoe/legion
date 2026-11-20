@@ -1463,7 +1463,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			`, commentID, run.issue, graphstore.KindComment); err != nil {
 				return err
 			}
-			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(ctx, b, graphstore.NoEvent) })
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(b, graphstore.NoEvent) })
 		},
 		left: func(ctx context.Context) ([]string, error) {
 			return readStrings(ctx, run.database.Pool, `

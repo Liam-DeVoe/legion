@@ -1250,7 +1250,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
 	// LegacyFromCause), so the row learns it beside the store write that states it.
 	if err := write(queued, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(queued, b, stated, eventID); err != nil {
+		if err := graphstore.QueueCaused(b, stated, eventID); err != nil {
 			return err
 		}
 		stampVersionEvent(b, document.id, document.id, version, versionAt, eventID)
@@ -1653,7 +1653,7 @@ func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, facts map[strin
 			if !held {
 				event = graphstore.NoEvent
 			}
-			if err := graphstore.QueueCaused(ctx, b, facts[document], event); err != nil {
+			if err := graphstore.QueueCaused(b, facts[document], event); err != nil {
 				return fmt.Errorf("append what the pass over room %s stated of %s: %w", room, document, err)
 			}
 		}

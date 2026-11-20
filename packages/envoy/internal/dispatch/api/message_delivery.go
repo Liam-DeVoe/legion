@@ -1123,7 +1123,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 				update message_deliveries set reply_id = $3, state = 'sent', error = null
 				where message_id = $1 and attempt = $2
 			`, message.ID, input.Attempt, reply.ID)
-			return queueAnsweredDelivery(r.Context(), b, answeredDelivery{
+			return queueAnsweredDelivery(b, answeredDelivery{
 				session: attempt.SessionID, was: attempt.State,
 			}, actor, answered.CreatedAt, answered.ID)
 		}); err != nil {

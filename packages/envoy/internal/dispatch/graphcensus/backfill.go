@@ -78,12 +78,14 @@ func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) ba
 // then mends what a process of the release before writes of a run of the command bar during a
 // roll or after a rollback (backfillRuns, backfillRunFrames, backfillGoneRuns): a run it recorded
 // with no interaction node, a frame it appended with no frame value, and a run whose row it
-// deleted an hour old, whose node it states gone. It then gives every role the store census holds
-// to a node and that has none its node and its page (backfillRoles), since the publisher writes
-// those only for the events it publishes from then on, and every session the census holds to a
-// node and that has none its node (backfillSessions): a session that only asked, followed or was
-// reached before the store existed was recorded by no write of the store, and the followed_by
-// edge to it would otherwise answer no node.
+// deleted an hour old, whose node it states gone; and the prevented_by it leaves asserted at a
+// check it drops or at a check of a document it retires, which it retracts
+// (backfillEndedPreventions). It then gives every role the store census holds to a node and that
+// has none its node and its page (backfillRoles), since the publisher writes those only for the
+// events it publishes from then on, and every session the census holds to a node and that has none
+// its node (backfillSessions): a session that only asked, followed or was reached before the store
+// existed was recorded by no write of the store, and the followed_by edge to it would otherwise
+// answer no node.
 //
 // It walks each kind in batches, writing a batch's nodes, its tuples and the projection
 // columns that name them in one transaction, so a row and its node commit together or not at
@@ -597,9 +599,26 @@ func markStaleBatch(ctx context.Context, database *store.Store, batch []string) 
 func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
 	slices.Sort(documents)
 	documents = slices.Compact(documents)
+	if err := lockDocumentOwners(ctx, tx, `id = any($1::uuid[])`, documents); err != nil {
+		return err
+	}
+	for _, document := range documents {
+		if _, err := tx.Exec(ctx, `
+			select 1 from document_block_versions where artifact_id = $1 for no key update
+		`, document); err != nil {
+			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
+		}
+	}
+	return nil
+}
+
+// lockDocumentOwners takes the owner row of each document whose artifacts row where picks, an SQL
+// predicate over artifacts with $1 bound to documents: each once, in the order of its owner key
+// (events.LockOwnerRows), the one order over owner rows. A document no row is left of has no owner
+// row to take.
+func lockDocumentOwners(ctx context.Context, tx pgx.Tx, where string, documents []string) error {
 	rows, err := tx.Query(ctx, `
-		select id::text, coalesce(issue_key, '') from artifacts where id = any($1::uuid[])
-	`, documents)
+		select id::text, coalesce(issue_key, '') from artifacts where `+where, documents)
 	if err != nil {
 		return fmt.Errorf("load the owners of a batch's documents: %w", err)
 	}
@@ -615,17 +634,7 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 	for _, document := range owned {
 		owners.Add(document[1], document[0], "document "+document[0])
 	}
-	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-		return err
-	}
-	for _, document := range documents {
-		if _, err := tx.Exec(ctx, `
-			select 1 from document_block_versions where artifact_id = $1 for no key update
-		`, document); err != nil {
-			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
-		}
-	}
-	return nil
+	return events.LockOwnerRows(ctx, tx, owners)
 }
 
 // heldBlockRows reads again, under the locks lockBlockDocuments took, which rows of the batch
@@ -1124,10 +1133,9 @@ func (w CommentWrite) Comments() int { return len(w.ids) }
 
 // Queue queues the write on b: its one store write of every node and every tuple
 // (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
-// store write of the nodes: the row's foreign key names the node. ctx is the writer's own, which
-// carries no run: neither writer is a request's.
-func (w CommentWrite) Queue(ctx context.Context, b *store.WriteBatch) error {
-	if err := graphstore.QueueWrite(ctx, b, w.Nodes, w.Tuples); err != nil {
+// store write of the nodes: the row's foreign key names the node.
+func (w CommentWrite) Queue(b *store.WriteBatch) error {
+	if err := graphstore.QueueWrite(b, w.Nodes, w.Tuples); err != nil {
 		return err
 	}
 	b.Queue("name the nodes of a comment batch on their rows", `
@@ -1220,7 +1228,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	if write.Comments() == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return write.Queue(ctx, b) }); err != nil {
+	if err := store.RunWrite(ctx, tx, write.Queue); err != nil {
 		return 0, 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1462,14 +1470,6 @@ func writeSessionBatch(ctx context.Context, database *store.Store, batch []sessi
 // absence of the row a node projects, which an older process's delete leaves: the store is never
 // read to decide what a row should say, nor a row to mend the store.
 
-// runFrameHeld is true of a going_events row e whose run's interaction node holds a frame value of
-// e's sequence: the anti-join backfillRunFrames finds an older pod's frames by.
-var runFrameHeld = `exists (
-		select 1 from graph_tuples t
-		where t.from_kind = '` + graphstore.KindInteraction + `' and t.from_id = e.request_id::text
-		  and t.kind = '` + graphstore.AttributeFrame + `' and t.to_kind = '` + graphstore.KindValue + `' and t.asserted
-		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
-
 // runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
 // interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
 // read as a run with no row rather than cast (store.CanonicalUUID), so no node can fail the read.
@@ -1491,7 +1491,7 @@ var runRowless = `
 		where n.kind = $1 and n.state <> $2 and not ` + runRowHeld
 
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its
-// node, through the one writer of such a node from its row (writeRun, WriteRun): the node, its
+// node, through the one writer of such a node from its row (graphstore.WriteRun): the node, its
 // author's node and tuples, and a frame value of every frame its row holds, in the shape the going
 // POST and the frame path write them. It reads the runs owed in batches by id, and writes each in
 // a transaction of its own, which takes the run's row first and reads again whether the node is
@@ -1509,10 +1509,10 @@ func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, err
 			if err != nil {
 				return done, err
 			}
-			if written.nodes > 0 {
+			if written.Nodes > 0 {
 				done.Rows++
-				done.Nodes += written.nodes
-				done.Tuples += written.tuples
+				done.Nodes += written.Nodes
+				done.Tuples += written.Tuples
 			}
 		}
 		if len(owed) < backfillBatch {
@@ -1545,28 +1545,28 @@ func readOwedRuns(ctx context.Context, database *store.Store, after string, limi
 	return owed, nil
 }
 
-// writeOwedRun writes the node of one run in a transaction of its own (writeRun).
-func writeOwedRun(ctx context.Context, database *store.Store, id string) (runWritten, error) {
+// writeOwedRun writes the node of one run in a transaction of its own (graphstore.WriteRun).
+func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphstore.RunWritten, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return runWritten{}, fmt.Errorf("begin the node of run %s: %w", id, err)
+		return graphstore.RunWritten{}, fmt.Errorf("begin the node of run %s: %w", id, err)
 	}
 	defer tx.Rollback(ctx)
-	written, err := writeRun(ctx, tx, id)
+	written, err := graphstore.WriteRun(ctx, tx, id)
 	if err != nil {
-		return runWritten{}, err
+		return graphstore.RunWritten{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return runWritten{}, fmt.Errorf("commit the node of run %s: %w", id, err)
+		return graphstore.RunWritten{}, fmt.Errorf("commit the node of run %s: %w", id, err)
 	}
 	return written, nil
 }
 
 // backfillRunFrames states a frame value of every going_events row whose run's interaction holds
-// no frame value of that sequence (runFrameHeld): a frame a process of the release before
-// appended to a run this build or the passes before gave a node. Each owed run is written in a
-// transaction of its own (writeRunFrames). Rows counts the frames it stated and Tuples the values,
-// one each, with what writeRun stated of a run that had no node by then.
+// no frame value of that sequence (graphstore.FrameHeldSQL): a frame a process of the release
+// before appended to a run this build or the passes before gave a node. Each owed run is written in
+// a transaction of its own (writeRunFrames). Rows counts the frames it stated and Tuples the
+// values, one each, with what graphstore.WriteRun stated of a run that had no node by then.
 func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.AttributeFrame}
 	after := uuid.Nil.String()
@@ -1581,8 +1581,8 @@ func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill
 				return done, err
 			}
 			done.Rows += frames
-			done.Tuples += frames + written.tuples
-			done.Nodes += written.nodes
+			done.Tuples += frames + written.Tuples
+			done.Nodes += written.Nodes
 		}
 		if len(owed) < backfillBatch {
 			break
@@ -1590,7 +1590,7 @@ func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill
 		after = owed[len(owed)-1]
 	}
 	var left int64
-	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+runFrameHeld).Scan(&left); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+graphstore.FrameHeldSQL).Scan(&left); err != nil {
 		return done, fmt.Errorf("count the frames the store holds no value of: %w", err)
 	}
 	done.Remaining = left
@@ -1604,7 +1604,7 @@ func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill
 func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select e.request_id::text from going_events e
-		where e.request_id > $1::uuid and not `+runFrameHeld+`
+		where e.request_id > $1::uuid and not `+graphstore.FrameHeldSQL+`
 		group by e.request_id
 		order by e.request_id
 		limit $2
@@ -1624,42 +1624,42 @@ func readOwedFrameRuns(ctx context.Context, database *store.Store, after string,
 // (graphstore.LockInteraction), as every frame of this build does (api's appendGoingEvent), so a
 // frame this build is appending to the run commits first, value and row together, and the read
 // under the lock no longer counts it owed. A run with no node by then gets it from its row through
-// writeRun, which states every frame the row holds, and which it answers. The values are read off
-// the rows (readRunFrames), exactly as the frame path states them.
-func writeRunFrames(ctx context.Context, database *store.Store, run string) (int64, runWritten, error) {
+// graphstore.WriteRun, which states every frame the row holds, and which it answers. The values are
+// read off the rows (graphstore.ReadRunFrames), exactly as the frame path states them.
+func writeRunFrames(ctx context.Context, database *store.Store, run string) (int64, graphstore.RunWritten, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return 0, runWritten{}, fmt.Errorf("begin the frames of run %s: %w", run, err)
+		return 0, graphstore.RunWritten{}, fmt.Errorf("begin the frames of run %s: %w", run, err)
 	}
 	defer tx.Rollback(ctx)
 	locked, err := graphstore.LockInteraction(ctx, tx, run)
 	if err != nil {
-		return 0, runWritten{}, err
+		return 0, graphstore.RunWritten{}, err
 	}
 	if !locked {
-		written, err := writeRun(ctx, tx, run)
+		written, err := graphstore.WriteRun(ctx, tx, run)
 		if err != nil {
-			return 0, runWritten{}, err
+			return 0, graphstore.RunWritten{}, err
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return 0, runWritten{}, fmt.Errorf("commit the node of run %s: %w", run, err)
+			return 0, graphstore.RunWritten{}, fmt.Errorf("commit the node of run %s: %w", run, err)
 		}
 		return 0, written, nil
 	}
-	frames, err := readRunFrames(ctx, tx, run, true)
+	frames, err := graphstore.ReadRunFrames(ctx, tx, run, true)
 	if err != nil {
-		return 0, runWritten{}, err
+		return 0, graphstore.RunWritten{}, err
 	}
 	if len(frames) == 0 {
-		return 0, runWritten{}, nil
+		return 0, graphstore.RunWritten{}, nil
 	}
 	if err := graphstore.Write(ctx, tx, nil, frames); err != nil {
-		return 0, runWritten{}, fmt.Errorf("state the frames of run %s: %w", run, err)
+		return 0, graphstore.RunWritten{}, fmt.Errorf("state the frames of run %s: %w", run, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, runWritten{}, fmt.Errorf("commit the frames of run %s: %w", run, err)
+		return 0, graphstore.RunWritten{}, fmt.Errorf("commit the frames of run %s: %w", run, err)
 	}
-	return int64(len(frames)), runWritten{}, nil
+	return int64(len(frames)), graphstore.RunWritten{}, nil
 }
 
 // backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
@@ -1752,6 +1752,117 @@ func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, 
 		return false, fmt.Errorf("commit the end of run %s: %w", id, err)
 	}
 	return true, nil
+}
+
+// The backfill's pass over the prevented_by tuples of the checks nobody runs any more. This build
+// retracts each prevented_by at a check block a version drops (refs' retractGonePointers) and at
+// each check of a document it retires (docs' retiredPreventions), in the transaction that drops or
+// retires it. A process of the release before, during a roll or after a rollback, does neither: it
+// states the block gone, or retires the document, and leaves each prevented_by at it asserted, so a
+// risk reads as prevented by a check of a retired document, and a check a later version restores
+// brings its old prevented_by back with it. The pass finds each such tuple by the store's own state
+// of the check and its document's row, not by a marker, and retracts it; a second run finds none.
+
+// endedChecks is an SQL array of the ended checks a risk asserted a prevented_by at: each far end of
+// such a tuple whose block the store holds gone, which a version dropped, or whose document is
+// retired (artifacts.retired_at), whose checks nobody runs. A block's node id names its document's
+// ref_key before its first '#', since a ref_key holds none. narrow is a predicate over p, the
+// prevented_by tuple, that bounds the checks read. It starts from the risks, through
+// graph_tuples_current, since risks are few and a read into blocks would walk every block's tuples.
+func endedChecks(narrow string) string {
+	return `array(
+		select distinct p.to_id from graph_tuples p
+		left join graph_nodes b on b.kind = p.to_kind and b.id = p.to_id
+		left join artifacts a on a.ref_key = split_part(p.to_id, '#', 1)
+		where p.from_kind = '` + graphstore.KindRisk + `' and p.kind = '` + graphstore.TuplePreventedBy + `'
+		  and p.to_kind = '` + refs.BlockNodeKind + `' and p.asserted
+		  and (b.state = '` + graphstore.StateGone + `' or a.retired_at is not null)
+		  and ` + narrow + `)`
+}
+
+// backfillEndedPreventions retracts every prevented_by the store asserts now at an ended check
+// (endedChecks), through the read the index pass and the retirement retract by
+// (refs.PreventionRetractions). It reads the documents that hold such a check in batches by
+// ref_key and retracts each batch's in a transaction of its own (writeEndedPreventions). Rows and
+// Tuples count the tuples it retracted.
+func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: "prevented_by_retracted"}
+	after := ""
+	for {
+		owed, err := readEndedPreventionDocuments(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		if len(owed) > 0 {
+			retracted, err := writeEndedPreventions(ctx, database, owed)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += retracted
+			done.Tuples += retracted
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	if err := database.Pool.QueryRow(ctx, refs.CurrentPreventionsSQL(`count(*)`, endedChecks(`true`))).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the prevented_by tuples at checks nobody runs: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readEndedPreventionDocuments reads the ref_keys past after, in order, of the documents that hold
+// an ended check a risk is prevented by now, at most limit of them.
+func readEndedPreventionDocuments(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		`+refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`))+`
+		order by 1
+		limit $2
+	`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
+	}
+	return owed, nil
+}
+
+// writeEndedPreventions retracts, in one transaction, every prevented_by the store asserts now at an
+// ended check of documents, a batch's ref_keys, and answers how many. It takes the owner lock
+// (store.LockOwner) of each of the documents that has a row first, each once and in ascending
+// owner key (lockDocumentOwners): the lock the index pass that drops a check and the retirement of
+// its document hold while they retract, and which api's lockReasoningOwners takes before it
+// appends a prevented_by at a check, so such a write beside the pass commits first and the read
+// under the lock sees it. It then reads the tuples again under that lock and retracts each, dated
+// now and made by the run (backfillActor), caused by no event, as writeGoneRun moves a run's node.
+func writeEndedPreventions(ctx context.Context, database *store.Store, documents []string) (int64, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin the retraction of the prevented_by tuples at checks nobody runs: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockDocumentOwners(ctx, tx, `ref_key = any($1)`, documents); err != nil {
+		return 0, err
+	}
+	retracted, err := refs.PreventionRetractions(ctx, tx, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`),
+		[]any{documents}, time.Now().UTC(), backfillActor, graphstore.NoEvent)
+	if err != nil {
+		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
+	}
+	if len(retracted) == 0 {
+		return 0, nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, retracted); err != nil {
+		return 0, fmt.Errorf("retract the prevented_by tuples at checks nobody runs: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit the retraction of the prevented_by tuples at checks nobody runs: %w", err)
+	}
+	return int64(len(retracted)), nil
 }
 
 // The asks and their followers. An ask's node holds the documents it is

@@ -507,7 +507,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
 		if planned {
-			if err := write(ctx, tx, func(b *store.WriteBatch) error { return drain.Queue(ctx, b) }); err != nil {
+			if err := write(ctx, tx, drain.Queue); err != nil {
 				return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 			}
 		} else {

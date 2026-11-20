@@ -1,7 +1,7 @@
 -- 20261116205055_interaction_nodes.up.sql
 --
--- INFRA-1950: a run of the command bar is an `interaction` node of the store, and `going_requests`
--- and `going_events` are its projections (dispatch://INFRA-1950/spec#b-r-interaction). The going
+-- A run of the command bar is an `interaction` node of the store, and `going_requests`
+-- and `going_events` are its projections (spec requirement r-interaction). The going
 -- POST and the frame path of this release write the node and each `frame` value before the row
 -- that projects it, in one transaction (api/going.go). This migration gives every run written
 -- before it the same: for each `going_requests` row whose run the store holds no interaction node

@@ -1027,13 +1027,13 @@ func (d DecisionIndexing) heldRooms(index BlockIndex) map[string]string {
 }
 
 // unheldTypedNodes is the node of each decision and reading the store holds present in document
-// artifactID, at any state but gone (a proposed, settled or overtaken node is as present as a
-// live one), that the version's blocks no longer hold as one, written at versionAt: stated gone,
-// with the supertag it holds, where the version holds no block of its id, and restated with the
-// supertag block where it holds the block under another type, as PlanBlocks writes the node of a
-// retyped block, which keeps the state it holds (blockNode). supertags is each block the version
-// holds as a decision or a reading (TypedFacts.supertags), whose node the typed-node pass writes
-// itself.
+// artifactID, at any state but gone (the spec's R12: a proposed, settled or overtaken
+// node is as present as a live one), that the version's blocks no longer hold as one, written at
+// versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
+// and restated with the supertag block where it holds the block under another type, as
+// PlanBlocks writes the node of a retyped block, which keeps the state it holds (blockNode).
+// supertags is each block the version holds as a decision or a reading (TypedFacts.supertags),
+// whose node the typed-node pass writes itself.
 //
 // It reads only what the store places in the document, each by its own key: the decisions and
 // readings its document_blocks rows hold, the block nodes whose current part_of is the document's

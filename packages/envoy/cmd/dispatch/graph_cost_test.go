@@ -4,21 +4,22 @@
 
 package main
 
-// Three cost measurements share this file. c-write-cost is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost is
-// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go), and the
-// predicate and lens reads' c-read-cost is TestThePredicateAndTheLensReadsGetNoSlower
-// (predicate_lens_read_cost_test.go). What they
+// Three cost measurements share this file. c-write-cost of cybermonklabs/legion#3178 is
+// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
+// cybermonklabs/legion#3178 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
+// (read_cost_test.go), and c-read-cost of cybermonklabs/legion#4193 is
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
-// (baseBuild, testbaseline.Commit). Each serves a database of its own and migrates it at boot, so
-// each arm runs its own code over its own schema: the older build lacks migrations this one
-// holds (the merge-base has no graph_nodes and no graph_tuples, over which this build's
-// graph_edges reads the tuple arm). One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the base commit (baseBuild): the
+// commit BASELINE_SHA names (testbaseline.Commit), which is the fork point with main for a branch
+// that lands on main. Each serves a database of its own and migrates it at boot, so each arm runs
+// its own code over its own schema: the older build lacks migrations this one holds (the fork
+// point has no graph_nodes and no graph_tuples, over which this build's graph_edges reads the
+// tuple arm). One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -120,11 +121,11 @@ func (a *costArm) ready(t *testing.T) {
 }
 
 // startCostArms starts both arms: this working copy's build and the base commit's (baseBuild:
-// the commit BASELINE_SHA names), each on an empty database of its own which that build migrates
-// at boot, and both delivering to one stub Envoy listener, so a delivery costs the same transport
-// on either arm. It answers them in the order they are measured in, this child first. The base
-// arm is named "the base build" and not "the commit before this child": BASELINE_SHA may name a
-// commit that already holds some of this child's own bases.
+// the commit BASELINE_SHA names, testbaseline.Commit), each on an empty database of its own which
+// that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
+// the same transport on either arm. It answers them in the order they are measured in, this child
+// first. The base arm is named "the base build" and not "the commit before this child":
+// BASELINE_SHA may name a commit that already holds some of this child's own bases.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)

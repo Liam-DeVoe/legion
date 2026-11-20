@@ -426,11 +426,11 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
 // toKind, names who wrote, answered or removed that node, into a person or a session: an ask's
 // authored_by, answered_by, decided_by or removed_by; a block's authored_by or decided_by - a
-// decision's, a reading's, a finding's of a lens; and the authored_by of a run of the command bar,
-// a lens, a risk or a constraint. The census's person and session row sides find the author of a
-// run through its going_requests row, or through that current authored_by once a process of the
-// release before deleted the row (graphcensus' goneRunsAuthored), and that of a lens, a risk or
-// a constraint only through that current authored_by (graphcensus' reasoningAuthored), and the
+// decision's, a reading's, a finding's of a lens; and the authored_by of a run of the command
+// bar, a lens, a risk or a constraint. The census's person and session row sides find the author
+// of a run through its going_requests row, or through that current authored_by once a process of
+// the release before deleted the row (graphcensus' goneRunsAuthored), and that of a lens, a risk
+// or a constraint only through that current authored_by (graphcensus' reasoningAuthored), and the
 // erase takes both, so for an author with no other record the erase's own record is the one that
 // names them. A comment's authored_by is not one: no record of an erase holds a comment's author,
 // whom the events of the comment name still (graphcensus' commentWriters).
@@ -997,19 +997,18 @@ func projectionRows(reference referencingColumn, table string) string {
 // this one now of a kind that row digests (graphcensus.DigestedTuple, the census's own definition
 // of what each projection row states): a block inside an erased block (its part_of and its
 // parent_block_id), a block that cites it (its mentions or pointer tuple and its block_refs row),
-// a decision that
-// names it (its shaped, from_ask or decided_by and its block_refs row), a comment or an ask its
-// author is (its authored_by and its author), an ask's documents, followers and answerer (the
-// tuples its asks and ask_followers rows state), and a recorded result whose check, recorder,
-// run's session or screenshot this node is (its result_of, part_of, authored_by, run_session or
-// screenshot and its check_results row). An ask's row is read here beside projectedTables: it is
-// the projection of the ask's node (migration 20261116094058), which the erase never deletes,
-// since it refuses an ask while that row stands (Erasure.read). The erase deletes the tuples into
-// the node, so
-// such a row would go on stating a tuple the store no longer holds, which is a difference
-// `census --store` reads. A tuple of a kind no row states - a changed_by_run a write made for a
-// run appended out of a comment, a block or an ask, a requirement's constrained_by - is the
-// store's alone: it blocks nothing, and the erase deletes it with the node.
+// a decision that names it (its shaped, from_ask or decided_by and its block_refs row), a comment
+// or an ask its author is (its authored_by and its author), an ask's documents, followers and
+// answerer (the tuples its asks and ask_followers rows state), and a recorded result whose check,
+// recorder, run's session or screenshot this node is (its result_of, part_of, authored_by,
+// run_session or screenshot and its check_results row). An ask's row is read here beside
+// projectedTables: it is the projection of the ask's node (migration 20261116094058), which the
+// erase never deletes, since it refuses an ask while that row stands (Erasure.read). The erase
+// deletes the tuples into the node, so such a row would go on stating a tuple the store no longer
+// holds, which is a difference `census --store` reads. A tuple of a kind no row states - a
+// changed_by_run a write made for a run appended out of a comment, a block or an ask, a
+// requirement's constrained_by - is the store's alone: it blocks nothing, and the erase deletes
+// it with the node.
 //
 // Two tuples into a node have no projection row behind them and still block, at any state of
 // the node that states them. One is the part_of of a node of a standing kind - a lens, a finding

@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # Drives the one truth of a run of the command bar and of this child's reasoning nodes across an
-# upgrade and a rollback (dispatch://INFRA-1950's c-census, dispatch://INFRA-1950/spec#b-r-one-truth,
-# dispatch://INFRA-1950/spec#b-r-interaction). Two products of one transformation agree after both
+# upgrade and a rollback (check c-census, spec requirements r-one-truth and r-interaction). Two
+# products of one transformation agree after both
 # lose the same row, so the driver starts before the migration and holds both products to an
 # inventory of its own:
 #
-#   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA (unset,
-#       `git merge-base origin/main HEAD`) and stamps it with that commit, over the run's empty
-#       database, which it migrates; the driver keeps the versions schema_migrations holds then as
-#       a file. Its /healthz names that commit as its own and as its fleet_commit, the build
-#       processes.Live reads every live process as serving. Through its own API three people each
-#       ask the command bar, and the driver reads each run's stream to its terminal frame; the
-#       server stops, so nothing appends a frame after the inventory is read.
+#   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA and
+#       stamps it with that commit, over the run's empty database, which it migrates; the driver
+#       keeps the versions schema_migrations holds then as a file. BASELINE_SHA is the release this
+#       child lands after: c-census's run sets it, unless its caller did, to the merge base with
+#       the branch of cybermonklabs/legion#4173, and once that pull request merges the implementer
+#       sets it to the first parent of its merge commit on main. It has no default, as
+#       lib-baseline.sh's has none: unset, the run is refused, exit 2. Before anything is built,
+#       the driver refuses a base whose tree lacks the migration 20261109013400_graph_store, which
+#       creates the store, naming the base: over a
+#       build that holds no store no two-build sentence of c-census can pass. Its /healthz names
+#       that commit as its own and as its fleet_commit, the build processes.Live reads every live
+#       process as serving. Through its own API three people each ask the command bar, and the
+#       driver reads each run's stream to its terminal frame; the server stops, so nothing appends
+#       a frame after the inventory is read.
 #       With psql it writes one run row a day ahead that holds no frame, and one run for each row
 #       of the identity table below, each a day ahead too and each form straight into
 #       going_requests.author, since the older server's sign-in stores a login in its canonical
@@ -33,22 +40,30 @@
 #       existing requirement block under the header of one of alice's runs, whose ends_at psql first
 #       sets a day ahead on both sides in one transaction, so the run's window decides no result,
 #       and one lens on the shared bearer e2e-token whose body names a session no other row names.
-#       It keeps an inventory of those writes. Before any further backfill the census reads the
-#       person and the session kinds at zero differences: the shared bearer proves no author, so
-#       that lens is the project's and settles nothing, yet it names the session its body names as
-#       its writer through authored_by and its write stated that session's node (spec v46 R12),
-#       so the session is on both sides; the driver reads that authored_by tuple.
+#       It keeps an inventory of those writes. Then alice routes the issue to a role and comments
+#       on it, one message addressed to that role, whose node and page this head's events outbox
+#       writes, publishing through the run's NATS. Last, so that no kind of the store is checked
+#       over no row, a second issue's spec holds an ask block that alice answers and a session
+#       follows, and an agent's decision with a shaped pointer at a requirement, a from_ask to that
+#       ask and a reading under it, which give the eight kinds cybermonklabs/legion#4173 adds
+#       (shaped, from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and
+#       ask_answer) a row each. Before any further backfill the census, run whole, exits 0 and
+#       reads the person, the session, the role and the page kinds and each of those eight at zero
+#       differences over more than zero rows: the shared bearer proves no author, so that lens is
+#       the project's and settles nothing, yet it names the session its body names as its writer
+#       through authored_by and its write stated that session's node (spec v46 R12), so the session
+#       is on both sides; the driver reads that authored_by tuple.
 #   B2  The base build again, as in a rollback, through run-server.sh, booted beside this head's
 #       server, which still serves: two builds serve the one database at once, each on a port of
 #       its own, and both sign cookies with the run's one dev sign-in key. While both serve, alice
 #       proposes the requirement r3 through this head's state route, the base build's own edit
 #       route writes a version of the spec that changes the words of r3's second paragraph, a block
 #       of its own whose text r3's holds, so that build's index pass writes r3's node again, and
-#       this head reads r3 still proposed (dispatch://INFRA-1149's keep-state rule). dave, a login
+#       this head reads r3 still proposed (cybermonklabs/legion#3178's keep-state rule). dave, a login
 #       no other row names, writes through this head a lens reserved for him, his only node, and
 #       reads his own page through this head with that lens on it; bob reads dave's page through
 #       the base build and is answered, status and body byte for byte, what that build answers him
-#       for a login nobody holds (dispatch://INFRA-1149's person-page rule). Then this head's
+#       for a login nobody holds (cybermonklabs/legion#3178's person-page rule). Then this head's
 #       server stops and the base build serves alone: one new run, whose frames it writes with no
 #       frame value; with psql the hand-written run's ends_at moves into the past, standing for time
 #       passing, on both sides in one transaction (its row, and its node's attribute and value
@@ -57,21 +72,24 @@
 #   H3  This head again. Each boot wrote one announcement once processes.Live read every live
 #       process as its build - the base build of B2, booted beside this head, once this head
 #       stopped - so they name the base build, this head, the base build and this head, in order:
-#       two builds. Before the backfill, a census beside a planted instance: it names the new run,
-#       a row with no node, and the terminal frame of the run row written by hand, a row with no
-#       frame value. Then the backfill again: a node for the new run, a frame value for each frame
-#       that build appended, and the run whose row it deleted at state gone. alice moves her
-#       pre-mortem to proposed, the finding to settled and her risk to overtaken. Only then the
-#       census, the store-to-projection comparison, which is reported apart from the inventory's: a
-#       run the migration lost shows in the first and never in the second. It reads zero
-#       differences for the interaction and frame kinds, for both block projections of
-#       dispatch://INFRA-1149, for person and session, and for the visibility and state of every
-#       node of this child's kinds, each kind having checked more than zero rows, the moved nodes
-#       counted as live ones are, and every interaction at `author`. Then, with psql, one
-#       interaction node no going_requests row projects, a copy of bob's run's node under an id no
-#       row names, and one frame value no going_events row projects, of the run row written by hand
-#       at the sequence after its one frame's: the census reads each as one difference of its kind
-#       naming its run, two in all, and once both are deleted, exactly as planted, zero again.
+#       two builds. Before the backfill, a census beside a planted instance, which exits 1 on its
+#       differences: it names the new run, a row with no node, and the terminal frame of the run row
+#       written by hand, a row with no frame value. Then the backfill again: a node for the new run,
+#       a frame value for each frame that build appended, and the run whose row it deleted at state
+#       gone. alice moves her pre-mortem to proposed, the finding to settled and her risk to
+#       overtaken. Only then the census, the store-to-projection comparison, which is reported
+#       apart from the inventory's: a run the migration lost shows in the first and never in the
+#       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
+#       reads zero differences for the interaction and frame kinds, for both block projections of
+#       cybermonklabs/legion#3178, for comment, person, session, role and page, for the eight kinds
+#       of cybermonklabs/legion#4173, and for the visibility and state of every node of this child's
+#       kinds, each kind having checked more than zero rows, the moved nodes counted as live ones
+#       are, and every interaction at `author`. Then,
+#       with psql, one interaction node no going_requests row projects, a copy of bob's run's node
+#       under an id no row names, and one frame value no going_events row projects, of the run row
+#       written by hand at the sequence after its one frame's: the census exits 1 and reads each as
+#       one difference of its kind naming its run, two in all, and once both are deleted, exactly
+#       as planted, it exits 0 and reads zero again.
 #   S   The store-only kinds (lens, finding, risk, constraint, lens_kind) and their constrained_by,
 #       has_kind, triggered_by and prevented_by tuples against the inventory of the routes' writes
 #       and the migration's seed, node for node and tuple for tuple.
@@ -85,9 +103,10 @@
 #   M   Each .census.sql of the migrations this head applied over the base, the select the
 #       repository runs before a deploy, reading 0.
 #   E   With no server running, `envoy-dispatch erase --node interaction:<uuid>` of the run the edit
-#       was made under, as dispatch://INFRA-1149's erase runs: a listing, then --confirm with its
+#       was made under, as cybermonklabs/legion#3178's erase runs: a listing, then --confirm with its
 #       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
-#       node of the run is left, the backfill writes none back, and the census reads zero again.
+#       node of the run is left, the backfill writes none back, and the census, run whole, exits 0
+#       and reads zero again.
 #
 # The identity table is written into this driver by a person, and no code the server runs produces
 # it: each row is a form a record can hold of a person's identity, the node its run's authored_by
@@ -95,15 +114,19 @@
 # bar and writes no comment; karol is one character from her and must stay a person of his own.
 #
 # Inputs: DATABASE_URL (an empty database on this machine that the run created and drops; every
-# server here migrates and serves it, and this driver reads and writes its rows), and optionally
-# BASELINE_SHA (lib-baseline.sh's: the base commit; while a branch this child builds on is unmerged,
-# a commit holding every such branch), DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which
-# serves and runs backfill-graph-store, census, lens-kind-add and erase, default
-# $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE (lib-baseline.sh's checkout). It starts the two
-# fakes run-server.sh needs, the fake Envoy and the fake GitHub, and every server (lib-processes.sh),
-# and stops each when it exits, also when a check fails, so the run can drop its database. Each
-# unmet input is exit 2. No BASELINE_BINARY is read: the base is always built here and stamped with
-# its commit.
+# server here migrates and serves it, and this driver reads and writes its rows), BASELINE_SHA
+# (the base commit, read in LEGION_WORKSPACE's checkout or else this one and handed to
+# lib-baseline.sh in full; it has no default; a base whose tree
+# lacks the migration 20261109013400_graph_store is refused, exit 2, naming it), and optionally
+# DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which serves and runs backfill-graph-store,
+# census, lens-kind-add and erase, default $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE
+# (lib-baseline.sh's checkout). It starts the two fakes run-server.sh needs, the fake Envoy and the
+# fake GitHub, a NATS server with JetStream, packages/envoy's natsd (internal/testnats/cmd/natsd),
+# which it builds and which this head's boots alone are handed (run-server.sh's
+# DISPATCH_E2E_NATS_URLS, boot_head), so this head's events outbox publishes, and every server
+# (lib-processes.sh), and stops each when it exits, also when a check fails, so the run can drop
+# its database. Each unmet input is exit 2. No BASELINE_BINARY is read: the base is always built
+# here and stamped with its commit.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1. The first PASS line after this head's
@@ -120,17 +143,18 @@ set +x
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_census?sslmode=disable \
-         [BASELINE_SHA=<commit>] [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
+Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/census?sslmode=disable \
+         BASELINE_SHA=<commit> [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
          node-visibility-census.sh
        (DATABASE_URL names an empty database on this machine, which the run created and drops;
-       BASELINE_SHA unset is git merge-base origin/main HEAD)
+       BASELINE_SHA is the commit of the release this branch lands after and has no default, and
+       a base whose tree lacks the migration 20261109013400_graph_store is refused)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib-processes.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib-processes.sh"
-require_env DATABASE_URL
+require_env DATABASE_URL BASELINE_SHA
 require_commands bun curl git go jq openssl psql python3 tar
 
 readonly driver=node-visibility-census.sh
@@ -152,13 +176,42 @@ DISPATCH_TOKEN="$token"
 # The tree this driver is part of, whose sources G greps and whose migrations M reads.
 tree="$(cd -- "$e2e_dir/../../.." && pwd)"
 readonly tree
+# The base, read before anything is built. BASELINE_SHA names it, the release this child lands
+# after; c-census's run sets it, when its caller has not, to the merge base with the branch of
+# cybermonklabs/legion#4173. It has no default, as lib-baseline.sh's has none: only the caller
+# knows that release, and require_env above refuses a run that names none. It is read in the
+# checkout lib-baseline.sh builds it from, LEGION_WORKSPACE or else this tree, and handed to
+# lib-baseline.sh in full, so the commit built is the commit read here. A base whose tree lacks
+# the migration that creates the store is refused, named: over a build that holds no store, no
+# sentence of c-census that reads two builds can pass.
+readonly base_repo="${LEGION_WORKSPACE:-$tree}"
+readonly store_migration=packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql
+readonly base_named="$BASELINE_SHA"
+BASELINE_SHA="$(git -C "$base_repo" rev-parse --verify --quiet "${base_named}^{commit}")" || {
+  printf "BASELINE_SHA '%s' names no commit of %s\n" "$base_named" "$base_repo" >&2
+  usage
+  exit 2
+}
+git -C "$base_repo" cat-file -e "$BASELINE_SHA:$store_migration" 2>/dev/null || {
+  printf '%s: the base %s (BASELINE_SHA %s) lacks the migration 20261109013400 (graph_store): its tree holds no %s, so it is a build with no store, over which no two-build sentence of c-census can pass\n' \
+    "$driver" "$BASELINE_SHA" "$base_named" "$store_migration" >&2
+  usage
+  exit 2
+}
+printf '%s: the base %s (BASELINE_SHA %s) holds the migration 20261109013400 (graph_store): %s\n' \
+  "$driver" "$BASELINE_SHA" "$base_named" "$store_migration"
+# The run's NATS reaches this head's boots alone (boot_head); one a caller's shell exported reaches
+# no server here, the base build's boots included.
+unset DISPATCH_E2E_NATS_URLS
 stamp="$(date +%s)-$$"
 readonly stamp
 # The session every bearer write names, the session the identity table says the server proved
-# carol's, and the session the lens on the shared bearer names, which no other row names.
+# carol's, the session the lens on the shared bearer names, which no other row names, and the
+# session that follows the ask alice answers (H2), which no other row names either.
 readonly session="census-$stamp"
 readonly carol_session="census-carol-$stamp"
 readonly bearer_session="census-bearer-lens-$stamp"
+readonly follower_session="census-follower-$stamp"
 readonly project=CENSUS
 # The two seeded people, the person of the identity table, karol, a login one character from
 # hers, who must stay a person of his own, dave, a login no other row names, whose only node is a
@@ -166,6 +219,9 @@ readonly project=CENSUS
 readonly alice=alice bob=bob carol=carol twin=karol third=dave
 readonly nobody="nobody-$stamp"
 readonly added_kind="census-$stamp"
+# The role the one message addressed to a role is addressed to (H2): a name roleRoutePattern
+# admits (lower case, digits and hyphens) that no other row names.
+readonly role="census-role-$stamp"
 # How long each of the two waits below may take: the owed block versions, and the older build's
 # sweep.
 readonly wait_limit=600
@@ -250,17 +306,66 @@ backfill() {
   pass "$1" "envoy-dispatch backfill-graph-store ran over the run's database"
 }
 
-# take_census SECTION NAME: runs envoy-dispatch census --store and keeps its report in
-# $work/census.NAME. It exits 0 or 1, by whether the report refuses; what this driver reads of it is
-# each kind's line and the total of differences.
+# take_census SECTION NAME EXIT: runs envoy-dispatch census --store, whole, keeps its report in
+# $work/census.NAME and prints each kind's line, the store-only and project lines, the total of
+# differences and the verdict. The command exits 0 when nothing refuses, 1 when the report refuses
+# and 2 when it could not take the census (cmd/dispatch's census), and the report refuses on a
+# difference, a project finding, a far end that does not resolve or a kind that checked no row
+# (graphcensus's StoreReport.Refused). EXIT is 0 for a census of the store as its writers left it,
+# every kind of it checked, whose verdict is `census: store ok`, and 1 for a census beside a
+# planted difference, whose verdict is `census: store REFUSED (<n> difference(s))`, the reason the
+# report names first.
 take_census() {
+  local verdict want
   run_cli "$1" "run envoy-dispatch census --store" census --store
   cp "$work/cli.out" "$work/census.$2"
-  grep -E '^census: store (kind=[a-z_]+ nodes=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and )' \
+  grep -E '^census: store (kind=[a-z_]+ (nodes|tuples)=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and |holds no row|checked no row)|^census: (store-only|project) ' \
     "$work/census.$2" >"$work/census.$2.lines" ||
     fail "$1" "envoy-dispatch census --store prints its report" "it printed no census line (exit $cli_code): $(<"$work/census.$2")"
   sed 's/^/  /' "$work/census.$2.lines"
-  pass "$1" "envoy-dispatch census --store read the store (exit $cli_code)"
+  verdict="$(grep -E '^census: store (ok|REFUSED|absent)' "$work/census.$2" | tail -n 1)" || verdict=""
+  if [[ "$3" == 0 ]]; then
+    want='^census: store ok$'
+  else
+    want='^census: store REFUSED \([0-9,]+ difference\(s\)\)$'
+  fi
+  [[ "$cli_code" == "$3" ]] ||
+    fail "$1" "envoy-dispatch census --store, run whole, exits $3" "it exited $cli_code: ${verdict:-it printed no verdict}"
+  [[ "$verdict" =~ $want ]] ||
+    fail "$1" "envoy-dispatch census --store, run whole, ends on the verdict /$want/" "its verdict reads: ${verdict:-none}"
+  pass "$1" "envoy-dispatch census --store, run whole, exited $3: $verdict"
+}
+
+# start_nats: builds natsd, packages/envoy's one nats-server for a shell script
+# (internal/testnats/cmd/natsd, the nats-server its go.mod pins, with JetStream on 127.0.0.1), as
+# scripts/e2e/dispatch-claimant-delivery.sh builds it for its Dispatch, and starts it on a port the
+# kernel picks (-p -1), its store under $work. It sets $nats_url, and its pid joins the fakes'
+# (pids), so stop_processes stops it with them. run-server.sh starts a server's events outbox only
+# for a server it hands a NATS (DISPATCH_E2E_NATS_URLS), and that publisher is the one writer of a
+# role's node and its page beside the row that addresses the role (outbox.deliveredGraph).
+start_nats() {
+  local pid line
+  mkdir -p "$work/bin" "$work/nats-store"
+  go -C "$tree/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd >"$work/natsd-build.log" 2>&1 ||
+    fail setup "build packages/envoy's ./internal/testnats/cmd/natsd" "go build exited non-zero: $(tail -n 20 "$work/natsd-build.log")"
+  "$work/bin/natsd" -p -1 -store_dir "$work/nats-store" >"$work/nats.log" 2>&1 &
+  pid="$!"
+  pids+=("$pid")
+  await_line setup "start the NATS server" "$pid" "$work/nats.log" 'Server is ready'
+  line="$(grep -m 1 -E 'Listening for client connections on 127\.0\.0\.1:[0-9]+$' "$work/nats.log")" ||
+    fail_with_log setup "start the NATS server" "it logged no client port" "$work/nats.log"
+  nats_url="nats://127.0.0.1:${line##*:}"
+  [[ "$nats_url" =~ ^nats://127\.0\.0\.1:[0-9]+$ ]] || fail setup "start the NATS server" "its line reads: $line"
+  readonly nats_url
+  printf '%s: natsd, a NATS server with JetStream, listens on %s (pid %s)\n' "$driver" "$nats_url" "$pid"
+}
+
+# boot_head SECTION NAME: boots this head's server (boot_server) with the run's NATS as its
+# DISPATCH_E2E_NATS_URLS, which run-server.sh hands it as NATS_URLS, so its events outbox
+# publishes and writes what a delivery states in the store, as a deployment's does. The base build
+# boots with none, in B1 through lib-baseline.sh and in B2 through boot_server.
+boot_head() {
+  DISPATCH_E2E_NATS_URLS="$nats_url" boot_server "$1" "$2" "$server_bin"
 }
 
 # fleet_reads SECTION COMMIT: the server serving now answers /healthz with COMMIT as the commit it
@@ -309,28 +414,73 @@ at() {
   "$@"
 }
 
-# census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
-# $c_row_differences and $c_node_differences.
+# census_kind FILE KIND: KIND's counts in the census report FILE, into $c_store, $c_rows,
+# $c_row_differences and $c_store_differences, and into $c_side what its store side counts: node,
+# or tuple for a kind the census holds triple by triple (graphcensus's KindReport.Triples), whose
+# line counts tuples where every other kind's counts nodes.
 census_kind() {
   local line
-  line="$(grep -m 1 -E "^census: store kind=$2 nodes=" "$1")" || return 1
-  [[ "$line" =~ nodes=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_node=([0-9,]+)\ nodes_without_a_row=([0-9,]+) ]] || return 1
-  c_nodes="${BASH_REMATCH[1]//,/}"
-  c_rows="${BASH_REMATCH[2]//,/}"
-  c_row_differences="${BASH_REMATCH[3]//,/}"
-  c_node_differences="${BASH_REMATCH[4]//,/}"
+  line="$(grep -m 1 -E "^census: store kind=$2 (nodes|tuples)=" "$1")" || return 1
+  [[ "$line" =~ (node|tuple)s=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_(node|tuple)=([0-9,]+)\ (node|tuple)s_without_a_row=([0-9,]+) ]] || return 1
+  c_side="${BASH_REMATCH[1]}"
+  c_store="${BASH_REMATCH[2]//,/}"
+  c_rows="${BASH_REMATCH[3]//,/}"
+  c_row_differences="${BASH_REMATCH[5]//,/}"
+  c_store_differences="${BASH_REMATCH[7]//,/}"
 }
 
 # census_zero SECTION NAME KIND: the census NAME read KIND at zero differences in both directions,
 # having checked more than zero rows of it; a kind that checked no row fails, named.
 census_zero() {
   census_kind "$work/census.$2" "$3" || fail "$1" "the census reads the kind $3" "no line of it in: $(<"$work/census.$2")"
-  [[ "$c_row_differences" == 0 && "$c_node_differences" == 0 ]] ||
+  [[ "$c_row_differences" == 0 && "$c_store_differences" == 0 ]] ||
     fail "$1" "the census reads $3 at zero differences" \
-      "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
+      "$c_row_differences row(s) without a $c_side and $c_store_differences $c_side(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
   [[ "$c_rows" -gt 0 ]] ||
     fail "$1" "the census checked more than zero rows of the kind $3" "it checked $c_rows rows of $3, so it proves nothing of it"
-  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes node(s)"
+  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_store $c_side(s)"
+}
+
+# The eight kinds of the store cybermonklabs/legion#4173 adds: a decision's shaped, from_ask and
+# decided_by, an ask's followers, a reading's parent, and an ask's placement, anchor and answer.
+# The census refuses none of them for holding no row and no tuple (graphcensus's emptyAgrees: a
+# deployment holds none until a decision is written or an ask answered), so a census that read
+# one of them over no row would pass while proving nothing of it. H2 writes a row of each, and
+# every census of the store as its writers left it reads each through census_zero, which fails
+# on a kind that checked no row, naming it.
+readonly -a decision_kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
+
+# wait_settled SECTION WHAT: waits, 120 s at most, until no document owes a settlement
+# (doc_settlements_pending) or its block index (a document_block_versions row with a null version),
+# so the census that follows reads every write before it, as decision-nodes.sh waits.
+readonly owed_sql="select (select count(*) from doc_settlements_pending)
+  + (select count(*) from document_block_versions where version is null)"
+wait_settled() {
+  local waited=0
+  query "$1" "read what the documents owe" "$owed_sql"
+  until [[ "$answer" == 0 ]]; do
+    [[ "$waited" -lt 120 ]] ||
+      fail "$1" "$2: every document settles within 120 s" "$answer settlement(s) and block index(es) still owed"
+    sleep 1
+    waited=$((waited + 1))
+    query "$1" "read what the documents owe" "$owed_sql"
+  done
+}
+
+# wait_ask SECTION ISSUE BLOCK: waits, 60 s at most, for the one ask of ISSUE whose block is BLOCK,
+# whose row settlement opens once the block is written, and sets $ask_id to its id.
+wait_ask() {
+  local waited=0
+  while true; do
+    request agent GET "/api/v1/issues/$2/asks?state=all"
+    want_status 200 "$1" "read the asks of $2"
+    ask_id="$(jq -r --arg b "$3" '[.[] | select(.block_id == $b)] | if length == 1 then .[0].id else "" end' "$work/body")" ||
+      fail "$1" "read the asks of $2" "unreadable: $(body)"
+    [[ -z "$ask_id" ]] || return 0
+    [[ "$waited" -lt 60 ]] || fail "$1" "the ask of block $3 of $2 opens within 60 s" "no single ask of $2 names block $3: $(body)"
+    sleep 1
+    waited=$((waited + 1))
+  done
 }
 
 # census_differences SECTION NAME: the census NAME read zero differences over every kind.
@@ -458,6 +608,7 @@ readonly identities
 pass setup "the identity table holds ${#identities[@]} forms: four of $carol and one of $twin, one character from her"
 
 start_fakes
+start_nats
 
 # --- B1: the base build, its three runs, the hand-written row, the identity table, the inventory -
 
@@ -591,7 +742,7 @@ pass B1 "kept the inventory of $inventory_size runs, each its id, author, words 
 
 # --- H1: this head over the same database, its migrations and backfill, against the inventory ----
 
-boot_server H1 "this head's server" "$server_bin"
+boot_head H1 "this head's server"
 seeded_catalogue
 
 registered_commit H1 "read this head's row of server_processes"
@@ -789,10 +940,91 @@ want_value H2 "the lens on the shared bearer is made by the session its body nam
 jq -r 'to_entries[] | "  inventory of writes: \(.key) \(.value | length)"' "$work/writes.json"
 pass H2 "kept the inventory of this build's writes in $work/writes.json"
 
-# Straight after those writes, before any further backfill.
-take_census H2 h2
+# The one message addressed to a role (Verification v55): the census refuses a kind it checked no
+# row of (cybermonklabs/legion#3178), and no row of this run addressed a role, so without it the census
+# refuses the role and the page kinds. alice routes $key to the role $role through this head and
+# writes a comment on it, as cybermonklabs/legion#3178's census test addresses its role
+# (addressTheRole, packages/envoy/cmd/dispatch/store_census_test.go): the route is the role's row,
+# which issues.route holds now and the issue.updated event names (graphcensus's addressedRoles),
+# and the comment is a message that route addresses to the role, which the events outbox's
+# publisher resolves as a destination. The publisher is the one writer of a role's node and its
+# page beside the row that addresses the role (outbox.deliveredGraph), and this head publishes
+# through the run's NATS (boot_head), so the driver waits, 60 s at most, until the store holds both
+# nodes, and reads that the publisher wrote them: no backfill runs before H3.
+request "cookie:$alice" PATCH "/api/v1/issues/$key" "$(jq -cn --arg r "role:$role" '{route: $r}')"
+want_status 200 H2 "$alice routes $key to the role $role through this head"
+request "cookie:$alice" POST "/api/v1/issues/$key/comments" \
+  "$(jq -cn --arg b "A comment on $key, which is routed to the role $role." '{body: $b}')"
+want_status 201 H2 "$alice writes a comment on $key, a message its route addresses to the role $role"
+readonly role_sql="select (select count(*) from issues where key = '$key' and route = 'role:$role') || '|'
+  || (select count(*) from graph_nodes where kind = 'role' and id = '$role') || '|'
+  || (select count(*) from graph_nodes where kind = 'page' and id = 'role/$role')"
+query H2 "read the role $role's route, node and page" "$role_sql"
+waited=0
+until [[ "$answer" == "1|1|1" ]]; do
+  [[ "$waited" -lt 60 ]] ||
+    fail_with_log H2 "this head's events outbox writes the node of the role $role and its page, role/$role, within 60 s" \
+      "issues routed to it|role nodes|page nodes read $answer" "$work/this head's server.log"
+  sleep 1
+  waited=$((waited + 1))
+  query H2 "read the role $role's route, node and page" "$role_sql"
+done
+want_value H2 "the node of the role $role and its page, role/$role, are made by the events outbox's publisher" \
+  "system:dispatch-outbox system:dispatch-outbox" \
+  "select string_agg((made_by->>'kind') || ':' || (made_by->>'id'), ' ' order by kind desc)
+   from graph_nodes where (kind = 'role' and id = '$role') or (kind = 'page' and id = 'role/$role')"
+pass H2 "$key is routed to the role $role, and this head's events outbox wrote the role's node and its page, role/$role (waited ${waited} s)"
+
+# The eight kinds of cybermonklabs/legion#4173 (decision_kinds): no write above gives any of them a
+# row, and the census refuses none of them for holding none, so each would be read over no row.
+# Through this head, as decision-nodes.sh writes its own half: the agent bearer creates a second
+# issue of the project and writes an ask block into its spec, whose row settlement opens and places
+# in that spec (ask_parent, ask_anchor); alice answers it (ask_answer), and the session
+# $follower_session follows it (followed_by). The bearer then writes into the same spec a decision
+# with a shaped pointer at its requirement r1 (shaped) and a from_ask to that ask (from_ask), whose
+# decided_by the server takes from the write that introduced the block (decided_by), and a reading
+# under it (reading_parent). They stand in a second issue's spec, which no later write of this
+# driver edits, so the base build's version of the first issue's spec (B2) moves none of them. The
+# driver waits until no document owes a settlement or its block index, so the census reads them.
+request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" '{project: $p,
+  title: "Census check: an ask and a decision", force: true, actor: $a,
+  spec: ":::requirement{#r1}\nThe decision of this spec shapes this requirement.\n:::\n\n:::requirement{#r2}\nThe ask of this spec stands below this requirement.\n:::\n"}')"
+want_status 201 H2 "the agent bearer creates a second issue of $project through this head"
+decision_key="$(jq -er '.key' "$work/body")" || fail H2 "create a second issue of $project" "no key: $(body)"
+readonly decision_key
+request agent POST "/api/v1/issues/$decision_key/artifacts/spec/edits" "$(jq -cn --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+  markdown: ":::ask{#a1 urgency=\"med\"}\nWhich transport does every service speak?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::"}], actor: $a}')"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail H2 "the agent bearer writes the ask block a1 into the spec of $decision_key" "HTTP $status: $(body)"
+wait_ask H2 "$decision_key" a1
+readonly decision_ask="$ask_id"
+pass H2 "the agent bearer wrote the ask block a1 into the spec of $decision_key, whose row settlement opened: ask $decision_ask"
+request "cookie:$alice" POST "/api/v1/asks/$decision_ask/answer" \
+  '{"text":"Plain HTTP, which every service already speaks.","selected":["REST"],"expected_edited_at":null}'
+want_status 200 H2 "$alice answers the ask $decision_ask in her own words"
+request agent PUT "/api/v1/asks/$decision_ask/followers/$(q "$follower_session")" \
+  "$(jq -cn --arg s "$follower_session" '{actor: {kind: "session", id: $s}}')"
+[[ "$status" =~ ^20[04]$ ]] || fail H2 "the session $follower_session follows the ask $decision_ask" "HTTP $status: $(body)"
+pass H2 "$alice answered the ask $decision_ask, and the session $follower_session follows it"
+wait_settled H2 "the answer of the ask $decision_ask"
+request agent POST "/api/v1/issues/$decision_key/artifacts/spec/edits" "$(jq -cn --arg s "dispatch://$decision_key/spec#b-r1" \
+  --arg f "dispatch://$decision_key/ask/$decision_ask" --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+  markdown: ("::::decision{#d1 shaped=\"" + $s + "\" from_ask=\"" + $f + "\"}\nPlain HTTP for every service this quarter.\n\n:::reading{#g1}\nThe agent reads the answer so.\n:::\n::::")}], actor: $a}')"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail H2 "the agent bearer writes the decision d1 into the spec of $decision_key" "HTTP $status: $(body)"
+wait_settled H2 "the decision d1 of $decision_key"
+pass H2 "the agent bearer wrote the decision d1 into the spec of $decision_key, shaping r1, settling the ask $decision_ask and holding the reading g1"
+
+# Straight after those writes, before any further backfill: the census, run whole, exits 0.
+take_census H2 h2 0
 census_zero H2 h2 person
 census_zero H2 h2 session
+census_zero H2 h2 role
+census_zero H2 h2 page
+for kind in "${decision_kinds[@]}"; do
+  census_zero H2 h2 "$kind"
+done
+census_differences H2 h2
 # The census's session node side is every session node (graphcensus's session kind), so were
 # $bearer_session not on its row side, its node, which the lens's check above read, would be a node
 # without a row, on which census_zero fails: the session is on both sides.
@@ -819,7 +1051,7 @@ pass B2 "the base build serves $older_url beside this head at $head_url, stamped
 # writes a version of the spec that changes the words of r3's second paragraph, a block of its own.
 # The index pass writes again only the node of a block whose text a version changed
 # (refs.IndexBlocks), and r3's text holds its paragraphs, so that version's pass, the base build's,
-# writes r3's node again: the write dispatch://INFRA-1149's keep-state rule (its R8) keeps r3's
+# writes r3's node again: the write cybermonklabs/legion#3178's keep-state rule (its R8) keeps r3's
 # state through. A version that changed only a block outside r3 would leave r3's node unwritten,
 # and r3 proposed whatever the base build's rule, so the driver first reads that the version moved
 # r3's text.
@@ -865,7 +1097,7 @@ pass B2 "this head reads the requirement $requirement3 still proposed after the 
 # on it. bob then reads dave's page through the base build, which registers no lens kind, so no
 # node dave holds is one bob may see there, and it answers him what it answers for a login nobody
 # holds: the status and the body, byte for byte once the login is substituted
-# (dispatch://INFRA-1149's person-page rule, its R15).
+# (cybermonklabs/legion#3178's person-page rule, its R15).
 at "$head_url" sign_in B2 "$third" " at this head, $head_url"
 at "$head_url" request "cookie:$third" POST "/api/v1/issues/$key/lenses" \
   "$(jq -cn --arg on "$spec" '{on: $on, kind: "boring-solution", visibility: "author"}')"
@@ -952,7 +1184,7 @@ stop_server B2 "the base build"
 
 # --- H3: this head and the backfill again, and the census ---------------------------------------
 
-boot_server H3 "this head's server again" "$server_bin"
+boot_head H3 "this head's server again"
 registered_commit H3 "read this head's row of server_processes"
 [[ "$answer" == "$head_commit" ]] || fail H3 "this head serves the database again" "its row names '$answer', want $head_commit"
 pass H3 "this head serves the database again at $base, stamped with $head_commit"
@@ -980,7 +1212,7 @@ want_value H3 "before the backfill, run $run_new holds its row and no interactio
           || (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_new') || '|'
           || (select count(*) from going_events where request_id = '$run_ahead' and sequence = $ahead_frame) || '|'
           || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$run_ahead' and kind = 'frame')"
-take_census H3 planted
+take_census H3 planted 1
 grep -Fqx "census: store kind=interaction difference at interaction $run_new: the row names a node the store does not hold" \
   "$work/census.planted" ||
   fail H3 "the census names run $run_new, a row with no node, a difference of the kind interaction" \
@@ -1042,13 +1274,19 @@ move_state H3 "$finding" "$finding_store" live proposed
 move_state H3 "$finding" "$finding_store" proposed settled
 move_state H3 "$risk" "risk/$risk_id" live overtaken
 
-take_census C h3
+take_census C h3 0
+census_zero C h3 comment
 census_zero C h3 interaction
 census_zero C h3 frame
 census_zero C h3 block
 census_zero C h3 block_ref
 census_zero C h3 person
 census_zero C h3 session
+census_zero C h3 role
+census_zero C h3 page
+for kind in "${decision_kinds[@]}"; do
+  census_zero C h3 "$kind"
+done
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero C h3 "${kind}_visibility_state"
 done
@@ -1066,10 +1304,10 @@ for moved in "lens|lens|$premortem_id|proposed" "finding|block|$finding_store|se
   IFS='|' read -r present live held <<<"$answer"
   census_kind "$work/census.h3" "${kind}_visibility_state" ||
     fail C "the census reads the kind ${kind}_visibility_state" "no line of it in: $(<"$work/census.h3")"
-  [[ "$held" == "$state" && "$c_nodes" == "$present" && "$present" -gt "$live" ]] ||
+  [[ "$held" == "$state" && "$c_store" == "$present" && "$present" -gt "$live" ]] ||
     fail C "the census counts the $kind $id at $state among the nodes of its kind, as it counts a live one" \
-      "the store holds it at $held, $present $kind node(s) are not gone and $live are live, and the census checked $c_nodes"
-  pass C "the census counts the $kind $id at $state among the $c_nodes $kind node(s) it checked, every one not gone, $live of them live, at zero differences"
+      "the store holds it at $held, $present $kind node(s) are not gone and $live are live, and the census checked $c_store"
+  pass C "the census counts the $kind $id at $state among the $c_store $kind node(s) it checked, every one not gone, $live of them live, at zero differences"
 done
 want_value C "every interaction node is at visibility author" "0|true" \
   "select count(*) filter (where visibility <> 'author') || '|' || (count(*) > 0)::text
@@ -1150,22 +1388,22 @@ IFS='|' read -r planted_frame_seq planted_frame <<<"$answer"
 readonly planted_frame_seq planted_frame
 pass C "planted the interaction node $planted_run, a copy of run $run_bob's node under an id no row names, and a frame value of run $run_ahead at sequence $planted_frame, which no going_events row holds"
 
-take_census C plants
+take_census C plants 1
 census_kind "$work/census.plants" interaction ||
   fail C "the census reads the kind interaction" "no line of it in: $(<"$work/census.plants")"
 found="$(grep -E '^census: store kind=interaction difference at ' "$work/census.plants" || true)"
 want_re="^census: store kind=interaction difference at interaction $planted_run: an? [a-z]+ node no row projects\$"
-[[ "$c_row_differences" == 0 && "$c_node_differences" == 1 && "$found" =~ $want_re ]] ||
+[[ "$c_row_differences" == 0 && "$c_store_differences" == 1 && "$found" =~ $want_re ]] ||
   fail C "the census reads the planted node as one difference of the kind interaction, naming the run $planted_run" \
-    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+    "$c_row_differences row(s) without a node and $c_store_differences node(s) without a row: ${found:-no difference named}"
 pass C "the census reads the planted node as one difference of the kind interaction, naming the run: $found"
 census_kind "$work/census.plants" frame ||
   fail C "the census reads the kind frame" "no line of it in: $(<"$work/census.plants")"
 found="$(grep -E '^census: store kind=frame difference at ' "$work/census.plants" || true)"
 want_re="^census: store kind=frame difference at frame $run_ahead $ahead_frame: the row and its node disagree: the row digests [0-9a-f]{32} and the node [0-9a-f]{32}\$"
-[[ "$c_row_differences" == 1 && "$c_node_differences" == 0 && "$found" =~ $want_re ]] ||
+[[ "$c_row_differences" == 1 && "$c_store_differences" == 0 && "$found" =~ $want_re ]] ||
   fail C "the census reads the planted frame value as one difference of the kind frame, naming the run $run_ahead" \
-    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+    "$c_row_differences row(s) without a node and $c_store_differences node(s) without a row: ${found:-no difference named}"
 pass C "the census reads the planted frame value as one difference of the kind frame, naming the run: $found"
 census_zero C plants interaction_visibility_state
 line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.plants")" ||
@@ -1192,7 +1430,7 @@ want_value C "no node and no tuple names the planted run $planted_run, and run $
                                                    or (to_kind = 'interaction' and to_id = '$planted_run')) || '|'
           || (select count(distinct t.to_id) from graph_tuples t
               where t.from_kind = 'interaction' and t.from_id = '$run_ahead' and t.kind = 'frame' and t.to_kind = 'value' and t.asserted)"
-take_census C unplanted
+take_census C unplanted 0
 census_zero C unplanted interaction
 census_zero C unplanted frame
 census_zero C unplanted interaction_visibility_state
@@ -1408,13 +1646,19 @@ want_value E "each edited block, ${changed_blocks[*]}, stands live, its changed_
   "select count(*) from graph_nodes where kind = 'block' and state = 'live' and id in (${changed_ids%,})"
 backfill E
 want_value E "the backfill writes no node of the erased run back" "0|0|0|0" "$erased_sql"
-take_census E erased
+take_census E erased 0
+census_zero E erased comment
 census_zero E erased interaction
 census_zero E erased frame
 census_zero E erased block
 census_zero E erased block_ref
 census_zero E erased person
 census_zero E erased session
+census_zero E erased role
+census_zero E erased page
+for kind in "${decision_kinds[@]}"; do
+  census_zero E erased "$kind"
+done
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero E erased "${kind}_visibility_state"
 done

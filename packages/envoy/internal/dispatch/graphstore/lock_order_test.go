@@ -659,7 +659,7 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 		done := make(chan error, 1)
 		go func() {
 			defer conn.Release()
-			done <- writeOnConnection(WithRun(ctx, run), conn, []Node{marked})
+			done <- writeOnConnection(store.WithRun(ctx, run), conn, []Node{marked})
 		}()
 		requireQueued(t, holder, conn, done, name)
 		writes = append(writes, done)

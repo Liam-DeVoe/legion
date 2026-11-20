@@ -394,7 +394,7 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 		for index := range tuples {
 			tuples[index].SourceEvent = cause
 		}
-		if err := graphstore.QueueWrite(ctx, b, nil, tuples); err != nil {
+		if err := graphstore.QueueWrite(b, nil, tuples); err != nil {
 			return fmt.Errorf("state the readability of the asks settlement read: %w", err)
 		}
 		return nil
@@ -1584,7 +1584,7 @@ func createAskBlock(
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11, $12, $13)
 		`, id, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, createdAt, nodeKind, nodeAddress)
 		var err error
-		*opening.followed, err = follow.Queue(ctx, b, graphstore.NoEvent)
+		*opening.followed, err = follow.Queue(b, graphstore.NoEvent)
 		return err
 	}); err != nil {
 		return model.Ask{}, openedFollow{}, err
@@ -1620,7 +1620,7 @@ func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who mode
 	if err != nil {
 		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
 	}
-	if err := write(ctx, tx, func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+	if err := write(ctx, tx, settled.Queue); err != nil {
 		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution

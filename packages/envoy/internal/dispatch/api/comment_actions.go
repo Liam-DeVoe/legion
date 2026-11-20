@@ -232,17 +232,6 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The edit reads whether the comment's row names its node (comments.node_kind), in the read
-	// phase, under the comment's lock lockedComment took: a comment left out of the store
-	// (commentStored's unprojected), or one a process of the release before wrote and the
-	// backfill has not stated yet, has none for a run to name. Only an edit made for a run reads it.
-	var stored bool
-	if graphstore.MadeForRun(r.Context()) {
-		if err := tx.QueryRow(r.Context(), `select node_kind is not null from comments where id = $1`, comment.ID).Scan(&stored); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	if err := queueExec(ledger, `
 		update comments
 		set body = $2, edited_at = $3
@@ -280,34 +269,41 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// An edit of a comment's words made for a run (graphstore.WithRun, which withinGoingRun puts
-	// on a request naming its run) names the comment as changed by that run where it changed them
-	// (dispatch://INFRA-1950/spec#b-r-interaction) and the comment is a node of the store. Nothing
-	// else this route writes reaches the comment's node, so under a run it writes that node as the
-	// create and the backfill write it (graphstore.CommentFacts' node): in the project, or between
-	// the parties, of what it belongs to (graphstore.ScopeOf), made by its author at its
-	// created_at, and marked changed. Its relations stand as they were stated and are stated
-	// again by nobody. The node restates the comment, so the node keeps the state, the
-	// visibility, the made_at and the made_by the store holds and moves nothing else. The
-	// changed_by_run is this edit's, dated at its edited_at and signed by its writer
-	// (graphstore.Node's ChangedAt and ChangedBy). It is the last node row this transaction
-	// takes, after the comment's row and its document, a step of the write phase queued after
-	// theirs, and what it states waits for comment.edited (graphstore.QueueCaused), as an issue's
-	// own field write does (patchIssue). A write made for no run writes no node and sends no
-	// statement more than it did.
+	// An edit of a comment's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the comment as changed by that run where it changed them
+	// (spec requirement r-interaction) and the comment is a node of the store: its row names its
+	// node (comments.node_kind), which a comment left out of the store (commentStored's
+	// unprojected), or one a process of the release before wrote and the backfill has not stated
+	// yet, does not, and has none for a run to name. That column is read here, in the read phase
+	// and for a run alone, under the owner lock every writer of the comment holds, in the one
+	// statement that reads the scope of what the comment belongs to (graphstore.CommentScopeOf).
+	// Nothing else this route writes reaches the comment's node, so it writes that node as the
+	// create and the backfill write it (graphstore.CommentFacts' node): in that project, or between
+	// those parties, made by its author at its created_at, and names it changed at its edited_at by
+	// its writer (graphstore.PlanChangedForRun). Its relations stand as they were stated and are
+	// stated again by nobody. The node write is queued after the row's update, its references and
+	// its mark, and what it states right after comment.edited (graphstore.QueueCaused over
+	// graphstore.LatestEvent), as an issue's own field write does (patchIssue).
 	var commentNode graphstore.Uncaused
-	if graphstore.MadeForRun(r.Context()) && stored && previousBody != comment.Body {
-		project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
+	if previousBody != comment.Body && store.RunOf(r.Context()) != "" {
+		stored, project, parties, err := graphstore.CommentScopeOf(r.Context(), tx, comment.ID, comment.IssueKey, comment.ArtifactID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
-		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
-		commentNode = graphstore.PlanUncaused([]graphstore.Node{node}, nil)
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, commentNode) }); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if stored {
+			commentNode, err = graphstore.PlanChangedForRun(r.Context(), editedAt, actor, func() (graphstore.Node, error) {
+				node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
+				return node, nil
+			})
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, commentNode) }); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 	}
 	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, referenceChanges)
@@ -324,10 +320,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The comment's node, where a run's edit wrote it, learns the comment.edited event the step
-	// before appended.
+	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
+	// still names comment.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(r.Context(), b, commentNode, graphstore.LatestEvent)
+		return graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -610,7 +606,7 @@ func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id
 	}
 	retraction := graphstore.AnchoredIn(id, *block, false, actor, time.Now().UTC(), graphstore.NoEvent)
 	return ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{retraction}); err != nil {
+		if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction}); err != nil {
 			return fmt.Errorf("retract the anchored_in of comment %s: %w", id, err)
 		}
 		return nil

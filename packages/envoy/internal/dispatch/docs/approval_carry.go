@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -72,22 +73,52 @@ import (
 // Only the newest review carries: when it requests changes no approval stands, and an older
 // approval was superseded by it.
 
+// CarriedReviewReasonPrefix opens the reason of every review Dispatch carries forward to a later
+// version, and is what tells such a review from one a person wrote on the version it names: the
+// number that follows it is the version the person approved. The Legion daemon reads the same
+// words from its own module (intake.CarriedApprovalReasonPrefix), which no import can share.
+const CarriedReviewReasonPrefix = "Carried forward from the approval of version "
+
 // restoreReason is the reason a review carried to a version restoring the approved text records,
 // naming the version of the approval it stands for (approvalOrigin), where that version's text is
-// the text restored. It opens as every carried reason does, which is how the Legion daemon tells a
-// carry from a person's own approval (intake.CarriedApprovalReasonPrefix).
-const restoreReason = "Carried forward from the approval of version %d: this version's text is that version's, unchanged."
+// the text restored. Like every carried reason, it is written from CarriedReviewReasonPrefix
+// rather than spelling that opening itself, so the sentence and its reader (CarriedFromVersion)
+// cannot drift apart.
+const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, unchanged."
 
 // restoreCarriedReason is restoreReason where the approval restored is itself a carry: it names the
 // version the person approved (approvalOrigin), then the version whose text is restored, the one
 // that approval was carried to (restoredReason).
-const restoreCarriedReason = "Carried forward from the approval of version %d: this version's text is version %d's, unchanged, which that approval was carried to."
+const restoreCarriedReason = CarriedReviewReasonPrefix + "%d: this version's text is version %d's, unchanged, which that approval was carried to."
+
+// CarriedFromVersion reads the version a carried review's reason names, out of the sentence every
+// carry writes (carriedReasonPrefix, restoreReason, restoreCarriedReason), and reports false for
+// every reason a person wrote. It stands beside those sentences because a reader that took a
+// carried review for a person's own would quote Dispatch's own words back as the reviewer's, and
+// nothing would report it: the writer and its reader are changed together here. A reason that
+// opens with the prefix but names no number there is read as a person's, since the number is all
+// such a line would say. The Legion daemon reads the same sentence in its own module, which no
+// import can share.
+func CarriedFromVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
 
 // carriedReasonPrefix opens the reason of every review a carry case records, naming the version
-// of the approval it stands for (approvalOrigin): the daemon's intake.CarriedApprovalReasonPrefix
-// and the version. The changes of the cases that carried follow it, joined, and carriedReasonEnd
-// closes it.
-const carriedReasonPrefix = "Carried forward from the approval of version %d: "
+// of the approval it stands for (approvalOrigin): CarriedReviewReasonPrefix and the version. The
+// changes of the cases that carried follow it, joined, and carriedReasonEnd closes it.
+const carriedReasonPrefix = CarriedReviewReasonPrefix + "%d: "
 
 // carriedReasonEnd closes a carried reason after the changes it names (carryVerdict).
 const carriedReasonEnd = ", were the whole change since it."
@@ -798,10 +829,16 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	}
 	// The carry's own approval is this document's newest review from here on, and no read of the
 	// table sees it until the write phase runs, so the read of the newest review that the write
-	// advice makes later in this transaction (supersededApprovalAdvice) takes it off the ledger.
-	// The carry makes no such read itself: it runs at most once for a document in a transaction
-	// (refuseSecondCarry).
-	recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
+	// advice makes later in this transaction (supersededApprovalAdvice, the standing review a
+	// question's advice names) takes it off the ledger. The carry makes no such read itself: it
+	// runs at most once for a document in a transaction (refuseSecondCarry).
+	//
+	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
+	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,
+	// migration 0014_artifact_reviews). Postgres holds now() at the transaction's start for the
+	// whole transaction, and the insert runs in tx, so the two are one value: a reader before the
+	// write phase names the carry at the time the stored row carries.
+	return recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
 		ArtifactID: artifactID,
 		Version:    number,
 		State:      "approved",
@@ -810,7 +847,6 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 		Reason:     &reason,
 		AskID:      askID,
 	})
-	return nil
 }
 
 // restoresApprovedText reports whether markdown, the text a new version of artifactID is written
@@ -1079,7 +1115,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// must see this answer rather than that move.
 	recordPendingApproval(ctx, tx, artifactID, &answered)
 	return write(ctx, tx, func(b *store.WriteBatch) error {
-		if err := settled.Queue(ctx, b); err != nil {
+		if err := settled.Queue(b); err != nil {
 			return fmt.Errorf("answer approval ask: %w", err)
 		}
 		if err := parts(b); err != nil {
@@ -1098,7 +1134,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		refs.QueueStamp(b, "ask", ask.ID)
 		// What the answer states on the ask's node is appended under that same event, which no
 		// statement between them appends another of (graphstore.LatestEvent).
-		if err := graphstore.QueueCaused(ctx, b, settled.Held, graphstore.LatestEvent); err != nil {
+		if err := graphstore.QueueCaused(b, settled.Held, graphstore.LatestEvent); err != nil {
 			return fmt.Errorf("state the answer of approval ask %s: %w", ask.ID, err)
 		}
 		ask.State, ask.Answer, ask.Resolution = answered.State, answered.Answer, answered.Resolution

@@ -60,7 +60,7 @@ var projectedTables = []struct{ Table, Issue, Key string }{
 }
 
 // runTables are the rows a run of the command bar is projected onto
-// (dispatch://INFRA-1950/spec#b-r-interaction), which carry no node_kind and node_address, so
+// (spec requirement r-interaction), which carry no node_kind and node_address, so
 // projectedTables never reaches them: going_requests projects the interaction node and its
 // made_by, and each going_events row one frame value of it. Column names the run in each, and Key
 // is the order the erase takes a run's rows of it in (lockProjectionRows) and how the listing
@@ -152,10 +152,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // writes back. The run deletes those, or rewrites them with the marker where it may take no row
 // away. Every other row that holds the same bytes derives from another node and is that node's
 // text - a sibling block of the same document among them: the run lists it with its address and
-// changes nothing in it. An operator erases a comment's or a block's text by a run over that node;
-// an issue's, a document's, an ask's or a message's text is in its own row and the events about
-// it, which no run reaches, and is changed through that object's own route (an issue's title, a
-// document's name and versions).
+// changes nothing in it. An operator erases the text of a comment, a block or a run of the
+// command bar by a run over that node; an issue's, a document's, an ask's or a message's text is
+// in its own row and the events about it, which no run reaches, and is changed through that
+// object's own route (an issue's title, a document's name and versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no

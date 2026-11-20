@@ -81,7 +81,7 @@ func (c interactionCredential) references(t *testing.T, handler http.Handler, di
 }
 
 // TestInteractionNodesAreTuplesReadByTheirOwnCredential is c-interaction-declared-and-private
-// (dispatch://INFRA-1950/spec#b-r-interaction). It holds the kind's declarations and its privacy in
+// (spec requirement r-interaction). It holds the kind's declarations and its privacy in
 // one place:
 //
 //   - interaction has a registry entry and backlink arms, so a count of it is answered and not

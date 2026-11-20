@@ -166,7 +166,8 @@ func TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk(t *t
 	}
 	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+uploaded.issueKey+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md",
-		"content": strings.Replace(markdown, opener, opener+` shaped="dispatch://`+uploaded.issueKey+`/spec#b-r1 dispatch://`+uploaded.issueKey+`/spec#b-r2"`, 1),
+		"content":      strings.Replace(markdown, opener, opener+` shaped="dispatch://`+uploaded.issueKey+`/spec#b-r1 dispatch://`+uploaded.issueKey+`/spec#b-r2"`, 1),
+		"precondition": uploadBase(t, handler, uploaded.specID),
 	})
 	advice := adviceFromResponse(t, written.Code, written.Body.String())
 	waitForArtifactVersion(t, handler, uploaded.specID, uploaded.approval.Version+1)

@@ -64,7 +64,8 @@ type routeShape struct {
 	Params any
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
-	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
+	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
+	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
@@ -718,7 +719,7 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
 	"GET /api/v1/block-links": {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
-	// The lens read of dispatch://INFRA-1950 (lens_read.go): the lenses on one node and the chains
+	// The lens read (lens_read.go): the lenses on one node and the chains
 	// of triggered lenses they stand in, each lens whole with its findings and its risks.
 	"GET /api/v1/lenses":                                   {Status: http.StatusOK, Response: nodeLenses{}, Params: lensesQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
@@ -755,7 +756,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	// The reasoning nodes of dispatch://INFRA-1950 under an issue (reasoning_routes.go). Each
+	// The reasoning nodes under an issue (reasoning_routes.go). Each
 	// write answers the node it wrote, carrying its state and visibility, so an author reads
 	// `author` on the node reserved for her in the answer to her own write.
 	"POST /api/v1/issues/{key}/lenses": {
@@ -774,7 +775,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {
 		Status: http.StatusOK, Response: pointerWritten{}, Request: pointerInput{},
 	},
-	// The node state of dispatch://INFRA-1950 (node_state.go): one write of a node's state, the
+	// The node state (node_state.go): one write of a node's state, the
 	// settle of a proposed node, whose body is an actor alone and may be empty, and the proposed
 	// nodes of an issue, each a graph node with its excerpt.
 	"POST /api/v1/issues/{key}/nodes/{id}/state": {
@@ -784,7 +785,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
 	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
-	// The pre-mortem conversion of dispatch://INFRA-1950 (premortem_convert.go): the map from each
+	// The pre-mortem conversion (premortem_convert.go): the map from each
 	// risk to its checks, read entry by entry, and the report the command prints too.
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
 		Status: http.StatusOK, Response: PremortemReport{}, Request: premortemConvertInput{},

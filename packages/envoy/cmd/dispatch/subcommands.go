@@ -301,10 +301,13 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 // tuples of every comment, document block and block reference written before the node and
 // tuple store existed, the node of every issue, document, ask and message written before its
 // kind's writer wrote one, and the project of every comment and block node written before a node
-// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
-// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
-// as its cause. It is safe to run again: a row that already names its node is left alone, so a
-// run interrupted anywhere carries on from where it stopped.
+// named its project, in batches, one transaction each (graphcensus.Backfill). It also retracts
+// each prevented_by a process of the release before left asserted at a check it dropped or at a
+// check of a document it retired, which this build retracts when it drops or retires one, and
+// prints how many on its `kind=prevented_by_retracted` line. It appends no event of its own: a
+// fact whose row's own event cannot be found carries the store's sentinel as its cause. It is safe
+// to run again: a row that already names its node is left alone, and a tuple already retracted is
+// read no more, so a run interrupted anywhere carries on from where it stopped.
 //
 // A block's parent is left to the block index: the run marks each document it touched owed
 // one, and `census --store` reads a difference on every backfilled block until that

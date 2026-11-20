@@ -2,7 +2,6 @@ package refs
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -69,7 +68,7 @@ type nodeKind struct {
 	// authorOnly says every read of the kind binds its predicate, so the kind may hold a node
 	// reserved for its author: init hands every kind flagged so to the store, which refuses such
 	// a node of any other kind (graphstore.AdmitAuthorOnly). It is set by authoredKind and
-	// credentialAuthoredKind alone, the constructors of the kinds dispatch://INFRA-1950 adds that
+	// credentialAuthoredKind alone, the constructors of the kinds cybermonklabs/legion#4193 adds that
 	// take `author` - interaction, lens, lens_block, risk and constraint - each called in the
 	// commit that registers its kind; a lens_kind is always project-visible and takes neither.
 	authorOnly bool
@@ -94,9 +93,9 @@ func unresolvedKind(visibility nodeVisibility) nodeKind {
 
 // authoredKind registers a node kind that may hold a node reserved for its author and whose
 // predicate compares the author a credential proved (comparesAuthor), the one rule every kind
-// dispatch://INFRA-1149 registers compares too: the loader that reads its nodes, every one of
+// cybermonklabs/legion#3178 registers compares too: the loader that reads its nodes, every one of
 // which binds that predicate. A lens, a block of a lens's finding (lens_block), a risk and a
-// constraint are registered by it (dispatch://INFRA-1950's R19), so a person's cookie, her
+// constraint are registered by it (the spec's R19), so a person's cookie, her
 // personal token and a session the broker verified as hers read what any of them wrote.
 func authoredKind(load nodeLoader) nodeKind {
 	return nodeKind{load: load, visibility: nodeVisibility{compares: comparesAuthor}, authorOnly: true, stated: true}
@@ -175,13 +174,13 @@ func init() {
 		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
-		// The kinds of dispatch://INFRA-1950 the store holds alone, each registered in the commit
+		// The kinds of cybermonklabs/legion#4193 the store holds alone, each registered in the commit
 		// that first writes a node of it (migration 20261116123354 writes the first two, the
 		// reasoning write of api the next three, and the going POST of api the last). A lens kind
 		// is a node of the catalogue, always project-visible, so its entry takes no node reserved
 		// for its author; a constraint, a lens, a finding of a lens and a risk may each be reserved
 		// for its author, and each one's predicate compares the author a credential proved, as
-		// every kind dispatch://INFRA-1149 registers does. A finding is stored as a node of kind
+		// every kind cybermonklabs/legion#3178 registers does. A finding is stored as a node of kind
 		// block at its own id, `lens/<uuid>#<block id>`, so its entry reads the store under that
 		// kind (storedAs). A lens, a finding and a risk are read by one loader, which takes the
 		// kind it reads (loadReasoningNodes). An interaction, one run of the command bar, is
@@ -261,10 +260,10 @@ type comparison uint8
 
 const (
 	// comparesAuthor compares the author the acting credential proved with the author the node's
-	// `made_by` records, the one rule of dispatch://INFRA-1149 (graphstore.AuthorIsSQL): the
+	// `made_by` records, the one rule of cybermonklabs/legion#3178 (graphstore.AuthorIsSQL): the
 	// person a cookie, a personal token or a session the broker verified proves, else the
 	// credential's own id, which counts for a session only where the broker proved that session
-	// (model.Actor's Proven), else its workload. It is every kind dispatch://INFRA-1149 registers,
+	// (model.Actor's Proven), else its workload. It is every kind cybermonklabs/legion#3178 registers,
 	// and a lens, a block of a lens's finding, a risk and a constraint (authoredKind).
 	comparesAuthor comparison = iota
 	// comparesCredential compares the whole acting credential with the one that wrote the node
@@ -389,101 +388,110 @@ func VisibleKind(kind, address, param string) string {
 }
 
 // StoredNodeMarker opens the one read of `visibility` that is no test of it: the column a loader
-// selects to answer a node's own stored state and visibility (storedNode). It decides nothing
-// about which nodes a read answers, which the kind's predicate has already decided, so the census
-// of the registry (TestEveryNodeKindAnswersAVisibilityPredicate) tells it from a predicate by
-// this marker, and still holds every other `visibility` a statement reads to a predicate the
-// registry rendered.
+// selects to answer a node's own stored visibility, beside its stored state (StoredRowOf). It
+// decides nothing about which nodes a read answers, which the kind's predicate has already
+// decided, so the census of the registry (TestEveryNodeKindAnswersAVisibilityPredicate) tells it
+// from a predicate by this marker, and still holds every other `visibility` a statement reads to a
+// predicate the registry rendered.
 const StoredNodeMarker = "/* the node's stored state and visibility */"
 
-// storedNode is the column every loader of kind selects for the node whose id address names, as
-// `graph_nodes` keys it - the address that kind's predicate reads (VisibleKind): the state and
-// the visibility the store holds for the node, as a text array of two, or null where the store
-// holds no row of it (setStored). It reads `visibility` once, which StoredNodeMarker accounts
-// for.
+// storedNodeAlias is the alias of the lateral join StoredNodeJoin adds to a statement's from list.
+const storedNodeAlias = "stored_row"
+
+// StoredState is the stored state StoredNodeJoin's join answers, as a statement beside that join
+// names the column: null where the store holds no row of the node.
+const StoredState = storedNodeAlias + ".stored_state"
+
+// storedNode is what every loader of kind adds to its statement to answer the stored state and
+// visibility of the node whose id address names, as `graph_nodes` keys it - the address that
+// kind's predicate reads (VisibleKind): StoredNodeJoin of the kind the store keys kind by.
 //
-// It is a column and not a test, so it runs only for a row the read's own filters kept: one more
-// probe of the `graph_nodes` primary key for each node a read answers, beside the predicate's own
-// probe of the same row. That is a choice for a loader that answers a handful of nodes. The block
+// It is a join that answers the row a read's own filters kept and nothing else: one more probe
+// of the `graph_nodes` primary key for each node a read answers, beside the predicate's own probe
+// of the same row. That is a choice for a loader that answers a handful of nodes. The block
 // loader answers thousands - every block of an 8,001-block document, the 5,000 blocks a list of
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
-// (dispatch://INFRA-1950's c-read-cost), so it reads both from one probe (visibleStoredKind).
-func storedNode(kind, address string) string {
-	return StoredNodeOf(`'`+StoredKindOf(kind)+`'`, address)
+// (check c-read-cost), so it reads both from one probe (visibleStoredKind).
+func storedNode(kind, address string) (join, columns string) {
+	return StoredNodeJoin(`'`+StoredKindOf(kind)+`'`, address)
 }
 
 // visibleStoredKind is VisibleKind and storedNode of the node of kind whose id address names,
 // read in one probe of the node's `graph_nodes` row rather than two, for a loader that answers
 // many nodes at once (loadBlockNodes). It answers the lateral join over that row the loader adds
-// to its from list; the column that answers storedNode's array from it (StoredRowOf), null where
-// the store holds no row; and the predicate over it, VisibleKind's test of the same row under the
-// same key with the same comparison of its author (VisibleKindRow), and true where the store
-// holds no row. So the loader answers the same nodes with the same state and visibility as the
-// pair it replaces, and the join reads `visibility` once under each of the two markers, as that
-// pair does.
+// to its from list; the two columns that answer storedNode's state and visibility from it
+// (StoredRowOf), null where the store holds no row; and the predicate over it, VisibleKind's test
+// of the same row under the same key with the same comparison of its author (VisibleKindRow), and
+// true where the store holds no row. So the loader answers the same nodes with the same state and
+// visibility as the pair it replaces, and the join reads `visibility` once under each of the two
+// markers, as that pair does.
 //
 // The join ends in `offset 0`, which keeps it a probe of the primary key per row, as the scalar
 // sub-plan it replaces is (visibleWhere): a lateral subquery Postgres may pull up is a join it may
 // hash from a scan of the whole store. A kind the registry does not hold joins nothing and
 // answers false, as VisibleKind does.
-func visibleStoredKind(kind, address, param string) (join, column, predicate string) {
+func visibleStoredKind(kind, address, param string) (join, columns, predicate string) {
 	if _, held := nodeRegistry[kind]; !held {
-		return "", "null::text[]", "false"
+		return "", "null::text, null::text", "false"
 	}
 	const alias, row = "stored_visible", "stored_visible_node"
-	join = `left join lateral (select ` + StoredRowOf(row) + ` as held, ` + VisibleKindRow(kind, row, param) + ` as seen
+	join = `left join lateral (select ` + StoredRowOf(row) + `, ` + VisibleKindRow(kind, row, param) + ` as seen
 		from graph_nodes ` + row + ` where ` + row + `.kind = '` + StoredKindOf(kind) + `' and ` + row + `.id = ` + address + `
 		offset 0) ` + alias + ` on true`
-	return join, alias + `.held`, `coalesce(` + alias + `.seen, true)`
+	return join, StoredColumnsOf(alias), `coalesce(` + alias + `.seen, true)`
 }
 
-// StoredNodeOf is storedNode for a node whose kind is the SQL kindExpr rather than a literal, for
-// a read outside this package that answers each node's stored state and visibility beside rows
-// of several kinds (api's person page): the same column, opened by the same marker. Its answer
-// is read by StoredStateOf.
-func StoredNodeOf(kindExpr, address string) string {
-	return StoredNodeMarker + `(select array[stored_node.state, stored_node.visibility] from graph_nodes stored_node
-		where stored_node.kind = ` + kindExpr + ` and stored_node.id = ` + address + `)`
+// StoredNodeJoin is what a statement adds to answer the stored state and visibility of the node
+// whose kind is the SQL kindExpr and whose id the SQL address names, as `graph_nodes` keys it: the
+// lateral join to add to its from list, after every relation address names, and the two columns
+// to select off it, the state and then the visibility the store holds for the node, each null
+// where the store holds no row of it (StoredNode, setStored), the state named StoredState. Every
+// loader of the registry adds it for its own kind (storedNode), and a read outside this package
+// that answers rows of several kinds - api's person page - adds it with the kind as its own SQL.
+// It reads `visibility` once, opened by StoredNodeMarker.
+func StoredNodeJoin(kindExpr, address string) (join, columns string) {
+	return `left join lateral (select ` + StoredRowOf(`stored_node`) + ` from graph_nodes stored_node
+		where stored_node.kind = ` + kindExpr + ` and stored_node.id = ` + address + `
+		offset 0) ` + storedNodeAlias + ` on true`, StoredColumnsOf(storedNodeAlias)
 }
 
-// StoredRowOf is the column StoredNodeOf answers, read off the `graph_nodes` row a statement
-// already holds as alias rather than by a probe of its own: the row's state and visibility,
-// opened by the same marker. A read that joins the node's row anyway selects this (api's lens
-// read, visibleStoredKind), so it reads that row once.
+// StoredRowOf is the stored state and the stored visibility of the `graph_nodes` row a statement
+// holds as alias, as two columns named stored_state and stored_visibility, the visibility opened by
+// StoredNodeMarker. A read that joins the node's row anyway selects these (api's lens read, the
+// constraints of an issue), and so does the join storedNode and visibleStoredKind add, so each
+// reads that row once.
 func StoredRowOf(alias string) string {
-	return StoredNodeMarker + `array[` + alias + `.state, ` + alias + `.visibility]`
+	return alias + `.state as stored_state, ` + StoredNodeMarker + alias + `.visibility as stored_visibility`
 }
 
-// StoredStateAndVisibility is the state and the visibility a storedNode column read for a node,
-// and live and project where the store holds no row of it, as VisibleKind reads such a node:
+// StoredColumnsOf is the two columns StoredRowOf names, read off the relation alias that selected
+// them: the stored state, then the stored visibility.
+func StoredColumnsOf(alias string) string {
+	return alias + `.stored_state, ` + alias + `.stored_visibility`
+}
+
+// StoredNode is the state and the visibility a read selected for one node (StoredRowOf), each
+// null where the store holds no row of the node.
+type StoredNode struct{ State, Visibility *string }
+
+// StoredStateAndVisibility is the state and the visibility a read selected for a node, and live
+// and project where the store holds no row of it, as VisibleKind reads such a node:
 // `graph_nodes` is the store's own list, and a node no write has recorded there is as live and as
-// project-visible as every node Dispatch wrote before the store existed. A row is two values; ok
-// is false for anything else.
-func StoredStateAndVisibility(stored []string) (state, visibility string, ok bool) {
-	switch len(stored) {
-	case 0:
-		return graphstore.StateLive, graphstore.VisibilityProject, true
-	case 2:
-		return stored[0], stored[1], true
+// project-visible as every node Dispatch wrote before the store existed.
+func StoredStateAndVisibility(stored StoredNode) (state, visibility string) {
+	state, visibility = graphstore.StateLive, graphstore.VisibilityProject
+	if stored.State != nil {
+		state = *stored.State
 	}
-	return "", "", false
+	if stored.Visibility != nil {
+		visibility = *stored.Visibility
+	}
+	return state, visibility
 }
 
-// StoredStateOf is StoredStateAndVisibility of the column a read selected for the node node
-// names, failing that read, in the words every read of the column fails in, for a column that
-// is not one.
-func StoredStateOf(node string, stored []string) (state, visibility string, err error) {
-	state, visibility, ok := StoredStateAndVisibility(stored)
-	if !ok {
-		return "", "", fmt.Errorf("read the stored state and visibility of %s: %d values, want 2", node, len(stored))
-	}
-	return state, visibility, nil
-}
-
-// setStored gives node the state and visibility storedNode read for it (StoredStateOf).
-func setStored(node *model.GraphNode, stored []string) (err error) {
-	node.State, node.Visibility, err = StoredStateOf(node.Kind+" "+node.ID, stored)
-	return err
+// setStored gives node the state and visibility storedNode read for it (StoredStateAndVisibility).
+func setStored(node *model.GraphNode, stored StoredNode) {
+	node.State, node.Visibility = StoredStateAndVisibility(stored)
 }
 
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a

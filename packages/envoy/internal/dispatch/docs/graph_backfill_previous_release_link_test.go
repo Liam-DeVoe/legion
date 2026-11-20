@@ -324,7 +324,7 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 	// The version write queues its writes on the ledger, its node's among them, so what it stated
 	// is caused in the same write phase, after them, as a route queues it.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(ctx, b, written.Blocks, event)
+		return graphstore.QueueCaused(b, written.Blocks, event)
 	}); err != nil {
 		t.Fatalf("queue what version %d's write stated: %v", want, err)
 	}

@@ -122,7 +122,7 @@ func (r *docsWriterRig) removeAsPerson(ctx context.Context, person model.Actor, 
 		}, func(appended model.Event) { event = appended.ID }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(ctx, b, written.Blocks, graphstore.LatestEvent)
+		return graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
 	}); err != nil {
 		return err
 	}

@@ -324,7 +324,7 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		if !held {
 			return nil
 		}
-		return graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
+		return graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
 			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
 	})
 }

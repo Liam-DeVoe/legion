@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// R12 of dispatch://INFRA-1950: no read takes live to mean present, and R5: a proposed node is
+// R12 of the spec: no read takes live to mean present, and R5: a proposed node is
 // drawn wherever the node is drawn, and each read of a node answers its node state. The Decisions
 // read holds a decision, an ask and a reading at every state but gone, each answering its state.
 //

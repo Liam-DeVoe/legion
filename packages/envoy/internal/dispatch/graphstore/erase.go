@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // EraseNode deletes node kind:id and the tuples seqs names, inside the caller's transaction: the
@@ -21,10 +24,16 @@ import (
 // away although nothing listed it. The run then answers that it erased a tuple no operator ever
 // saw, and the row the tuple projected stands with no tuple behind it.
 //
-// So the delete is by seq and the node's row goes only once no tuple of either side is left: a
+// So the delete is by seq and the node's row goes only where no tuple of either side is left: a
 // tuple that landed since the listing refuses the whole erase, naming each seq, and the caller's
 // transaction rolls back having removed nothing. The operator reads the listing again, which
 // then names the new tuple's row as a blocker or lists it, and runs the erase anew.
+//
+// Its three statements - the delete of the listed tuples, the read of what is left of the node's,
+// and the delete of its row - are one batch of their own (store.RunWrite), so no Go code runs
+// between them. The refusals are the callbacks of the first two, which read the count the delete
+// took and the tuples the read found as Send reads their results: the statements after a refused
+// one have run by then, and the refusal ends the caller's transaction, which rolls them back.
 //
 // The caller holds the node's row already, taken `for update` after every owner row it writes
 // under and before anything else (grapherase's lockInStoreOrder), so these deletes take no row
@@ -35,27 +44,34 @@ import (
 // of the node are read and deleted under either kind (NodeTuplesSQL).
 func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) error {
 	addressed := AddressKind(kind, id)
-	tag, err := tx.Exec(ctx, `delete from graph_tuples where seq = any($3::bigint[])
-		and `+NodeTuplesSQL("", "$1", "$2", "$4"), kind, id, seqs, addressed)
-	if err != nil {
-		return fmt.Errorf("delete the tuples of %s:%s: %w", kind, id, err)
-	}
-	if tag.RowsAffected() != int64(len(seqs)) {
-		return fmt.Errorf("the erase refuses %s:%s: it listed %d tuple(s) of the node and deleted %d, so the tuples moved while it ran; nothing was removed, and the erase can be run again",
-			kind, id, len(seqs), tag.RowsAffected())
-	}
-	left, err := tuplesLeft(ctx, tx, kind, id, addressed)
-	if err != nil {
-		return err
-	}
-	if len(left) > 0 {
-		return fmt.Errorf("the erase refuses %s:%s: %s after its listing was read, so the erase would delete a tuple nobody listed; nothing was removed, and the erase can be run again",
-			kind, id, landed(left))
-	}
-	if _, err := tx.Exec(ctx, `delete from graph_nodes where kind = $1 and id = $2`, kind, id); err != nil {
-		return fmt.Errorf("delete the node %s:%s: %w", kind, id, err)
-	}
-	return nil
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue(fmt.Sprintf("delete the tuples of %s:%s", kind, id), `delete from graph_tuples where seq = any($3::bigint[])
+			and `+NodeTuplesSQL("", "$1", "$2", "$4"), kind, id, seqs, addressed).Exec(func(tag pgconn.CommandTag) error {
+			if tag.RowsAffected() != int64(len(seqs)) {
+				return fmt.Errorf("the erase refuses %s:%s: it listed %d tuple(s) of the node and deleted %d, so the tuples moved while it ran; nothing was removed, and the erase can be run again",
+					kind, id, len(seqs), tag.RowsAffected())
+			}
+			return nil
+		})
+		what := fmt.Sprintf("read the tuples left of %s:%s", kind, id)
+		b.Queue(what, `
+			select seq || ' (' || from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ')'
+			from graph_tuples
+			where `+NodeTuplesSQL("", "$1", "$2", "$3")+`
+			order by seq`, kind, id, addressed).Query(func(rows pgx.Rows) error {
+			left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return fmt.Errorf("%s: %w", what, err)
+			}
+			if len(left) > 0 {
+				return fmt.Errorf("the erase refuses %s:%s: %s after its listing was read, so the erase would delete a tuple nobody listed; nothing was removed, and the erase can be run again",
+					kind, id, landed(left))
+			}
+			return nil
+		})
+		b.Queue(fmt.Sprintf("delete the node %s:%s", kind, id), `delete from graph_nodes where kind = $1 and id = $2`, kind, id)
+		return nil
+	})
 }
 
 // RedactValues rewrites the value each tuple of seqs carries to the value beside it in values,
@@ -97,9 +113,8 @@ func RedactValues(ctx context.Context, tx pgx.Tx, seqs []int64, values []string)
 // of graph_tuples: its alias and a dot, or nothing where it names the table alone. A finding of a
 // lens is keyed as a block, and a tuple into it - the part_of of a lens invoked on it - names it
 // lens_block, so every read and delete of a node's tuples takes both: the erase lists the tuples
-// it deletes (grapherase's readTuples), deletes them by seq (EraseNode) and reads what is left
-// (tuplesLeft) over this one set, and its blockers read the tuples into the node over
-// NodeTuplesIntoSQL.
+// it deletes (grapherase's readTuples), deletes them by seq and reads what is left over this one
+// set (EraseNode), and its blockers read the tuples into the node over NodeTuplesIntoSQL.
 func NodeTuplesSQL(prefix, kind, id, addressed string) string {
 	return `((` + prefix + `from_kind = ` + kind + ` and ` + prefix + `from_id = ` + id + `) or (` +
 		NodeTuplesIntoSQL(prefix, kind, id, addressed) + `))`
@@ -109,24 +124,6 @@ func NodeTuplesSQL(prefix, kind, id, addressed string) string {
 // under either kind.
 func NodeTuplesIntoSQL(prefix, kind, id, addressed string) string {
 	return prefix + `to_kind in (` + kind + `, ` + addressed + `) and ` + prefix + `to_id = ` + id
-}
-
-// tuplesLeft is every tuple of either side of the node the delete by seq left, which is every
-// tuple another writer appended since the listing was read, by seq with the fact it states.
-func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id, addressed string) ([]string, error) {
-	rows, err := tx.Query(ctx, `
-		select seq || ' (' || from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ')'
-		from graph_tuples
-		where `+NodeTuplesSQL("", "$1", "$2", "$3")+`
-		order by seq`, kind, id, addressed)
-	if err != nil {
-		return nil, fmt.Errorf("read the tuples left of %s:%s: %w", kind, id, err)
-	}
-	left, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the tuples left of %s:%s: %w", kind, id, err)
-	}
-	return left, nil
 }
 
 // landed names the tuples that landed since the listing as the refusal reads them.

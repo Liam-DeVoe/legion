@@ -91,10 +91,17 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			// The column every loader selects to answer a node's stored state and visibility
-			// (storedNode) reads `visibility` once and tests nothing, and the registry opens it
-			// with a marker of its own; every other `visibility` a statement reads is a test.
-			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, StoredNodeMarker)
+			// The column every loader selects to answer a node's stored visibility, beside its
+			// stored state (StoredRowOf), reads `visibility` once and tests nothing, and the
+			// registry opens it with a marker of its own; every other `visibility` a statement
+			// reads is a test. A marker is subtracted only where it opens that column, named
+			// stored_visibility, so a marker set beside a test excuses nothing.
+			columns := len(storedVisibilityColumn.FindAllStringIndex(statement, -1))
+			if markers := strings.Count(statement, StoredNodeMarker); markers != columns {
+				t.Errorf("statement %d of the %s read opens %d marker of a stored state and visibility and %d of them opens a stored_visibility column: the marker opens that column alone\n%s",
+					index+1, read.call, markers, columns, statement)
+			}
+			statementTests := strings.Count(statement, ".visibility") - columns
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -173,8 +180,6 @@ var readsWithoutAViewer = map[string]string{
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
-	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
-		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -297,6 +302,11 @@ func markedKinds(statement string) []string {
 	return kinds
 }
 
+// storedVisibilityColumn is the one read of `visibility` StoredNodeMarker opens: the column a
+// loader selects to answer a node's stored visibility, named stored_visibility beside the column
+// stored_state (StoredRowOf).
+var storedVisibilityColumn = regexp.MustCompile(regexp.QuoteMeta(StoredNodeMarker) + `\w+\.visibility as stored_visibility\b`)
+
 // graphRead is one call of a read of the graph: the exported function that made it, the call
 // as a failure names it, and every statement the call issued, in order.
 type graphRead struct {
@@ -365,8 +375,13 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
-	// Nodes is Node over a batch, and ExcerptedNodes is Nodes with each node's excerpt: one
-	// target of every kind, so each kind's loader issues its statement in the one call.
+	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
+	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's loader
+	// issues its statement in the one call. BlockTexts reads each kind of block among them in a
+	// statement of its own and passes every other kind over. A finding's statement binds the
+	// predicate of its kind over the row it reads; a document's block and an item's bind none,
+	// since a caller reads those only once TargetNames has answered them to the reader. So that
+	// read is held to the registry as a whole.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -377,6 +392,14 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		return err
+	})
+	record("TargetNames", "TargetNames of every kind at once", func() error {
+		_, err := TargetNames(ctx, recorder, who, everyKind)
+		return err
+	})
+	record("BlockTexts", "BlockTexts of every kind at once", func() error {
+		_, err := BlockTexts(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {

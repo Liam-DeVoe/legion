@@ -51,7 +51,9 @@ import (
 // states is appended under that event, in the batch that appends it (appendCausingEvent). A
 // document made again under the same title takes the removed one's ref_key, the id of the same
 // node, and so names no run as having changed it but its own, and a run counts no document that
-// has gone, as it lists none.
+// has gone, as it lists none. The removal holds the document's owner lock, which every writer
+// that marks the document's node changed takes first, so no changed_by_run of the node lands
+// between the read of those the node states and their retraction.
 //
 // The document's node is stated gone before its row goes, in the store's order (node, row, event,
 // facts), and the state tuple is appended in the batch that appends the artifact.removed event
@@ -121,7 +123,9 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// facts in the batch that appends artifact.removed below (removedDocumentNodes,
 	// appendCausingEvent). What that node write reads is read first, under the locks and before
 	// the transaction's first write, so no read of it runs while the transaction holds an id
-	// (#2468's write phase).
+	// (#2468's write phase): the owner's lock and the room's are held already, and every writer of
+	// the node takes the owner's lock first, so neither the node nor its marks move before the
+	// node is stated gone.
 	goneNodes, err := removedDocumentNodes(r.Context(), tx, artifact, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)

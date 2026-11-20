@@ -38,7 +38,7 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   comment_block: "Comment",
   component: "Component",
   // A constraint, a run of the command bar, a kind of the lens catalogue, a lens, a finding of a
-  // lens and a risk read under the kind's own name until dispatch://INFRA-1196 gives them the
+  // lens and a risk read under the kind's own name until cybermonklabs/legion#2813 gives them the
   // words a person reads.
   constraint: "constraint",
   interaction: "interaction",

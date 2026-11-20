@@ -112,12 +112,13 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 // these rows that takes an owner row takes it before them, which the erase already holds. A run's
 // rows name no node, and no writer of them waits on the run's interaction node row while it holds
 // one of them. Each frame of this build takes the node's row `for no key update` before the run's
-// row (api's appendGoingEvent). A frame of a run with no node, and the backfill's writer for one
-// run (graphcensus.WriteRun), take the run's row `for no key update` and then write the node,
-// which no other transaction can see until they commit, let alone hold; a frame that finds there
-// a node another write committed and another transaction holds lets its transaction go and begins
-// again, taking the node's row first (api's lockGoingRun). So an erase holding the node's row may
-// wait at the run's row for such a writer, which never waits for the erase.
+// row (api's appendGoingEvent). A frame of a run with no node, and the backfill, through the one
+// writer of a run's node from its row (graphstore.WriteRun), take the run's row `for no key
+// update` and then write the node, which no other transaction can see until they commit, let
+// alone hold; a frame that finds there a node another write committed and another transaction
+// holds lets its transaction go and begins again, taking the node's row first (api's
+// lockGoingRun). So an erase holding the node's row may wait at the run's row for such a writer,
+// which never waits for the erase.
 //
 // Taking them here, and not when apply deletes them, is what orders the erase against a writer
 // that holds one of them and no owner row: the block index tick's window arm takes a comment's

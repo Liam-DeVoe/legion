@@ -10,11 +10,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A document a write made for a run created is listed by the run's references in both directions,
-// and the run's count is the list behind it (dispatch://INFRA-1950/spec#b-r-interaction, R4).
+// and the run's count is the list behind it (spec requirement r-interaction, R4).
 //
 // A run of alice's creates an issue and its spec, so the write marks the issue's node and the
 // document's node changed by the run: one changed_by_run out of each, to the run's interaction.
@@ -56,7 +57,7 @@ func TestARunsChangedByRunFromADocumentIsListedInBothDirectionsAndCounted(t *tes
 	}
 	// The issue create's own write of the two nodes, made for the run (api's createIssue).
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(graphstore.WithRun(ctx, run), tx, []graphstore.Node{
+		return graphstore.Write(store.WithRun(ctx, run), tx, []graphstore.Node{
 			graphstore.Created(graphstore.IssueNode(issue, project, alice, at)),
 			graphstore.Created(graphstore.ArtifactNode(refKey, project, "", alice, at)),
 		}, nil)

@@ -18,7 +18,8 @@ import (
 // AskedText is a document as the text routes serve it (TextWithAsks): its canonical markdown, which
 // holds no server-owned attribute on any ask block; its whole-document token; its blocks, whose
 // byte ranges index that markdown, for a read that asked for them; and its asks, one entry per ask
-// block of that markdown, in document order, never nil.
+// block of that markdown, in document order, nil where the markdown holds no ask block, so the
+// text routes answer such a document with no asks member, as the release before answered it.
 type AskedText struct {
 	Markdown string
 	Token    string
@@ -63,7 +64,7 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 		}
 		if served {
 			if !strings.Contains(markdown, "ask{") {
-				return AskedText{Markdown: markdown, Token: token, Asks: []model.TextAsk{}}, nil
+				return AskedText{Markdown: markdown, Token: token}, nil
 			}
 			stored = &AskedText{Markdown: markdown, Token: token}
 		}
@@ -83,9 +84,9 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 		text = &renderedDocument{markdown: read.markdown, token: read.token, blocks: read.blocks}
 		tree = read.tree
 	case tree == nil:
-		return AskedText{Asks: []model.TextAsk{}}, nil
+		return AskedText{}, nil
 	}
-	answer := AskedText{Asks: []model.TextAsk{}}
+	var answer AskedText
 	if pmdoc.HoldsAskBlock(tree) {
 		if stripped, took := withoutAskServerAttributes(tree); took {
 			tree, text = stripped, nil
@@ -142,8 +143,9 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 
 // textAsks is the asks member of tree, a tree of document artifactID with no server-owned
 // attribute on any ask block: one entry per ask block, in document order, read from the ask that
-// answers for it (textAskOf). A block an ask of the document indexes reads that ask; a copy of an
-// ask of another document of its owner (readCopiedAskSources) reads its source, and names it and
+// answers for it (textAskOf), and nil for a tree that holds no ask block. A block an ask of the
+// document indexes reads that ask; a copy of an ask of another document of its owner
+// (readCopiedAskSources) reads its source, and names it and
 // its document; on a closed issue's document, a readable block that neither has an ask nor copies
 // one - a block no settlement has indexed yet, which opens no ask while the issue is closed - reads
 // resolved, since the close withdrew every ask of its issue; and every other block reads no state,
@@ -160,6 +162,9 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		}
 		return true
 	})
+	if len(blocks) == 0 {
+		return nil, nil
+	}
 	entries := make([]model.TextAsk, len(blocks))
 	for index, node := range blocks {
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)

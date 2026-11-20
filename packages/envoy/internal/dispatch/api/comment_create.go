@@ -1137,7 +1137,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := stored.caused(r.Context(), b, graphstore.LatestEvent); err != nil {
+		if err := stored.caused(b, graphstore.LatestEvent); err != nil {
 			return err
 		}
 		if !stored.unprojected {
@@ -1146,7 +1146,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			}
 		}
 		if input.AskID != nil {
-			if _, err := follow.Queue(r.Context(), b, graphstore.LatestEvent); err != nil {
+			if _, err := follow.Queue(b, graphstore.LatestEvent); err != nil {
 				return err
 			}
 		}
@@ -1318,16 +1318,15 @@ func (w commentStoreWrite) writeNode(b *store.WriteBatch) error {
 }
 
 // caused queues what the comment states under the event that stored it, its node's two base
-// attributes among them, and the move of its node row onto that event (graphstore.QueueCaused),
-// for the run ctx carries (graphstore.WithRun).
+// attributes among them, and the move of its node row onto that event (graphstore.QueueCaused).
 // event is graphstore.LatestEvent on the request path, which queues this right after that event,
 // and graphstore.NoEvent where no event recorded the write, and the tuples then carry the
 // sentinel.
-func (w commentStoreWrite) caused(ctx context.Context, b *store.WriteBatch, event int64) error {
+func (w commentStoreWrite) caused(b *store.WriteBatch, event int64) error {
 	if w.unprojected {
 		return nil
 	}
-	if err := graphstore.QueueCaused(ctx, b, w.written, event); err != nil {
+	if err := graphstore.QueueCaused(b, w.written, event); err != nil {
 		return fmt.Errorf("state what comment %s is: %w", w.written.Nodes[0].ID, err)
 	}
 	return nil

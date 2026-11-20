@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -22,7 +23,7 @@ import (
 // is written and indexed as the release before this one does it: p1's mention is gone from its
 // text, so that release deletes the mention's block_refs row, records the version indexed and the
 // document's blocks standing at it, and states nothing in the store. Version 3, the same text, is
-// then indexed by this build, which finds the store's statement stale (standsAtVersion) and reads
+// then indexed by this build, which finds the store's statement stale (blockStand.stale) and reads
 // what the store still asserts of the document's blocks (heldDocumentBlocks).
 //
 // The mention p1 no longer holds is retracted by that pass, which is the stale path doing what it
@@ -68,7 +69,7 @@ func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *test
 		if err != nil || !won {
 			t.Fatalf("index version 1 (won %t): %v", won, err)
 		}
-		return graphstore.Caused(graphstore.WithRun(ctx, run), tx, write, firstRecord.event)
+		return graphstore.Caused(store.WithRun(ctx, run), tx, write, firstRecord.event)
 	}); err != nil {
 		t.Fatalf("append what version 1 stated for the run: %v", err)
 	}

@@ -9,20 +9,21 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // withinGoingRun runs a write route's handler for the run of the command bar its request names in
-// contracts.GoingRunHeader, where it names one (dispatch://INFRA-1950/spec#b-r-interaction). It is
+// contracts.GoingRunHeader, where it names one (spec requirement r-interaction). It is
 // the one reader of that header, once per request: routeHandler, the one chain register mounts
 // every row behind, wraps every POST, PATCH, PUT and DELETE route in it, and the run it admits
-// rides on the request's context (graphstore.WithRun), where graphstore.Write and
-// graphstore.Caused read it and append a changed_by_run tuple from each node the write marks
-// changed. So no write path takes the run as an argument and none can leave
-// it behind: a write path only marks the nodes it created or changed, which is what it alone
-// knows, and a write route added later is held to the header with no line of its own. A helper
-// each handler called would be one call in every handler that writes, each a place the header
-// could be read twice or not at all.
+// rides on the request's context (store.WithRun), where every write phase built for that context
+// carries it (store.NewWriteBatch) and the graph store's writers that queue on it
+// (graphstore.QueueWrite, graphstore.QueueCaused) append a changed_by_run tuple from each node the
+// write marks changed. So no write path takes the run as an argument and none can leave it behind:
+// a write path only marks the nodes it created or changed, which is what it alone knows, and a
+// write route added later is held to the header with no line of its own. A helper each handler
+// called would be one call in every handler that writes, each a place the header could be read
+// twice or not at all.
 //
 // The run must be one the record holds, live - now() < ends_at, whatever frames it has stored -
 // and the caller's, by the test the stream holds its reader to (goingRunIsTheCallers: the whole
@@ -34,8 +35,8 @@ import (
 // A request that names no run runs as it always did and costs nothing new: the header is read
 // from the request alone, and only a request that carries it resolves its caller here or sends a
 // query (readLiveGoingRun), so a write with no header sends no statement more than it did before,
-// and no write of the store on its context reads a changed_by_run (graphstore.Write and Caused
-// send that read only for a context holding a run).
+// and no write of the store on its context reads a changed_by_run (graphstore.QueueWrite and
+// QueueCaused send that read only on a batch made for a run).
 //
 // routeHandler puts it inside the project and session scope checks and outside the key layer, so a
 // caller held to another project is told that first, and a refused run claims no Idempotency-Key:
@@ -108,7 +109,7 @@ func (s *server) withinGoingRun(handler http.HandlerFunc, keyed bool) http.Handl
 			refuse()
 			return
 		}
-		handler(w, r.WithContext(graphstore.WithRun(ctx, run)))
+		handler(w, r.WithContext(store.WithRun(ctx, run)))
 	}
 }
 

@@ -651,10 +651,10 @@ func storeKinds() []StoreKind {
 			              and k.state = 'answered'))`,
 	}, {
 		Name: "block_move", MovedBy: movedWithAsks, Tuples: 1, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at one a day, since the one writer of a moved_to is the decisions step's conversion, which" +
-			" moves each section and ask block of a decisions document an earlier release wrote into its issue's spec" +
-			" once, a backlog no table dates: the moved address's moved_to, its node and placement being a block's," +
-			" which the block terms count",
+		Driver: "assumed at one a day, since the one writer of a moved_to out of a block is the decisions step's" +
+			" conversion, which moves each section and ask block of a decisions document an earlier release wrote" +
+			" into its issue's spec once, a backlog no table dates: the moved address's moved_to, its node and" +
+			" placement being a block's, which the block terms count",
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
@@ -668,22 +668,23 @@ func storeKinds() []StoreKind {
 			" block terms count",
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
-		// frame path and the backfill (WriteRun) and migration 20261116205055 write a run through: the
-		// words and ends_at values, and graphstore.AuthorFacts' authored_by with its author's aliases
-		// (an alias_of and a recorded_as at most); graphstore.Write's base attributes of the node it
-		// makes, the visibility, the state and the project where the run names one; and the
-		// changed_by_run a write made for the run appends out of a node it changed (graphstore.WithRun).
+		// frame path and the backfill (graphstore.WriteRun) and migration 20261116205055 write a run
+		// through: the words and ends_at values, and graphstore.AuthorFacts' authored_by with its
+		// author's aliases (an alias_of and a recorded_as at most); graphstore.Write's base attributes
+		// of the node it makes, the visibility, the state and the project where the run names one; and
+		// the changed_by_run a write made for the run appends out of a node it changed
+		// (store.WithRun).
 		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 runs a day, since production writes no interaction before the lenses child ships and" +
+		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
 			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
 			" table of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
 			" most its project, its words and ends_at values, its authored_by, at most two aliases of its author and" +
 			" one changed_by_run into it",
 	}, {
 		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
-		// appendGoingEvent) and the backfill (readRunFrames) write of each frame.
+		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
-		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before dispatch://INFRA-1950" +
+		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before this one" +
 			" deletes a run's going_events rows with its going_requests row: one frame value each",
 	}, {
 		// Counted off writeGoneRun, the one writer that states a run's node gone (backfillGoneRuns):
@@ -699,9 +700,19 @@ func storeKinds() []StoreKind {
 		// made_by, graphstore.AuthorFacts' authored_by and the author's aliases, stated once a write.
 		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 10, Assumed: 2 * sizingWindowDays,
 		Driver: "assumed at 2 a day, a pre-mortem and one other, since production writes no lens before" +
-			" the lenses child ships: its node, its visibility, state and project, its part_of the node it analyses," +
+			" this release: its node, its visibility, state and project, its part_of the node it analyses," +
 			" its has_kind, at most its verdict value and its triggered_by, its authored_by and at most two aliases" +
 			" of its author",
+	}, {
+		// Counted off api's retireConvertedDocument, the one writer of a moved_to out of a document's
+		// address, which appends one through writeReasoningPointer each time the pre-mortem conversion
+		// (api.ConvertPremortem) retires a document.
+		Name: "document_move", MovedBy: movedWithLenses, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at one a day, the pre-mortem the lens term assumes a day, since the one writer of a moved_to" +
+			" out of a document's address is the pre-mortem conversion, which moves the address of each pre-mortem" +
+			" document an earlier release wrote to the lens it writes in its place once, a backlog no table dates:" +
+			" the document's moved_to, its lens and risks being counted by the lens and risk terms and its" +
+			" retirement by artifact_removed",
 	}, {
 		// Counted off api's newFinding and writeReasoningNodes, a finding written with its lens
 		// (invokeLens) or on its own (addLensFinding): the visibility, state and project, the part_of
@@ -727,7 +738,7 @@ func storeKinds() []StoreKind {
 		// graphstore.AuthorFacts' authored_by and aliases; and the constrained_by the requirement's
 		// pointer write appends (POST .../nodes/{id}/pointers).
 		Name: "constraint", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at 1 a day, since production writes no constraint before the lenses child ships: its node, its" +
+		Driver: "assumed at 1 a day, since production writes no constraint before this release: its node, its" +
 			" visibility, state and project, its part_of its issue, at most three values, a standard and its" +
 			" reference or a measurement, its value and where it was taken, its authored_by, at most two aliases of" +
 			" its author, and the constrained_by of the requirement it forced",
@@ -738,7 +749,7 @@ func storeKinds() []StoreKind {
 		// graphstore.AuthorFacts' authored_by and aliases, with one prevented_by.
 		Name: "risk", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 11 * sizingWindowDays,
 		Driver: "assumed at 11 a day, one pre-mortem's risks a day as the one this tree holds has eleven, since" +
-			" production writes no risk before the lenses child ships: its node, its visibility, state and project, its" +
+			" production writes no risk before this release: its node, its visibility, state and project, its" +
 			" part_of its lens, its heading, early_warning and prevention values, its authored_by, at most two aliases" +
 			" of its author, and one prevented_by",
 	}, {

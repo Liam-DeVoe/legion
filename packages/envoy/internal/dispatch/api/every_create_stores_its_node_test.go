@@ -326,7 +326,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/results":          noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
 	"POST /api/v1/results/{id}/retract":          noObject,
-	// The reasoning nodes of dispatch://INFRA-1950, a node's state and the pre-mortem conversion:
+	// The reasoning nodes, a node's state and the pre-mortem conversion:
 	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
 	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each
 	// is called with the empty body and refused.

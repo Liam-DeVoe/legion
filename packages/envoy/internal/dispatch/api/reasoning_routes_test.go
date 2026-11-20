@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -318,6 +321,25 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		http.StatusBadRequest, "INVALID_POINTER", "a finding stands under a lens")
 }
 
+// TestThePointerRouteKindEnumIsTheStoresPointerKinds holds the enum pointerInput's Kind spells,
+// which the OpenAPI document and every client generated from it read, to the kinds the store's
+// type rules hold (graphstore.PointerKinds), the list the route reads: a struct tag cannot read a
+// variable, so a kind the store's table gains or drops fails here until the tag says the same.
+func TestThePointerRouteKindEnumIsTheStoresPointerKinds(t *testing.T) {
+	field, ok := reflect.TypeFor[pointerInput]().FieldByName("Kind")
+	if !ok {
+		t.Fatal("pointerInput holds no Kind field")
+	}
+	enum, want := strings.Split(field.Tag.Get("enum"), ","), graphstore.PointerKinds()
+	t.Logf("pointerInput's Kind enum %v, the store's pointer kinds %v", enum, want)
+	if !slices.Equal(enum, want) {
+		t.Errorf("pointerInput's Kind enum is %v, want the store's pointer kinds %v, in that order", enum, want)
+	}
+	if !slices.Equal(pointerKinds, want) {
+		t.Errorf("the pointer route writes the kinds %v, want the store's %v", pointerKinds, want)
+	}
+}
+
 // TestAPointerRetargetMovesTheKindAndKeepsThePlace: a has_kind retarget of a lens that is no
 // pre-mortem moves its kind and leaves its part_of as it was, and a retarget of a pre-mortem's
 // kind away from pre-mortem is the same 409, body for body, whether a risk hangs under the lens
@@ -443,7 +465,7 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 // check of another issue of the risk's project, as the pre-mortem conversion writes one, and the
 // risk route and the pointer route's append and retarget each refuse one at a check of another
 // project with the store's 400 INVALID_POINTER, naming the check by its address, and store nothing
-// (dispatch://INFRA-1950/spec#b-r-constraint-risk). Visibility comes first: a check of another
+// (spec requirement r-constraint-risk). Visibility comes first: a check of another
 // project that the caller may not see, and an address there nobody holds, each answer the one 404
 // an address nobody holds answers, through either route.
 func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
@@ -526,6 +548,140 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 	}
 }
 
+// TestARetiredDocumentsChecksPreventNoRisk: nobody runs a retired document's checks
+// (spec requirement r-constraint-risk). A risk prevented by the check of the second
+// issue's Verification document, and a second risk prevented by the issue's own second check, read
+// prevented by them, and the first check's backlinks hold the first risk. The second issue's
+// document is then retired (docs.RetireDocument): the first risk reads prevented by nothing,
+// through the store and through the lens read, the check reads preventing no risk, and the tuple's
+// history ends in its retraction, signed by the retirement's writer under its document.retired
+// event; the second risk keeps its check. A prevented_by to the retired document's check is then
+// refused with 400 INVALID_POINTER naming the check by its address, through the risk route, the
+// pointer route's append and retarget, and the conversion's map, in a dry run as in a real one,
+// which names the entry and its risk too; nothing is stored.
+func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
+	rig := newPremortemRig(t)
+	ctx := context.Background()
+	premortem := rig.invoke(rig.requirement, graphstore.LensKindPreMortem, "alice", nil)
+	riskBody := func(heading, check string) map[string]any {
+		return map[string]any{
+			"lens": premortem.Address, "heading": heading, "early_warning": "A sign.", "prevention": "A guard.", "prevented_by": check,
+		}
+	}
+	risk := func(heading, check string) riskWritten {
+		t.Helper()
+		response := rig.post("/risks", riskBody(heading, check), "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("write the risk %q prevented by %s: status=%d body=%s", heading, check, response.Code, response.Body.String())
+		}
+		return decodeBody[riskWritten](t, response)
+	}
+	retiring := risk("A check of a document that is then retired covers it.", rig.otherIssueCheck)
+	kept := risk("A check of a document that stands covers it.", rig.secondCheck)
+	// preventing is each risk in the backlinks of the second issue's check.
+	preventing := func(when string) []string {
+		t.Helper()
+		response := dispatchReferences(t, rig.handler, rig.otherIssueCheck, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the backlinks of %s %s: status=%d body=%s", rig.otherIssueCheck, when, response.Code, response.Body.String())
+		}
+		risks := []string{}
+		for _, edge := range decodeBody[model.GraphReferences](t, response).Edges {
+			if edge.Node.Kind == graphstore.KindRisk {
+				risks = append(risks, edge.Kind+" "+edge.Node.Ref)
+			}
+		}
+		return risks
+	}
+	// prevented is each risk of the pre-mortem with the checks the lens read answers it prevented by.
+	prevented := func() map[string][]string {
+		t.Helper()
+		read := rig.lenses(premortem.Address, "alice")
+		if read.Lens == nil {
+			t.Fatalf("the read of %s answers no lens", premortem.Address)
+		}
+		risks := map[string][]string{}
+		for _, risk := range read.Lens.Risks {
+			risks[risk.Address] = risk.PreventedBy
+		}
+		return risks
+	}
+	if got := preventing("before the retirement"); !slices.Equal(got, []string{graphstore.TuplePreventedBy + " " + retiring.Address}) {
+		t.Fatalf("before the retirement %s is in the backlinks of %s as %v, want its prevented_by", retiring.Address, rig.otherIssueCheck, got)
+	}
+	if got := prevented(); !slices.Equal(got[retiring.Address], []string{rig.otherIssueCheck}) || !slices.Equal(got[kept.Address], []string{rig.secondCheck}) {
+		t.Fatalf("before the retirement the lens read answers the risks prevented by %v", got)
+	}
+
+	retirement := retireTestDocument(t, rig.database, rig.otherIssueDocumentID)
+
+	if got := rig.current(graphstore.KindRisk, retiring.ID, graphstore.TuplePreventedBy); len(got) != 0 {
+		t.Errorf("after the retirement %s is prevented by %v, want nothing", retiring.Address, got)
+	}
+	if got := rig.current(graphstore.KindRisk, kept.ID, graphstore.TuplePreventedBy); !slices.Equal(got, []string{"block/" + rig.secondCheckNode}) {
+		t.Errorf("after the retirement %s is prevented by %v, want the check of the document that stands", kept.Address, got)
+	}
+	history, err := graphstore.History(ctx, rig.database.Pool, graphstore.KindRisk, retiring.ID, graphstore.TuplePreventedBy)
+	if err != nil {
+		t.Fatalf("read the prevented_by history of %s: %v", retiring.Address, err)
+	}
+	if last := len(history) - 1; len(history) != 2 || history[last].Asserted || history[last].ToID != rig.otherIssueCheckNode ||
+		history[last].Who.Kind != "user" || history[last].Who.ID != "alice" || history[last].SourceEvent != retirement.Event.ID {
+		t.Errorf("the prevented_by history of %s is %+v, want its assertion and then its retraction by alice under the document.retired event %d",
+			retiring.Address, history, retirement.Event.ID)
+	}
+	if got := prevented(); len(got[retiring.Address]) != 0 || got[retiring.Address] == nil || !slices.Equal(got[kept.Address], []string{rig.secondCheck}) {
+		t.Errorf("after the retirement the lens read answers the risks prevented by %v, want %s by nothing and %s by %s",
+			got, retiring.Address, kept.Address, rig.secondCheck)
+	}
+	if got := preventing("after the retirement"); len(got) != 0 {
+		t.Errorf("after the retirement the backlinks of %s hold the risks %v, want none", rig.otherIssueCheck, got)
+	}
+
+	says := "the prevented_by tuple from a risk at the check block " + rig.otherIssueCheck + " of a retired document breaks its type rule: " +
+		"prevented_by points from a risk at a check block of a document that is not retired, since nobody runs a retired document's checks"
+	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
+	stored := rig.storeCounts()
+	pointers := nodePath("risk/"+kept.ID, "pointers")
+	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
+	for _, refused := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		says     string
+	}{
+		{"a risk prevented by the retired document's check", rig.post("/risks", riskBody("Its check is retired.", rig.otherIssueCheck), "alice"), says},
+		{"an append at the retired document's check", rig.post(pointers,
+			map[string]any{"kind": graphstore.TuplePreventedBy, "action": pointerAppend, "to": rig.otherIssueCheck}, "alice"), says},
+		{"a retarget to the retired document's check", rig.post(pointers, map[string]any{
+			"kind": graphstore.TuplePreventedBy, "action": pointerRetarget, "from": rig.secondCheck, "to": rig.otherIssueCheck,
+		}, "alice"), says},
+		{"a conversion whose map names the retired document's check, in a dry run", dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": rig.premortemMap(), "dry_run": true}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+		{"a conversion whose map names the retired document's check", dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": rig.premortemMap()}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+	} {
+		if answer := requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", rig.otherIssueCheck); answer.Error != refused.says {
+			t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, refused.says)
+		}
+	}
+	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
+		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
+			afterRisks, afterPreventions, risks, preventions)
+	}
+	if after := rig.storeCounts(); after != stored {
+		t.Errorf("the refusals left %v nodes and tuples, want the %v they found", after, stored)
+	}
+	if retirements := rig.retirements(rig.documentID); len(retirements) != 0 {
+		t.Errorf("after the refused conversions the pre-mortem document holds the document.retired events %v, want none", retirements)
+	}
+	if got := rig.current(graphstore.KindRisk, kept.ID, graphstore.TuplePreventedBy); !slices.Equal(got, []string{"block/" + rig.secondCheckNode}) {
+		t.Errorf("after the refusals %s is prevented by %v, want the check of the document that stands alone", kept.Address, got)
+	}
+	if _, err := rig.convert(rig.premortemMap(), false); !errors.Is(err, graphstore.ErrInvalidPointer) || !strings.Contains(err.Error(), rig.otherIssueCheck) {
+		t.Errorf("the conversion through ConvertPremortem answers %v, want the store's refusal naming %s", err, rig.otherIssueCheck)
+	}
+}
+
 // TestARepeatedLensWriteUnderItsKeyWritesOnce: the route's Idempotency-Key answers a repeat of a
 // lens's invocation from the key, and the store holds one lens.
 func TestARepeatedLensWriteUnderItsKeyWritesOnce(t *testing.T) {
@@ -594,4 +750,89 @@ func TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAChildIsNeverWiderThanItsParent: a node written under or on a node reserved for its author
+// is reserved for that author too (spec requirement r-node-visibility). A risk written with no
+// visibility under alice's author-only pre-mortem reads author, and so does a lens written with
+// none on her author-only constraint and one on the finding of her author-only lens. A risk
+// written with `project` under that pre-mortem, a lens written with `project` on that constraint,
+// on that pre-mortem and on its finding are each the store's 400 VISIBILITY_WIDER_THAN_PARENT,
+// whose words name the node the write drew and the node it would stand under or on, each by its
+// address, and the store holds after each what it held before.
+func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
+	rig := newReasoningRig(t)
+	hidden := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{
+		"visibility": graphstore.VisibilityAuthor, "findings": []string{"Her own finding."},
+	})
+	if hidden.Visibility != graphstore.VisibilityAuthor || len(hidden.Findings) != 1 || hidden.Findings[0].Visibility != graphstore.VisibilityAuthor {
+		t.Fatalf("alice's pre-mortem answers %+v, want it and its finding at author", hidden)
+	}
+	finding := hidden.Findings[0].Address
+	private := rig.post("/constraints", map[string]any{"standard": "A rule she keeps", "reference": "her notes", "visibility": graphstore.VisibilityAuthor}, "alice")
+	if private.Code != http.StatusCreated {
+		t.Fatalf("write alice's constraint: status=%d body=%s", private.Code, private.Body.String())
+	}
+	constraint := decodeBody[constraintRead](t, private)
+	risk := map[string]any{"lens": hidden.Address, "heading": "A failure.", "early_warning": "A sign.", "prevention": "A guard."}
+	stored := func(kind, id string) string {
+		t.Helper()
+		node, held, err := graphstore.ReadNode(context.Background(), rig.database.Pool, kind, id)
+		if err != nil || !held {
+			t.Fatalf("read the stored visibility of %s %s: held %t, %v", kind, id, held, err)
+		}
+		return node.Visibility
+	}
+
+	defaulted := rig.post("/risks", risk, "alice")
+	if defaulted.Code != http.StatusCreated {
+		t.Fatalf("write a risk with no visibility under alice's pre-mortem: status=%d body=%s", defaulted.Code, defaulted.Body.String())
+	}
+	written := decodeBody[riskWritten](t, defaulted)
+	t.Logf("a risk with no visibility under %s: %s at %s", hidden.Address, written.Address, written.Visibility)
+	if written.Visibility != graphstore.VisibilityAuthor || stored(graphstore.KindRisk, written.ID) != graphstore.VisibilityAuthor {
+		t.Errorf("the risk with no visibility under alice's pre-mortem answers %q and is stored %q, want author",
+			written.Visibility, stored(graphstore.KindRisk, written.ID))
+	}
+	for _, on := range []string{constraint.Address, finding} {
+		lens := rig.invoke(on, "botec", "alice", nil)
+		t.Logf("a lens with no visibility on %s: %s at %s", on, lens.Address, lens.Visibility)
+		if lens.Visibility != graphstore.VisibilityAuthor || stored(graphstore.KindLens, lens.ID) != graphstore.VisibilityAuthor {
+			t.Errorf("the lens with no visibility on %s answers %q and is stored %q, want author", on, lens.Visibility, stored(graphstore.KindLens, lens.ID))
+		}
+	}
+
+	project := map[string]any{"visibility": graphstore.VisibilityProject}
+	for _, refused := range []struct {
+		name, path string
+		body       map[string]any
+		child      string
+		parent     string
+	}{
+		{"a project risk under alice's pre-mortem", "/risks", withBody(risk, project), "dispatch://risk/", hidden.Address},
+		{"a project lens on alice's constraint", "/lenses", withBody(map[string]any{"on": constraint.Address, "kind": "botec"}, project), "dispatch://lens/", constraint.Address},
+		{"a project lens on alice's pre-mortem", "/lenses", withBody(map[string]any{"on": hidden.Address, "kind": "botec"}, project), "dispatch://lens/", hidden.Address},
+		{"a project lens on the finding of alice's pre-mortem", "/lenses", withBody(map[string]any{"on": finding, "kind": "botec"}, project), "dispatch://lens/", finding},
+	} {
+		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
+		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
+		answer := requireRefused(t, refused.name, rig.post(refused.path, refused.body, "alice"),
+			http.StatusBadRequest, codeVisibilityWiderThanParent, "cannot stand under or on "+refused.parent+", which is reserved for its author")
+		if !strings.HasPrefix(answer.Error, refused.child) {
+			t.Errorf("%s is refused %q, want it to name the node it drew, %s<uuid>, first", refused.name, answer.Error, refused.child)
+		}
+		risksAfter, placesAfter := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
+		lensesAfter, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
+		if risksAfter != risks || lensesAfter != lenses || placesAfter != places {
+			t.Errorf("after %s the store holds %d risks, %d lenses and %d part_of tuples, and held %d, %d and %d before",
+				refused.name, risksAfter, lensesAfter, placesAfter, risks, lenses, places)
+		}
+	}
+}
+
+// withBody is body with every field of extra set on a copy of it.
+func withBody(body, extra map[string]any) map[string]any {
+	merged := maps.Clone(body)
+	maps.Copy(merged, extra)
+	return merged
 }
