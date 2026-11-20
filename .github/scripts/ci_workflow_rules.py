@@ -6,7 +6,7 @@ hash, which workspaces ci_job_reads.py's WORKSPACES must name, and
 that no other workflow of this repository runs on a merge group.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
-engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 16, 21, 22, 13 and 14,
+engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 16, 22, 23, 13 and 14,
 and ci_filter_coverage.main()
 is what runs them, over the documents it already loaded where the rule reads only those - the
 rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
@@ -109,7 +109,7 @@ def ci_only_documents(documents: dict) -> dict:
     file two workflows call is live under each caller's events, and a file with a trigger of its
     own has runs no caller starts at all. Both cases are in this repository today:
     .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
-    to main, and docs-site.yaml:189 carries `github.event_name == 'push'` for exactly that
+    to main, and docs-site.yaml's cache save step carries `github.event_name == 'push'` for that
     caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
     .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
     other case: nothing else calls them and they run on workflow_call alone, so a push condition
@@ -164,7 +164,8 @@ def check_push_conditions(documents: dict, problems: list) -> None:
 # job's check run is a passing required check, so the term that saves every other job from a dead
 # group would hand that group the check it merges on, concluded by nothing. Each of those jobs
 # runs on every attempt and refuses an attempt above the first in a step, which fails and makes
-# the check a failure; the comment above each one's `if:` in ci.yaml says so.
+# the check a failure; .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
+# and .github/ci-notes/ci.md#why-a-re-run-attempt-of-a-merge-group-run-is-refused-in-a-step say so.
 RERUN_GUARD = ("(github.event_name != 'merge_group' || github.run_attempt == '1')",
                re.compile(r"\(\s*github\.event_name\s*!=\s*'merge_group'\s*\|\|"
                           r"\s*github\.run_attempt\s*==\s*'1'\s*\)"))
@@ -628,7 +629,7 @@ def check_go_fetch_fills(documents: dict, problems: list) -> list:
     caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     fills = go_fills(caches)
     if not fills:
-        problems.append(error(CACHE_WORKFLOW, f"rule 21 UNKNOWN: no actions/cache/save or actions/cache step of this "
+        problems.append(error(CACHE_WORKFLOW, f"rule 22 UNKNOWN: no actions/cache/save or actions/cache step of this "
                                               f"workflow names {GO_MODULE_CACHE} in its path:, so this rule found no Go "
                                               f"family to hold a fill of and compared nothing; a ci-caches.yaml without one "
                                               f"is a module cache nothing fills, not a rule with nothing to do"))
@@ -637,7 +638,7 @@ def check_go_fetch_fills(documents: dict, problems: list) -> list:
     families = list(dict.fromkeys(family for _, family, _ in fills))
     read = sum(len(readers.get(family, [])) for family in families)
     if not read:
-        problems.append(error(CACHE_WORKFLOW, f"rule 21 UNKNOWN: no job of {WORKFLOW} or of a workflow it calls, "
+        problems.append(error(CACHE_WORKFLOW, f"rule 22 UNKNOWN: no job of {WORKFLOW} or of a workflow it calls, "
                                               f"followed through every call, restores a Go family this workflow saves "
                                               f"({', '.join(families)}), so this rule read no reader's fetch files to hold "
                                               f"a fill to and compared nothing"))
@@ -645,7 +646,7 @@ def check_go_fetch_fills(documents: dict, problems: list) -> list:
         check_fill(job_id, family, filled, readers.get(family, []), problems)
     if len(problems) > start:
         return []
-    return [f"rule 21: {len(families)} Go families {posixpath.basename(CACHE_WORKFLOW)} saves, {read} readers, each "
+    return [f"rule 22: {len(families)} Go families {posixpath.basename(CACHE_WORKFLOW)} saves, {read} readers, each "
             f"fill runs its readers' fetch files"]
 
 
@@ -921,8 +922,10 @@ def check_go_cache_keys(documents: dict, problems: list) -> list:
                                                 f"them to the list"))
     if len(problems) > start or not keys:
         return []
-    return [f"rule 22: {keys} Go module cache keys, each hashing go-fetch.sh, its family's fetch files and the "
+    return [f"rule 23: {keys} Go module cache keys, each hashing go-fetch.sh, its family's fetch files and the "
             f"files they name"]
+
+
 def check_race_fill_scripts(fills: list, problems: list) -> None:
     """Each (fill job, script, its workdir, its compile call) of `fills` is a ci-caches.yaml job
     that fills a family whose race step runs a script: the job's steps in that workdir run the
