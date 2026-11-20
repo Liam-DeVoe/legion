@@ -64,6 +64,20 @@ export function viewportAt(width: number): { readonly height: number; readonly w
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
+/** `MEASURED_TITLE` less one word, "design", 108 characters: the title the rows that read the
+ *  header's 390 px limit set (`expectHeaderWithinItsLimit`). The limit, 8 lines, was measured on
+ *  the literal key "HDR", whose crumbs "HDR › HDR-1 › HDR-2" (19 characters) share row one with
+ *  Details. A key of the row's own (`rowKey`, e2e/test.ts) is six characters at the least, and
+ *  at 390 px its crumbs leave Details a line of its own at nearly every suffix, a one-letter
+ *  logical key's included: "H….. › H…..-1 › H…..-2", 28 characters, makes row one 330 to 467 px
+ *  of the 362 px it has. So the header needs a line less below it: without the word the title
+ *  takes 3 lines at 390 px rather than 4, in Dispatch Inter and in both fallbacks of
+ *  web/src/styles.css ("Inter fallback" and "Inter fallback DejaVu"), in every column from 341 px
+ *  up. Its first line is the measured title's own, and the other two each end 5 px or more short
+ *  of 362 px. */
+export const PHONE_TITLE =
+  "Dispatch's issue page is redesigned from research: an ordered body and a header that fits, with nothing lost";
+
 /** Twenty labels, the most Dispatch lets an issue hold (`maxIssueLabels`,
  *  `packages/envoy/internal/dispatch/api/issue_queries.go`): more than the header's line holds
  *  at 1440 px and at 390 px, so it ends with the count of those left over. */
@@ -635,9 +649,9 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 /**
  * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
  * where the issue's project gates two or three steps, since the header then draws one approval
- * entry for each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
- * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
- * one does. No other width has a limit.
+ * entry for each (R3, decision 213); at 390 px, on the 20-label seed and `PHONE_TITLE`, 8 lines
+ * and 250 px while no approval request waits on the reader and 9 lines and 280 px while one
+ * does. No other width has a limit.
  */
 function headerLimit(
   width: number,

@@ -181,7 +181,11 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
 test("a broadcast written as a numbered list renders as a list on the broadcast page, the Agents page and the broadcasts list", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester]);
+  // Sessions of the row's own: the Agents page below counts both under `Idle`, which holds the
+  // sessions Dispatch has never heard from, and a session under an id an earlier row wrote with
+  // is not one.
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester]);
   // Longer than a Broadcasts row is wide on any project's viewport, so the list's preview has
   // something to cut: the row's own assertion below fails if it ever fits on one line unclamped.
   const intro =

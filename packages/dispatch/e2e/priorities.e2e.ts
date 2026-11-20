@@ -322,16 +322,40 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
 }
 
 /** The text of one column of every row of a table, which is how a row reads the cells R6 names
- *  without spelling each row out. */
+ *  without spelling each row out. A table draws only the rows its box has scrolled to and a few
+ *  beyond them (the virtualizer's `overscan`, `web/src/components/DataTable.tsx`), and a fault
+ *  list holds every issue of the deployment its fault names, more than its box draws at once
+ *  once other rows' issues stand in flight beside the row's own. So the box is read as a reader
+ *  reads it: scrolled from its top to its end a box's height at a time, two frames drawn after
+ *  each step so the rows it reached are drawn, each row read once by the name a reader hears,
+ *  and the box put back at its top. */
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
   const at = await columnIndex(table, header);
-  return table
-    .locator("tr[data-issue-row]")
-    .evaluateAll(
-      (rows, index) =>
-        rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
-      at
-    );
+  return table.evaluate(async (element, index) => {
+    const box = element.closest('[data-testid="issues-table-scroll"]');
+    if (!(box instanceof HTMLElement)) throw new Error("the table is drawn in no scroll box");
+    const drawn = () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      return promise;
+    };
+    const texts = new Map<string, string>();
+    box.scrollTop = 0;
+    for (;;) {
+      await drawn();
+      for (const row of element.querySelectorAll("tr[data-issue-row]")) {
+        texts.set(
+          row.getAttribute("aria-label") ?? "",
+          row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""
+        );
+      }
+      const from = box.scrollTop;
+      box.scrollTop = from + box.clientHeight;
+      if (box.scrollTop <= from) break;
+    }
+    box.scrollTop = 0;
+    return [...texts.values()];
+  }, at);
 }
 
 /** The badge beside the rail's Priorities entry, which is its last span; an entry with no count

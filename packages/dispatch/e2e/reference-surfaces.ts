@@ -164,17 +164,26 @@ const FILLER_PARAGRAPHS = 40;
  *
  * The keys are deterministic — an issue's key is its project's next number — and the seeding
  * refuses any other, so a change in how keys are minted fails here rather than inside a row.
+ *
+ * `login` is the person who makes the projects and the issues, alice where none is named: an
+ * issue is assigned to whoever made it, so the world's questions wait on that person, and a row
+ * that reads them in its reader's Inbox names a person of its own (`rowPerson`, e2e/test.ts).
  */
-export async function seedReferenceWorld(): Promise<ReferenceWorld> {
+export async function seedReferenceWorld({
+  login,
+}: {
+  readonly login?: string;
+} = {}): Promise<ReferenceWorld> {
   const core = rowKey("CORE");
   const projects: ReferenceProjects = {
     acme: rowKey("ACME"),
     core,
     xcore: rowKeyBehind("X", core),
   };
-  await createProject({ key: projects.core, name: "Core" });
-  await createProject({ key: projects.xcore, name: "Cross core" });
-  await createProject({ key: projects.acme, name: "Acme" });
+  const by = { login };
+  await createProject({ key: projects.core, name: "Core" }, by);
+  await createProject({ key: projects.xcore, name: "Cross core" }, by);
+  await createProject({ key: projects.acme, name: "Acme" }, by);
   const filler = Array.from(
     { length: FILLER_PARAGRAPHS },
     (_, index) => `Filler paragraph ${index + 1} keeps the questions below the fold.`
@@ -182,13 +191,13 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   const spec = [ANCHOR, ...filler, ...QUESTION_IDS.map((id) => questionBlock(id, "spec")), ""].join(
     "\n\n"
   );
-  const host = await createIssue({ project: projects.core, spec, title: "Reference host" });
-  const target = await createIssue({ project: projects.core, title: "Warm the cache" });
-  const other = await createIssue({ project: projects.xcore, title: "Cross-project target" });
+  const host = await createIssue({ project: projects.core, spec, title: "Reference host" }, by);
+  const target = await createIssue({ project: projects.core, title: "Warm the cache" }, by);
+  const other = await createIssue({ project: projects.xcore, title: "Cross-project target" }, by);
   // The table's ACME-12 is the twelfth issue of its project, so eleven stand before it.
-  let acme = await createIssue({ project: projects.acme, title: "Acme first" });
+  let acme = await createIssue({ project: projects.acme, title: "Acme first" }, by);
   for (let made = 2; made <= 12; made += 1) {
-    acme = await createIssue({ project: projects.acme, title: `Acme number ${made}` });
+    acme = await createIssue({ project: projects.acme, title: `Acme number ${made}` }, by);
   }
   const made = { acme: acme.key, host: host.key, other: other.key, target: target.key };
   const want = {

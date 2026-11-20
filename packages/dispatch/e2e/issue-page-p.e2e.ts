@@ -47,6 +47,7 @@ import {
   labelsLeft,
   lineOrder,
   MEASURED_TITLE,
+  PHONE_TITLE,
   propertiesLine,
   seedHeader,
   shortControls,
@@ -65,7 +66,7 @@ import {
 import { leaveFocus, onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
-import { expect, type Locator, type Page, type Request, rowKey, test } from "./test";
+import { expect, type Locator, type Page, type Request, rowKey, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -163,8 +164,9 @@ async function pressOutOfTheEdit(
   await page.mouse.up();
 }
 
-// Row (1): the header draws every property with a value at every width, on the measured title
-// and 20 labels.
+// Row (1): the header draws every property with a value at every width, on the phone's title
+// (`PHONE_TITLE`, the measured title less a word, which the 390 px limit is read on) and 20
+// labels.
 // On the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
@@ -175,7 +177,7 @@ async function pressOutOfTheEdit(
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
     const desktopProject = test.info().project.name !== "iphone";
 
     // No approval request waits on the reader: the approval control reads Not requested and
@@ -184,7 +186,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
-      await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
+      await expect(issueHeader(page)).toContainText(PHONE_TITLE);
       await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
       await expect(issueHeader(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
       await expectHeaderWithinItsLimit(page, width, false, TYPEFACE);
@@ -230,7 +232,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
-      await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
+      await expect(issueHeader(page)).toContainText(PHONE_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
 
       // The header's own values, each where it is drawn, with no control opened.
@@ -373,7 +375,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         `the issue page does not hold one h1 at ${width} px`
       ).toHaveCount(1);
       expect(
-        await timesDrawn(page.locator("[data-issue-page]"), MEASURED_TITLE),
+        await timesDrawn(page.locator("[data-issue-page]"), PHONE_TITLE),
         "the page draws the title more than once"
       ).toBe(1);
       expect(
@@ -812,7 +814,7 @@ test("the approval entries stay in the header and read the document each step ap
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
 
     // The page is drawn in the typeface.
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -848,7 +850,7 @@ test("the header holds its limits when the typeface does not load @phone", async
           await page.setViewportSize(viewportAt(width));
           await gotoIssue(page, `/issues/${seeded.key}`);
           await expectHeaderDrawn(page);
-          await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
+          await expect(issueHeader(page)).toContainText(PHONE_TITLE);
           await expect
             .poll(() => typefaceStatuses(page), {
               message: `the ${TYPEFACE} face did not load at ${width} px`,
@@ -860,7 +862,7 @@ test("the header holds its limits when the typeface does not load @phone", async
           await without.setViewportSize(viewportAt(width));
           await gotoIssue(without, `/issues/${seeded.key}`);
           await expectHeaderDrawn(without);
-          await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
+          await expect(issueHeader(without)).toContainText(PHONE_TITLE);
           await expect
             .poll(() => typefaceStatuses(without), {
               message: `the ${TYPEFACE} face did not fail at ${width} px, so this is not the fallback`,
@@ -1770,15 +1772,20 @@ test("the header draws the words of its two counts as a reader reads them @phone
   });
 });
 
-/** A reader whose login is as long as the measured root's assignee's: 16 characters. */
-const LONG_LOGIN = "dana@example.dev";
+/** The logical login of a reader of the row's own (`rowPerson`, e2e/test.ts) whose login is as
+ *  long as the measured root's assignee's, `dana@example.dev`: 16 characters, these eleven and
+ *  the five letters of the row's own. Everyone who has signed in is one list, the options of
+ *  every assignee control, which a fixed login would stay in for every later row of the worker;
+ *  the row's own person is taken out of it again when the row ends (`ownPeople`). */
+const LONG_LOGIN = "danaexample";
 
 // The header holds its limits with 20 labels and the measured title, which is a real root's
 // own. On a copy of that root - a root of a project that gates its spec, 24 children with 3 done,
 // assigned to a 16-character login - with 20 labels and the spec's approval request waiting on
 // the reader, the header once took 4 lines and 127 px at 1440 px and 11 lines and 327 px at
 // 390 px. Row (1)'s seed is a child with one chip and 3 children, so no row read this issue's
-// shape. This row seeds that shape and reads the header's limits with no request waiting and
+// shape. This row seeds that shape, under the title the 390 px limit is read on (`PHONE_TITLE`,
+// the measured title less a word), and reads the header's limits with no request waiting and
 // with one; on the phone it reads 390 px.
 // SLOW(>=2s): 3,938 ms on chromium and 2,597 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): a root written with 24 children, a second context signed in as the long login, and
@@ -1795,7 +1802,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
         force: true,
         project: like,
         spec: "The plan.",
-        title: MEASURED_TITLE,
+        title: PHONE_TITLE,
       });
       for (let at = 0; at < 24; at += 1) {
         const child = await createIssue({
@@ -1809,12 +1816,13 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
       return root;
     },
     async (_alice, root) => {
-      const context = await asUser(browser, LONG_LOGIN);
+      const login = rowPerson(LONG_LOGIN);
+      const context = await asUser(browser, login);
       try {
-        await withIssuePage(context, LONG_LOGIN);
+        await withIssuePage(context, login);
         const page = await context.newPage();
         await patchIssue(root.key, {
-          assignee: LONG_LOGIN,
+          assignee: login,
           labels: [...TWENTY_LABELS],
           priority: 1,
           status: "in_progress",
@@ -1847,8 +1855,9 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
 // R3 at 1440 px on a project that gates two or three steps, where the header draws one approval
 // entry for each step (R6): at most 4 lines and 130 px, with no request waiting and with one on
 // every gated document, so each entry carries Approve and Request changes (decision 213). The
-// root has the large root's shape above - the measured title, 20 labels, 24 children with 3 done
-// and the 16-character login as its assignee - so the properties line is as long as R3's cases.
+// root has the large root's shape above - 20 labels, 24 children with 3 done and the
+// 16-character login as its assignee - and the measured title whole, so the properties line is
+// as long as R3's cases.
 // SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
 // roots written with 24 children and their gated documents each, a second context signed in as
 // the long login, and four loads, the header's limit measured after each.
@@ -1896,14 +1905,15 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
       return roots;
     },
     async (_alice, roots) => {
-      const context = await asUser(browser, LONG_LOGIN);
+      const login = rowPerson(LONG_LOGIN);
+      const context = await asUser(browser, login);
       try {
-        await withIssuePage(context, LONG_LOGIN);
+        await withIssuePage(context, login);
         const page = await context.newPage();
         await page.setViewportSize(viewportAt(DESKTOP.width));
         for (const root of roots) {
           await patchIssue(root.key, {
-            assignee: LONG_LOGIN,
+            assignee: login,
             labels: [...TWENTY_LABELS],
             priority: 1,
             status: "in_progress",
