@@ -209,10 +209,8 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	return recorded, tx.Commit(ctx)
 }
 
-// treeMembers is every record of tree, read in one short read-only transaction: what a handler
-// that judges work against the tree it enters reads once and asks record.AcceptedAncestorIn of,
-// rather than opening a transaction and reading the tree again per child it answers for
-// (release_children over a whole wave, rerun_child over the one child and its tree's root).
+// treeMembers is every record of tree, read in one short read-only transaction: what rerun_child
+// reads once to find the tree root it refuses a lingering tree by.
 func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, error) {
 	if s.pool == nil || s.records == nil {
 		return nil, errors.New("record dependencies are unavailable")
@@ -227,6 +225,27 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 		return nil, err
 	}
 	return members, tx.Commit(ctx)
+}
+
+// chainsOf is the Dispatch chains of the daemon's project with keys named (record.ReadChains),
+// read in one short read-only transaction: what a handler that judges work against the issues
+// above it reads once and asks record.AcceptedAncestorIn of, rather than opening a transaction
+// and reading the chains again per child it answers for (release_children over a whole wave,
+// rerun_child over the one child).
+func (s *server) chainsOf(ctx context.Context, keys []string) (*record.Chains, error) {
+	if s.pool == nil || s.records == nil {
+		return nil, errors.New("record dependencies are unavailable")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	chains, err := record.ReadChains(ctx, tx, s.records, s.dispatchProject, keys)
+	if err != nil {
+		return nil, err
+	}
+	return chains, tx.Commit(ctx)
 }
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
@@ -1037,21 +1056,28 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	// ancestor's own head is approved and on its way to the merge queue, and work released under
 	// it now would let it merge a head that does not carry that work (dispatch://INFRA-980,
 	// "Children first"). The whole wave is refused rather than part of it, as every other
-	// refusal here is, so the architect retries one call. The chain is read from the records of
-	// the architect's tree, starting at the Dispatch parent of a child the records do not hold
-	// yet, and walks past a parent already done to whichever issue above it still merges. The
-	// tree is read once for the whole wave, as every other read of this request is cached for
-	// its life: one wave's children share their ancestors, and a transaction and a read of every
-	// record of the tree per child bought nothing.
+	// refusal here is, so the architect retries one call. The chain is Dispatch's as the copy
+	// holds it, starting at the Dispatch parent of a child the copy does not hold yet, and it
+	// walks past a parent already done to whichever issue above it still merges. The chains are
+	// read once for the whole wave, as every other read of this request is cached for its life:
+	// one wave's children share their ancestors, and a transaction and a read of the chains per
+	// child bought nothing.
 	if len(children) > 0 {
-		members, err := s.treeMembers(r.Context(), grant.Tree)
+		keys := make([]string, 0, 2*len(children))
+		for _, child := range children {
+			keys = append(keys, child.view.Key)
+			if parent := intake.ObservedIssue(child.view).Parent; parent != "" {
+				keys = append(keys, parent)
+			}
+		}
+		chains, err := s.chainsOf(r.Context(), keys)
 		if err != nil {
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree of the children to release")
+			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chains of the children to release")
 			return
 		}
 		for _, child := range children {
 			parent := intake.ObservedIssue(child.view).Parent
-			if ancestor := record.AcceptedAncestorIn(members, grant.Tree, child.view.Key, parent); ancestor != "" {
+			if ancestor := record.AcceptedAncestorIn(chains, child.view.Key, parent); ancestor != "" {
 				writeFailure(w, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, "release it again"))
 				return
 			}
@@ -1694,7 +1720,12 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusConflict, "TREE_LINGERING", fmt.Sprintf("the tree %s is lingering after it left the workflow, so %s cannot run in it again", root.Key, child.Key))
 		return
 	}
-	if ancestor := record.AcceptedAncestorIn(members, child.Tree, child.Key, ""); ancestor != "" {
+	chains, err := s.chainsOf(r.Context(), []string{child.Key})
+	if err != nil {
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chain of the child to rerun")
+		return
+	}
+	if ancestor := record.AcceptedAncestorIn(chains, child.Key, ""); ancestor != "" {
 		writeFailure(w, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, "run it again"))
 		return
 	}

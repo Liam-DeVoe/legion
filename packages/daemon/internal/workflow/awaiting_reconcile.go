@@ -42,13 +42,29 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 	if err != nil {
 		return nil, false, err
 	}
-	var roots []record.Issue
+	var candidates []record.Issue
+	var keys []string
 	for _, issue := range issues {
 		if held != nil && held(issue.Key) {
 			continue
 		}
-		if claim.IsTreeRoot(issue.Key, issue.Tree) &&
-			issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
+		if issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
+			candidates = append(candidates, issue)
+			keys = append(keys, issue.Key)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, changed, nil
+	}
+	// A root here is an issue that holds its own design gate on Dispatch's chain as the copy shows
+	// it (record.Chains.HoldsOwnGate), and its tree the issues in Legion's work under it.
+	chains, err := record.ReadChains(ctx, tx, e.store, project, keys)
+	if err != nil {
+		return nil, false, err
+	}
+	var roots []record.Issue
+	for _, issue := range candidates {
+		if chains.HoldsOwnGate(issue.Key) {
 			roots = append(roots, issue)
 		}
 	}
@@ -61,7 +77,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 	}
 	// A root whose key yields no claim token has no architect claim to read (record.RoleRun's
 	// zero value), so it owes its start and keeps its slot.
-	keys := make([]string, len(roots))
+	keys = make([]string, len(roots))
 	tokens := make([]claim.Token, len(roots))
 	var runKeys []record.RoleRunKey
 	for i, root := range roots {
@@ -100,10 +116,10 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 			return nil, false, err
 		}
 		_, holds := slotted[root.Key]
-		view := awaitView{Root: root, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
+		view := awaitView{Root: root, HoldsGate: chains.HoldsOwnGate(root.Key), Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
 			Steps: e.cfg.Steps, Gates: gates}
-		for _, member := range issues {
-			if member.Tree == root.Key && member.Key != root.Key {
+		for _, under := range chains.Under(root.Key) {
+			if member, recorded := chains.Record(under); recorded {
 				view.Members = append(view.Members, member)
 			}
 		}
@@ -279,15 +295,17 @@ const (
 	actTakeIn
 )
 
-// awaitView is what decideAwait reads of one root: its record, whether it holds an admission slot
-// (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why it
-// could not resume (Unresumable, "" when it could), its architect's run at the root's
+// awaitView is what decideAwait reads of one root: its record, whether it holds its own design
+// gate (HoldsGate, the chain's answer, record.Chains.HoldsOwnGate), whether it holds an admission
+// slot (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why
+// it could not resume (Unresumable, "" when it could), its architect's run at the root's
 // generation, its asks' mirror rows, the design-gate steps the deployment gates (Steps) and the
 // gates the root holds by step (Gates). A gate's document names its approval requests — every
 // approval row of that document — and their answer is a review rather than a person's act on an
 // ask (RootAsk.PersonActSeq).
 type awaitView struct {
 	Root        record.Issue
+	HoldsGate   bool
 	Slotted     bool
 	Members     []record.Issue
 	Unresumable string
@@ -359,7 +377,8 @@ func decideAwait(v awaitView) awaitDecision {
 	// row it gave back, and an owed start is a start its worker still waits to be given, not a
 	// standing. A root at admitted that owes one and holds neither reads the never-started reason;
 	// the decision is actStay either way, so only the reason could differ.
-	case !record.CanWaitOnPerson(root, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
+	// Whether the root holds its own gate is the chain's answer the view carries (HoldsGate).
+	case !record.CanWaitOnPerson(root, v.HoldsGate, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
 		if !v.Slotted && root.ReleasedForWaitAt == nil {
 			return awaitDecision{Why: "the daemon has not started it, so it holds no admission slot"}
 		}

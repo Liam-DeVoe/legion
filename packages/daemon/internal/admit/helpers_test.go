@@ -138,9 +138,13 @@ func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key,
 	return workflow.ArchitectStartTask(start)
 }
 
+// apply applies fact as the Dispatch consumer does: the Mirror first, which writes the reading
+// into the daemon's copy of Dispatch's issues that every decision reads the chain from
+// (record.ReadChains), then engine and admission.
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact,
+		blockers.NewMirror(record.NewStore(), admission.project), engine, admission); err != nil {
 		t.Fatalf("ApplyFact %s: %v", eventID, err)
 	}
 }
@@ -242,7 +246,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -307,13 +311,47 @@ func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	return got
 }
 
+// putIssue writes issue's record and its row of the copy of Dispatch's issues as a reading of
+// Dispatch would show it (putCopyTx): the copy is what every decision reads the chain from, so a
+// fixture that seeds a record seeds the issue's place on Dispatch's chain with it.
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put issue: %v", err)
 		}
+		putCopyTx(t, tx, issue)
 	})
+}
+
+// putCopyTx writes the copy's row of issue as a reading of Dispatch does
+// (record.Store.PutDispatchIssue): the parent the record names and the status Dispatch last showed
+// it in (DispatchStatus, else Status), at a sequence above every value the copy holds of it, so
+// the row reads as the record does whatever was written before. A fixture that names no parent
+// but a tree other than the issue's own key states that the issue stands under that tree's root,
+// and its row says so. It is the one way these tests seed an issue's place on Dispatch's chain.
+func putCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
+	t.Helper()
+	ctx := context.Background()
+	var seq int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`,
+		issue.Key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
+	}
+	status, parent := issue.DispatchStatus, ""
+	if status == "" {
+		status = issue.Status
+	}
+	switch {
+	case issue.Parent != nil:
+		parent = *issue.Parent
+	case issue.Tree != "" && issue.Tree != issue.Key:
+		parent = issue.Tree
+	}
+	if err := record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: issue.Project,
+		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent)}); err != nil {
+		t.Fatalf("put the copy's row of %s: %v", issue.Key, err)
+	}
 }
 
 // seedSlotted records key as a running root of its own tree: its record, its admission slot and
@@ -348,6 +386,7 @@ func seedSlottedInPhase(t *testing.T, pool *pgxpool.Pool, project, key, rank str
 		if err := records.PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
+		putCopyTx(t, tx, issue)
 		slots, err := records.Slots(context.Background(), tx)
 		if err != nil {
 			t.Fatalf("list slots: %v", err)

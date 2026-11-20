@@ -836,7 +836,7 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 	if stored == nil {
 		return true, nil
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *stored, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *stored)
 	if err != nil {
 		return false, err
 	}

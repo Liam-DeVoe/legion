@@ -199,7 +199,7 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		if !record.CanWaitOnPerson(root, facts.Gates[root.Tree], true) {
+		if !record.CanWaitOnPerson(root, facts.Chains.HoldsOwnGate(root.Key), facts.Gates[root.Key], true) {
 			t.Fatalf("the root whose gate has never opened may wait on no person, want it able to: it kept the slot that says the daemon started it")
 		}
 	})

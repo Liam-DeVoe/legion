@@ -215,7 +215,15 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 		if err != nil {
 			return err
 		}
-		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, record.LineFacts{})
+		keys := make([]string, len(issues))
+		for i, issue := range issues {
+			keys[i] = issue.Key
+		}
+		chains, err := record.ReadChains(t.Context(), tx, store, "LEGION", keys)
+		if err != nil {
+			return err
+		}
+		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, record.LineFacts{Chains: chains})
 		return nil
 	})
 	return blocked
@@ -416,10 +424,6 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		HandedOver: true, LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	seedTreeLifecycle(t, pool, "LEGION-208")
-	seedAdmittedChild(t, pool, "LEGION-209")
-	seedAdmittedChild(t, pool, "LEGION-210")
-	seedMirror(t, pool, "LEGION-210", "todo", "LEGION-300")
-	seedMirror(t, pool, "LEGION-300", "in_progress")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	marked := func(key string) bool {
 		t.Helper()
@@ -429,14 +433,30 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		}
 		return got
 	}
-	for _, key := range []string{"LEGION-208", "LEGION-209", "LEGION-210"} {
+	if marked("LEGION-208") {
+		t.Fatalf("LEGION-208 is marked before any phase of it started")
+	}
+
+	// The gate opens with no Dispatch child under the root, so its own first phase starts (an
+	// open child would hold it first: the children-first wait).
+	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
+		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
+	startUnblockedChildren(t, pool, engine)
+	if got := phaseOf(t, pool, "LEGION-208"); got != phase.Planning || !marked("LEGION-208") {
+		t.Fatalf("LEGION-208 = %s marked %t once the gate opened, want planning marked true", got, marked("LEGION-208"))
+	}
+
+	// The children its architect files after it: one starts its first phase and is marked, and
+	// one an unfinished link holds stays at admitted unmarked.
+	seedAdmittedChild(t, pool, "LEGION-209")
+	seedAdmittedChild(t, pool, "LEGION-210")
+	seedMirror(t, pool, "LEGION-210", "todo", "LEGION-300")
+	seedMirror(t, pool, "LEGION-300", "in_progress")
+	for _, key := range []string{"LEGION-209", "LEGION-210"} {
 		if marked(key) {
 			t.Fatalf("%s is marked before any phase of it started", key)
 		}
 	}
-
-	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
-		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
 	startUnblockedChildren(t, pool, engine)
 	for key, want := range map[string]struct {
 		at     phase.Phase
@@ -445,7 +465,7 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		"LEGION-208": {phase.Planning, true}, "LEGION-209": {phase.Planning, true}, "LEGION-210": {phase.Admitted, false},
 	} {
 		if got := phaseOf(t, pool, key); got != want.at || marked(key) != want.marked {
-			t.Fatalf("%s = %s marked %t once the gate opened, want %s marked %t", key, got, marked(key), want.at, want.marked)
+			t.Fatalf("%s = %s marked %t once its first phase could start, want %s marked %t", key, got, marked(key), want.at, want.marked)
 		}
 	}
 

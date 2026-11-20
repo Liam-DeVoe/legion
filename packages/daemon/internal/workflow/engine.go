@@ -659,7 +659,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root)
 	if err != nil || !live {
 		return intake.Result{}, err
 	}
@@ -741,7 +741,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	if err != nil || root == nil {
 		return err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root)
 	if err != nil || !live {
 		return err
 	}
@@ -2069,11 +2069,11 @@ type acceptanceHold struct {
 // (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
 // child of it is named by the second, as it holds there first.
 func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) (acceptanceHold, error) {
-	members, err := e.treeMembers(ctx, tx, issue)
+	open, err := e.openBeneath(ctx, tx, issue)
 	if err != nil {
 		return acceptanceHold{}, err
 	}
-	if open := record.OpenBeneath(issue, members); len(open) > 0 {
+	if len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
 	}
 	resting, err := RestingRoots(ctx, tx, e.store, issue.Key)
@@ -2083,7 +2083,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if len(resting) > 0 {
 		return acceptanceHold{code: signOffRestingRoot, names: restingNames(resting)}, nil
 	}
-	children, err := e.childrenOpen(ctx, tx, issue, members)
+	children, err := e.childrenOpen(ctx, tx, issue)
 	if err != nil || len(children) == 0 {
 		return acceptanceHold{}, err
 	}
@@ -2092,31 +2092,23 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // childrenOpen is each Dispatch child of issue that is still open (record.ChildOpen), with the
 // status Dispatch shows it in, whether the daemon released it, and the issue above it its own
-// blocked_by link names, in key order: what the daemon's mirror of Dispatch's issues shows under
+// blocked_by link names, in key order: what the daemon's copy of Dispatch's issues shows under
 // issue (Store.DispatchChildren), judged with the daemon's own record of each child, so a child
-// that runs as a tree of its own is open while it is in the workflow there, and a child filed and
-// never released is open until it is closed or in icebox. The judgement is the admission pass's
-// own of every started parent (record.OpenChildWaits), which leaves out a child of issue's own
-// tree that the daemon itself holds at admitted under an accepted ancestor, as OpenBeneath leaves
-// it out: otherwise the sign-off's hold and that ancestor's merge, which waits for issue, would
-// wait on each other for ever. members is issue's tree where the caller has read it already
-// (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
-// all, which is what the guard on every phase start reads (childrenHolding).
-func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
+// filed and never released is open until it is closed or in icebox. The judgement is the
+// admission pass's own of every started parent (record.OpenChildWaits), which leaves out a child
+// the daemon itself holds at admitted under an accepted issue above it, as OpenBeneath leaves it
+// out: otherwise the sign-off's hold and that issue's merge, which waits for issue, would wait on
+// each other for ever. The chains are read only when Dispatch shows a child under issue at all,
+// which is what the guard on every phase start reads (childrenHolding).
+func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.OpenChild, error) {
 	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
-	rows := mirrored[issue.Key]
-	if len(rows) == 0 {
+	if len(mirrored[issue.Key]) == 0 {
 		return nil, nil
 	}
-	if members == nil {
-		if members, err = e.treeMembers(ctx, tx, issue); err != nil {
-			return nil, err
-		}
-	}
-	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, members, map[string][]record.DispatchIssueRow{issue.Key: rows}, nil)
+	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, []record.Issue{issue})
 	return waits[issue.Key].Open, err
 }
 

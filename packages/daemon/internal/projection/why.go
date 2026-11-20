@@ -126,7 +126,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 	}
 	for _, issue := range own {
 		view, projected := state.Issues[issue.Key]
-		if !projected || !record.InWorkflow(issue) {
+		if !projected || !record.InLegionsWork(issue) {
 			continue
 		}
 		stopped, stoppedClaim := stoppedAt[issue.Key]
@@ -150,7 +150,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 				// root of the line whose wait blockers.LineWaitsOn judged. The links are
 				// judged for a member something holds and for no other, since a member
 				// nothing holds reads no clause whatever they say.
-				waitsOn := blockers.Holds(rows, issue)
+				waitsOn := blockers.Holds(rows, facts.Chains, issue)
 				if len(waitsOn) == 0 {
 					waitsOn = blocked[issue.Key]
 				}
@@ -172,7 +172,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			// The links this pass judged, read once for the two fills that name them: the
 			// children fill names them after the children it waits for, and the link fill is
 			// the whole of them.
-			links := blockers.Holds(rows, issue)
+			links := blockers.Holds(rows, facts.Chains, issue)
 			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycle, facts.ChildWaits[issue.Key], links)}
 		default:
 			// Neither the line nor `blocked` names it, so this arm reads out the two kinds
@@ -185,7 +185,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			if atWorkPastReview(issue, running) {
+			if atWorkPastReview(issue, running, facts.Chains) {
 				continue
 			}
 			reason, _ := heldReason(api.WhyUnlisted, causes[issue.Key], facts.Gates)
@@ -292,15 +292,10 @@ func linkReason(waitsOn []string) string {
 // (admit's tellStalledTrees, over record.RunningRoots and record.TreeQuiet.AtWork), and this
 // file reads each of them where it is already answered.
 //
-// The tree is this arm's own term: running is the roots whose trees run (record.RunningRoots,
-// over record.TreeRuns), and nothing of a tree that does not run is being worked on, whatever
-// phase its members stand in. A root a person parked is the shape that proves it: its linger
-// suspends every claim of its members while their Dispatch status stands, so the record holds
-// them in the workflow (record.InWorkflow) and whyStates reads them, and nothing of them runs
-// again until the root is admitted afresh. Such a member is served `unlisted` with its held
-// word's sentence, as it was before the phases past the review stopped holding a slot: the park
-// takes the slot of every member of the tree it stops back whatever the phase
-// (record.NeedsSlot), so such a member stood in none of the three lists then either.
+// The tree is this arm's own term: running is the gate roots that run (record.RunningRoots,
+// over record.TreeRuns), and nothing under a gate root that does not run is being worked on,
+// whatever phase it stands in. The issue's gate root is the chain's (record.Chains.GateRoot), so
+// an issue whose parent moved is read under the gate root it stands under now.
 //
 // The claim is the first arm's and is not read again here. A claim nothing will wake is the
 // daemon's own judgement (workflow.Stranded, which refuses a tree that does not run by this same
@@ -318,11 +313,11 @@ func linkReason(waitsOn []string) string {
 // for this one question. A hold is what stops the work: no worker of a held issue runs, so it is
 // served `unlisted` with its held word's sentence — never at_work's, which the ladder refuses a
 // held issue (record.HeldReasonOf) — and the hold is what a reader of it asks about.
-func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
+func atWorkPastReview(issue record.Issue, running map[string]struct{}, chains *record.Chains) bool {
 	if issue.Phase == phase.Held || !record.PastReview(issue) {
 		return false
 	}
-	_, runs := running[issue.Tree]
+	_, runs := running[chains.GateRoot(issue.Key)]
 	return runs
 }
 
@@ -341,7 +336,7 @@ func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 // `admission.held` still names the held word beside it. Else, an issue whose word this table
 // serves under `blocked` reads that sentence rather than the sentence of the links or children
 // that hold it: closing those would not free it while that word stands, so `why` and
-// `admission.held` name one cause. The words served there are the six the ladder reads before
+// `admission.held` name one cause. The words served there are the words the ladder reads before
 // dispatch_blocker (record.HeldBefore), and a test holds the two lists equal. Else — the word is
 // dispatch_blocker, children_first or a later one, or the issue has no held row — it reads
 // blockedReason, whose own text names the links and children.
@@ -370,6 +365,10 @@ func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 // ladder is the authority on which issue reads which word (record.HeldReasonOf), and each
 // constant's own doc comment is the authority on what the word means.
 var heldSentences = map[record.HeldReason]heldSentence{
+	record.HeldChainUnknown: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its Dispatch chain is unknown: the daemon's copy of Dispatch's issues cannot show it to its top at " + heldBy +
+			" (a row the copy lacks, a loop or more than 32 links), and the daemon starts nothing of it while the chain is unknown."
+	}},
 	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
 			"and the daemon starts no issue of that tree."
@@ -379,24 +378,24 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"and the daemon starts no issue of that tree until that root is put back at todo."
 	}},
 	record.HeldLabelOff: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
-		return "It is the root of its own tree and its record says the legion label is off, " +
+		return "No issue above it is in Legion's work and its record says the legion label is off, " +
 			"so nothing hands it to the daemon."
 	}},
 	record.HeldAncestry: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "Its Dispatch chain reaches live work above it: " + heldBy + ". " +
-			"It stands as that tree's unreleased work."
+		return "Its Dispatch parent is not in Legion's work, and " + heldBy + ", above that parent, is: " +
+			"it stands as " + heldBy + "'s unreleased work."
 	}},
 	record.HeldRootAwaitingPerson: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "Its tree's root, " + heldBy + ", has handed work to a person, " +
-			"and the daemon starts no issue of that tree before that root resumes."
+		return "Its top issue, " + heldBy + ", has handed work to a person, " +
+			"and the daemon starts nothing under it before that issue resumes."
 	}},
 	record.HeldAwaitingChildren: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
 		return "It waits on its open children: the daemon runs no phase of its own work, and holds the " +
 			"start it had, while a child of it is open."
 	}},
 	record.HeldDesignGate: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "The design gate of its tree stands shut: " + heldBy + " waits for a person's approval of each gated " +
-			"step's document at its current version, and the daemon starts no issue of that tree until it opens."
+		return "A design gate it waits for stands shut: " + heldBy + " waits for a person's approval of each gated " +
+			"step's document at its current version, and the daemon starts nothing under it until it opens."
 	}},
 	record.HeldAcceptedAncestor: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "The daemon has accepted the reviewed head of " + heldBy + ", which stands above it, " +
@@ -447,7 +446,7 @@ func heldReason(state api.WhyState, cause record.HeldIssue, gates map[string]rec
 	return reason, serves
 }
 
-// basisGateReason is the sentence of the design gate's word for the tree of root, where root holds
+// basisGateReason is the sentence of the design gate's word for the gate of root, where root holds
 // a gated step that stands open on an ancestor's approval or waits on an ancestor's approval
 // request (dispatch://INFRA-3320, R1 and R2); "" for a root that holds neither, which reads the
 // table's sentence. Each gated step of root is named with its own state, in the order the
@@ -460,7 +459,7 @@ func basisGateReason(root string, gate record.TreeGate) string {
 	if !slices.ContainsFunc(steps, func(step record.DesignStep) bool { return gate.Rows[step].Basis != nil }) {
 		return ""
 	}
-	words := []string{"The design gate of its tree stands shut, and the daemon starts no issue of that tree until it opens."}
+	words := []string{"A design gate it waits for stands shut, and the daemon starts nothing under it until it opens."}
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
 		switch {

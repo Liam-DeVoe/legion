@@ -22,7 +22,7 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 		basis, "ask-90")
 	open := record.OpenOnBasis(record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec, ArtifactID: "artifact-LEGION-100", LatestVersion: 2}, basis)
 	criteria := record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", LatestVersion: 3}
-	const shut = "The design gate of its tree stands shut, and the daemon starts no issue of that tree until it opens."
+	const shut = "A design gate it waits for stands shut, and the daemon starts nothing under it until it opens."
 	for _, tc := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -38,7 +38,7 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 			shut + " The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3." +
 				" The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90."},
 		{"a spec step with no basis", nil, shutGate("LEGION-100"),
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
+			"A design gate it waits for stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts nothing under it until it opens."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := projectionStore{

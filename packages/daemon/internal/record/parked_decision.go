@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // RelayOutcome is what RelayParkedDecision did with one decision, which is what its caller logs.
@@ -38,23 +36,28 @@ const (
 	RelayNotParked
 )
 
-// WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
-// to be opened, with no architect running for it yet: the one queued-root rule (QueuedRoot),
-// read with the root's own design gate, not lingering, and holding no slot of its own. steps
-// are the design-gate steps the deployment gates.
+// WaitsForSlot says whether root is a root a person handed to Legion that waits in the line for
+// its first start, with no architect running for it yet: in Legion's work, a root on Dispatch's
+// chain as the copy shows it now (Chains.IsRoot), the one queued-root rule (QueuedRoot) read with
+// its own design gate, and holding no slot of its own. steps are the design-gate steps the
+// deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a
-// root handed over in accepting carries the row it held in the tree it left (Waiting's
-// queued-root loop states why), so a person's todo on such a root read here as a root with no
-// architect, and every decision a person made on its tree was kept for a start that is never
-// queued instead of reaching the architect that is running (RelayParkedDecision, workflow's
-// CatchUpTheTreesOwed). The slot is still asked, after the rule rather than instead of it: a
-// root at admitted whose gate has never opened is a queued root by its record and holds the
-// slot its architect is writing the design in, and that architect hears a decision itself.
+// root handed over in accepting carries the row it held before (Waiting's queued-root loop states
+// why), so a person's todo on such a root read here as a root with no architect, and every
+// decision a person made on it was kept for a start that is never queued instead of reaching the
+// architect that is running (RelayParkedDecision, workflow's CatchUpTheTreesOwed). The slot is
+// still asked, after the rule rather than instead of it: a root at admitted whose gate has never
+// opened is a queued root by its record and holds the slot its architect is writing the design
+// in, and that architect hears a decision itself.
 func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps []DesignStep) (bool, error) {
-	if root.Lingers() || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if !InLegionsWork(root) {
 		return false, nil
+	}
+	chains, err := ReadChains(ctx, tx, store, root.Project, []string{root.Key})
+	if err != nil || !chains.IsRoot(root.Key) {
+		return false, err
 	}
 	rows, err := store.GatesOf(ctx, tx, root.Key)
 	if err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -93,7 +94,9 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
 // line reaches it, its own architect's start and then its planner's queued behind the row
 // creating the child's branch, which each start waits for, and the in_progress of the phase it
-// enters written over the todo Dispatch shows.
+// enters written over the todo Dispatch shows. The fact reaches the copy of Dispatch's issues
+// first (blockers.Mirror), as the Dispatch consumer applies it: the copy is where the line reads
+// the child's place under its parent.
 func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -104,7 +107,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{
 		Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 1, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V",
-	}, engine, admissionStub{}); err != nil {
+	}, blockers.NewMirror(record.NewStore(), "LEGION"), engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact: %v", err)
 	}
 	startUnblockedChildren(t, pool, engine)
@@ -815,6 +818,10 @@ func TestABackwardMoveNoRowServesIsRefused(t *testing.T) {
 	}
 }
 
+// seedIssue writes issue's record and its row of the copy of Dispatch's issues as a reading of
+// Dispatch would show it (seedCopyTx): the copy is what every decision reads the chain from
+// (record.ReadChains), so a fixture that seeds a record seeds the issue's place on Dispatch's
+// chain with it.
 func seedIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
@@ -825,8 +832,38 @@ func seedIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	if err := record.NewStore().PutIssue(t.Context(), tx, issue); err != nil {
 		t.Fatalf("seed issue: %v", err)
 	}
+	seedCopyTx(t, tx, issue)
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit seed issue: %v", err)
+	}
+}
+
+// seedCopyTx writes the copy's row of issue as a reading of Dispatch does
+// (record.Store.PutDispatchIssue): the parent the record names and the status Dispatch last showed
+// it in (DispatchStatus, else Status), at a sequence above every value the copy holds of it, so
+// the row reads as the record does whatever was written before. A fixture that names no parent
+// but a tree other than the issue's own key states that the issue stands under that tree's root,
+// and its row says so.
+func seedCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
+	t.Helper()
+	var seq int64
+	if err := tx.QueryRow(t.Context(), `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`,
+		issue.Key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
+	}
+	status, parent := issue.DispatchStatus, ""
+	if status == "" {
+		status = issue.Status
+	}
+	switch {
+	case issue.Parent != nil:
+		parent = *issue.Parent
+	case issue.Tree != "" && issue.Tree != issue.Key:
+		parent = issue.Tree
+	}
+	if err := record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project,
+		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent)}); err != nil {
+		t.Fatalf("seed the copy's row of %s: %v", issue.Key, err)
 	}
 }
 

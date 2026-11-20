@@ -333,7 +333,7 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 			return false, err
 		}
 	}
-	return record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	return record.TreeLive(ctx, e.store, tx, *root)
 }
 
 // tellRestingLeft tells the architect of each ancestor that root rests on (R8) that root has left

@@ -96,7 +96,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err := e.tellRestingLeft(ctx, tx, issue, status); err != nil {
 			return err
 		}
-		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
+		if held, err := record.OperatorHolds(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
 				return err
 			}
@@ -141,7 +141,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	above := record.Above(issue, members)
+	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	if err != nil {
+		return err
+	}
+	above := chains.Above(issue.Key)
 	var root *record.Issue
 	for i := range members {
 		if members[i].Key == issue.Tree {
@@ -174,7 +178,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	for _, ancestor := range above {
-		current, err := e.store.Issue(ctx, tx, ancestor.Key)
+		current, err := e.store.Issue(ctx, tx, ancestor)
 		if err != nil {
 			return err
 		}

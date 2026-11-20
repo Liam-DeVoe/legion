@@ -183,7 +183,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	if err != nil || root == nil {
 		return err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root)
 	if err != nil || !live {
 		return err
 	}

@@ -110,25 +110,20 @@ func ReadChains(ctx context.Context, tx pgx.Tx, store Store, project string, ext
 	if err != nil {
 		return nil, err
 	}
-	chains := &Chains{
-		rows:   make(map[string]ChainRow, len(rows)),
-		chains: make(map[string]Chain, len(rows)),
-		above:  make(map[string][]string, len(rows)),
-	}
 	keys := make([]string, 0, len(rows))
 	var starts []string
 	for _, row := range rows {
-		chains.rows[row.Key] = row
 		keys = append(keys, row.Key)
 		if row.Depth == 0 {
 			starts = append(starts, row.Key)
 		}
 	}
-	if chains.children, err = store.DispatchChildren(ctx, tx, project, starts); err != nil {
+	children, err := store.DispatchChildren(ctx, tx, project, starts)
+	if err != nil {
 		return nil, err
 	}
-	for _, children := range chains.children {
-		for _, child := range children {
+	for _, under := range children {
+		for _, child := range under {
 			keys = append(keys, child.Key)
 		}
 	}
@@ -137,14 +132,29 @@ func ReadChains(ctx context.Context, tx pgx.Tx, store Store, project string, ext
 	if err != nil {
 		return nil, fmt.Errorf("read the records on the chains of %s: %w", project, err)
 	}
-	chains.records = make(map[string]*Issue, len(records))
+	return newChains(rows, children, records), nil
+}
+
+// newChains is the chains of one read: the rows of the copy it reached, the copy's children of
+// each key it started from, and the daemon's record of every key those name (ReadChains).
+func newChains(rows []ChainRow, children map[string][]DispatchIssueRow, records []Issue) *Chains {
+	chains := &Chains{
+		rows:     make(map[string]ChainRow, len(rows)),
+		records:  make(map[string]*Issue, len(records)),
+		children: children,
+		chains:   make(map[string]Chain, len(rows)),
+		above:    make(map[string][]string, len(rows)),
+	}
+	for _, row := range rows {
+		chains.rows[row.Key] = row
+	}
 	for i := range records {
 		chains.records[records[i].Key] = &records[i]
 		if InLegionsWork(records[i]) {
 			chains.working = append(chains.working, records[i].Key)
 		}
 	}
-	return chains, nil
+	return chains
 }
 
 // Record is the daemon's record of key as the read holds it, and whether it records key. The
@@ -333,4 +343,18 @@ func (c *Chains) Under(key string) []string {
 // key. A key the read did not start from has none read.
 func (c *Chains) Children(key string) []DispatchIssueRow {
 	return c.children[key]
+}
+
+// unrecordedTodo is every key the read started from that the copy shows todo and the daemon
+// records nothing of, in key order: the issues a person or an architect put at todo that no
+// decision has recorded yet (HeldList lists the ones on an unknown chain).
+func (c *Chains) unrecordedTodo() []string {
+	var keys []string
+	for key, row := range c.rows {
+		if _, recorded := c.records[key]; !recorded && row.Depth == 0 && row.Present && row.Status == "todo" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }

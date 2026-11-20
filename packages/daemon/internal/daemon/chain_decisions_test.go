@@ -878,6 +878,9 @@ func newChainDaemon(t *testing.T, project string, wrong bool) *chainDaemon {
 // seed writes the project's rows as today's daemon stores them: each issue's copy row, the
 // record of each recorded issue with its gate and slot, the lifecycle of each tree at work, each
 // architect claim on the tree its issue is stored in, and the marks today's daemon keeps by tree.
+// Each record whose stored tree is its own key holds its own gate (holds_gate), as the
+// migration that adds the column marks every root of the release before
+// (20261120091044_issue_holds_gate).
 func (d *chainDaemon) seed(token string) {
 	t := d.t
 	t.Helper()
@@ -892,7 +895,7 @@ func (d *chainDaemon) seed(token string) {
 			}
 			issue := record.Issue{Key: row.key, Tree: row.tree, Project: d.project, Title: row.key, Phase: row.phase, Generation: 1,
 				Status: row.status, DispatchStatus: row.status, Rank: rankOf(row.key), LastDispatchSeq: chainSeq, HandedOver: row.labelled,
-				Repo: chainRepo, DefaultBranch: "main", GitHubRepo: chainRepo}
+				Repo: chainRepo, DefaultBranch: "main", GitHubRepo: chainRepo, HoldsGate: row.tree == row.key}
 			issue.TakenBack = issue.CarriesRun()
 			if row.parent != "" {
 				issue.Parent = new(row.parent)

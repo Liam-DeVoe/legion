@@ -351,21 +351,23 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			catchUp.Gates = append(catchUp.Gates, stated)
 		}
 	}
-	members, err := store.TreeIssues(ctx, tx, issue.Tree)
+	// The issues it lists are the issue itself and every issue in Legion's work under it on the
+	// Dispatch chain (record.Chains.Under), in key order.
+	chains, err := record.ReadChains(ctx, tx, store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return record.CatchUp{}, treeWaits{}, err
 	}
-	owned := map[string]bool{issue.Key: true}
-	for _, under := range record.Beneath(issue, members) {
-		owned[under.Key] = true
+	members := []record.Issue{issue}
+	for _, under := range chains.Under(issue.Key) {
+		if member, recorded := chains.Record(under); recorded {
+			members = append(members, member)
+		}
 	}
-	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
+	slices.SortFunc(members, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })
+	catchUp.Issues = make([]record.CatchUpIssue, 0, len(members))
 	var accepting []record.Issue
 	var live []string
 	for _, member := range members {
-		if !owned[member.Key] {
-			continue
-		}
 		listed := record.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
 		if member.Parent != nil {
 			listed.Parent = *member.Parent

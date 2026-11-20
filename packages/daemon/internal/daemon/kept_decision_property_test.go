@@ -1848,7 +1848,7 @@ func (r *keptRun) adoptionTarget() *keptTree {
 		live := false
 		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 			var err error
-			live, err = record.TreeLive(r.ctx, r.records, tx, *stored, nil)
+			live, err = record.TreeLive(r.ctx, r.records, tx, *stored)
 			return err
 		}); err != nil {
 			r.fatalf("read whether the tree of %s is live: %v", tree.key, err)

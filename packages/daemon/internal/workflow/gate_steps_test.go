@@ -217,17 +217,14 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	}
 	issues, slots, facts := read()
 	// Every issue that no longer needs its slot gives it back before the line is read, as the
-	// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
-	// architect wrote the design in, and the line offers a slot to no issue already holding one.
+	// real pass does (admit's releaseSlots): an issue out of Legion's work, or past a phase that
+	// keeps a slot, and the line offers a slot to no issue already holding one.
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
-	live := record.LiveRoots(issues, facts)
 	for _, slot := range slots {
-		issue, recorded := byKey[slot.Issue]
-		_, running := live[issue.Tree]
-		if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		if issue, recorded := byKey[slot.Issue]; recorded && record.NeedsSlot(issue) {
 			continue
 		}
 		if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
@@ -243,7 +240,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	// Every started issue that waits on another issue gives its row back, as the real pass does
 	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
 	// state that release leaves.
-	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 	if err != nil {
 		t.Fatalf("judge the line: %v", err)
 	}
@@ -256,7 +253,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		}
 	}
 	issues, slots, facts = read()
-	rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+	rows, facts, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 	if err != nil {
 		t.Fatalf("judge the line again: %v", err)
 	}
@@ -266,7 +263,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if held != nil && held(entry.Issue.Key) {
 			break
 		}
-		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, entry.Issue)) > 0 {
+		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
 			continue
 		}
 		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {

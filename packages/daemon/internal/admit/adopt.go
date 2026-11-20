@@ -3,7 +3,6 @@ package admit
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -71,7 +70,7 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			return nil, nil, fmt.Errorf("read the root of %s: %w", fact.Tree, err)
 		}
 		if root != nil {
-			if live, err = record.TreeLive(ctx, a.store, tx, *root, a.engine.GatedSteps()); err != nil {
+			if live, err = record.TreeLive(ctx, a.store, tx, *root); err != nil {
 				return nil, nil, fmt.Errorf("read whether the tree of %s is live: %w", fact.Tree, err)
 			}
 		}
@@ -126,110 +125,4 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 	}
 	_, returned, err := a.promote(ctx, tx)
 	return returned, nil, err
-}
-
-// adoptQueuedRoots moves every todo root of this project, waiting in admission's queue or not yet
-// handed to Legion, into the live tree its recorded parent runs in, when that root never ran as a
-// tree of its own (workflow's AdoptionRefusal, Engine.Adopt): a person made it a child of that tree,
-// so it takes no slot and no architect as a root of its own, and runs in the tree as any of its
-// todo children does: a slot and its own architect come with its first phase start (workflow's
-// Engine.StartFirstPhase). A candidate is a recorded root of this project in todo whose parent is
-// recorded in a tree other than its own. One that ran as a tree of its own, or carries a run
-// handed over to it, keeps queueing as its own root: taking it out of the line would strand its
-// run with nobody told. So does one handed over as a root of its own (record.Issue.HandedOverFrom),
-// its old root's re-admission included: the hand-over made it a tree of its own for good. A key
-// Reconcile holds, the candidate's or its target's, is left for release to apply first, when
-// respectHolds is set.
-//
-// Only a root is a candidate here, so no member of a closed tree is moved by a pass: C4 of
-// dispatch://INFRA-3107 adopts such a member on an architect's release alone (adoptChildren,
-// workflow's Engine.AdoptMember), and until one releases it the member stands in admission.held
-// with the reason tree_closed.
-//
-// It loops until a pass adopts nothing, and returns the issues, slots and line facts that pass
-// read: it wrote nothing, so they are the record as it stands, and promotion reuses them rather
-// than reading the tree lifecycles, the gates and the owed starts a second time. Each adoption
-// makes a root a member, never a root again, so the roots bound the passes. A candidate whose
-// target root is itself a candidate waits for the next pass, so nested queued roots join the
-// live tree at the top once each, rather than passing through the queued tree between;
-// candidates whose parents form a cycle are each other's targets and stay roots of their own.
-//
-// It reads the project's live records (record.Store.LiveIssues). A candidate's parent may be a
-// finished child of a live tree, which that read leaves out, so the parents it does not hold are
-// read by key (record.Store.IssuesOf); a target is a live tree's root, which it always holds.
-func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHolds bool) ([]record.Issue, []record.Slot, record.LineFacts, error) {
-	for {
-		issues, err := a.store.LiveIssues(ctx, tx, a.project)
-		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
-		}
-		slots, err := a.store.Slots(ctx, tx)
-		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
-		}
-		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-		if err != nil {
-			return nil, nil, record.LineFacts{}, err
-		}
-		// A target whose tree is not live is skipped here, so every target asked about is live.
-		live := record.LiveRoots(issues, facts)
-		recorded := make(map[string]record.Issue, len(issues))
-		for _, issue := range issues {
-			recorded[issue.Key] = issue
-		}
-		var queued []record.Issue
-		var unread []string
-		for _, issue := range issues {
-			if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Status != "todo" || issue.Parent == nil {
-				continue
-			}
-			queued = append(queued, issue)
-			if _, ok := recorded[*issue.Parent]; !ok && !slices.Contains(unread, *issue.Parent) {
-				unread = append(unread, *issue.Parent)
-			}
-		}
-		parents, err := a.store.IssuesOf(ctx, tx, a.project, unread)
-		if err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("read the parents of the queued roots: %w", err)
-		}
-		for _, parent := range parents {
-			recorded[parent.Key] = parent
-		}
-		var candidates []adoption
-		for _, issue := range queued {
-			parent, ok := recorded[*issue.Parent]
-			if !ok {
-				continue
-			}
-			target, ok := recorded[parent.Tree]
-			if !ok || target.Key == issue.Key || respectHolds && (a.held(issue.Key) || a.held(target.Key)) {
-				continue
-			}
-			if _, ok := live[target.Key]; !ok {
-				continue
-			}
-			refusal, err := a.engine.AdoptionRefusal(ctx, tx, issue, target.Key)
-			if err != nil {
-				return nil, nil, record.LineFacts{}, fmt.Errorf("read whether %s joins the tree of %s: %w", issue.Key, target.Key, err)
-			}
-			if refusal == nil {
-				// The sweep reads no Dispatch, so a candidate it adopts carries only its
-				// recorded parent: what it waits on is the mirror's, which enterChild reads.
-				candidates = append(candidates, adoption{issue: issue, target: target, child: intake.AdoptedChild{Issue: issue.Key, Parent: *issue.Parent}})
-			}
-		}
-		adopted := false
-		for _, candidate := range candidates {
-			if slices.ContainsFunc(candidates, func(other adoption) bool { return other.issue.Key == candidate.target.Key }) {
-				continue
-			}
-			if err := a.engine.Adopt(ctx, tx, candidate.issue, candidate.target, candidate.child); err != nil {
-				return nil, nil, record.LineFacts{}, fmt.Errorf("adopt %s into the tree of %s: %w", candidate.issue.Key, candidate.target.Key, err)
-			}
-			adopted = true
-		}
-		if !adopted {
-			return issues, slots, facts, nil
-		}
-	}
 }

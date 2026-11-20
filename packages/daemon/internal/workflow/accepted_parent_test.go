@@ -72,11 +72,15 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 }
 
 // leave moves key to at with the Dispatch status it leaves on, as a close or a person's park
-// leaves it.
+// leaves it: the record, and the copy of Dispatch's issues the reading of that move writes
+// (blockers.Mirror), which the open-children rule reads.
 func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), "update issues set phase = $2, status = $3 where key = $1", key, string(at), status); err != nil {
 		t.Fatalf("take %s out of the workflow: %v", key, err)
+	}
+	if _, err := pool.Exec(context.Background(), "update dispatch_issues set status = $2 where key = $1", key, status); err != nil {
+		t.Fatalf("move the copy's row of %s to %s: %v", key, status, err)
 	}
 }
 
@@ -107,7 +111,7 @@ func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *t
 	// The hold stands, and is now the nearer ancestor's: the sign-off put LEGION-209 in retro,
 	// so LEGION-300 waits for it as well as for the merged root above it. It is still in the
 	// workflow for every other reading.
-	if got := record.AcceptedAncestor(*issueRecord(t, pool, "LEGION-300"), treeByKey(t, pool, "LEGION-208")); got != "LEGION-209" {
+	if got := record.AcceptedAncestor(projectChains(t, pool, "LEGION-300"), "LEGION-300"); got != "LEGION-209" {
 		t.Fatalf("the accepted ancestor of LEGION-300 = %q, want the issue just accepted above it, LEGION-209", got)
 	}
 	if !record.InWorkflow(*issueRecord(t, pool, "LEGION-300")) {
@@ -115,21 +119,17 @@ func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *t
 	}
 }
 
-// treeByKey is every recorded member of tree, by key.
-func treeByKey(t *testing.T, pool *pgxpool.Pool, tree string) map[string]record.Issue {
+// projectChains is the Dispatch chains of the test project with keys named (record.ReadChains),
+// as a decision of the daemon reads them.
+func projectChains(t *testing.T, pool *pgxpool.Pool, keys ...string) *record.Chains {
 	t.Helper()
-	byKey := map[string]record.Issue{}
+	var chains *record.Chains
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		members, err := record.NewStore().TreeIssues(context.Background(), tx, tree)
-		if err != nil {
-			return err
-		}
-		for _, member := range members {
-			byKey[member.Key] = member
-		}
-		return nil
+		var err error
+		chains, err = record.ReadChains(context.Background(), tx, record.NewStore(), "LEGION", keys)
+		return err
 	})
-	return byKey
+	return chains
 }
 
 // A6. close_root is refused the same way and with the same code: the close lingers the whole
@@ -181,7 +181,7 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	if held.Tree != "LEGION-208" || held.Phase != phase.Admitted {
 		t.Fatalf("the person's todo = %#v, want it recorded in LEGION-208's tree at admitted", held)
 	}
-	if got := record.AcceptedAncestor(held, treeByKey(t, pool, "LEGION-208")); got != "LEGION-208" {
+	if got := record.AcceptedAncestorIn(projectChains(t, pool, held.Key, "LEGION-209"), held.Key, "LEGION-209"); got != "LEGION-208" {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want LEGION-208, found by walking past the done parent", got)
 	}
 	var reason string

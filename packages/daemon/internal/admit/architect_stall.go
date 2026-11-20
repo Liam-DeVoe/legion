@@ -98,7 +98,7 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		}{
 			{record.ArchitectTookNothing, took},
 			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], floor, now)},
-			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, run, floor,
+			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Key], held.admittedAt, row, run, floor,
 				letOuts[root.Key], now)},
 		} {
 			if arm.why != "" {

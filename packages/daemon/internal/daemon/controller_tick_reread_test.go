@@ -348,6 +348,14 @@ func seedHeldChild(t *testing.T, pool *store.Pool, key, tree string) {
 		Title: key, Tree: tree, Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "todo",
 		Rank: "A", LastDispatchSeq: 1,
 	})
+	// The copy of Dispatch's issues holds the child under its parent, which is what makes it an
+	// issue under a parent its blockers can hold (blockers.Holdable over the chain).
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: 1,
+			Parent: record.Carry(parent)})
+	}); err != nil {
+		t.Fatalf("seed the copy's parent of %s: %v", key, err)
+	}
 }
 
 // seedBlockedRoots records count roots, each waiting on a distinct blocker of this daemon's own

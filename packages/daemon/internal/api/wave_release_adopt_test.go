@@ -185,7 +185,7 @@ func (a *adoptionHarness) waiting() []string {
 		if err != nil {
 			return err
 		}
-		_, _, line, _, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil, time.Now())
+		_, _, line, _, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil)
 		if err != nil {
 			return err
 		}

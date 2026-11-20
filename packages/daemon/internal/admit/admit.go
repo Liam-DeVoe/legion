@@ -439,13 +439,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, err
 	}
 	own := ownSlots(issues, slots)
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
 	if err != nil {
 		return false, err
 	}
 	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) {
+		if len(blockers.LineWaitsOn(rows, facts.Chains, candidate)) == 0 && slotFor(candidate) {
 			taking++
 		}
 	}
@@ -579,7 +579,7 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 		return nil, nil, nil, err
 	}
 	own := ownSlots(issues, slots)
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -644,10 +644,10 @@ type phaseWorker struct {
 
 // phaseWorkerOf is issue as a candidate of a repair over phase workers, and whether it is one:
 // an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
-// the record shows under way in a tree that does not linger. project is the project's claim
-// token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
-// roots are read from and which the slot repair walks its slots and its issues past review
-// through.
+// the record shows under way under a gate root in Legion's work (record.Chains.GateRoot). project
+// is the project's claim token (claim.ProjectToken), and byKey is the project's live records by
+// key, which the gate roots are read from and which the slot repair walks its slots and its
+// issues past review through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -679,11 +679,11 @@ func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[
 	if role == "" {
 		return phaseWorker{}, false
 	}
-	if !record.AtWork(issue, facts.Gates[issue.Tree]) {
+	if !facts.AtWork(issue) {
 		return phaseWorker{}, false
 	}
-	root, rooted := byKey[issue.Tree]
-	if !rooted || root.Lingers() {
+	root, rooted := byKey[facts.Chains.GateRoot(issue.Key)]
+	if !rooted {
 		return phaseWorker{}, false
 	}
 	token, err := claim.NewToken(project, issue.Key, role)
@@ -796,7 +796,7 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 	var silent []record.SilentIssue
 	for _, held := range workers {
 		run := runs[held.token]
-		gate := facts.Gates[held.issue.Tree]
+		gate := facts.Gates[held.root.Key]
 		// The two rules never both hold: SilentPhaseWorker refuses the claim whose report
 		// names background work, and BackgroundStalledWorker is about that claim alone.
 		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, a.workerSilence, now)
@@ -1234,7 +1234,7 @@ func (a *Admission) orphan(ctx context.Context, tx pgx.Tx, stored record.Issue, 
 	if root == nil {
 		return true, nil
 	}
-	live, err := record.TreeLive(ctx, a.store, tx, *root, a.engine.GatedSteps())
+	live, err := record.TreeLive(ctx, a.store, tx, *root)
 	if err != nil {
 		return false, fmt.Errorf("read whether %s's tree is live: %w", stored.Key, err)
 	}
@@ -1595,24 +1595,23 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // releaseSlots releases the slot of every issue of this project that no longer needs one
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
 // whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
-// order. Each release is logged once the fact commits. A tree leaving the workflow, a root
-// finishing, an issue whose work passes its review, an issue reaching its done, and a linger all
-// read the same predicate, so one rule says when an issue stops needing a slot where it stands.
-// The daemon makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather
-// than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
-// another issue; the two are apart because they free rows for opposite reasons — this one
-// because the issue's phase holds no row, that one because the work is held — and only that one
-// leaves a mark, since only its issue stands in the line for the row again. An issue past its
-// review is never one it frees (blockers.waitsOf says why).
+// order. Each release is logged once the fact commits. An issue Dispatch shows out of Legion's
+// work, an issue whose work passes its review and an issue reaching its done all read the same
+// predicate, so one rule says when an issue stops needing a slot where it stands, and it reads
+// the issue's own status alone (R20 of dispatch://INFRA-3320): an issue above it leaving work
+// frees nothing of it. The daemon makes one other release, releaseSlotsForWaits, judged by
+// blockers.waitsOf rather than by record.NeedsSlot, which frees the row of an issue that goes on
+// working and waits on another issue; the two are apart because they free rows for opposite
+// reasons — this one because the issue's phase holds no row, that one because the work is held —
+// and only that one leaves a mark, since only its issue stands in the line for the row again. An
+// issue past its review is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
 // (intake.ApplyFact), so a read per slot cost every fact of every consumer, the API and the
 // boot's replay a round trip to the database for each slot of the shared table, and a read of
 // every record would grow with every issue the project has ever recorded. The read leaves out
-// another project's slot, whose own daemon releases it. The further facts the predicate needs of
-// each slotted issue — its tree root, and whether that root's tree is live — come from issues
-// and facts, which the pass read once for all of them, so this still makes exactly one query.
+// another project's slot, whose own daemon releases it.
 //
 // It also clears the mark of a release for a wait from every issue that needs no slot at all
 // (record.Issue.ReleasedForWaitAt, over issues rather than over the slotted rows): an issue
@@ -1621,23 +1620,15 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
 // the line from the moment before the park (record.Waiting).
-func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
+func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return nil, fmt.Errorf("list this project's slotted issues: %w", err)
 	}
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	live := record.LiveRoots(issues, facts)
 	inUse := len(own)
 	var released []string
 	for _, issue := range own {
-		// A slotted issue whose root the live records do not hold belongs to a tree that has
-		// finished: LiveRoots does not name it either, so the predicate releases it.
-		_, running := live[issue.Tree]
-		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		if record.NeedsSlot(issue) {
 			continue
 		}
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
@@ -1648,11 +1639,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		a.logSlot(ctx, "released", issue.Key, inUse)
 	}
 	for _, issue := range issues {
-		if issue.ReleasedForWaitAt == nil {
-			continue
-		}
-		_, running := live[issue.Tree]
-		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		if issue.ReleasedForWaitAt == nil || record.NeedsSlot(issue) {
 			continue
 		}
 		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
@@ -1711,11 +1698,11 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //   - a parent in awaiting_children that no open child holds any longer goes back to the start it
 //     held (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
 //
-// Each reads an issue of this project in the workflow whose tree runs (record.RunningRoots: its
-// lifecycle open under the workflow, its root neither lingering nor waiting in the line as a
-// queued root), so a lingering or unopened tree, or one whose root is on the backlog, keeps every
-// member where it stands, a queued root is left alone (record.QueuedRoot), and a root handed over
-// in awaiting_children comes back once its promotion has opened its tree. A key a hold still names
+// Each reads an issue of this project in the workflow whose gate root runs (record.RunningRoots
+// over the pass's chains: the gate root in Legion's work and not waiting in the line for its first
+// start), so an issue under a root still queued, or on an unknown chain with no gate root, stays
+// where it stands, a queued root is left alone (record.LineFacts.Queued), and a root handed over
+// in awaiting_children comes back once its promotion has started it. A key a hold still names
 // (held, the pass's own predicate) is read on the first pass after the hold ends, as the promotion
 // reads it. The engine leaves alone a parent held, in retro or in merging, whose pull request has
 // merged, or whose phase's role stands on an entry a role's move back raised out of retro or
@@ -1751,7 +1738,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) {
 			continue
 		}
-		if _, runs := running[parent.Tree]; !runs {
+		if _, runs := running[facts.Chains.GateRoot(parent.Key)]; !runs {
 			continue
 		}
 		wait, open := facts.StartedParentWaits[parent.Key]
@@ -1804,18 +1791,18 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // only ever runs once the consumer has caught up to every key Reconcile deferred. The in-memory
 // pending set itself only clears after that whole call's transaction commits (see release), so
 // without this, the pass's own membership check would hold every one of them back in the very
-// call that released them. A queued root a live tree took in (adoptQueuedRoots) leaves the line
-// before anything else reads it.
+// call that released them. No issue is adopted into a tree here (R19 of dispatch://INFRA-3320):
+// an issue under a parent at work is read under it on Dispatch's chain as it stands.
 //
 // It makes one read of each kind for the whole pass and shares it: one read of the project's
 // pause, which also gives the floor the pass's stall readings count from (readStallFloor), one
-// record.Store.LiveIssues, one record.Store.Slots, one bulk tree-lifecycle read, one design-gate
-// read, one read of the starts the project owes its workers (the three of record.ReadLineFacts)
-// and one read of the Dispatch mirror rows of everything it judges (blockers.Judged,
-// blockers.Load). The release, the waiting line, the INFRA-129 safety net, the promotion and the
-// two repair passes all judge from those, so no path reads per slot, per tree or per issue under
-// the one fact lock every fact takes (intake.ApplyFact). A read is made again only where this
-// pass has itself written something that would make it stale (reread).
+// record.Store.LiveIssues, one record.Store.Slots, the pass's one reading of the Dispatch chains
+// with the gates on them and one read of the starts the project owes its workers
+// (record.ReadLineFacts), and one read of the Dispatch mirror rows of everything it judges
+// (blockers.Judged, blockers.Load). The release, the waiting line, the INFRA-129 safety net, the
+// promotion and the two repair passes all judge from those, so no path reads per slot, per chain
+// or per issue under the one fact lock every fact takes (intake.ApplyFact). A read is made again
+// only where this pass has itself written something that would make it stale (reread).
 //
 // Every path that promotes comes through here — a live fact, the controller tick, a hold's
 // release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds,
@@ -1832,7 +1819,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil || paused {
 		return 0, nil, err
 	}
-	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1867,7 +1854,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	released, err := a.releaseSlots(ctx, tx, issues, facts)
+	released, err := a.releaseSlots(ctx, tx, issues)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1894,7 +1881,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// blockers.JudgeLine): each with the one word for why (record.HeldReason), written by the walk
 	// that built the line, so the stalled-tree measure below reads those words rather than
 	// walking the project's issues again.
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
 	if err != nil {
 		return 0, released, err
 	}
@@ -1907,7 +1894,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, append(released, waiting...), err
 	}
 	released = append(released, waiting...)
-	unslotted, err := a.releaseUnslotted(ctx, tx, issues, record.LiveRoots(issues, facts), facts.ChildWaits, respectHolds)
+	unslotted, err := a.releaseUnslotted(ctx, tx, issues, facts, respectHolds)
 	if err != nil {
 		return 0, released, err
 	}
@@ -1917,7 +1904,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1979,7 +1966,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// so the line moves on. The rule is read per kind, as the state's own `blocked`
 			// reads it (blockers.LineWaitsOn), so no issue is reported waiting on a link this
 			// loop would start anyway.
-			if waits := blockers.LineWaitsOn(rows, candidate); len(waits) > 0 {
+			if waits := blockers.LineWaitsOn(rows, facts.Chains, candidate); len(waits) > 0 {
 				a.log.Info("admission waits for what this issue waits on", "issue", issue.Key, "blockers", waits)
 				continue
 			}
@@ -2143,7 +2130,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.ResumeAwaitedRoot(ctx, tx, issue, *awaiting); err != nil {
 					return admitted, released, fmt.Errorf("resume %s after a person's answer: %w", issue.Key, err)
 				}
-				opened = opened || facts.Gates[issue.Tree].Open()
+				opened = opened || facts.GatesOpen(issue.Key)
 			case record.LineQueuedRoot:
 				issue.Status = "in_progress"
 				// A root whose tree is opened runs as a tree of its own, which no ancestry hold
@@ -2223,7 +2210,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.reenterStrandedChildren(ctx, tx, issue, issues); err != nil {
 					return admitted, released, err
 				}
-				opened = opened || facts.Gates[issue.Tree].Open()
+				opened = opened || facts.GatesOpen(issue.Key)
 			case record.LineFirstPhase:
 				if err := a.engine.StartFirstPhase(ctx, tx, issue, rows[issue.Key].Blockers); err != nil {
 					return admitted, released, err
@@ -2246,7 +2233,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
 			return admitted, released, err
 		}
 	}
@@ -2275,7 +2262,24 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
 	}
 	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-	return issues, slots, facts, err
+	if err != nil {
+		return nil, nil, record.LineFacts{}, err
+	}
+	// Every recorded issue the pass finds a root holds its own gate from now on, and keeps it once
+	// it gets a parent in Legion's work (R15 of dispatch://INFRA-3320, record.Chains.HoldsOwnGate):
+	// one statement marks every root the read finds unmarked, and none is sent when there is none.
+	var roots []string
+	for _, issue := range issues {
+		if !issue.HoldsGate && facts.Chains.IsRoot(issue.Key) {
+			roots = append(roots, issue.Key)
+		}
+	}
+	if len(roots) > 0 {
+		if err := a.store.MarkHoldsGate(ctx, tx, roots); err != nil {
+			return nil, nil, record.LineFacts{}, fmt.Errorf("mark the roots that hold their own gate: %w", err)
+		}
+	}
+	return issues, slots, facts, nil
 }
 
 // slotFor says whether promoting this candidate must take one of the cap's slots for it: it
@@ -2473,8 +2477,12 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // one here: a person's, or an outside session's, which is a person's where no tree runs
 // (workflow's sessionStatusWrite). A root in todo without the label is not one: taking the label
 // off is a pause the label ends.
-func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, waits map[string]record.ChildWait) bool {
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
+//
+// A root here is one on the pass's chains (record.Chains.IsRoot, R15 of dispatch://INFRA-3320): an
+// issue under a parent in Legion's work is no root whatever tree its record stores, and its gate
+// root's tree is what runs it.
+func (a *Admission) unslotted(issue record.Issue, chains *record.Chains, live map[string]struct{}, waits map[string]record.ChildWait) bool {
+	if !chains.IsRoot(issue.Key) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
 		return false
 	}
 	switch issue.Status {
@@ -2501,9 +2509,8 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
 // on the controller topic alone (record.UnslottedNotice, one per root, its reason naming why). A
 // key Reconcile holds is left for release to apply first, when respectHolds is set. It reports
 // whether it released any.
-func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, live map[string]struct{},
-	waits map[string]record.ChildWait, respectHolds bool,
-) (bool, error) {
+func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, respectHolds bool) (bool, error) {
+	live := record.LiveRoots(issues, facts)
 	released := false
 	for _, issue := range issues {
 		if respectHolds && a.held(issue.Key) {
@@ -2513,7 +2520,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if err != nil {
 			return released, fmt.Errorf("check whether awaiting root %s can resume: %w", issue.Key, err)
 		}
-		if !awaiting && !a.unslotted(issue, live, waits) {
+		if !awaiting && !a.unslotted(issue, facts.Chains, live, facts.ChildWaits) {
 			continue
 		}
 		reason := fmt.Sprintf("%s was %s, a status only a running tree has, while no tree of it runs: its lifecycle is not open, it waits in no line and on no person, so nothing would ever start it", issue.Key, issue.Status)
@@ -3165,8 +3172,8 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		if !record.PastReview(issue) || !record.InWorkflow(issue) {
 			continue
 		}
-		root, rooted := byKey[issue.Tree]
-		if !rooted || !record.TreeRuns(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) {
+		root, rooted := byKey[facts.Chains.GateRoot(issue.Key)]
+		if !rooted || !record.TreeRuns(root, facts.Gates[root.Key]) {
 			continue
 		}
 		take(issue, time.Time{})
@@ -3179,7 +3186,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 			continue
 		}
 		architect, selected := a.rootArchitectOf(project, issue)
-		if !selected || !record.TreeRuns(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key]) {
+		if !selected || !record.TreeRuns(issue, facts.Gates[issue.Key]) {
 			continue
 		}
 		seen[issue.Key] = struct{}{}

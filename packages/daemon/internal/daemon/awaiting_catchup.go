@@ -115,7 +115,8 @@ func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, sl
 		}
 	}
 	_, holds := slotted[issue.Key]
-	return record.CanWaitOnPerson(issue, gate, holds)
+	// A root of its own tree, which the first test above asks for, holds its own gate.
+	return record.CanWaitOnPerson(issue, true, gate, holds)
 }
 
 // slottedIssues is the key of every issue holding an admission slot.
@@ -161,13 +162,13 @@ func (w *workflowRuntime) holdForCatchUp(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// rootGates is the design gate of every tree root among issues, by key, in one read: what the
-// predicate above asks of each of them, and what the catch-up itself reads the root's registered
-// steps from. Every root has an entry, carrying the steps the deployment gates and whatever rows
-// that root holds, so a root whose architect has still to write its design reads as the gate it
-// is (record.TreeGate).
+// rootGates is the design gate of every issue among issues, by key, in one read: what the
+// predicate above asks of each root among them, and what the catch-up itself reads the root's
+// registered steps from. Every issue has an entry, carrying the steps the deployment gates and
+// whatever rows that issue holds, so a root whose architect has still to write its design reads as
+// the gate it is (record.TreeGate).
 func (w *workflowRuntime) rootGates(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[string]record.TreeGate, error) {
-	gates, err := record.ReadTreeGates(ctx, tx, w.records, issues, w.gatedSteps)
+	gates, err := record.ReadGates(ctx, tx, w.records, issues, w.gatedSteps)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates of the roots to catch up: %w", err)
 	}

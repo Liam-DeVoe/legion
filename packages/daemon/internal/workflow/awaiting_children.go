@@ -157,7 +157,7 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 	if !record.OpenChildHolds(issue.Phase) || !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
 		return nil, nil
 	}
-	return e.childrenOpen(ctx, tx, issue, nil)
+	return e.childrenOpen(ctx, tx, issue)
 }
 
 // holdForChildren moves issue to awaiting_children in place of the start of to that trigger's row
@@ -517,7 +517,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 // last open child has gone since the last admission pass is told that the next pass brings it
 // back.
 func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act string) (intake.Result, error) {
-	open, err := e.childrenOpen(ctx, tx, issue, nil)
+	open, err := e.childrenOpen(ctx, tx, issue)
 	if err != nil {
 		return intake.Result{}, err
 	}

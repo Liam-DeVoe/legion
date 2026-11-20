@@ -3,9 +3,8 @@ package record
 import (
 	"context"
 	"fmt"
-	"maps"
-	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -14,33 +13,115 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// One pass walks one chain (chainOf): the hold under an accepted ancestor (Waiting) and the
-// children-first cycle (ChildWaits) are two walks of the same records, so the map they walk is
-// built in one place. It holds the pass's own records and the records above them that its read
-// leaves out (LineFacts.Parents), which is what lets either walk cross an ancestor already done;
-// the pass's own records stay a map of their own, since what runs and what an issue ranks against
-// is read from those alone.
+// copyOf is the copy's row of each of issues as a reading of Dispatch writes it: its project, the
+// parent its record names and the status Dispatch last showed it in.
+func copyOf(issues ...Issue) []DispatchIssueRow {
+	rows := make([]DispatchIssueRow, len(issues))
+	for i, issue := range issues {
+		status := issue.DispatchStatus
+		if status == "" {
+			status = issue.Status
+		}
+		parent := ""
+		if issue.Parent != nil {
+			parent = *issue.Parent
+		}
+		rows[i] = DispatchIssueRow{Key: issue.Key, Project: issue.Project, Status: status, Parent: parent}
+	}
+	return rows
+}
+
+// chainsOf is the chains a read of copied and records makes (ReadChains), walked in memory as
+// Store.ChainRows walks the copy: from each record's key and each todo row of the copy, up to
+// MaxChainLinks+1 rows from each, a key already on the walk's path ending it; the copy's children
+// of each key the walk started from; and the records themselves.
+func chainsOf(records []Issue, copied []DispatchIssueRow) *Chains {
+	byKey := make(map[string]DispatchIssueRow, len(copied))
+	for _, row := range copied {
+		byKey[row.Key] = row
+	}
+	var starts []string
+	for _, issue := range records {
+		starts = append(starts, issue.Key)
+	}
+	for _, row := range copied {
+		if row.Status == "todo" {
+			starts = append(starts, row.Key)
+		}
+	}
+	slices.Sort(starts)
+	starts = slices.Compact(starts)
+	at := map[string]int{}
+	var rows []ChainRow
+	for _, start := range starts {
+		path := []string{start}
+		for key, depth := start, 0; ; depth++ {
+			row, present := byKey[key]
+			if i, read := at[key]; !read {
+				at[key] = len(rows)
+				rows = append(rows, ChainRow{Key: key, Depth: depth, Parent: row.Parent, Status: row.Status, Present: present})
+			} else if depth < rows[i].Depth {
+				rows[i].Depth = depth
+			}
+			if !present || row.Parent == "" || depth >= MaxChainLinks+1 || slices.Contains(path, row.Parent) {
+				break
+			}
+			key = row.Parent
+			path = append(path, key)
+		}
+	}
+	children := map[string][]DispatchIssueRow{}
+	for _, start := range starts {
+		for _, row := range copied {
+			if row.Parent == start {
+				children[start] = append(children[start], row)
+			}
+		}
+		slices.SortFunc(children[start], func(a, b DispatchIssueRow) int { return strings.Compare(a.Key, b.Key) })
+	}
+	return newChains(rows, children, records)
+}
+
+// putCopy writes the copy's row of issue as a reading of Dispatch does (Store.PutDispatchIssue):
+// the parent its record names and the status Dispatch last showed it in, at a sequence above every
+// value the copy holds of it, so the row reads as the record does whatever was written before.
+func putCopy(t *testing.T, ctx context.Context, tx pgx.Tx, issue Issue) {
+	t.Helper()
+	row := copyOf(issue)[0]
+	var seq int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`,
+		issue.Key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
+	}
+	must(t, NewStore().PutDispatchIssue(ctx, tx, DispatchReading{Key: row.Key, Project: row.Project, Seq: seq + 1,
+		Status: Carry(row.Status), Parent: Carry(row.Parent)}))
+}
+
+// One pass walks one chain: the hold under an accepted ancestor (Waiting's HeldUnderAccepted) and
+// the children-first cycle (ChildWaits) are two readings of the same chains (Chains), so a row of
+// the copy one of them read is read by the other from what the first kept. The chain is the
+// copy's, so it crosses an issue already done that the pass's own records leave out: the issue
+// under a done parent is held by the merging issue above that parent, and its child's blocked_by
+// link to that same issue is named a cycle.
 func TestOnePassWalksOneChain(t *testing.T) {
 	root := chainIssue("LEGION-900", "LEGION-900", "", phase.Admitted, "in_progress")
 	merging := chainIssue("LEGION-901", "LEGION-900", "LEGION-900", phase.Merging, "needs_review")
 	doneParent := chainIssue("LEGION-902", "LEGION-900", "LEGION-901", phase.Done, "done")
 	child := chainIssue("LEGION-903", "LEGION-900", "LEGION-902", phase.Admitted, "todo")
-	issues := []Issue{root, merging, child}
-	above := map[string]Issue{doneParent.Key: doneParent}
+	grandchild := DispatchIssueRow{Key: "LEGION-904", Project: "LEGION", Status: "backlog", Parent: child.Key,
+		Blockers: []string{merging.Key}}
+	chains := chainsOf([]Issue{root, merging, doneParent, child}, append(copyOf(root, merging, doneParent, child), grandchild))
 
-	chain := chainOf(byKey(issues), above)
-	want := map[string]Issue{root.Key: root, merging.Key: merging, child.Key: child, doneParent.Key: doneParent}
-	if !reflect.DeepEqual(chain, want) {
-		t.Fatalf("the chain of the pass holds %v, want %v: its own records and the records above them",
-			slices.Sorted(maps.Keys(chain)), slices.Sorted(maps.Keys(want)))
+	if ancestor := AcceptedAncestor(chains, child.Key); ancestor != merging.Key {
+		t.Fatalf("the accepted ancestor of %s = %q, want %s past the done parent %s", child.Key, ancestor, merging.Key, doneParent.Key)
 	}
-	// The one walk both readers make crosses the done parent and names the merging ancestor,
-	// which is the whole reason the records above the pass are in the map at all.
-	if ancestor := AcceptedAncestor(child, chain); ancestor != merging.Key {
-		t.Fatalf("the accepted ancestor of %s over the pass's chain = %q, want %s past the done parent %s", child.Key, ancestor, merging.Key, doneParent.Key)
+	read := chains.steps
+	waits := ChildWaits(chains, []Issue{child})
+	if open := waits[child.Key].Open; len(open) != 1 || open[0].Key != grandchild.Key || open[0].Cycle != merging.Key {
+		t.Fatalf("the open children of %s = %+v, want %s naming %s as its cycle", child.Key, open, grandchild.Key, merging.Key)
 	}
-	if ancestor := AcceptedAncestor(child, byKey(issues)); ancestor != "" {
-		t.Fatalf("the accepted ancestor of %s over the pass's own records alone = %q, want none: that walk stops at the parent they leave out", child.Key, ancestor)
+	if chains.steps != read {
+		t.Fatalf("the cycle walk read %d rows of the copy again, want none: the hold's walk kept the chain", chains.steps-read)
 	}
 }
 

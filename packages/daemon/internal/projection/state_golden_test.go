@@ -40,10 +40,11 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
 // a root carrying a run is work already under way.
 //
-// It carries the trees too (dispatch://INFRA-980): LEGION-208's lifecycle stands open under the
-// workflow, and the two roots waiting in the line are live trees of their own, so `trees` names
-// three roots while one issue alone holds a slot — which is the reading `active` can no longer
-// give. Each issue's `tree` names its root, so the child LEGION-209 is told from the three roots.
+// It carries the trees too (R22 of dispatch://INFRA-3320): the roots in Legion's work, each with
+// no issue above it in work on Dispatch's chain, so `trees` names three roots while one issue
+// alone holds a slot — which is the reading `active` cannot give. Each issue's `tree` names its
+// gate root on the chain (record.Chains.StateTree), so the child LEGION-209 is told from the
+// three roots.
 func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	const issue = "LEGION-208"
 	architect, err := claim.NewToken("legion", issue, claim.RoleArchitect)
@@ -66,7 +67,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 		lifecycles: []string{issue},
 		mirror: []record.DispatchIssueRow{
 			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
-			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5},
+			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5, Parent: issue},
 			{Key: "LEGION-210", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-301"}, Seq: 6},
 			{Key: "LEGION-211", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-302"}, Seq: 7},
 			{Key: "LEGION-300", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 8},

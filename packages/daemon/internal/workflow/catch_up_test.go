@@ -187,25 +187,29 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // wake, and it names every issue in accepting whose acceptance is that architect's, whatever each
 // is waiting for: the acceptance itself is refused while an issue beneath it is still in the
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
-// decided.
+// decided. The catch-up names the issues the architect acts on: its own issue and the issues
+// under it in Legion's work (R18 of dispatch://INFRA-3320), so a child done or on the backlog is
+// not among them.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	awaiting := func(keys string) string {
 		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
 	}
+	const both, rootAlone = "LEGION-1,LEGION-2", "LEGION-1"
 	for _, tc := range []struct {
 		name                    string
 		root, child             phase.Phase
 		rootStatus, childStatus string
+		issues                  string
 		want                    string
 	}{
-		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
-		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
-		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
-		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},
-		{"the root merging", phase.Merging, phase.Done, "retro", "done", base},
-		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", base},
+		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", rootAlone, awaiting("LEGION-1")},
+		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", rootAlone, awaiting("LEGION-1")},
+		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", both, awaiting("LEGION-1")},
+		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", both, awaiting("LEGION-2")},
+		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", both, awaiting("LEGION-1, LEGION-2")},
+		{"the root merging", phase.Merging, phase.Done, "retro", "done", rootAlone, base},
+		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", both, base},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -217,7 +221,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 				Phase: tc.child, Generation: 1, Status: tc.childStatus, Rank: "V"})
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
 			got := catchUps(t, pool)
-			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2 reason=%s", tc.want)
+			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=%s reason=%s", tc.issues, tc.want)
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("catch-ups %v; want [%s]", got, want)
 			}

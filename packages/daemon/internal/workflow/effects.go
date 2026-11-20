@@ -124,7 +124,10 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
 		return false
 	}
-	if !record.AtWork(issue, gate) || root.Lingers() {
+	// root is issue's gate root (admit's phaseWorkerOf), so the issue holds its own gate exactly
+	// where it is its own gate root; a phase a worker role works is never admitted, so AtWork
+	// reads no gate for it.
+	if !record.AtWork(issue, root.Key == issue.Key, gate) || root.Lingers() {
 		return false
 	}
 	c := run.Claim

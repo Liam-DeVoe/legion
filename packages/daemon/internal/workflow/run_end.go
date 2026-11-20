@@ -268,8 +268,8 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 // uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
 // tree, stands in an open run that no start of this release counted, and that run: issue
 // stands in a step whose runs are recorded (standingStep), the end rule does not hold that run over
-// (runOver), its tree is not the operator's, which runs no step of the workflow
-// (record.OperatorHoldsTree), and its generation started a run (generationStarted).
+// (runOver), the issue is not the operator's, which runs no step of the workflow
+// (record.OperatorHolds), and its generation started a run (generationStarted).
 func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
 	step, ok := standingStep(issue)
 	if !ok {
@@ -280,7 +280,7 @@ func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns
 	if err != nil || over {
 		return run, false, err
 	}
-	operator, err := record.OperatorHoldsTree(ctx, e.store, tx, issue)
+	operator, err := record.OperatorHolds(ctx, e.store, tx, issue)
 	if err != nil || operator {
 		return run, false, err
 	}

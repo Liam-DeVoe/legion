@@ -166,7 +166,7 @@ func spLine(t *testing.T, pool *pgxpool.Pool) []record.LineEntry {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		if _, _, line, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil, fixedNow); err != nil {
+		if _, _, line, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})
