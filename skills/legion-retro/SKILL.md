@@ -69,6 +69,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
    **Results read:** implementer <check and result>, tester <check and result, where the task has a tester step>.
 
+   **Declined threads:** <with no reviewer step, each bot thread step 1 declined, by node id with its reason, or none>
+
    **Production check:** <the command or user action that will show the change working in production>
    **Carried by:** <the deploy or restart that carries the merge there>
    **Run by:** <the agent or role your system prompt's deployment instructions name; when none, the person to ask>

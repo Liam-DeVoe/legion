@@ -757,11 +757,26 @@ test("retro reads only the handoffs its task has, and answers bot threads with n
       /the `Checks` block included, except a no-result line/,
     ]),
     ...lacks("legion-worker/references/review-threads.md", [
-      /declined thread[^.;]*completion summary, or at retro in its Dispatch message/,
+      /declined thread[^.]*in its completion summary when it implements/,
+      /at retro in the Dispatch message of `skill:\/\/legion-retro` step 5/,
       /stamped with the head it just pushed, or at retro with the head retro found/,
     ]),
   ];
   expect(missing).toEqual([]);
+});
+
+// A declined bot thread on a task with no reviewer step is named in one place for each phase of
+// the implementer: the completion summary when it implements, and retro's Dispatch message, since
+// a retro summary holds two sentences. The prompt parts are read where they live in the repository.
+test("each phase of the implementer names a declined bot thread in its own place", () => {
+  const prompts = path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts");
+  expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
+    /Name each thread you declined[^.]*in your completion's `summary`; at your retro, name them in the Dispatch message of `skill:\/\/legion-retro` step 5/
+  );
+  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
+    /name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
+  );
+  expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
 
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
