@@ -2,7 +2,9 @@
 // it writes. Two checks run, in this order, and either one refuses the write:
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
-//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
+//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text. The
+//     deployment names it (Setting); under a deployment that names none, a write where no check
+//     is named skips it rather than being refused for its absence (Guard.sharedCheck).
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
 //     GitHub reports public.
@@ -80,6 +82,14 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// PrivateCopyBase is the directory a guard under a deployment's digest makes the copy of the
+	// check it runs under (Guard.sharedCheck, privateCopy), in place of this package's
+	// PrivateCopyBase and its fallback. Empty is the ordinary case, a role's: the role's own
+	// private directory where it is there, else /tmp. A caller that is no role sets it to a
+	// directory of its own that only its user reaches: the daemon's answer loop, whose container
+	// may hold the worker image's root-owned, empty PrivateCopyBase and binds nothing writable
+	// there (internal/ghtool's Answer.leakGuard). The copy is made in it and nowhere else.
+	PrivateCopyBase string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -94,15 +104,22 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// copyBase and copyFallback are where the private copy of a check under a deployment's digest
+	// is made (privateCopy): Options.PrivateCopyBase for both where it is set, and otherwise
+	// PrivateCopyBase and privateCopyFallback. This package's own tests set them directly.
+	copyBase, copyFallback string
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, curl: curlProgram}
+	g := &Guard{opts: opts, curl: curlProgram, copyBase: PrivateCopyBase, copyFallback: privateCopyFallback}
 	if opts.Curl != "" {
 		g.curl = opts.Curl
+	}
+	if opts.PrivateCopyBase != "" {
+		g.copyBase, g.copyFallback = opts.PrivateCopyBase, opts.PrivateCopyBase
 	}
 	g.noAnswer = noAnswer(g.base())
 	return g
@@ -209,18 +226,22 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own.
+// shape, and the rule pass then reads the title and the body as two records of their own. Under a
+// deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: WhyNoCheck, Err: err}
-	}
-	if err := g.shared(ctx, what, child{
-		argv:  []string{check, "check-public-text", "-"},
-		stdin: strings.NewReader(req.Text),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		if err := g.shared(ctx, what, child{
+			argv:  []string{check.path, "check-public-text", "-"},
+			stdin: strings.NewReader(req.Text),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
 	if err != nil {

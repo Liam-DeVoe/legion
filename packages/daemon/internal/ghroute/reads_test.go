@@ -176,8 +176,9 @@ func TestGhGraphQLQueryRead(t *testing.T) {
 // The read rule is proven against the check the worker image pins: the tag ReadsProvenCheckTag
 // names is worker.Dockerfile's `ARG LEAK_CHECK_TAG`, ReadsProvenCheckSHA256 is the sha256 of a
 // public_leak_check.py, and it is the sha256 of the public_leak_check.py the tests' port of the
-// check was written against (ghroutetest.PinnedCheckPortSHA256). A bump of the pin fails here
-// until the tag, the sha256 and that port all move.
+// check was written against (ghroutetest.PinnedCheckPortSHA256). That sha256 is the gate
+// `legion gh` hands the guard for every call, whatever checker a role is told. A bump of the pin
+// fails here until the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
 	const prove = "follow the steps in ReadsProvenCheckTag's comment (reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghroutetest.PinnedCheckReads and the new sha256 into ghroutetest.PinnedCheckPortSHA256, run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ReadsProvenCheckTag and ReadsProvenCheckSHA256"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))

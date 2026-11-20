@@ -81,26 +81,57 @@ It carries:
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
-  it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on that repository's owner (`leakCheckToken`, `internal/daemon/kubernetes.go`).
-  The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
+  it is published by tag from a repository the deployment names, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build, and a deployment that names a manifest digest (below) moves its `manifest_sha256` in the same change.
+  The deployment names the check with one operator setting of two values, set together or not at all: the repository it is published from (`owner/name`) and the check's manifest digest at that tag (64 lowercase hex digits).
+  The manifest digest covers every file the check runs from, in this order: `public-leak-check.sh` (the launcher every write runs), `public_leak_check.py` (the program it execs), `README.md`, and `must-pass-lines.txt` (which the check's self-test reads); these are the files the check's own install procedure installs into a home and records a sha256 of each of.
+  It is the sha256 of the four lines `sha256sum` prints of them, so `(cd leak-check && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt) | sha256sum` prints it (`leakguard.Manifest`).
+  A launcher script edited beside an unchanged program is therefore another check.
+  The two values are `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment, or the `leak_check` block of `legion.yaml`, whose `repository` and `manifest_sha256` override the two variables one by one:
+
+  ```yaml
+  leak_check:
+    repository: example-org/deployment
+    manifest_sha256: <the manifest digest of the pinned tag's leak-check directory>
+  ```
+
+  The loader refuses one value without the other, naming the one that is set and the two places the missing one may come from, a repository that is no `owner/name`, and a digest that is not 64 lowercase hex digits.
+  A daemon before the setting refuses the `leak_check` key and ignores the two variables, so a deployment sets the variables first and the release that reads them follows.
+  At boot the daemon logs which check it runs: `daemon: the deployment leak check is configured: …`, with the setting's `repository` and `manifest_sha256` as fields of the line.
+
+- the shared check's way into a pod, which takes the setting above:
+  the pod's launcher names its pin in its hello, and the daemon reads the check at that tag from the named repository with a read-only token of its own, which its implement App mints as a read lease on that repository's owner (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The daemon reads each tag once and keeps that served tarball and its manifest digest in memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
-  Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag or its tag file is refused (`spawnOnce`, `internal/shim/shim.go`).
+  Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
+  The digest a role is told is the one its pod was built under, which the pod's template records (`legion.dev/leak-checker-manifest-sha256`): a pod kept after the deployment moved its worker image's pin and its `manifest_sha256` together holds the install of the old pin, so a role started in it before its update round is told the old digest and starts, and can push its work and answer that round (`keptPod.checker`, `launch.leakChecker`).
+  A recorded digest other than the setting's is drift, so an update round opens over such a pod and replaces it once its workers have pushed (`leakCheckDrift`): a corrected digest, or a moved repository, reaches every pod.
+  A pod that records none was built under no setting or by a daemon before the record.
+  If its reconnected launcher holds no install, the daemon computes the manifest of the tarball it will push to that exact session, records and tells that served digest before the first slice, then starts the role only after that session installs it.
+  A served digest other than the setting is drift, so the kept pod starts safely under its own pin and its update round replaces it.
+  If its launcher holds an install from before, the role is told none and that install runs unhashed, as every check did before the setting, until the pod is next replaced.
+  The role's name for the digest is not the daemon's, so a configuration a role loads, `legion config check` among them, never reads one half of the daemon's setting without the other.
+  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghroute.ReadsProvenCheckSHA256`, `internal/ghroute/reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, its tag file is refused, or it has a manifest digest other than the one the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `manifest_sha256` starts no role.
+  Under the digest, the guard of every write holds the check it finds to it as well: a check whose manifest digest is anything else, or that misses a file of it, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
-  A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
+
+- a deployment that names no check, which runs none:
+  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
+
+- the check's launches, rollbacks and tmux panes:
+  a launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
   The tag file is read without following a link or waiting on a fifo, and one that is no regular file or is past 256 bytes is read as no install of the pin (`installedTag`).
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
-  an older daemon pushes nothing, and a new image's shim then refuses every start.
-  A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
+  an older daemon pushes nothing and tells no digest, so a new image's shim starts the role, and every write it makes is refused for the check its environment names and its pod does not hold.
+  A tag of that repository need not be protected for a role to run under the check the deployment named: a tag force-moved to other bytes has another manifest digest, which every shim and guard told the deployment's refuses; the daemon serves its earlier copy of the tag until it restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
-  The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The daemon resolves that machine's check once per launch and tells the pane where it is, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   A refused write writes nothing and prints one of three lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
   `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
@@ -1541,7 +1572,7 @@ the daemon reads each conversation where its panes keep it ([The conversation st
 With `answers` set, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
 A daemon running in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, sets `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 Beside that `gh`, boot needs the shared public leak check the loop's tool runs before every call ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)), and refuses to start without one, naming the check and where it looked:
-a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon reads the tag it installs the check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
+a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon needs the deployment's leak check setting, `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` or the `leak_check` block ([Worker image](#worker-image)), and reads the tag it installs that check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
 A Kubernetes daemon runs no other tool of its host but that check, which it installs and runs itself, since its pods run the image's.
 `legion config check` and `legion probe-boot` make the same refusals.
 `legion state --json` shows the block under `settings.answers`:
@@ -1754,14 +1785,22 @@ So the tool runs only what is safe there, and decides before anything runs:
 
 - **The check the guard runs.**
   Each runtime has one rule for the check the guard runs (`ghtool.Host.LeakCheck`), which the tool asks for at every call and hands the guard, so the guard never resolves a check of its own.
-  Under `runtime: kubernetes` the daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs ([Worker image](#worker-image)):
-  it reads the check at its own environment's `LEGION_LEAK_CHECK_TAG` through the reader every pod's launcher is pushed the check from, so one read of a tag serves both, installs it under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
+  Where the deployment names its leak check ([Worker image](#worker-image)), the guard is told that check's manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256`, under either runtime (`ghtool.Host.LeakCheckManifestSHA256`), and holds the check it is handed to it as a pane's or a pod's guard does: a check whose manifest digest is anything else refuses the call, gh never started, with `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found.
+  Under that digest the guard runs a private copy of the check it held to it, and the tool has it make that copy in the answer's own 0700 directory, `<state_dir>/answers/<question>/gh/leak-check-copies`, never in a role's private directory (`leakguard.Options.PrivateCopyBase`): the worker image holds that directory root-owned and empty, and nothing writable is bound over it in the daemon's container.
+  Where the deployment names none, the guard is told no digest, a `LEGION_LEAK_CHECKER_MANIFEST_SHA256` of the daemon's own environment included.
+  Under `runtime: kubernetes` the repository the check is read from and its manifest digest are the deployment's setting, which `answers` needs there: boot refuses to start without it, naming `LEGION_LEAK_CHECK_REPOSITORY`, `LEGION_LEAK_CHECK_MANIFEST_SHA256` and the `leak_check` block, and a served check whose manifest digest is not the setting's is a cause no wait changes (below).
+
+- **The check under `runtime: kubernetes`.**
+  The daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs:
+  it reads the check from the repository the setting names, at its own environment's `LEGION_LEAK_CHECK_TAG`, through the reader every pod's launcher is pushed the check from, so one read of a tag serves both.
+  The check it read must have the setting's manifest digest, as a pod built under the setting is pushed none of another, or nothing is installed.
+  It installs that check under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), reads it back as a role's shim reads its pod's install, at the tag and of the setting's manifest digest (`leakguard.Installed`), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
   A cause that is not GitHub's own trouble refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`, told as the boot's GitHub App mint tells it (`appTransient`, permanent unless GitHub reports its own trouble):
-  a tag not of the published shape, a daemon with no GitHub App, a tarball read GitHub answers 404 (the tag is missing) or 403 for anything but its rate limit, a tarball that holds no check, an App with no installation on the check's owner, GitHub refusing the reading permissions the read's token asks for, any other token mint GitHub does not report as its own trouble, and a served check whose install fails, its `--help` run among them.
+  a tag not of the published shape, a daemon with no GitHub App, a tarball read GitHub answers 404 (the tag is missing) or 403 for anything but its rate limit, a tarball that holds no check or misses a file of its manifest, an App with no installation on the check's owner, GitHub refusing the reading permissions the read's token asks for, any other token mint GitHub does not report as its own trouble, a served check whose manifest digest is not the setting's, `the check the daemon read at <tag> has the manifest digest <digest>, not the deployment's <digest> (LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256)`, and a served check whose install fails, its `--help` run among them.
   GitHub's trouble boots the daemon all the same and leaves the install to the background: the read's transport failing, the body included, its time bound passing, an HTTP 5xx answer to the tarball read, GitHub's rate limit (a 429, or a 403 that carries it), a 401 to the token the read was made with, which the daemon then forgets so the next try mints a fresh one, and a token mint that failed as GitHub's trouble.
   The daemon tries the install again 5 seconds later, doubling the wait up to 30 seconds, until it lands, a try meets a cause that is not GitHub's trouble, or the daemon stops, and logs each failed try as `answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again` with the tag, the wait (`retryIn`) and the cause.
   Until the install lands, every `gh` call is refused before gh starts with the setup error naming the pin and the last try's cause, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, is not installed yet, …`, recorded and logged as the guard's own refusals are.
-  A try in the background that meets a cause that is not GitHub's trouble ends the install:
+  A try in the background that meets a cause that is not GitHub's trouble, a manifest digest that is not the setting's among them, ends the install:
   the daemon logs it once at Error, `answers: the shared public leak check cannot be installed, so the gh tool refuses every call until the daemon's next boot; installing it no more`, with the tag and the cause, and tries no more.
   Every `gh` call from then on is refused with that cause, in a setup error that says so, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, could not be installed, and the daemon tries the install again only at its next boot: …`.
   The first call after the install lands runs under the installed check.
@@ -1770,7 +1809,8 @@ So the tool runs only what is safe there, and decides before anything runs:
 - **The check under `runtime: tmux`.**
   The check is the machine's own, which the tool resolves at each call in the daemon's own environment, as the daemon resolves a pane's at each launch (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), since an operator's machine installs, moves and republishes the check while the daemon runs.
   It never resolves the check in the environment the guard's children run in, whose `PATH` has gh's directory in front and which carries no `PUBLIC_LEAK_CHECK`.
-  A call made while the machine carries none is refused with the setup error naming the missing check.
+  A call made while the machine's setup is broken, or names no check at all, is refused with the setup error naming what the resolution read, whether or not the deployment names a leak check: a pane of a deployment that names none runs its writes under the guard's rules alone where no check is named, and the tool runs no call without one.
+  Where the deployment names a leak check, the guard holds the machine's check to its manifest digest (above).
 
 ### The conversation stores
 

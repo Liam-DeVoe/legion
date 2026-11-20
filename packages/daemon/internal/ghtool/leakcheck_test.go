@@ -17,15 +17,29 @@ import (
 )
 
 // standInSource is the Kubernetes runtime's reader of the shared check as these tests serve it
-// (LeakCheckSource): body, packed, at any tag, with each tag it was read at recorded.
+// (LeakCheckSource): body, packed, and its manifest digest, at any tag, with each tag it was read
+// at recorded.
 type standInSource struct {
-	body []byte
-	tags []string
+	body     []byte
+	manifest string
+	tags     []string
 }
 
 func (s *standInSource) Get(_ context.Context, tag string) (leakguard.Served, error) {
 	s.tags = append(s.tags, tag)
-	return leakguard.Served{Tag: tag, Body: s.body}, nil
+	return leakguard.Served{Tag: tag, Body: s.body, ManifestSHA256: s.manifest}, nil
+}
+
+// servedSource is the reader serving check, the leak-check directory's files by name, packed and
+// digested as the daemon's reader packs GitHub's tarball of the check's repository
+// (leakguard.PackTarballManifest).
+func servedSource(t *testing.T, check map[string]leakguardtest.Member) *standInSource {
+	t.Helper()
+	body, manifest, err := leakguard.PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, check)))
+	if err != nil {
+		t.Fatalf("pack the served check: %v", err)
+	}
+	return &standInSource{body: body, manifest: manifest}
 }
 
 // refusingSource is a reader whose every read fails with err, as GitHub's refusal of the read
@@ -36,17 +50,23 @@ func (s refusingSource) Get(context.Context, string) (leakguard.Served, error) {
 	return leakguard.Served{}, s.err
 }
 
-// servedCheck is the check the daemon serves, packed as it packs one (a gzipped tarball of the
-// leak-check directory's own paths, leakguard.PackTarball): a launcher that answers the install's
+// servedCheck is the leak-check directory the daemon serves: a launcher that answers the install's
 // one `--help` run as the real check does, counting it in runs (leakguardtest.AnswersHelp), and
-// clears every call it is handed after, recording it in record (checkPasses, recordsIn).
-func servedCheck(t *testing.T, runs, record string) []byte {
-	t.Helper()
-	launcher := "#!/bin/sh\nif [ \"$1\" = --help ]; then\n" + leakguardtest.AnswersHelp(runs) + "fi\n" + recordsIn(record, checkPasses)
-	return leakguardtest.Tarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: launcher, Mode: 0o755},
-		"public_leak_check.py":  {Body: "# the check itself\n", Mode: 0o644},
-	})
+// clears every call it is handed after, recording it in record (checkPasses, recordsIn), beside
+// the three other files of its manifest (leakguard.ManifestFiles).
+func servedCheck(runs, record string) map[string]leakguardtest.Member {
+	return checkFiles("#!/bin/sh\nif [ \"$1\" = --help ]; then\n" + leakguardtest.AnswersHelp(runs) + "fi\n" + recordsIn(record, checkPasses))
+}
+
+// checkFiles is a leak-check directory whose launcher is launcher, beside leakguardtest's stand-in
+// program, README and must-pass lines, the four files of its manifest.
+func checkFiles(launcher string) map[string]leakguardtest.Member {
+	return map[string]leakguardtest.Member{
+		leakguardtest.CheckName:    {Body: launcher, Mode: 0o755},
+		leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
+	}
 }
 
 // installedAt is a Kubernetes daemon's check once an install landed at check (LeakCheck.Install).
@@ -71,8 +91,9 @@ func daemonEnviron(t *testing.T, extra ...string) []string {
 }
 
 // A Kubernetes daemon's gh tool runs the check the daemon installed for it, read through the
-// runtime's own reader at the pin (InstallLeakCheck): a call the installed check clears runs gh,
-// with no setup failure, in an environment that holds no check of its own. The install is a
+// runtime's own reader at the pin and of the deployment's manifest digest (InstallLeakCheck): a
+// call the installed check clears runs gh, with no setup failure, in an environment that holds no
+// check of its own, the guard told that digest and holding the install to it. The install is a
 // pod's launcher's: one `--help` run of the served check, the tag recorded, at
 // <state_dir>/leak-check. Resolved in that environment, as a tmux daemon's check is
 // (MachineLeakCheck), there is none, and every call is refused with the setup failure naming it,
@@ -80,9 +101,9 @@ func daemonEnviron(t *testing.T, extra ...string) []string {
 func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 	const tag = "leak-check-v18"
 	runs, record := filepath.Join(t.TempDir(), "help-runs"), filepath.Join(t.TempDir(), "leak-check-record")
-	source := &standInSource{body: servedCheck(t, runs, record)}
+	source := servedSource(t, servedCheck(runs, record))
 	stateDir := t.TempDir()
-	check, err := InstallLeakCheck(context.Background(), source, tag, stateDir, slog.New(slog.DiscardHandler))
+	check, err := InstallLeakCheck(context.Background(), source, tag, source.manifest, stateDir, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("InstallLeakCheck: %v", err)
 	}
@@ -99,6 +120,7 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 		// The installed check records in the file written into it, which is what f.checked reads.
 		f.record = record
 		f.answer.host.LeakCheck, f.answer.host.Environ = installedAt(check), daemonEnviron(t)
+		f.answer.host.LeakCheckManifestSHA256 = source.manifest
 		got := f.run(1, argv...)
 		if !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
 			t.Fatalf("gh %q = %+v; want gh's answer, exit 0, and no setup failure", argv, got)
@@ -133,17 +155,15 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 // install of a body the reader keeps fails the same way again.
 func TestAFailedInstallIsAnInstallErrorAndAFailedReadIsNot(t *testing.T) {
 	const tag = "leak-check-v18"
-	silent := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\nexit 2\n", Mode: 0o755},
-	})
-	_, err := InstallLeakCheck(context.Background(), &standInSource{body: silent}, tag, t.TempDir(), slog.New(slog.DiscardHandler))
+	silent := servedSource(t, checkFiles("#!/bin/sh\nexit 2\n"))
+	_, err := InstallLeakCheck(context.Background(), silent, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
 	var install *InstallError
 	if !errors.As(err, &install) || !strings.HasPrefix(err.Error(), leakguard.RefusalPrefix+"the served check") {
 		t.Fatalf("the install of a check whose --help fails = %v, want an *InstallError in the cause sentence %q…", err, leakguard.RefusalPrefix+"the served check")
 	}
 
-	read := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of " + leakguard.CheckSlug + " at " + tag + " with HTTP 502")
-	_, err = InstallLeakCheck(context.Background(), refusingSource{err: read}, tag, t.TempDir(), slog.New(slog.DiscardHandler))
+	read := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of example-org/deployment at " + tag + " with HTTP 502")
+	_, err = InstallLeakCheck(context.Background(), refusingSource{err: read}, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
 	if !errors.Is(err, read) || errors.As(err, &install) {
 		t.Fatalf("an install whose read failed = %v, want the read's own error and no *InstallError", err)
 	}
@@ -157,9 +177,10 @@ func TestAFailedInstallIsAnInstallErrorAndAFailedReadIsNot(t *testing.T) {
 func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) {
 	const tag = "leak-check-v18"
 	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-	pending := NewLeakCheck(tag)
+	source := servedSource(t, servedCheck(filepath.Join(t.TempDir(), "help-runs"), f.record))
+	pending := NewLeakCheck(tag, source.manifest)
 	stateDir := t.TempDir()
-	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of " + leakguard.CheckSlug + " at " + tag + " with HTTP 502")
+	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of example-org/deployment at " + tag + " with HTTP 502")
 	if err := pending.Install(context.Background(), refusingSource{err: cause}, stateDir, slog.New(slog.DiscardHandler)); !errors.Is(err, cause) {
 		t.Fatalf("a try whose read failed = %v, want the read's own error", err)
 	}
@@ -183,7 +204,6 @@ func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) 
 		t.Errorf("the refusal logged %v; want one line naming the pending install", lines)
 	}
 
-	source := &standInSource{body: servedCheck(t, filepath.Join(t.TempDir(), "help-runs"), f.record)}
 	if err := pending.Install(context.Background(), source, stateDir, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("a try the reader serves: %v", err)
 	}
@@ -205,8 +225,8 @@ func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) 
 func TestACallAfterTheInstallStoppedIsRefusedSayingTheNextBootTriesAgain(t *testing.T) {
 	const tag = "leak-check-v18"
 	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-	stopped := NewLeakCheck(tag)
-	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of " + leakguard.CheckSlug + " at " + tag + " with HTTP 404")
+	stopped := NewLeakCheck(tag, strings.Repeat("5e", 32))
+	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of example-org/deployment at " + tag + " with HTTP 404")
 	if err := stopped.Install(context.Background(), refusingSource{err: cause}, t.TempDir(), slog.New(slog.DiscardHandler)); !errors.Is(err, cause) {
 		t.Fatalf("a try whose read failed = %v, want the read's own error", err)
 	}
@@ -316,18 +336,19 @@ func TestTheMachinesCheckIsResolvedInTheDaemonsEnvironmentAndNotTheGuards(t *tes
 }
 
 // A re-pin is a boot at another tag: its install replaces the copy of the tag before at the same
-// path, logging the one line that says so, and the path reads back as the new tag's.
+// path, logging the one line that says so, and the path reads back as the new tag's, of the
+// deployment's manifest digest.
 func TestAnInstallAtANewPinReplacesTheOneBefore(t *testing.T) {
 	runs := filepath.Join(t.TempDir(), "help-runs")
-	source := &standInSource{body: servedCheck(t, runs, filepath.Join(t.TempDir(), "leak-check-record"))}
+	source := servedSource(t, servedCheck(runs, filepath.Join(t.TempDir(), "leak-check-record")))
 	stateDir := t.TempDir()
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
-	first, err := InstallLeakCheck(context.Background(), source, "leak-check-v18", stateDir, log)
+	first, err := InstallLeakCheck(context.Background(), source, "leak-check-v18", source.manifest, stateDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := InstallLeakCheck(context.Background(), source, "leak-check-v19", stateDir, log)
+	second, err := InstallLeakCheck(context.Background(), source, "leak-check-v19", source.manifest, stateDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,10 +356,112 @@ func TestAnInstallAtANewPinReplacesTheOneBefore(t *testing.T) {
 	if second != first {
 		t.Fatalf("the second install is at %s, want the first's path %s", second, first)
 	}
-	if _, err := leakguard.Installed([]string{leakguard.TagVariable + "=leak-check-v19"}, dir); err != nil {
-		t.Fatalf("the install at %s does not read back as leak-check-v19: %v", dir, err)
+	if check, err := leakguard.Installed([]string{leakguard.TagVariable + "=leak-check-v19", leakguard.CheckerVar + "=" + source.manifest}, dir); err != nil || check != second {
+		t.Fatalf("the install at %s reads back as %q, %v; want %s, of leak-check-v19 and the digest %s", dir, check, err, second, source.manifest)
 	}
 	if want := "answers: the install of leak-check-v19 replaced the install of leak-check-v18 at " + dir; !strings.Contains(logs.String(), want) {
 		t.Errorf("the re-pin logged %q, want the line %q", logs.String(), want)
+	}
+}
+
+// The guard of every call is told the deployment's manifest digest as leakguard.CheckerVar where
+// the deployment names a check (Host.LeakCheckManifestSHA256), once and with the setting's own
+// value, and none where it names none, whatever the daemon's own environment carries under that
+// name. Told it, the guard holds the check the host answers to it, as a pane's or a pod's guard
+// holds its role's: under a check of another digest a call is refused, gh never run, with the
+// setup failure naming the digest told and the check's own, where the same call runs under the
+// check's own digest and under none.
+func TestTheGuardIsHeldToTheDeploymentsDigestOnlyWhereItNamesOne(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	// The fixture's check with the three other files of its manifest beside it, so it has one.
+	leakguardtest.Companions(t, f.check, leakguardtest.Program)
+	own, err := leakguard.Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(f.check, name)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := strings.Repeat("0", 64)
+	f.answer.host.Environ = append(f.answer.host.Environ, leakguard.CheckerVar+"="+strings.Repeat("7c", 32))
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	for seq, tc := range []struct {
+		name, manifest string
+		told           []string
+		runs           bool
+	}{
+		{name: "a deployment that names the check's own digest", manifest: own, told: []string{own}, runs: true},
+		{name: "a deployment that names none", runs: true},
+		{name: "a deployment that names another digest", manifest: other, told: []string{other}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.answer.host.LeakCheckManifestSHA256 = tc.manifest
+			var told []string
+			for _, pair := range f.answer.guardEnv(t.TempDir()) {
+				if value, ok := strings.CutPrefix(pair, leakguard.CheckerVar+"="); ok {
+					told = append(told, value)
+				}
+			}
+			if !slices.Equal(told, tc.told) {
+				t.Fatalf("the guard is told %s %q, want %q", leakguard.CheckerVar, told, tc.told)
+			}
+			ran := len(f.invocations(false))
+			got := f.run(seq+1, argv...)
+			if tc.runs {
+				if !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
+					t.Fatalf("gh %q = %+v; want gh's answer, exit 0", argv, got)
+				}
+				return
+			}
+			const refused = "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check found is not the one the deployment names: "
+			if got.Ran || got.Exit != -1 || !strings.Contains(got.Output, refused+leakguard.CheckerVar+"="+other) ||
+				!strings.Contains(got.Output, "has the manifest digest "+own) {
+				t.Fatalf("gh %q = %+v; want the setup failure naming the digest told and the check's own, gh never run", argv, got)
+			}
+			if now := len(f.invocations(false)); now != ran {
+				t.Errorf("gh ran %d calls for a call refused for its check's digest", now-ran)
+			}
+		})
+	}
+}
+
+// Under the deployment's manifest digest the guard of a call runs its private copy of the check
+// from the answer's own 0700 directory under the daemon's state directory (Answer.copies,
+// leakguard.Options.PrivateCopyBase), never from leakguard.PrivateCopyBase or /tmp: a Kubernetes
+// daemon's container holds the worker image's root-owned PrivateCopyBase, where no copy can be
+// made. The fixture's check records the directory it ran from, and the copy is gone once the call
+// answers.
+func TestACallUnderTheDigestRunsTheCheckFromACopyUnderTheStateDirectory(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	ran := filepath.Join(t.TempDir(), "ran-from")
+	f.leakCheck("echo \"$(dirname \"$(readlink -f \"$0\")\")\" >>'" + ran + "'\n" + checkPasses)
+	leakguardtest.Companions(t, f.check, leakguardtest.Program)
+	own, err := leakguard.Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(f.check, name)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.answer.host.LeakCheckManifestSHA256 = own
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	if got := f.run(1, argv...); !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
+		t.Fatalf("gh %q = %+v; want gh's answer, exit 0", argv, got)
+	}
+	recorded, err := os.ReadFile(ran)
+	if err != nil {
+		t.Fatalf("the check recorded no run: %v", err)
+	}
+	copies, err := filepath.EvalSymlinks(f.answer.copies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := filepath.EvalSymlinks(f.host.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := strings.TrimSpace(string(recorded))
+	if filepath.Dir(from) != copies || !strings.HasPrefix(copies, state+string(filepath.Separator)) {
+		t.Fatalf("the check ran from %q, want one copy in %s, under the state directory %s", from, copies, state)
+	}
+	if info, err := os.Stat(copies); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the copies' directory %s is %v, %v; want a 0700 directory", copies, info, err)
+	}
+	if _, err := os.Lstat(from); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the copy %s is still there once the call answered (%v)", from, err)
 	}
 }

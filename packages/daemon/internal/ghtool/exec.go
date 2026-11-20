@@ -60,6 +60,13 @@ func (a *Answer) toolPath() string {
 // has a visibility read GitHub answered 404. check is the check it runs, the one the host's
 // LeakCheck answered for this call, so the guard resolves none of its own.
 //
+// Under the deployment's manifest digest (Host.LeakCheckManifestSHA256) the guard runs a private
+// copy of the check it held to that digest, and makes it in the answer's own 0700 directory
+// (Answer.copies, leakguard.Options.PrivateCopyBase), never under leakguard.PrivateCopyBase: that
+// is a role's private directory, which the worker image a Kubernetes daemon runs from holds
+// root-owned and empty, with nothing bound over it in the daemon's container, so no copy could be
+// made there and every call would be refused.
+//
 // The whole argv is what it reads, the footer added and all, rather than the options a parser
 // calls text: the shared check's own gh-guard reads full argv, and a private name is refusable
 // wherever it stands. The repository is the one the call was routed to, and "" where it named no
@@ -80,7 +87,7 @@ func (a *Answer) toolPath() string {
 // (Answer.guardEnv), so no call of the model's can be it; and the exact `gh api rate_limit`, which
 // the model can make, is guarded whole here, since nothing of the tool skips the guard for it.
 func (a *Answer) leakGuard(ctx context.Context, check string, argv []string, target ghroute.Target, configDir string) error {
-	_, err := leakguard.New(leakguard.Options{Check: check, Env: a.guardEnv(configDir)}).GhCall(ctx, leakguard.GhRequest{
+	_, err := leakguard.New(leakguard.Options{Check: check, Env: a.guardEnv(configDir), PrivateCopyBase: a.copies}).GhCall(ctx, leakguard.GhRequest{
 		Args:  argv,
 		Stdin: nil,
 		Repo:  targetRepo(target),
@@ -102,8 +109,13 @@ func targetRepo(target ghroute.Target) string {
 
 // guardEnv is the environment the leak guard's children start from for a call routed to
 // configDir: the names of the daemon's own environment (Host.Environ, this process's where the
-// host named none) that guardKeeps keeps, gh's switches (ghSettings), and PATH and GH_CONFIG_DIR
-// its own.
+// host named none) that guardKeeps keeps, gh's switches (ghSettings), PATH and GH_CONFIG_DIR its
+// own, and the deployment's manifest digest as leakguard.CheckerVar where the deployment names a
+// check (Host.LeakCheckManifestSHA256). The guard reads its own environment for that name
+// (leakguard's sharedCheck), so this is the one place it is told it, and it holds the check the
+// host answers to it: a check of another digest refuses the call with the setup failure naming
+// both digests. Where the deployment names none the name is not set, and the guard runs the
+// check it is handed as it is.
 //
 // The daemon's and not the call's, which is the environment gh itself runs under (Answer.env):
 // that one holds two directories on its PATH, an empty HOME and empty XDG directories, which is
@@ -135,7 +147,7 @@ func (a *Answer) guardEnv(configDir string) []string {
 	if base == nil {
 		base = os.Environ()
 	}
-	env := make([]string, 0, len(base)+len(ghSettings)+2)
+	env := make([]string, 0, len(base)+len(ghSettings)+3)
 	// The last entry of a name is the one exec reads, so the daemon's PATH is the last one seen.
 	path := ""
 	for _, pair := range base {
@@ -150,6 +162,9 @@ func (a *Answer) guardEnv(configDir string) []string {
 		path = string(filepath.ListSeparator) + path
 	}
 	env = append(env, ghSettings...)
+	if a.host.LeakCheckManifestSHA256 != "" {
+		env = append(env, leakguard.CheckerVar+"="+a.host.LeakCheckManifestSHA256)
+	}
 	return append(env, "PATH="+a.toolPath()+path, "GH_CONFIG_DIR="+configDir)
 }
 
@@ -177,13 +192,14 @@ func (a *Answer) guardEnv(configDir string) []string {
 //
 // Everything else stays out, among it: the daemon's own credentials and seeds; PUBLIC_LEAK_CHECK
 // (leakguard.CheckVar), since the guard is handed the check's path (Host.LeakCheck) and resolves
-// none of its own; GH_TOKEN, GITHUB_TOKEN and GH_PATH (Answer.guardEnv); the trust stores
-// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), which beside a proxy would let that proxy read
-// the App's token (leakguard.TokenChildKeeps), while the call's own gh runs with none
-// (Answer.env), and a deployment whose proxy reads TLS installs its CA in the system's store,
-// which gh reads by default (docs/deployment.md); GH_HOST, which the call's gh runs without and
-// the check reads a call under (ghroutetest.PinnedCheckReads); the GIT_ names, by which the
-// check's git would read the daemon's repository and configuration (GIT_DIR,
+// none of its own; a leakguard.CheckerVar of the daemon's own environment, since the guard is told
+// the deployment's digest from the host alone (Answer.guardEnv); GH_TOKEN, GITHUB_TOKEN and GH_PATH
+// (Answer.guardEnv); the trust stores (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), which beside
+// a proxy would let that proxy read the App's token (leakguard.TokenChildKeeps), while the call's
+// own gh runs with none (Answer.env), and a deployment whose proxy reads TLS installs its CA in the
+// system's store, which gh reads by default (docs/deployment.md); GH_HOST, which the call's gh runs
+// without and the check reads a call under (ghroutetest.PinnedCheckReads); the GIT_ names, by which
+// the check's git would read the daemon's repository and configuration (GIT_DIR,
 // GIT_CONFIG_PARAMETERS); PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL, which the
 // guard sets for no check (leakguard's package doc); and LEGION_GH_OWNERS_DIR, which the guard
 // reads only of a read `legion gh` refused, while this tool's reads run the real gh.

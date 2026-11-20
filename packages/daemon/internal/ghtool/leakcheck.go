@@ -36,13 +36,25 @@ const leakCheckDir = "leak-check"
 // procgroup.NoReaper. log takes the one line of an install that replaced what the directory held:
 // the install of an earlier boot, at its tag.
 //
-// An error is the read's own (source's), or an *InstallError: the install's cause sentence, or the
-// setup failure a role's shim would refuse to start with where the install does not read back as
-// tag's.
-func InstallLeakCheck(ctx context.Context, source LeakCheckSource, tag, stateDir string, log *slog.Logger) (string, error) {
+// manifest is the deployment's manifest digest (leakguard.Setting.ManifestSHA256), which the
+// install is held to as the install of a pod built under the setting is. What source served must
+// be of it (leakguard.Served's ManifestSHA256), as the daemon pushes a pod built under the setting
+// no check of another digest (runtime/sandbox's serveLeakCheck), or nothing is installed; and the
+// install reads back under it as leakguard.CheckerVar, as a role's shim reads its pod's install, so
+// its four files on disk hash to it too.
+//
+// An error is the read's own (source's), or an *InstallError: a served check of another digest,
+// the install's cause sentence, or the setup failure a role's shim would refuse to start with
+// where the install does not read back as tag's and manifest's.
+func InstallLeakCheck(ctx context.Context, source LeakCheckSource, tag, manifest, stateDir string, log *slog.Logger) (string, error) {
 	served, err := source.Get(ctx, tag)
 	if err != nil {
 		return "", err
+	}
+	if served.ManifestSHA256 != manifest {
+		other := fmt.Errorf("the check the daemon read at %s has the manifest digest %s, not the deployment's %s (%s or leak_check.manifest_sha256)",
+			tag, served.ManifestSHA256, manifest, leakguard.ManifestVar)
+		return "", &InstallError{sentence: leakguard.Cause(other.Error(), nil), err: other}
 	}
 	dir := filepath.Join(stateDir, leakCheckDir)
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
@@ -51,18 +63,19 @@ func InstallLeakCheck(ctx context.Context, source LeakCheckSource, tag, stateDir
 	}); err != nil {
 		return "", &InstallError{sentence: leakguard.Cause(err.Error(), nil), err: err}
 	}
-	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + tag}, dir)
+	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + tag, leakguard.CheckerVar + "=" + manifest}, dir)
 	if err != nil {
 		return "", &InstallError{sentence: err.Error(), err: err}
 	}
 	return check, nil
 }
 
-// InstallError is an InstallLeakCheck failure after source served the check: the install of what
-// it served (leakguard.InstallServed) or the read back of what was installed
-// (leakguard.Installed). Installing again does not change it, since source keeps a read that
-// succeeded (leakguard.Source) and so serves the next install the same body. Its text is the
-// failure's sentence, and it wraps the failure.
+// InstallError is an InstallLeakCheck failure after source served the check: a served check of
+// another manifest digest than the deployment's, the install of what it served
+// (leakguard.InstallServed), or the read back of what was installed (leakguard.Installed).
+// Installing again does not change it, since source keeps a read that succeeded
+// (leakguard.Source) and so serves the next install the same body. Its text is the failure's
+// sentence, and it wraps the failure.
 type InstallError struct {
 	sentence string
 	err      error
@@ -83,14 +96,14 @@ type LeakChecker interface {
 }
 
 // LeakCheck is the shared public leak check a Kubernetes daemon's gh tool runs before every call
-// (Host.LeakCheck): the copy the daemon installs at its pin (Install), which an answer's call may
-// come before. Until a try of the install lands, Check refuses every call with the setup failure
-// naming the pin and why the last try failed; from then on it answers the installed check, to the
-// next call of an answer already open too. Once the daemon stops trying (Stop), the refusal says
-// so. The daemon installs into it while the answers' calls read it, so it is safe for concurrent
-// use.
+// (Host.LeakCheck): the copy the daemon installs at its pin and holds to the deployment's manifest
+// digest (Install), which an answer's call may come before. Until a try of the install lands,
+// Check refuses every call with the setup failure naming the pin and why the last try failed;
+// from then on it answers the installed check, to the next call of an answer already open too.
+// Once the daemon stops trying (Stop), the refusal says so. The daemon installs into it while the
+// answers' calls read it, so it is safe for concurrent use.
 type LeakCheck struct {
-	tag string
+	tag, manifest string
 
 	mu        sync.Mutex
 	installed string
@@ -98,15 +111,16 @@ type LeakCheck struct {
 	stopped   bool
 }
 
-// NewLeakCheck is the check at tag, not yet installed.
-func NewLeakCheck(tag string) *LeakCheck { return &LeakCheck{tag: tag} }
+// NewLeakCheck is the check at tag, of the deployment's manifest digest manifest, not yet
+// installed.
+func NewLeakCheck(tag, manifest string) *LeakCheck { return &LeakCheck{tag: tag, manifest: manifest} }
 
-// Install makes one try of the install at the pin: the check source serves at it, installed
-// under stateDir (InstallLeakCheck). A try that lands makes the installed check the one every
-// call runs, and logs the tag and the path to log; one that fails makes its error why every call
-// is refused until a try lands, and returns it.
+// Install makes one try of the install at the pin: the check source serves at it, held to the
+// deployment's manifest digest and installed under stateDir (InstallLeakCheck). A try that lands
+// makes the installed check the one every call runs, and logs the tag and the path to log; one
+// that fails makes its error why every call is refused until a try lands, and returns it.
 func (c *LeakCheck) Install(ctx context.Context, source LeakCheckSource, stateDir string, log *slog.Logger) error {
-	check, err := InstallLeakCheck(ctx, source, c.tag, stateDir, log)
+	check, err := InstallLeakCheck(ctx, source, c.tag, c.manifest, stateDir, log)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
@@ -155,12 +169,23 @@ func (c *LeakCheck) Check() (string, error) {
 // daemon's environment rather than the guard children's (Answer.guardEnv), whose PATH has gh's
 // directory in front and which carries no PUBLIC_LEAK_CHECK. Nil Environ is this process's own,
 // read at each call.
+//
+// Resolve answers a check, a broken setup (leakguard.BrokenAt: a check named and not there or not
+// an executable file, a file of the check's name on PATH that is no executable, a pointer file
+// that cannot be read or names nothing), or no place naming a check at all (leakguard.NoneNamed).
+// The tmux runtime tells a pane the path of a broken setup, which its guard refuses every write
+// for, and tells it nothing where none is named, which its guard refuses a write for only under a
+// deployment that names a check. The gh tool refuses a call for either, under every deployment:
+// it runs no call without a check (internal/daemon's answersLeakCheck). Under a deployment that
+// names a check, the guard holds the check this answers to the deployment's manifest digest
+// (Host.LeakCheckManifestSHA256), as a pane's guard holds the pane's.
 type MachineLeakCheck struct {
 	Environ []string
 }
 
-// Check is the machine's check, or, on a machine that carries none, the setup failure the guard
-// itself refuses such a call with (leakguard.WhyNoCheck), naming all three places.
+// Check is the machine's check, or, on a machine whose setup is broken or names none, the setup
+// failure the guard itself refuses such a call with (leakguard.WhyNoCheck), naming what Resolve
+// read.
 func (m MachineLeakCheck) Check() (string, error) {
 	check, err := leakguard.New(leakguard.Options{Env: m.Environ}).Resolve()
 	if err != nil {

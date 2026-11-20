@@ -33,18 +33,20 @@ import (
 // alone, and where none named a repository at all; Command, the path of the leaf command it runs
 // as gh's own help names it (`pr list` for `pr ls`), nil when it runs none (`gh`, a group alone,
 // `gh help`, `gh --version`); Files, the files the command would send to GitHub as content
-// (sentFiles), for the leak guard a caller runs before gh (leakguard.GhRequest.Files); and
-// WritesNothing, whether the call is in a read grammar (writesNothing), false for a help call,
-// so that under the shared check that rule was proven against (ReadsProvenCheckSHA256) a
-// caller's guard runs that check alone for it (leakguard.GhRequest.WritesNothing). Such a call
-// sends no file: no grammar names an option of sentFileOptions
-// (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
+// (sentFiles), for the leak guard a caller runs before gh (leakguard.GhRequest.Files), and
+// StdinSent, whether it sends its standard input as content as well
+// (leakguard.GhRequest.StdinSent); and WritesNothing, whether the call is in a read grammar
+// (writesNothing), false for a help call, so that under the shared check that rule was proven
+// against (ReadsProvenCheckSHA256) a caller's guard runs that check alone for it
+// (leakguard.GhRequest.WritesNothing). Such a call sends no file: no grammar names an option of
+// sentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type Target struct {
 	Dir           string
 	Owner         string
 	Repo          string
 	Command       []string
 	Files         []leakguard.GhFile
+	StdinSent     bool
 	WritesNothing bool
 }
 
@@ -66,16 +68,17 @@ var sentFileOptions = map[string]bool{
 
 // sentFiles are the files the parsed command would send to GitHub as content, each named once
 // and each named by the option it came from, for the leak guard to read the text of
-// (leakguard.GhRequest.Files). The answer is never nil, so a command that sends no file is a
-// command the guard reads no file of, rather than one it reads the argv of again with a table
-// of its own.
+// (leakguard.GhRequest.Files), and whether it sends its standard input as content as well. The
+// files are never nil, so a command that sends no file is a command the guard reads no file of,
+// rather than one it reads the argv of again with a table of its own.
 //
-// A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
-// check's own handshake and never opens as a file. The options are read in the order their
-// names sort, since a parse holds each option's values together and not the argv's order
-// across options, and a report that named two files must name them the same way twice.
-func sentFiles(parsed ghArgs) []leakguard.GhFile {
-	files := []leakguard.GhFile{}
+// A value of `-`, and an `@-`, is standard input, which is no file to open: the guard reads it
+// through the shared check's own handshake, and reads it itself where no shared check runs
+// (leakguard.GhRequest.StdinSent). The options are read in the order their names sort, since a
+// parse holds each option's values together and not the argv's order across options, and a
+// report that named two files must name them the same way twice.
+func sentFiles(parsed ghArgs) (files []leakguard.GhFile, stdin bool) {
+	files = []leakguard.GhFile{}
 	for _, name := range slices.Sorted(maps.Keys(sentFileOptions)) {
 		whole := sentFileOptions[name]
 		for _, value := range parsed.values[name] {
@@ -89,7 +92,11 @@ func sentFiles(parsed ghArgs) []leakguard.GhFile {
 				}
 				path = strings.TrimPrefix(after, "@")
 			}
-			if path == "" || path == "-" {
+			if path == "-" {
+				stdin = true
+				continue
+			}
+			if path == "" {
 				continue
 			}
 			if slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }) {
@@ -98,7 +105,7 @@ func sentFiles(parsed ghArgs) []leakguard.GhFile {
 			files = append(files, leakguard.GhFile{Option: "--" + name, Path: path})
 		}
 	}
-	return files
+	return files, stdin
 }
 
 // CallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order, and
@@ -240,7 +247,7 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	if err := sel.fromOwnRepository(cmd, parsed, env, remotes); err != nil {
 		return Target{}, err
 	}
-	files := sentFiles(parsed)
+	files, stdinSent := sentFiles(parsed)
 	reads := writesNothing(argv, cmd.path)
 	fallback := ""
 	if reads || graphQLQueryRead(argv) {
@@ -250,7 +257,7 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	if err != nil {
 		return Target{}, err
 	}
-	return Target{Dir: dir, Owner: sel.onlyOwner(), Repo: sel.onlyRepository(), Command: cmd.path, Files: files, WritesNothing: reads}, nil
+	return Target{Dir: dir, Owner: sel.onlyOwner(), Repo: sel.onlyRepository(), Command: cmd.path, Files: files, StdinSent: stdinSent, WritesNothing: reads}, nil
 }
 
 // cannotPlace is TargetOf's refusal of an argument it cannot place: what it is and why, and how

@@ -47,6 +47,7 @@ func dsnFileOf(t *testing.T, contents string) string {
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 	noGH := []string{"PATH=" + t.TempDir()}
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.LeakCheck = leakCheckSetting
 	if _, err := prepare(cfg, quietLogger(), overrides{environ: noGH}); err != nil {
 		t.Fatalf("prepare with no answers and no gh = %v, want the boot to go on", err)
 	}
@@ -129,6 +130,7 @@ func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			cfg.LeakCheck = leakCheckSetting
 			cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), tc.file)
 			_, err := readBoot(cfg, withGH, os.Getenv, true, quietLogger())
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) || strings.Contains(err.Error(), "fixture-keyword-password") {
@@ -250,6 +252,7 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheCheckPin(t *testing
 	machine := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
 	noPin := []string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + machine}
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.LeakCheck = leakCheckSetting
 	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), dsnFileOf(t, conversationsDSN+"\n"))
 	const needs = "answers needs the shared public leak check, which the answer loop's gh tool runs before every call, " +
 		"and a Kubernetes daemon installs it at the tag LEGION_LEAK_CHECK_TAG names"
@@ -274,5 +277,33 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheCheckPin(t *testing
 	reads, err := readBoot(cfg, environLookup(append(slices.Clone(noPin), leakguard.TagVariable+"="+leakCheckTag)), os.Getenv, true, quietLogger())
 	if err != nil || reads.answers.leakCheckTag != leakCheckTag || reads.answers.leakCheck != "" {
 		t.Fatalf("readBoot = pin %q, check %q, %v; want the pin %s and no check of the host's", reads.answers.leakCheckTag, reads.answers.leakCheck, err, leakCheckTag)
+	}
+}
+
+// A Kubernetes daemon with `answers` refuses to start where the deployment names no shared leak
+// check (config's leak_check, leakguard.Setting): its gh tool installs the check from the
+// repository that setting names and holds it to that manifest digest, and a deployment with none
+// has neither. The refusal names the setting's two variables and its legion.yaml block, and comes
+// though the pin is set and a check is on the daemon's host; `legion config check` makes it too.
+// The same configuration with the setting reads the pin.
+func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheLeakCheckSetting(t *testing.T) {
+	gh := binary(t, t.TempDir(), "gh")
+	machine := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+	env := []string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + machine, leakguard.TagVariable + "=" + leakCheckTag}
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), dsnFileOf(t, conversationsDSN+"\n"))
+	const want = "answers needs the shared public leak check, which the answer loop's gh tool runs before every call, " +
+		"and a Kubernetes daemon reads it from the repository the deployment's leak check setting names, which names none: " +
+		"set LEGION_LEAK_CHECK_REPOSITORY and LEGION_LEAK_CHECK_MANIFEST_SHA256 in the daemon's environment, " +
+		"or leak_check.repository and leak_check.manifest_sha256 in legion.yaml"
+	if _, err := prepare(cfg, quietLogger(), overrides{environ: env}); err == nil || err.Error() != want {
+		t.Fatalf("prepare with no leak check setting = %v, want %q", err, want)
+	}
+	if _, _, err := CheckStart(cfg, environLookup(env)); err == nil || err.Error() != want {
+		t.Fatalf("CheckStart with no leak check setting = %v, want %q", err, want)
+	}
+	cfg.LeakCheck = leakCheckSetting
+	if reads, err := readBoot(cfg, environLookup(env), os.Getenv, true, quietLogger()); err != nil || reads.answers.leakCheckTag != leakCheckTag {
+		t.Fatalf("readBoot under the setting = pin %q, %v; want the pin %s", reads.answers.leakCheckTag, err, leakCheckTag)
 	}
 }

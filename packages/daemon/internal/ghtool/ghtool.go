@@ -78,34 +78,40 @@ type Recorder interface {
 // every owner the role's App is installed on. Calls records each call, Log takes its line, Now is
 // the clock.
 //
-// The last two are the leak guard's, which every call passes before gh is handed anything
+// The last three are the leak guard's, which every call passes before gh is handed anything
 // (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, required and
 // asked at each call (LeakChecker), which hands the guard the check's path: a Kubernetes daemon's
 // copy, installed at its pin (LeakCheck, which refuses the call until an install lands), or a
 // tmux daemon's machine check, resolved in Environ at each call (MachineLeakCheck, which refuses
 // the call with the setup failure naming the missing check where the machine carries none). The
 // daemon states which of the two its runtime takes (internal/daemon's answersTools).
+// LeakCheckManifestSHA256 is the deployment's manifest digest (leakguard.Setting.ManifestSHA256,
+// config's leak_check), which the guard is told as leakguard.CheckerVar (Answer.guardEnv) and
+// holds the check LeakCheck answers to, as a pane's or a pod's guard holds its role's; "" is a
+// deployment that names no check, whose guard is told none.
 // Environ is the daemon's own environment (os.Environ() form), of which the guard's own children —
 // the check, and the gh read of a repository's visibility — start from the names guardKeeps
 // allows; nil is this process's own, read at each call. It is the daemon's and not the call's: a
 // call's environment carries two directories on its PATH and nothing else, which is no
 // environment a shell script can run in, and resolves no check at all (Answer.guardEnv).
 type Host struct {
-	GH         string
-	Git        string
-	Legion     string
-	StateDir   string
-	LeakCheck  LeakChecker
-	Environ    []string
-	Credential runtime.GitHubCredential
-	Calls      Recorder
-	Log        *slog.Logger
-	Now        func() time.Time
+	GH                      string
+	Git                     string
+	Legion                  string
+	StateDir                string
+	LeakCheck               LeakChecker
+	LeakCheckManifestSHA256 string
+	Environ                 []string
+	Credential              runtime.GitHubCredential
+	Calls                   Recorder
+	Log                     *slog.Logger
+	Now                     func() time.Time
 }
 
 // Answer is one answer's gh environment, Open's: the agent, the question, the agent's credential
-// bundle, the empty directories a call runs in, the wrapper GH_PATH names, and the agent's usage
-// as a refusal ends with it, rendered once. Close removes it.
+// bundle, the empty directories a call runs in, the directory the leak guard copies the check
+// into, the wrapper GH_PATH names, and the agent's usage as a refusal ends with it, rendered once.
+// Close removes it.
 type Answer struct {
 	host     Host
 	agent    Agent
@@ -115,16 +121,20 @@ type Answer struct {
 	dir                                   string
 	owners                                string
 	home, config, cache, data, state, cwd string
-	wrapper                               string
-	usage                                 string
+	// copies is dir's leak-check-copies, where the guard of each call makes its private copy of
+	// the check under the deployment's digest (Answer.leakGuard, leakguard.Options.PrivateCopyBase).
+	copies  string
+	wrapper string
+	usage   string
 }
 
 // Open builds question's gh environment for agent once, before its first call: a fresh 0700
 // directory <state_dir>/answers/<question>/gh (whatever an earlier run of the same question left
 // there removed first) holding the agent's bundle (host.Credential for its role and its issue's
 // repository, written with ghconfig.WriteBundle, exactly as a tmux pane's is), the empty
-// HOME, XDG and working directories every call runs with, and the GH_PATH wrapper. It logs the
-// App and owners the bundle holds, never a token.
+// HOME, XDG and working directories every call runs with, the 0700 directory the leak guard
+// copies the check into, and the GH_PATH wrapper. It logs the App and owners the bundle holds,
+// never a token.
 func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer, error) {
 	switch {
 	case !filepath.IsAbs(host.GH):
@@ -150,11 +160,11 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 	a.home, a.cwd = filepath.Join(a.dir, "home"), filepath.Join(a.dir, "work")
 	a.config, a.cache = filepath.Join(a.dir, "xdg", "config"), filepath.Join(a.dir, "xdg", "cache")
 	a.data, a.state = filepath.Join(a.dir, "xdg", "data"), filepath.Join(a.dir, "xdg", "state")
-	a.wrapper = filepath.Join(a.dir, "bin", "gh")
+	a.wrapper, a.copies = filepath.Join(a.dir, "bin", "gh"), filepath.Join(a.dir, "leak-check-copies")
 	if err := os.RemoveAll(a.dir); err != nil {
 		return nil, fmt.Errorf("the gh tool for %s: clear %s: %w", question, a.dir, err)
 	}
-	for _, d := range []string{a.home, a.cwd, a.config, a.cache, a.data, a.state, filepath.Dir(a.wrapper)} {
+	for _, d := range []string{a.home, a.cwd, a.config, a.cache, a.data, a.state, a.copies, filepath.Dir(a.wrapper)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, fmt.Errorf("the gh tool for %s: %w", question, err)
 		}

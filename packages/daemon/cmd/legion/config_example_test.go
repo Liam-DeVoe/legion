@@ -160,6 +160,28 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented leak_check block, uncommented with a digest in place of its placeholder,
+// passes the same check and settles on the repository and the manifest digest it names. It needs
+// no volume and no mount: the block names a repository and a digest, not files.
+func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"# leak_check:",
+			"#   repository: example-org/deployment",
+			"#   manifest_sha256: <64 hex digits>",
+		)
+		return strings.Replace(example, "manifest_sha256: <64 hex digits>", "manifest_sha256: "+checker, 1)
+	}, nil)
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LeakCheck; got.Repository.String() != "example-org/deployment" || got.ManifestSHA256 != checker {
+		t.Errorf("the leak_check block uncommented settles on %+v, want example-org/deployment and %s", got, checker)
+	}
+}
+
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
@@ -430,12 +452,14 @@ func checkShippedExample(t *testing.T, edit func(string) string, extra map[strin
 }
 
 // The example's commented `answers` block, uncommented, passes the check too, on the postgres
-// session store the example already names: its gh found by LEGION_GH_PATH, the shared public leak
-// check's pin found in LEGION_LEAK_CHECK_TAG as the worker image sets it for the daemon it runs
-// (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL file read, and its
-// placeholder api_key_command, which sh could not run, never run — a key is read for each model
-// call, never by the check. Without that pin the same file is refused, naming it, since a
-// Kubernetes daemon's gh tool would then have no check to run before any call.
+// session store the example already names: its gh found by LEGION_GH_PATH, the deployment's leak
+// check setting in its two variables (the example leaves its leak_check block commented), the
+// shared public leak check's pin found in LEGION_LEAK_CHECK_TAG as the worker image sets it for
+// the daemon it runs (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL
+// file read, and its placeholder api_key_command, which sh could not run, never run — a key is
+// read for each model call, never by the check. Without that pin, or without the setting, the same
+// file is refused, naming what is missing, since a Kubernetes daemon's gh tool would then have no
+// check to run before any call.
 func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
@@ -446,10 +470,20 @@ func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 		"conversations-dsn": "postgres://legion-daemon:placeholder@conversations.internal.example:5432/omp_sessions\n",
 		"anthropic-key":     "placeholder\n",
 	}
+	setting := func(t *testing.T) {
+		t.Setenv(leakguard.RepositoryVar, "example-org/deployment")
+		t.Setenv(leakguard.ManifestVar, strings.Repeat("5e", 32))
+	}
 	t.Run("with the worker image's pin", func(t *testing.T) {
+		setting(t)
 		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
 		config := checkShippedExample(t, uncommentAnswers, files)
-		cfg, err := configpkg.LoadForValidation(config, func(string) string { return "postgres://127.0.0.1:1/legion" })
+		cfg, err := configpkg.LoadForValidation(config, func(name string) string {
+			if name == "LEGION_POSTGRES_DSN" {
+				return "postgres://127.0.0.1:1/legion"
+			}
+			return os.Getenv(name)
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -458,12 +492,26 @@ func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 		}
 	})
 	t.Run("with no pin", func(t *testing.T) {
+		setting(t)
 		t.Setenv(leakguard.TagVariable, "")
 		config := stageShippedExample(t, uncommentAnswers, files)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 		if code != 1 || !strings.Contains(errb.String(), "answers needs the shared public leak check") || !strings.Contains(errb.String(), leakguard.TagVariable) {
 			t.Fatalf("legion config check with no %s = %d, stdout %q, stderr %q; want 1 and the refusal naming the pin", leakguard.TagVariable, code, out.String(), errb.String())
+		}
+	})
+	t.Run("with no leak check setting", func(t *testing.T) {
+		t.Setenv(leakguard.RepositoryVar, "")
+		t.Setenv(leakguard.ManifestVar, "")
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		config := stageShippedExample(t, uncommentAnswers, files)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "answers needs the shared public leak check") ||
+			!strings.Contains(errb.String(), leakguard.RepositoryVar+" and "+leakguard.ManifestVar) {
+			t.Fatalf("legion config check with no leak check setting = %d, stdout %q, stderr %q; want 1 and the refusal naming %s and %s",
+				code, out.String(), errb.String(), leakguard.RepositoryVar, leakguard.ManifestVar)
 		}
 	})
 }

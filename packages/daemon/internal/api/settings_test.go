@@ -250,6 +250,7 @@ var settingsExcluded = map[string]string{
 	"ConversationStore.DSNFile":       "the path of a file holding a credential: the conversation store's URL, password and all",
 	"ConversationStore.Database":      "the instance and IAM login behind the daemon's conversation store, left out as runtime.kubernetes.session_database is",
 	"Tmux.SessionDSNFile":             "the path of a file holding a credential: the tmux session database's URL, password and all",
+	"Config.LeakCheck":                "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
