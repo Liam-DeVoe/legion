@@ -2990,7 +2990,6 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
-  - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/no_reach_base_test.go'
   - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
   - '!packages/envoy/internal/dispatch/asks/**/*_test.go'
