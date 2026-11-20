@@ -703,7 +703,7 @@ type RouteMux interface {
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
-		ListenAgent: s.listenAgentAtItsDirectory, GoingRunShape: goingRunShape}
+		ListenAgent: s.listenAgentAtItsDirectory, GoingRunShape: goingRunShape, GoingRunCounts: s.goingRunCounts, ListAnswerBytes: s.listAnswers.Held}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -712,12 +712,19 @@ type Background struct {
 	// Wait is the wait Register describes, for shutdown.
 	Wait func()
 	// ListenAgent listens for the agent process on its Unix socket, under a secret of its own
-	// (AgentListener): agent.sock in $XDG_RUNTIME_DIR/dispatch-agent, or in a directory of its own
-	// under the system's temporary directory where that is unset, each of mode 0700.
-	ListenAgent func() (*AgentListener, error)
+	// (AgentListener): agent.sock in dispatch-agent under the runtime directory it is given (the
+	// process's XDG_RUNTIME_DIR), or in a directory of its own under the system's temporary
+	// directory where that is empty, each of mode 0700. The api package reads no environment.
+	ListenAgent func(runtimeDir string) (*AgentListener, error)
 	// GoingRunShape is the highest saved shape of a command-bar run this build reads, which the
 	// process writes into its row of server_processes (processes.Instance.GoingRunShape).
 	GoingRunShape int
+	// GoingRunCounts counts the command-bar runs that work, wait in the queue and wait for their
+	// person, which the process's /metrics shows.
+	GoingRunCounts func(context.Context) (GoingRunCounts, error)
+	// ListAnswerBytes is the bytes the list-answer cache holds (listAnswers), which the process's
+	// /metrics shows.
+	ListAnswerBytes func() int64
 	// ResumeDeliveries is one pass of the delivery sweep (resumeOwedDeliveries): every delivery a
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).

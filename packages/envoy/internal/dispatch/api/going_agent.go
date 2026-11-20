@@ -17,7 +17,9 @@ package api
 // goingQueuedPerPerson wait in the queue, which refuses a new one (admitGoingRun).
 //
 // The calls themselves - a read or write of Dispatch through the route table as the run's
-// person, a GitHub read and a web read - are going_agent_call.go's and going_agent_reads.go's.
+// person, a GitHub read and a web read - are going_agent_call.go's and going_agent_reads.go's;
+// what the process supervisor needs of the listener - the agent's renewals, its run slots and its
+// death - is going_agent_supervision.go's.
 
 import (
 	"bytes"
@@ -152,6 +154,15 @@ type AgentListener struct {
 	stopping  chan struct{}
 	stopOnce  sync.Once
 	health    atomic.Pointer[agentwire.Health]
+	// renewed is when the latest renew arrived, in Unix nanoseconds, 0 before any (LastRenewal).
+	renewed atomic.Int64
+	// runSlots is how many runs one agent instance may hold at once (SetRunSlots), 0 for no bound
+	// of the server's.
+	runSlots atomic.Int64
+	// suspects (under mu) are the runs an agent that died held, which the next claims take one at a
+	// time, each while its instance holds no other run, until it saves a new step or ends
+	// (claimNext, settleSuspect).
+	suspects map[string]bool
 
 	// claimWait, renewWait, callTime and callKeyWait are goingClaimWait, goingRenewWait,
 	// goingCallTime and goingCallTime; a test shortens them.
@@ -164,11 +175,12 @@ type AgentListener struct {
 }
 
 // goingAgentDirectory is the directory the agent's socket is made in: dispatch-agent under
-// $XDG_RUNTIME_DIR, made or narrowed to mode 0700, or, where that is unset, a directory of its
+// runtime, the process's runtime directory (XDG_RUNTIME_DIR, which cmd/dispatch reads through its
+// settings table), made or narrowed to mode 0700, or, where runtime is empty, a directory of its
 // own under the system's temporary directory, which os.MkdirTemp makes with mode 0700. made says
 // the directory is this process's own, which Close removes.
-func goingAgentDirectory() (dir string, made bool, err error) {
-	if runtime := os.Getenv("XDG_RUNTIME_DIR"); runtime != "" {
+func goingAgentDirectory(runtime string) (dir string, made bool, err error) {
+	if runtime != "" {
 		dir = filepath.Join(runtime, "dispatch-agent")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", false, fmt.Errorf("make the agent's socket directory: %w", err)
@@ -185,10 +197,10 @@ func goingAgentDirectory() (dir string, made bool, err error) {
 	return dir, true, nil
 }
 
-// listenAgentAtItsDirectory listens for the agent in its directory (goingAgentDirectory), which
-// Background.ListenAgent hands the process.
-func (s *server) listenAgentAtItsDirectory() (*AgentListener, error) {
-	dir, made, err := goingAgentDirectory()
+// listenAgentAtItsDirectory listens for the agent in its directory under runtime
+// (goingAgentDirectory), which Background.ListenAgent hands the process.
+func (s *server) listenAgentAtItsDirectory(runtime string) (*AgentListener, error) {
+	dir, made, err := goingAgentDirectory(runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +246,7 @@ func (s *server) newAgentListener(dir string, made bool) (*AgentListener, error)
 	}
 	return &AgentListener{
 		s: s, dir: dir, made: made, path: path, listener: listener, secret: secret,
-		slots: make(chan struct{}, goingCallSlots), instances: map[string]bool{}, conns: map[net.Conn]struct{}{},
+		slots: make(chan struct{}, goingCallSlots), instances: map[string]bool{}, conns: map[net.Conn]struct{}{}, suspects: map[string]bool{},
 		stopping: make(chan struct{}), claimWait: goingClaimWait, renewWait: goingRenewWait,
 		callTime: goingCallTime, callKeyWait: goingCallTime, web: goingWebReader{admit: goingPublicAddress, limit: goingWebReadTime},
 	}, nil
@@ -553,7 +565,7 @@ func (a *AgentListener) claim(ctx context.Context, request agentwire.ClaimReques
 			return agentwire.ClaimAnswer{}, nil
 		}
 		woken := a.s.goingRuns.wait()
-		run, err := a.claimOne(ctx, request.Instance)
+		run, err := a.claimNext(ctx, request.Instance)
 		if err != nil {
 			if ctx.Err() != nil {
 				return agentwire.ClaimAnswer{}, nil
@@ -581,23 +593,41 @@ const goingPersonLock = `select pg_advisory_xact_lock(hashtextextended('going_ru
 
 // claimOne takes, in one transaction, the oldest ready run - queued, or working with its lease
 // run out - whose shape this build reads and whose person works fewer than goingWorkingPerPerson
-// runs, each row locked for update and skipped where another claim holds it. It sets a fresh
-// lease token, the instance as the owner and the lease's end, and answers the run with its
-// history; nil where no run is ready. A run whose history no claim can answer fails with
-// goingRunHistoryTooLarge, and the next is taken.
-func (a *AgentListener) claimOne(ctx context.Context, instance string) (*agentwire.ClaimedRun, error) {
+// runs, each row locked for update and skipped where another claim holds it; only, where it is
+// not nil, names the runs it may take. most, where it is above 0, is how many runs the instance
+// may hold: an instance that holds that many already takes none, counted under a transaction lock
+// on the instance, so its claims at once never pass it. It sets a fresh lease token, the instance
+// as the owner and the lease's end, and answers the run with its history; nil where no run is
+// ready. A run whose history no claim can answer fails with goingRunHistoryTooLarge, and the next
+// is taken.
+func (a *AgentListener) claimOne(ctx context.Context, instance string, only []string, most int64) (*agentwire.ClaimedRun, error) {
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if most > 0 {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('going_agent:' || $1, 0))`, instance); err != nil {
+			return nil, fmt.Errorf("lock %s's runs: %w", instance, err)
+		}
+		var held int64
+		if err := tx.QueryRow(ctx, `
+			select count(*) from going_runs where state = 'working' and lease_owner = $1 and lease_ends_at >= now()
+		`, instance).Scan(&held); err != nil {
+			return nil, fmt.Errorf("count the runs %s holds: %w", instance, err)
+		}
+		if held >= most {
+			return nil, tx.Commit(ctx)
+		}
+	}
 	rows, err := tx.Query(ctx, `
 		select id::text, author_login from going_runs
 		where state in ('queued', 'working') and (state = 'queued' or lease_ends_at < now()) and shape <= $1
+		  and ($3::uuid[] is null or id = any($3::uuid[]))
 		order by created_at
 		limit $2
 		for update skip locked
-	`, goingRunShape, goingClaimBatch)
+	`, goingRunShape, goingClaimBatch, only)
 	if err != nil {
 		return nil, fmt.Errorf("read the ready runs: %w", err)
 	}
@@ -730,13 +760,15 @@ func admitGoingRun(ctx context.Context, tx pgx.Tx, login string) error {
 }
 
 // renew renews, for goingLeaseTerm, each lease the request names that the instance still holds of
-// a working run, keeps the agent's health, and answers once renewWait has passed, once a renewed
-// run is stopped, once the server is stopping, or once the agent stops waiting. A lease whose run
-// was stopped is answered stopped; any other lease not renewed is lost.
+// a working run, keeps the agent's health and when the renew arrived (LastRenewal), and answers
+// once renewWait has passed, once a renewed run is stopped, once the server is stopping, or once
+// the agent stops waiting. A lease whose run was stopped is answered stopped; any other lease not
+// renewed is lost.
 func (a *AgentListener) renew(ctx context.Context, request agentwire.RenewRequest) (agentwire.RenewAnswer, *agentwire.Error) {
 	if request.Instance == "" {
 		return agentwire.RenewAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a renew names its instance")
 	}
+	a.renewed.Store(time.Now().UnixNano())
 	health := request.Health
 	a.health.Store(&health)
 	answer := agentwire.RenewAnswer{Renewed: []agentwire.RenewedLease{}, Stopped: []string{}, Lost: []string{}}
@@ -883,7 +915,7 @@ func (s *server) stopGoingRun(ctx context.Context, run, reason string) (bool, er
 // transaction that holds the run's row for share and checks, under it, that the request's lease
 // token is the run's and the run works: a stale owner's step is refused and nothing of it is
 // written. A second try of a step already saved saves nothing again, and answers the events'
-// sequence as they stand.
+// sequence as they stand. A new step of a suspect run ends its suspicion (settleSuspect).
 func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest) (agentwire.StepAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
 		return agentwire.StepAnswer{}, refusal
@@ -937,6 +969,9 @@ func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest)
 	if err := tx.Commit(ctx); err != nil {
 		return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
 	}
+	if tag.RowsAffected() > 0 {
+		a.settleSuspect(request.Run)
+	}
 	return agentwire.StepAnswer{Sequence: sequence}, nil
 }
 
@@ -957,7 +992,8 @@ func goingLeaseHeld(ctx context.Context, tx pgx.Tx, run, token string) (bool, er
 // the turn spent to its budget, in one statement whose condition is the request's lease token and
 // the run working, so a stale owner's end changes nothing. The statement locks the run's row for
 // the update it makes, which no share lock is taken before: a share lock held while the update
-// waits behind a renew's would deadlock with it.
+// waits behind a renew's would deadlock with it. An ended run is no suspect any more, and its
+// instance's run slot is free (runEnded).
 func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (agentwire.EndAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
 		return agentwire.EndAnswer{}, refusal
@@ -982,5 +1018,6 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	if tag.RowsAffected() == 0 {
 		return agentwire.EndAnswer{}, goingStaleLease(request.Run)
 	}
+	a.runEnded(request.Run)
 	return agentwire.EndAnswer{}, nil
 }

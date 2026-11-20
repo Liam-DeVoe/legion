@@ -79,6 +79,8 @@ var settings = []setting{
 		Description: "Most browser connections to document rooms the server holds at once; one more document socket is refused (503) until one leaves. A positive integer."},
 	{Name: "XDG_CONFIG_HOME", Default: "`~/.config`", Required: "no",
 		Description: "Directory whose `legion/envoy.json` is the user `envoy.json`, which `DISPATCH_SERVER_URL` and `NATS_URLS` fall back to; set but empty, it is `~/.config` too, and a path that is not absolute refuses startup."},
+	{Name: "XDG_RUNTIME_DIR", Default: "a directory of the process's own under the system's temporary directory", Required: "no",
+		Description: "Directory of the process's runtime files: the server makes the socket its agent process (`envoy-dispatch agent`) calls it at in `dispatch-agent` under it, with mode 0700, so only the server's user can open it."},
 	{Name: "DISPATCH_SERVER_URL", Default: "`dispatch.serverUrl` from `envoy.json`", Required: "no",
 		Description: "The origin people open in a browser, and, where the `DISPATCH_SIGNIN_*` settings configure browser sign-in, the sign-in callback origin (`<origin>/auth/callback`): an absolute http(s) URL with no path. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "NATS_URLS", Default: "`envoy.natsUrls` from `envoy.json`", Required: "no",
@@ -175,6 +177,8 @@ var settings = []setting{
 		Description: "Path of the file holding the bearer token every call to that endpoint presents, re-read on each call, as `DISPATCH_AZURE_FEDERATED_TOKEN_FILE` is, so a rotation needs no restart. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_CHAT_TOKEN`."},
 	{Name: "DISPATCH_CHAT_MODEL", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
 		Description: "The model each request names."},
+	{Name: "DISPATCH_AGENT_SOCKET", Required: "no",
+		Description: "The Unix socket `envoy-dispatch agent`, the command bar's agent process, calls its server at. The server sets it for that process, which it starts itself with an environment of the chat model's settings and this one, and nothing else sets it: the server never reads it, and `envoy-dispatch agent` refuses to start without it."},
 	{Name: "DISPATCH_DECISION_MODEL", Required: "no",
 		Description: "The System One model the command bar's one decision call is put to before it answers: which action the words ask for, whether they point at the page's item, and chart or prose. It must be a model the committed measurement holds (`packages/envoy/going/decision_models.json`), whose two fitted thresholds the server reads; a name the record does not hold is no decision model, and the server starts, logs why and decides nothing, as it does unset or with no endpoint."},
 	{Name: "DISPATCH_DECISION_MODEL_ENDPOINT", Required: "when `DISPATCH_DECISION_MODEL_TOKEN_FILE` is set",
@@ -225,6 +229,8 @@ var settings = []setting{
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_CEILING", Default: "the ceiling the container's memory limit gives: the smaller of 4 GiB and a sixth of it", Required: "no",
+		Description: "The resident memory, in bytes, above which a test process kills its agent process (`envoy-dispatch agent`), in place of the ceiling a deployment's container gives; a positive whole number, for an end-to-end test of the kill only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

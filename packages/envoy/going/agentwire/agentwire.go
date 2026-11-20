@@ -288,12 +288,17 @@ type Lease struct {
 	LeaseToken string `json:"lease_token"`
 }
 
-// Health is the agent's own figures, from runtime/metrics, which each renew carries.
+// Health is the agent's own figures, which each renew carries: its Go runtime's goroutines, live
+// heap, total memory and memory limit (RuntimeHealth), the runs its loops work on now, and the
+// goroutines its watchdog counts stuck. Each is one number, so the renew's request limit holds it
+// whatever the agent works on.
 type Health struct {
 	Goroutines       int    `json:"goroutines"`
 	HeapLiveBytes    uint64 `json:"heap_live_bytes"`
 	TotalBytes       uint64 `json:"total_bytes"`
 	MemoryLimitBytes uint64 `json:"memory_limit_bytes"`
+	Working          int    `json:"working"`
+	StuckGoroutines  int    `json:"stuck_goroutines"`
 }
 
 // RenewRequest renews the leases the instance holds and carries its health.

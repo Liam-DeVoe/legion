@@ -3649,7 +3649,21 @@ In this process a second try waits for a first try still running, at most 60 s, 
 In another process it does not wait: it runs, its landing's insert waits on the first try's row at its commit, and once the first try commits its change rolls back and it answers from the first try's row.
 A message's or a comment's delivery recovery point goes into its landing's `recovery`, and the delivery sweep sends a landed message that has no delivery attempt.
 A GitHub read goes through the server's GitHub App, only for a repository Dispatch maps to a project the person can read; a web read goes only to an address in the person's words or in a tool result of the run, connects only to a public address, checked on each connection after the DNS answer and on each redirect, and stops at 1 MiB or 10 s, marked cut.
-At shutdown, after the HTTP drain, the server answers no claim a run, answers every waiting renew at once, closes the agent's standard input where a supervisor set that, waits for the calls in flight until 5 s before its stop grace ends, and closes the socket.
+At shutdown, after the HTTP drain, the server answers no claim a run, answers every waiting renew at once, closes the agent's standard input, so the agent exits within 1 s, waits for the calls in flight until 5 s before its stop grace ends, closes the socket, and kills an agent still running 2 s later.
+
+The server starts the agent itself (`cmd/dispatch/agent_supervisor.go`): its own binary as `envoy-dispatch agent`, with an environment of `DISPATCH_AGENT_SOCKET`, `GOMAXPROCS` (4 at the most), `GOMEMLIMIT` and the chat model's settings (`DISPATCH_ANSWERER` and the `DISPATCH_AZURE_CHAT_*` and Azure sign-in settings, or the `DISPATCH_CHAT_*` ones) and nothing else, the secret on its standard input, which stays open, and nice 10 on each of its threads.
+The agent exits when its standard input closes, so it never outlives the server.
+After an exit the server starts it again 1 s later, then twice as long after each exit within a minute of its start, 30 s at the most, logging `the agent process exited; it starts again` with the wait.
+It reads the agent's `VmRSS` every 50 ms and kills it with SIGKILL above its ceiling, logging `agent killed for memory` with the memory at the kill, and kills an agent that has renewed nothing for 30 s (three renewals), which is how a SIGSTOP or a stuck runtime is found.
+Each exit frees at once the leases of the runs the agent held; a run it held alone counts one kill (`going_runs.kills`), and fails `AGENT_KILLED` at the third, and the runs it held beside others are claimed one at a time, each alone, until each saves a new step or ends.
+Two kills for memory within an hour that no run alone caused halve the agent's run slots, to 1 at the least, for an hour: a claim of an agent that holds its slots takes no run.
+The limits come from the container's memory limit L, read through automemlimit's reader (`memlimit.FromCgroup`: cgroup v2's `memory.max` or cgroup v1's `memory.limit_in_bytes`, `cmd/dispatch/memlimits.go`): the agent's ceiling is the smaller of 4 GiB and L/6, its `GOMEMLIMIT` 75% of that, and the server's own memory limit 90% of what L leaves after the ceiling, set at boot unless `GOMEMLIMIT` already sets one; with no limit the ceiling is 4 GiB and the server sets none.
+The socket's directory is `dispatch-agent` under `XDG_RUNTIME_DIR`, a row of the settings table that the server hands its API server, so the API package reads no environment.
+The agent works 8 runs at once.
+`DISPATCH_TEST_AGENT_CEILING`, under the test hooks, sets the ceiling in bytes for a test of the kill.
+
+`/metrics` shows both processes: `envoy_dispatch_process_goroutines`, `envoy_dispatch_process_heap_live_bytes`, `envoy_dispatch_process_memory_total_bytes`, `envoy_dispatch_process_memory_limit_bytes` and `envoy_dispatch_process_start_time_seconds`, each with `process="server"` and `process="agent"` (the agent's runtime figures as its latest renew carried them, none before its first renew); `envoy_dispatch_cache_bytes` with `cache` `read`, `display_tree` and `list_answer`; `envoy_dispatch_going_runs` with `state` `working`, `queued` and `waiting`; and `envoy_dispatch_agent_slots`, `envoy_dispatch_agent_slots_in_use`, `envoy_dispatch_agent_stuck_goroutines` and `envoy_dispatch_agent_memory_kills`, the agent's kills for memory since the server started.
+This build's agent has no model loop yet: it claims each run and ends it `failed` with the reason `agent_unbuilt`.
 
 ## Keyed writes
 

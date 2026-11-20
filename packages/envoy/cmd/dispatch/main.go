@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -172,6 +174,14 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// AgentCeiling is the resident memory above which this process kills its agent process, zero
+	// for the ceiling its container gives (agentLimits); only DISPATCH_TEST_AGENT_CEILING, under the
+	// test hooks, sets it, since no process-level test can hold the agent at gigabytes.
+	AgentCeiling int64
+	// RuntimeDir is XDG_RUNTIME_DIR, the directory the agent's socket is made in
+	// (api.Background.ListenAgent); empty, the socket is made in a directory of its own under the
+	// system's temporary directory.
+	RuntimeDir string
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -258,6 +268,7 @@ func main() {
 	if len(os.Args) > 1 {
 		os.Exit(runSubcommand(context.Background(), os.Args[1:], env, os.Stdout, os.Stderr))
 	}
+	started := time.Now()
 	boot, err := resolveBootConfig(env)
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
@@ -271,6 +282,23 @@ func main() {
 		processes.HeartbeatInterval = boot.ProcessHeartbeat
 		processes.LiveWindow = 3 * boot.ProcessHeartbeat
 	}
+	// The memory of the command bar's agent process and the server's own beside it, from the
+	// container's memory limit (agentLimits), before anything sizes itself by the server's limit:
+	// the document read cache takes a sixteenth of it. A GOMEMLIMIT the environment set is the
+	// server's limit as it stands.
+	containerLimit, err := containerMemoryLimit()
+	if err != nil {
+		slog.Warn("dispatch: read the container's memory limit; the agent's limits are those of no limit", "error", err)
+	}
+	limits := agentLimits(containerLimit)
+	if boot.AgentCeiling > 0 {
+		limits.Ceiling = boot.AgentCeiling
+	}
+	if limits.ServerLimit > 0 && debug.SetMemoryLimit(-1) == math.MaxInt64 {
+		debug.SetMemoryLimit(limits.ServerLimit)
+	}
+	slog.Info("dispatch: memory limits", "container", containerLimit, "server", debug.SetMemoryLimit(-1),
+		"agent_ceiling", limits.Ceiling, "agent_gomemlimit", limits.AgentLimit, "agent_slots", limits.Slots)
 
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
 	if err != nil {
@@ -1148,12 +1176,21 @@ func main() {
 	// The command bar's agent process makes every read and write of its runs as a call to this
 	// server over a Unix socket only this process's user can open (api.AgentListener). A socket
 	// this process cannot make leaves the runs waiting for one that can, and Dispatch serves on.
+	// The agent is this binary's own `agent` subcommand, which agentSupervisor starts with an
+	// environment of the chat model's settings alone, and starts again after each exit.
 	var agent agentShutdown
-	if listening, err := background.ListenAgent(); err != nil {
+	var supervisor *agentSupervisor
+	if listening, err := background.ListenAgent(boot.RuntimeDir); err != nil {
 		slog.Warn("dispatch: listen for the command bar's agent; its runs wait for a server process that does", "error", err)
-	} else {
+	} else if executable, err := os.Executable(); err != nil {
+		slog.Error("dispatch: find this binary to start the agent process from; its runs wait for a server process that does", "error", err)
 		agent = listening
+	} else {
+		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, agentEnvironment(boot.Answerer, listening.Path(), limits), limits)
+		agent = supervisor
 	}
+	registerProcessMetrics(met, processFigures{started: started, readCacheBytes: documentService.ReadCacheBytes,
+		listAnswerBytes: background.ListAnswerBytes, runs: background.GoingRunCounts, agent: supervisor})
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.
@@ -1375,6 +1412,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_CEILING", boot.TestHooksEnabled, &boot.AgentCeiling); err != nil {
+		return bootConfig{}, err
+	}
+	boot.RuntimeDir = strings.TrimSpace(env.get("XDG_RUNTIME_DIR"))
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -2229,6 +2270,25 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 	value, err := time.ParseDuration(raw)
 	if err != nil || value <= 0 {
 		return fmt.Errorf("%s=%q (expected a positive Go duration)", name, raw)
+	}
+	*target = value
+	return nil
+}
+
+// testHookBytes reads the test-only count of bytes setting name into target, leaving target as it
+// is when the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is
+// any value that is not a positive whole number.
+func testHookBytes(env settingValues, name string, testHooksEnabled bool, target *int64) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return fmt.Errorf("%s=%q (expected a positive whole number of bytes)", name, raw)
 	}
 	*target = value
 	return nil

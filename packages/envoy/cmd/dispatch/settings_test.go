@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -46,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -822,6 +825,17 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			if _, err := envoyJSON(t, map[string]string{"XDG_CONFIG_HOME": "relative"}); err == nil || err.Error() != `XDG_CONFIG_HOME is "relative", which is not an absolute path` {
 				t.Errorf("relative: err = %v, want a refusal naming XDG_CONFIG_HOME and its value", err)
+			}
+		},
+		"XDG_RUNTIME_DIR": func(t *testing.T) {
+			// The directory the agent's socket is made in, handed to the API server's listener;
+			// unset, the listener makes a directory of its own.
+			runtime := t.TempDir()
+			if boot := resolveWith(t, map[string]string{"XDG_RUNTIME_DIR": " " + runtime + " "}); boot.RuntimeDir != runtime {
+				t.Errorf("RuntimeDir = %q, want %q", boot.RuntimeDir, runtime)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.RuntimeDir != "" {
+				t.Errorf("unset: RuntimeDir = %q, want empty", boot.RuntimeDir)
 			}
 		},
 		"ENVOY_ALLOW_REMOTE_NATS": func(t *testing.T) {
@@ -1653,6 +1667,42 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": ""}), "DISPATCH_CHAT_MODEL is required")
 			refusedWith(t, map[string]string{"DISPATCH_CHAT_MODEL": "llama-3-70b"}, "DISPATCH_CHAT_MODEL set, but DISPATCH_ANSWERER is unset")
 		},
+		"DISPATCH_AGENT_SOCKET": func(t *testing.T) {
+			// The agent process calls its server at the socket the setting names, under the secret its
+			// standard input carries, and exits 0 once that input closes; unset, it refuses to start.
+			var stderr bytes.Buffer
+			if code := runAgent(context.Background(), envGetter(nil), strings.NewReader(""), &stderr); code != 2 || !strings.Contains(stderr.String(), "DISPATCH_AGENT_SOCKET is unset") {
+				t.Errorf("unset: exit %d, stderr %q; want 2, naming DISPATCH_AGENT_SOCKET", code, stderr.String())
+			}
+			socket := testtmp.Socket(t, "agent.sock")
+			hellos := serveAgentHellos(t, socket)
+			secret := bytes.Repeat([]byte{7}, agentwire.SecretSize)
+			stdin, server := io.Pipe()
+			exited := make(chan int, 1)
+			go func() {
+				exited <- runAgent(context.Background(), envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": " " + socket + " "}), stdin, io.Discard)
+			}()
+			if _, err := server.Write(secret); err != nil {
+				t.Fatalf("write the secret to the agent: %v", err)
+			}
+			select {
+			case got := <-hellos:
+				if !bytes.Equal(got, secret) {
+					t.Errorf("the agent's hello carried the secret %x, want %x, which its standard input carried", got, secret)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the agent said no hello at the socket DISPATCH_AGENT_SOCKET names within 30 s")
+			}
+			_ = server.Close()
+			select {
+			case code := <-exited:
+				if code != 0 {
+					t.Errorf("the agent exited %d when its standard input closed, want 0", code)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the agent still ran 5 s after its standard input closed")
+			}
+		},
 		"DISPATCH_DECISION_MODEL": func(t *testing.T) {
 			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL": " jev-latest "})); boot.Decision.Model != "jev-latest" {
 				t.Errorf("Model = %q, want the trimmed model", boot.Decision.Model)
@@ -2061,6 +2111,19 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_PROCESS_HEARTBEAT=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_CEILING": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.AgentCeiling != 0 {
+				t.Errorf("unset: AgentCeiling = %d, want 0 (the ceiling the container gives)", boot.AgentCeiling)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CEILING": " 1048576 "}); boot.AgentCeiling != 1<<20 {
+				t.Errorf("DISPATCH_TEST_AGENT_CEILING=1048576: AgentCeiling = %d", boot.AgentCeiling)
+			}
+			for _, invalid := range []string{"1MiB", "-1", "0"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CEILING": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_CEILING=%q (expected a positive whole number of bytes)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_CEILING": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
