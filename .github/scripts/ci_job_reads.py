@@ -2563,7 +2563,7 @@ impossible=$!
 # here: no test of internal/pgmigrate reads the test binary's deadline, so it declares
 # no margin of its own the way the documents package's roomWaitMargin (30 s) and
 # pmdoc's perCallReportMargin (60 s) are theirs.
-DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 10m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+DISPATCH_TEST_DATABASE_URL='{PGMIGRATE_DSN}' go test -json -count=1 -timeout 10m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
@@ -2572,7 +2572,7 @@ pgmigrate=$!
 # 2m, by R6 from the pair at 8cfd2682 (the table on this job): this call's one package
 # on the slower run is internal/dispatch/routes, 58.7 s (run 44657322918, job
 # 136026779841), and 58.7 / 30 = 1.96, so 2m.
-DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+DISPATCH_TEST_DATABASE_URL='{ROUTES_DSN}' go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # internal/dispatch/events, on the fifth Postgres service, for the reason the routes
 # call gives: its horizon tests wait for the event log's safe horizon, which any
@@ -2584,7 +2584,7 @@ routes=$!
 # (the table on this job): this call's one package on the slower run is
 # internal/dispatch/events, 38.6 s (run 44657322918, job 136026779841), and
 # 38.6 / 30 = 1.29, so 2m.
-DISPATCH_TEST_DATABASE_URL={EVENTS_DSN} go test -json -count=1 -timeout 2m ./{EVENTS_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/events.json" 2> "$RUNNER_TEMP/go-test-logs/events.log" &
+DISPATCH_TEST_DATABASE_URL='{EVENTS_DSN}' go test -json -count=1 -timeout 2m ./{EVENTS_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/events.json" 2> "$RUNNER_TEMP/go-test-logs/events.log" &
 events=$!
 # The one untagged test of cmd/dispatch that reads a live event feed, on the third
 # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
@@ -2598,7 +2598,7 @@ events=$!
 # 50.2 s (run 44657322918, job 136026779841), and 50.2 / 30 = 1.67, so 2m. The limit
 # leaves 69.8 s above that time, over the 30 s of horizontest.Drain that the test's
 # wait for its event feed leaves of the deadline.
-DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 2m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+DISPATCH_TEST_DATABASE_URL='{SHUTDOWN_DSN}' go test -json -count=1 -timeout 2m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
 shutdown=$!
 # internal/testnats runs its server in the test process, so the package list above
 # starts no container. The real-server tests, a rendered authorization on the image the
