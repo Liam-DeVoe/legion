@@ -189,12 +189,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
-		// The refusal names the key the caller sent and the rule, and nothing read or derived
-		// from it, so an issue of a project the caller may not see is refused in the words a key
-		// nobody holds is (the hidden-object walk compares the two byte for byte).
+		// The refusal is built from the key the caller sent alone, its project the key up to its
+		// first -, and from nothing read, so an issue of a project the caller may not see is refused
+		// in the words a key nobody holds in that project is.
+		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only the Legion daemon of %s's project names the sessions that hold its roles. That daemon writes as session legion-daemon:<project>, the key up to its first -.",
-			key))
+			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
+			project, key, daemon))
 		return
 	}
 	if input.Holders == nil {
