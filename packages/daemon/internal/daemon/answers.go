@@ -36,11 +36,9 @@ type answering struct {
 	loop     *answerloop.Loop
 }
 
-// attachAnswers builds the answer loop over the daemon's store, its Dispatch client (posting in an
-// agent's name), its Envoy listener, supervision's answer gate, the issue record, the gh tool, the
-// conversation store and the project's pause flag, and under kubernetes first installs the shared
-// public leak check that tool's guard runs (answersTools), refusing the boot where it cannot.
-// Without `answers` it builds nothing.
+// attachAnswers builds the answer loop over its configuration (answersLoop), and under kubernetes
+// first installs the shared public leak check its gh tool's guard runs (answersTools), refusing
+// the boot where it cannot. Without `answers` it builds nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) error {
 	if w.answers == nil {
 		return nil
@@ -53,6 +51,14 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	if err != nil {
 		return fmt.Errorf("the answer loop: %w", err)
 	}
+	w.answers.loop = answerloop.New(w.answersLoop(cfg, p, s, st, client, tools))
+	return nil
+}
+
+// answersLoop is the answer loop's configuration over the daemon's store, its Dispatch client
+// (client, posting in an agent's name), its Envoy listener, supervision's answer gate, the issue
+// record, the gh tool (tools, answersTools'), the conversation store and the project's pause flag.
+func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision, st *store.Store, client answerloop.Dispatch, tools ghTools) answerloop.Config {
 	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
 	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
 	var paused func() bool
@@ -62,7 +68,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 			return on
 		}
 	}
-	w.answers.loop = answerloop.New(answerloop.Config{
+	return answerloop.Config{
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
 		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
 		Issues: recordFacts{w}, Tools: tools,
@@ -76,8 +82,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 			return cfg.GitHubApps.Review.AppID
 		},
 		Answer: answer.Answer, Paused: paused, Now: time.Now, Log: w.log,
-	})
-	return nil
+	}
 }
 
 // answersTools is the answer loop's gh tool (ghTools): the daemon's host every answer opens under,

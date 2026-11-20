@@ -355,17 +355,12 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 	question := userMessage(req)
 	// The gh tool adds each call's output to what the agent has in front of it (inFront).
 	front := &inFront{history: history, question: question}
-	// The pause ends the run from inside it. A gh call it finds is refused, which agentloop would
-	// only hand back to the model, so the gh tool cancels the run's context with ErrPaused as the
-	// cause instead (toolSet); OnStep ends the run as a model call ends.
-	runCtx, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
-	result, runErr := agentloop.Run(runCtx, agentloop.Request{
+	result, runErr := agentloop.Run(ctx, agentloop.Request{
 		Model:   r.agentModel(req.Conversation.ThinkingLevel),
 		System:  systemPrompt(req),
 		History: history,
 		Input:   []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: question}}}},
-		Tools:   toolSet(req, front.add, stop),
+		Tools:   toolSet(req, front.add),
 		Bounds: agentloop.Bounds{
 			Time: req.Bounds.Answer, Calls: req.Bounds.ModelCalls, OutputTokens: req.Bounds.OutputTokens,
 		},
@@ -393,8 +388,9 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		LastCall: lastCall,
 		// A model call that ends while the project is paused is the run's last. agentloop
 		// finishes a step once the gh calls it asked for have returned, their results among its
-		// blocks, so this also ends a run the pause came during a gh call of; and it keeps a
-		// reply asked for again, or a cut call made again, from going on.
+		// blocks, so this also ends a run the pause came during or before a gh call of, the
+		// step's calls still to run refused (toolSet); and it keeps a reply asked for again, or
+		// a cut call made again, from going on.
 		OnStep: func(agentloop.Step) error {
 			if req.paused() {
 				return ErrPaused
@@ -406,7 +402,7 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 	if runErr != nil && ctx.Err() != nil {
 		return reply, fmt.Errorf("answer: %w", ctx.Err())
 	}
-	if errors.Is(runErr, ErrPaused) || errors.Is(context.Cause(runCtx), ErrPaused) {
+	if errors.Is(runErr, ErrPaused) {
 		return reply, ErrPaused
 	}
 	reply.Append = exchange(req, r, result, front)

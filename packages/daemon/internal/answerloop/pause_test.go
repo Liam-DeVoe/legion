@@ -3,13 +3,16 @@ package answerloop
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -268,5 +271,106 @@ func TestAPauseAsTheAnswerIsPreparedStopsItBeforeItsFirstGhCall(t *testing.T) {
 	if posts := p.dispatch.posts(); p.gh.lookups.Load() != 1 || p.answerCount() != 1 || p.question(q.ID).State != store.QuestionPosted || len(posts) != 1 {
 		t.Fatalf("after the resume: %d lookups, %d answers, question %s, Dispatch posts %s; want the lookup, the answer and its post",
 			p.gh.lookups.Load(), p.answerCount(), p.question(q.ID).State, describe(posts))
+	}
+}
+
+// pausingEnvoy is the listener, the project's pause coming as it takes the loop's send of a reply.
+type pausingEnvoy struct {
+	Envoy
+	paused *atomic.Bool
+}
+
+func (e pausingEnvoy) Send(ctx context.Context, m notify.Message) error {
+	e.paused.Store(true)
+	return e.Envoy.Send(ctx, m)
+}
+
+// countedConversations is the rig's conversations, counting each read of one.
+type countedConversations struct {
+	Conversations
+	reads atomic.Int64
+}
+
+func (c *countedConversations) Open(ctx context.Context, conv store.AgentConversation) (Session, error) {
+	c.reads.Add(1)
+	return c.Conversations.Open(ctx, conv)
+}
+
+// toolsOpened is the rig's gh tool, recording the question each answer opens it for.
+type toolsOpened struct {
+	tool      Tool
+	mu        sync.Mutex
+	questions []string
+}
+
+func (o *toolsOpened) Open(_ context.Context, _ ghtool.Agent, question string) (Tool, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.questions = append(o.questions, question)
+	return o.tool, nil
+}
+
+func (o *toolsOpened) opened() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.questions)
+}
+
+// A worker already running when the pause comes reads it again before its session's next
+// question, so that question is not begun. Two questions of one session are open, and the pause
+// comes after the first one's last read of it: as the first reply is sent, which post read the
+// pause before, or as the first answer returns a reply to a message that asks nothing, which
+// nothing posts. The first question ends; the second stays received, its conversation is not read
+// and no gh tool is opened for it. A pause the first answer reads itself ends the pass with
+// answer.ErrPaused, before any read of the next question.
+func TestAPauseAfterAQuestionsLastReadOfItStopsItsWorkerBeforeTheSessionsNextQuestion(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// asksNothing is a first answer that replies none and returns as the pause comes;
+		// otherwise the pause comes as the first reply is sent.
+		asksNothing bool
+		first       store.QuestionState
+	}{
+		{name: "as the first reply is sent", first: store.QuestionPosted},
+		{name: "as the first answer, to a message that asks nothing, returns", asksNothing: true, first: store.QuestionDropped},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPauseRig(t)
+			conversations := &countedConversations{Conversations: p.cfg.Conversations}
+			tools := &toolsOpened{tool: p.gh}
+			p.cfg.Conversations, p.cfg.Tools = conversations, tools
+			if c.asksNothing {
+				p.answer = func(req answer.Request) (answer.Reply, error) {
+					reply := answered(req, "Noted.")
+					reply.Kind = answer.None
+					p.paused.Store(true)
+					return reply, nil
+				}
+			} else {
+				p.cfg.Envoy = pausingEnvoy{Envoy: p.cfg.Envoy, paused: &p.paused}
+			}
+			p.restart()
+			p.conversation("ses_tester", testerToken, 0)
+			p.receive(envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-1", "agent.ses_tester.k1", "Run the suite?"))
+			first := p.only().ID
+			p.receive(envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-2", "agent.ses_tester.k2", "And the linter?"))
+			second := ""
+			for id := range p.questions() {
+				if id != first {
+					second = id
+				}
+			}
+			p.drain()
+			switch {
+			case p.question(first).State != c.first:
+				t.Fatalf("the first question = %s; want %s", p.question(first).State, c.first)
+			case p.question(second).State != store.QuestionReceived:
+				t.Fatalf("the second question = %s once the pause came; want received", p.question(second).State)
+			case !slices.Equal(tools.opened(), []string{first}):
+				t.Fatalf("the gh tool was opened for %v; want once, for the first question %s", tools.opened(), first)
+			case conversations.reads.Load() != 1 || p.answerCount() != 1:
+				t.Fatalf("%d conversation reads and %d answers; want the first question's alone", conversations.reads.Load(), p.answerCount())
+			}
+		})
 	}
 }

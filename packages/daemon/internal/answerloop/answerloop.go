@@ -330,8 +330,11 @@ func (l *Loop) schedule(ctx context.Context) {
 // work runs session's open questions one after another, in the order they were received, until
 // none is left to work now: a held forward is tried once a pass, and an error ends the pass, which
 // the next sweep tries again. The project's pause ends the pass too, read before each question and
-// answered by a run it stopped (answer.ErrPaused): the question keeps its state and waits, with
-// the ones after it, for the resume.
+// answered by a run it stopped (answer.ErrPaused): the question keeps its state and waits, with the
+// ones after it, for the resume. The read before each question stops a worker that was running
+// when the pause came short of its session's next question, whose generate would otherwise read
+// the conversation and the day's spend, mark the question generating, read the issue's facts and
+// open the gh tool, writing the role App's credential, all before its own read of the pause.
 func (l *Loop) work(ctx context.Context, session string) {
 	tried := map[string]store.QuestionState{}
 	for ctx.Err() == nil {
