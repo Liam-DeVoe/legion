@@ -124,8 +124,8 @@ jobs:
       # tag as well and are deliberately not here: they read the module's source, the text-check
       # job runs their eighteen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
       # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
-      # run twice. It comes before the unit step for the reason the API package's own run did:
-      # run beside the other package binaries,
+      # run twice. It comes before the unit step for the
+      # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
