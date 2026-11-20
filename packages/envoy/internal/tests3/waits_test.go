@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -73,7 +73,11 @@ var goBounds = []goBound{
 //     signal is refused, since weed shell ends 0 on TERM in the SeaweedFS image, and so is one of
 //     0 seconds, which turns the bound off.
 //   - The script waits (until, while, sleep, wait) only in within, which ends by its seconds,
-//     and sleeps only as `sleep 1`.
+//     and sleeps only as `sleep 1`. within's one wait is an until right after
+//     `deadline=$(( $(date +%s) + seconds ))` alone. No wait stands inside another wait, in its
+//     condition or its body, and no within's command runs within again, at once or through
+//     others: each would set the deadline the outer wait reads on every pass, so it might never
+//     end.
 //   - The script runs its own functions and the commands of scriptCommands alone, and so do the
 //     commands that within, timeout and a trap run, so a command that can wait with no bound
 //     (`read`, `nc -l`, `.`) is named. A command named by a path is read by its base name. tail
@@ -84,9 +88,17 @@ var goBounds = []goBound{
 //   - No own function of the script or of the steps takes the name of a command these rules read
 //     (ruledCommand: date, sleep, tail, curl, timeout, kill, [ and the others), and none is
 //     defined twice, since the shell would run its body in place of the one the rules read. Only
-//     the statement right before an until sets deadline, which that until's body reads, and only
-//     within in the script, s3 in the steps, sets seconds, to its first argument; a for's
-//     variable, arithmetic and ${x=...} assign too.
+//     a wait's deadline statement, `deadline=$(( $(date +%s) + <seconds> ))` alone right before
+//     its until, sets deadline, which that until's body reads, and only within in the script, s3
+//     in the steps, sets seconds, to its first argument; a for's variable, arithmetic and
+//     ${x=...} assign too. No arithmetic stands anywhere but in a wait's deadline statement:
+//     busybox sh reads a variable's value in arithmetic as an expression, and every shell reads
+//     the text of $x there, so after `dl=deadline=9` both $(( dl )) and $(( $dl )) set deadline.
+//   - within and s3 take their arguments as their first two statements, `seconds=$1 ...` and
+//     `shift <n>`, and run no other shift and no set, so a call's first word is its seconds and
+//     its words after those it takes off are what its last command is given, as the shell builds
+//     them at that call. No set of the script sets the arguments (it needs `set -eu` alone), and
+//     registered, whose within takes registered's own "$1" as its seconds, shifts and sets none.
 //   - No check ends the script with no message for a case to want: exit runs only in fail and
 //     usage, return only as `return "$status"`, and no test (`[`, `test`, `grep`) runs where
 //     nothing acts on its failure (an if, until or while, || or &&), which `set -e` turns into an
@@ -100,24 +112,10 @@ var goBounds = []goBound{
 //     expansion, is refused, and no `::error::` is printed but by fail and usage.
 //   - In seaweedfs.go, every function that sets a deadline is in goBounds, whose case exists, and
 //     every function that sends a request (Exec, Do) sets one.
-//   - In the shard job of .github/workflows/dispatch-browser.yaml, the steps of storeSteps, which
-//     start the browser suite's file store, wait for it and check it, run their own function s3
-//     and the commands of stepCommands alone, so a request or a wait by any other command
-//     (`wget`, `weed shell`, `tail`, `.`) is named, and no function runs itself again. They ask
-//     the store things only through the wait step's s3, whose one kind of curl is
-//     `curl -q -g -sf --max-time "$seconds" "$@"`: -q, first, reads no .curlrc, which could make
-//     curl try again, and -g makes a URL's [..] and {..} text, not a list of requests. seconds is
-//     s3's first argument, and s3 takes off its first two with `shift 2` before its curl. Every s3
-//     call gives a whole number of seconds above 0 (curl's 0 is no limit), and gives curl -o, -X
-//     and --data-binary, none of which sets a time, and one URL alone, literal text or the word
-//     after --: curl makes a request of each URL, each under its own --max-time. s3 ends the step
-//     by name, with exit 1, on curl's timeout (exit 28). They start weed server only by
-//     `nohup weed server ... &`, in the background of the step that starts the store. They wait
-//     only in an until that is a statement of its own right after
-//     `deadline=$(( $(date +%s) + <seconds> ))`, whose body ends the step by name, with exit 1,
-//     once the deadline passes, and sleeps only as `sleep 1`. No while or for stands anywhere, and
-//     no sleep outside such a wait. No case in this package starts those steps, so these rules are
-//     their check.
+//   - The steps of storeSteps, in the shard job of .github/workflows/dispatch-browser.yaml, which
+//     start the browser suite's file store, wait for it and check it, are held to the rules that
+//     storesteps_test.go's head says and stepFindings reads. No case in this package starts those
+//     steps, so these rules are their check.
 //
 // The last subtest plants each kind of fault and wants this program to name it, so a rule that
 // cannot see what it is for fails too, and plants shell that ends by itself, which it must pass,
@@ -188,11 +186,25 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			ruled    = "which takes the name of a command these rules read"
 			twice    = "defined more than once"
 			deadline = "sets deadline other than right before its until"
+			shifts   = "s3 does not take off its seconds and what"
+			nested   = "a wait inside another wait"
+			arith    = "arithmetic other than a wait's deadline statement"
+			curlLine = `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`
 		)
 		// One wait of the wait step, read by the program, after its deadline: shape is what
 		// stands around it.
 		readyWait := `until s3 10 "the root" -o /dev/null http://127.0.0.1:18333/; do [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::no root"; exit 1; }; sleep 1; done`
-		for _, c := range []struct {
+		// The check of the S3 port's wait, which ends its body but for its sleep, and within's.
+		portCheck := `[ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within a minute"; cat "$RUNNER_TEMP/weed.log"; exit 1; }` + "\n"
+		withinCheck := `    [ "$(date +%s)" -lt "$deadline" ] || fail "$message" "$seen"` + "\n"
+		// twoEdits plants two texts in the script, the second in the script the first made.
+		twoEdits := func(old1, new1, old2, new2 string) func() []string {
+			return func() []string {
+				first := replaceOnce(t, "one-collection.sh", oneCollection, old1, new1)
+				return scriptFindings(replaceOnce(t, "one-collection.sh", first, old2, new2), storeCases, scriptBounds, cases)
+			}
+		}
+		planted := []struct {
 			name     string
 			findings func() []string
 			want     string
@@ -258,9 +270,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a request with no deadline", gosource("\n// call sends", "\nfunc ping(c testcontainers.Container) {\n\t_, _, _ = c.Exec(context.Background(), []string{\"true\"})\n}\n\n// call sends"), "ping sends a request with no deadline"},
 			{"a deadline cut", gosource("\tctx, cancel := context.WithTimeout(ctx, deadline)\n\tdefer cancel()\n\tsent, err", "\tsent, err"), "request sends a request with no deadline"},
 			{"a curl with no bound in the wait step", inWait("curl -sf -o /dev/null http://127.0.0.1:18333/\n"), "a curl outside s3"},
-			{"the wait step's s3 with its bound cut", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf "$@"`), stepCurl},
-			{"a second curl in s3 with no bound", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf --max-time "$seconds" "$@" || curl -sf "$@"`), stepCurl},
-			{"s3's curl with its bound turned off after it", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf --max-time "$seconds" "$@" --max-time 0`), stepCurl},
+			{"the wait step's s3 with its bound cut", wait(curlLine, `curl -q -g --proto =http -sf "$@"`), stepCurl},
+			{"a second curl in s3 with no bound", wait(curlLine, curlLine+` || curl -sf "$@"`), stepCurl},
+			{"s3's curl with its bound turned off after it", wait(curlLine, curlLine+" --max-time 0"), stepCurl},
 			{"s3 that tries again a request that timed out", wait(`if [ "$status" = 28 ]; then`, `if false; then`), "on curl's timeout"},
 			{"an s3 call whose seconds are a variable", wait(`s3 10 "the bucket"`, `s3 "$seconds" "the bucket"`), "an s3 call whose seconds are not a whole number"},
 			{"an s3 call of 0 seconds", wait(`s3 10 "the bucket"`, `s3 0 "the bucket"`), s3Zero},
@@ -306,13 +318,32 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"an s3 call given a URL the shell splits after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- $store`), "after --, which the shell splits"},
 			{"an s3 call given no URL", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null`), "an s3 call that gives curl 0 URLs, not one"},
 			{"an s3 call given \"$@\" after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- "$@"`), "after --, which the shell splits"},
-			{"s3's curl that reads URL patterns", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -sf --max-time "$seconds" "$@"`), stepCurl},
+			{"s3's curl that reads URL patterns", wait(curlLine, `curl -q --proto =http -sf --max-time "$seconds" "$@"`), stepCurl},
 			{"s3's curl that reads a .curlrc that tries again", func() []string {
 				curlrc := replaceOnce(t, "the wait step", steps[waitStep], "store=http://", "echo \"retry = 100000\" > \"$HOME/.curlrc\"\nstore=http://")
-				return stepFindings(waitStep, replaceOnce(t, "the wait step", curlrc, `curl -q -g -sf --max-time "$seconds" "$@"`, `curl -g -sf --max-time "$seconds" "$@"`))
+				return stepFindings(waitStep, replaceOnce(t, "the wait step", curlrc, curlLine, `curl -g --proto =http -sf --max-time "$seconds" "$@"`))
 			}, stepCurl},
-			{"s3 that gives curl its what", wait("  shift 2\n", "  shift\n"), "s3 does not take off its seconds and what"},
-			{"s3 that takes off its seconds after its curl", wait("  shift 2\n  curl -q -g -sf --max-time \"$seconds\" \"$@\" && return 0\n", "  curl -q -g -sf --max-time \"$seconds\" \"$@\" && return 0\n  shift 2\n"), "s3 does not take off its seconds and what"},
+			// A URL of a scheme curl does not hold to --max-time: file:///dev/zero is read for ever.
+			{"s3's curl that reads a URL of any scheme", wait(curlLine, `curl -q -g -sf --max-time "$seconds" "$@"`), stepCurl},
+			{"s3's curl that reads a file:// URL too", wait(curlLine, `curl -q -g --proto =http,file -sf --max-time "$seconds" "$@"`), stepCurl},
+			// s3's arguments as the shell builds them at a call: a shift that does not run, or runs
+			// elsewhere, leaves seconds and what to curl.
+			{"s3 that gives curl its what", wait("  shift 2\n", "  shift\n"), shifts},
+			{"s3 that takes off its seconds after its curl", wait("  shift 2\n  "+curlLine+" && return 0\n", "  "+curlLine+" && return 0\n  shift 2\n"), shifts},
+			{"s3 whose shift a condition skips", wait("  shift 2\n", "  [ 1 = 0 ] && \\\n  shift 2\n"), shifts},
+			{"s3 whose shift follows a test of its what", wait("  shift 2\n", "  [ -z \"$what\" ] && shift 2\n"), shifts},
+			{"s3 whose shift runs in a substitution", wait("  shift 2\n", "  echo \"$(shift 2)\" > /dev/null\n"), shifts},
+			{"s3 whose shift stands in an if", wait("  shift 2\n", "  if true; then shift 2; fi\n"), shifts},
+			{"s3 that reads its seconds after its shift", wait("  seconds=$1 what=$2\n  shift 2\n", "  shift 2\n  seconds=$1 what=$2\n"), shifts},
+			{"s3 that reads its what from another word", wait("  seconds=$1 what=$2\n", "  seconds=$1 what=$3\n"), shifts},
+			{"s3 that shifts again", wait("  shift 2\n", "  shift 2\n  shift 1\n"), shifts},
+			{"s3 that takes off one word", wait("  shift 2\n", "  shift 1\n"), shifts},
+			{"s3 that takes off three words", wait("  shift 2\n", "  shift 3\n"), shifts},
+			// -o, --data-binary and -X, each with a value curl takes as its own.
+			{"an s3 call whose -o the shell splits", inWait("out='/dev/null -m0'\ns3 10 \"the root\" -o $out -- \"$store\"\n"), s3Curl + "-o $out, a value the shell splits"},
+			{"an s3 call whose --data-binary the shell splits", inWait("d='ready -m0'\ns3 10 \"the root\" --data-binary $d -o /dev/null -- \"$store\"\n"), s3Curl + "--data-binary $d, a value the shell splits"},
+			{"an s3 call whose -X a variable gives", inWait("m='PUT -m0'\ns3 10 \"the root\" -X $m -o /dev/null -- \"$store\"\n"), s3Curl + "-X $m, a method whose value"},
+			{"an s3 call whose -X a quoted variable gives", inWait("m=PUT\ns3 10 \"the root\" -X \"$m\" -o /dev/null -- \"$store\"\n"), s3Curl + "-X \"$m\", a method whose value"},
 			// A command the rules read, or the deadline a wait reads, that the file makes its own.
 			{"a date of the wait step's own", wait("s3() {", "date() {\n  echo 0\n}\ns3() {"), ruled},
 			{"a date of the script's own", script("\nwithin() {\n", "\ndate() {\n  echo 0\n}\n\nwithin() {\n"), ruled},
@@ -326,6 +357,26 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a deadline set again in within's wait", script("    [ \"$(date +%s)\" -lt \"$deadline\" ]", "    deadline=$(( $(date +%s) + 60 ))\n    [ \"$(date +%s)\" -lt \"$deadline\" ]"), deadline},
 			{"a deadline set again by a for", script("    [ \"$(date +%s)\" -lt \"$deadline\" ]", "    for deadline in 99999999999; do echo; done\n    [ \"$(date +%s)\" -lt \"$deadline\" ]"), deadline},
 			{"within's seconds set again", script("  shift 3\n  deadline=", "  shift 3\n  seconds=100000\n  deadline="), "within takes its seconds from other than its first argument"},
+			{"within's seconds after its arguments are set", script("  seconds=$1 message=$2 seen=$3\n", "  first=$1; shift; set -- 100000 \"$@\"\n  seconds=$1 message=$2 seen=$3\n"), "within does not take off its seconds, message and file"},
+			{"within's deadline set twice in one statement", script("  deadline=$(( $(date +%s) + seconds ))\n", "  deadline=$(( $(date +%s) + seconds )) deadline=99999999999\n"), deadline},
+			{"a set that sets the script's arguments", script("set -eu\n", "set -eu\nset -- prepare tests3 /tmp/weed.log\n"), "a set that sets the arguments"},
+			{"registered that shifts its seconds away", script("registered() {\n  within \"$1\"", "registered() {\n  shift\n  within \"$1\""), "a bound whose seconds this program cannot read"},
+			{"within's wait with no deadline statement before it", script("  deadline=$(( $(date +%s) + seconds ))\n", "  # deadline=$(( $(date +%s) + seconds ))\n"), "a wait of within other than its until right after"},
+			{"a deadline statement that assigns more", wait("deadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the S3 port's", "deadline=$(( $(date +%s) + 60 )) n=0\nuntil s3 10 \"the S3 port's"), noDue},
+			// A wait that sets the deadline another wait reads, on each of its passes.
+			{"a wait inside another wait's body", wait(portCheck, portCheck+"  deadline=$(( $(date +%s) + 60 ))\n  "+readyWait+"\n"), nested},
+			{"a wait inside another wait's condition", wait(`until s3 10 "the S3 port's first request"`, "until { deadline=$(( $(date +%s) + 60 )); "+readyWait+"; }; s3 10 \"the S3 port's first request\""), nested},
+			{"a wait in a function of the wait step", inWait("poll() {\n  deadline=$(( $(date +%s) + 60 ))\n  " + readyWait + "\n}\n"), "a wait in a function"},
+			{"a wait inside within's wait", script(withinCheck, withinCheck+"    deadline=$(( $(date +%s) + 60 ))\n    until [ -d / ]; do sleep 1; done\n"), nested},
+			{"a within whose command runs within through others", twoEdits("prepare() {\n  registered 60\n", "gate() {\n  registered 60\n}\n\nprepare() {\n",
+				` master "/vol/grow?collection=$collection&count=7" "$work/grow.txt"`, " gate"), "a within whose command runs within again (gate → registered → within)"},
+			{"a within whose command is within", script(` master "/vol/grow?collection=$collection&count=7" "$work/grow.txt"`, ` within 10 x "$work/x" true`), "a within whose command runs within again (within)"},
+			// Arithmetic that reads a variable's value, which can assign deadline.
+			{"a deadline set through a variable's value in arithmetic", twoEdits("work=$(mktemp -d)\n", "work=$(mktemp -d)\ndl='deadline=99999999999'\n",
+				withinCheck, withinCheck+"    echo $(( dl )) > /dev/null\n"), arith},
+			{"a deadline set through $x in arithmetic", wait(portCheck, portCheck+"  echo $(( $dl )) > /dev/null\n"), arith},
+			{"arithmetic in s3", wait("  shift 2\n", "  shift 2\n  echo $(( $dl )) > /dev/null\n"), arith},
+			{"a deadline set by an operator the POSIX parse refuses", wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  echo $(( deadline **= 2 )) > /dev/null\n"), "does not parse as POSIX shell"},
 			// Each part of the reader, so a part made blind leaves its fault unnamed.
 			{"a sleep in a case's word", inPrepare("  case $(sleep 100000) in *) echo x ;; esac\n"), waits},
 			{"a sleep in a case's pattern", inPrepare("  case x in $(sleep 100000)) echo x ;; esac\n"), waits},
@@ -358,7 +409,17 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 				bounds[1].caseName = "no such case"
 				return goFindings(string(source), bounds, cases)
 			}, `the deadline of request names a case that does not exist: "no such case"`},
-		} {
+		}
+		// Each compound operator of arithmeticAssigns, which assigns to the variable on its left;
+		// = and ++ have cases of their own above.
+		for _, op := range []string{"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="} {
+			planted = append(planted, struct {
+				name     string
+				findings func() []string
+				want     string
+			}{"a deadline set again by " + op, wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  echo $(( deadline "+op+" 2 )) > /dev/null\n"), deadline})
+		}
+		for _, c := range planted {
 			findings := c.findings()
 			if !slices.ContainsFunc(findings, func(f string) bool { return strings.Contains(f, c.want) }) {
 				t.Errorf("%s: the program found %q, want a finding saying %q", c.name, findings, c.want)
@@ -381,6 +442,10 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a wait on one line whose deadline ends it", inWait("deadline=$(( $(date +%s) + 60 ))\n" + readyWait + "\n")},
 			{"a test as a wait's condition", script("  until \"$@\"; do\n", "  until grep -q x \"$seen\"; do\n")},
 			{"a test in an assignment before a command", inPrepare("  n=\"$(grep -c x \"$log\")\" echo > /dev/null\n")},
+			{"a tail given an escaped $ before a quote", inPrepare("  tail -n 200 \\$'x' /tmp/weed.log > /dev/null\n")},
+			{"a tail given an escaped ~ and a ~ inside a word", inPrepare("  tail -n 200 \\~ a~b /tmp/weed.log > /dev/null\n")},
+			{"an s3 call whose what is an option", inWait("s3 2 -m0 -o /dev/null -- \"$store\"\n")},
+			{"a set of options alone", script("set -eu\n", "set -eu\nset +x\n")},
 		} {
 			if findings := c.findings(); len(findings) > 0 {
 				t.Errorf("%s: the program found %q, want no finding", c.name, findings)
@@ -513,13 +578,18 @@ func ruledCommand(name string) bool {
 	return scriptCommands[name] || stepCommands[name] || storeRequests[name] || name == "kill" || name == "test" || name == "wait"
 }
 
-// ownFindings answers, by line, what read's own functions and assignments break: a function
-// that takes the name of a command these rules read (ruledCommand), or that is defined more than
-// once, so the body the rules read is not the one every call runs; an assignment to deadline
-// other than the statement right before an until, whose body reads it, so the wait's end moves;
-// and an assignment to seconds other than function's own `seconds=$1` (within's in the script,
-// s3's in the steps), so no call's seconds say its bound.
-func ownFindings(read *shellRead, function string) []shellRefusal {
+// ownFindings answers, by line, what read's own functions, assignments, arithmetic and waits
+// break: a function that takes the name of a command these rules read (ruledCommand), or that is
+// defined more than once, so the body the rules read is not the one every call runs; an
+// assignment to deadline other than a wait's deadline statement,
+// deadline=$(( $(date +%s) + <seconds> )) alone right before its until, whose body reads it, so
+// the wait's end moves (seconds answers whether a word may give those seconds in this file);
+// arithmetic anywhere but in such a statement, since busybox sh reads a variable's value in
+// arithmetic as an expression and every shell reads the text of $x there, so either can assign
+// to deadline through a value; a wait inside another wait, which would set the deadline that
+// wait reads again on every pass; and an assignment to seconds other than function's own
+// `seconds=$1` (within's in the script, s3's in the steps), so no call's seconds say its bound.
+func ownFindings(read *shellRead, function string, seconds func(*syntax.Word) bool) []shellRefusal {
 	var found []shellRefusal
 	defined := map[string]int{}
 	for _, d := range read.definitions {
@@ -530,23 +600,31 @@ func ownFindings(read *shellRead, function string) []shellRefusal {
 			found = append(found, shellRefusal{d.line, "a function named " + d.name + ", defined more than once, so the body the rules read is not the one every call runs"})
 		}
 	}
-	beforeUntil := map[*syntax.Assign]bool{}
+	statements := map[*syntax.Assign]bool{}
+	arithmetic := map[*syntax.ArithmExp]bool{}
 	for _, loop := range read.loops {
-		if loop.kind != "until" || loop.before == nil {
+		if loop.nested {
+			found = append(found, shellRefusal{loop.line, "a wait inside another wait (an until, while or for in its condition or its body), which can set the deadline that wait reads again on every pass, so it may never end"})
+		}
+		if loop.kind != "until" {
 			continue
 		}
-		if call, ok := loop.before.Cmd.(*syntax.CallExpr); ok && len(call.Args) == 0 {
-			for _, a := range call.Assigns {
-				beforeUntil[a] = true
-			}
+		if a, x := deadlineStatement(loop.before, seconds); a != nil {
+			statements[a] = true
+			arithmetic[x] = true
 		}
 	}
 	for _, a := range read.assigns {
 		switch {
-		case a.name == "deadline" && !beforeUntil[a.node]:
-			found = append(found, shellRefusal{a.line, "sets deadline other than right before its until, so the wait's end moves where its body reads it"})
+		case a.name == "deadline" && !statements[a.node]:
+			found = append(found, shellRefusal{a.line, "sets deadline other than right before its until, by deadline=$(( $(date +%s) + <seconds> )) alone, so the wait's end moves where its body reads it"})
 		case a.name == "seconds" && (a.function != function || a.value.source != "$1"):
 			found = append(found, shellRefusal{a.line, function + " takes its seconds from other than its first argument, so no call's seconds say its bound"})
+		}
+	}
+	for _, x := range read.arithmetic {
+		if !arithmetic[x.node] {
+			found = append(found, shellRefusal{x.line, "arithmetic other than a wait's deadline statement, which can assign through a variable's value (busybox sh reads that value as an expression, and every shell reads the text of $x), so deadline may move"})
 		}
 	}
 	return found
@@ -645,14 +723,22 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 	for _, name := range slices.Sorted(maps.Keys(selfRunning)) {
 		finding(int(read.functions[name].Pos().Line()), "a function that runs itself again ("+selfRunning[name]+"), so nothing but a bound ends it")
 	}
-	for _, own := range ownFindings(read, "within") {
+	for _, own := range ownFindings(read, "within", withinSeconds) {
 		finding(own.line, own.what)
 	}
 	for _, loop := range read.loops {
-		if loop.kind != "for" && loop.function != "within" {
+		switch {
+		case loop.kind == "for":
+		case loop.function != "within":
 			finding(loop.line, "waits outside within, which ends by its seconds")
+		case loop.kind != "until" || !isWithinDeadline(loop.before):
+			finding(loop.line, "a wait of within other than its until right after deadline=$(( $(date +%s) + seconds )) alone, so its seconds may not end it")
 		}
 	}
+	if within := read.functions["within"]; within != nil && !takesArguments(read, "within", "seconds", "message", "seen") {
+		finding(int(within.Pos().Line()), "within does not take off its seconds, message and file by `seconds=$1 message=$2 seen=$3` and then `shift 3`, its first two statements, with no other shift or set, so a call's first word may not be its seconds, nor its words after the third its command")
+	}
+	registeredShifts := slices.ContainsFunc(read.commands, func(c shellCommand) bool { return c.function == "registered" && changesArguments(c) })
 	for _, c := range read.commands {
 		if !c.name.literal {
 			// within's "$@" is the command each call of within gives it, read at that call.
@@ -675,8 +761,19 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 			finding(c.line, `returns a status other than "$status", which under set -e ends the script with no message for a case to want`)
 		case name == "tail" && tailFinding(c.args) != "":
 			finding(c.line, tailFinding(c.args))
+		case name == "set" && setsArguments(c.args):
+			finding(c.line, "a set that sets the arguments, so a $1 that a bound reads may not be its call's word; the script needs set -eu alone")
 		case !scriptCommands[name] && read.functions[name] == nil:
 			finding(c.line, "runs "+name+", which is not in scriptCommands, so it may wait with no bound")
+		}
+		if name == "within" && read.functions["within"] != nil && len(c.args) > 3 && c.args[3].literal {
+			way := "within"
+			if command := c.args[3].text; command != "within" {
+				way = read.way(command, "within")
+			}
+			if way != "" {
+				finding(c.line, "a within whose command runs within again ("+way+"), which sets the deadline this within reads on every try, so it may never end")
+			}
 		}
 		if (name == "sleep" || name == "wait") && c.function != "within" {
 			finding(c.line, "waits outside within, which ends by its seconds")
@@ -696,8 +793,9 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 				if !inListed(c.offset) {
 					finding(c.line, fmt.Sprintf("the bound %q is in no text of scriptBounds, so it has no case", text))
 				}
-			case name == "within" && c.function == "registered" && seconds.source == `"$1"`:
-				// registered's own seconds, each call of which is a bound of its own
+			case name == "within" && c.function == "registered" && seconds.source == `"$1"` && !registeredShifts:
+				// registered's own seconds, each call of which is a bound of its own; registered
+				// shifts and sets none of its arguments, so its "$1" is each call's first word
 			default:
 				finding(c.line, fmt.Sprintf("a bound whose seconds this program cannot read (%s), so no case can be listed for it", text))
 			}
@@ -773,261 +871,96 @@ func goFindings(source string, bounds []goBound, names map[string]bool) []string
 	return findings
 }
 
-// workflow is the workflow whose shard job starts the browser suite's file store, read from this
-// package's directory; waitStep is that job's step that waits for the store, and storeSteps every
-// step of it that starts the store, waits for it or checks it.
-const (
-	workflow = "../../../../.github/workflows/dispatch-browser.yaml"
-	waitStep = "Wait for the S3-compatible server"
-)
-
-var storeSteps = []string{"Start an S3-compatible server for uploaded files", waitStep, "Check that no write grew the file store"}
-
-// stepCommands are the commands the store steps may run besides their own function s3: each
-// ends by itself, or under a bound a rule of stepFindings reads. curl runs only in s3, as
-// `curl -q -g -sf --max-time "$seconds" "$@"`; one-collection.sh's own waits are held by the
-// script's rules; nohup only starts weed server in the background, in the step that starts the
-// store; sleep runs only as a wait's sleep 1. Any other command is named, so a request or a wait
-// by any other command (wget, nc, tail, weed shell, .) fails the program.
-var stepCommands = map[string]bool{
-	"[": true, "cat": true, "curl": true, "date": true, "echo": true, "exit": true, "mkdir": true,
-	"nohup": true, "one-collection.sh": true, "return": true, "shift": true, "sleep": true,
-}
-
-// storeStepRuns answers the run: text of each step of storeSteps, read from workflow's shard job.
-func storeStepRuns(t *testing.T) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile(workflow)
-	if err != nil {
-		t.Fatalf("read %s: %v", workflow, err)
-	}
-	var parsed struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(raw, &parsed); err != nil {
-		t.Fatalf("parse %s: %v", workflow, err)
-	}
-	runs := map[string]string{}
-	for _, step := range parsed.Jobs["shard"].Steps {
-		if slices.Contains(storeSteps, step.Name) {
-			runs[step.Name] = step.Run
-		}
-	}
-	for _, name := range storeSteps {
-		if runs[name] == "" {
-			t.Fatalf("%s: the shard job has no step %q that runs a script", workflow, name)
-		}
-	}
-	return runs
-}
-
-// s3Curl answers whether the words of a curl are s3's own: -q -g -sf --max-time "$seconds" "$@".
-// -q, which curl reads only as its first word, keeps it from reading a .curlrc, which could make
-// it try again (retry = 100000); -g makes [..] and {..} in a URL text, not a list of requests.
-func s3Curl(args []shellWord) bool {
-	want := []string{"-q", "-g", "-sf", "--max-time", `"$seconds"`, `"$@"`}
-	return slices.EqualFunc(args, want, func(w shellWord, form string) bool { return w.form() == form })
-}
-
-// s3CurlFinding answers what is wrong with the words an s3 call (s3 <seconds> <what> <word>...)
-// gives curl, or "" when nothing is. They must be -o <file>, -X <method> and --data-binary
-// <data>, none of which sets a time, and one URL alone: literal text that does not start with -,
-// or the one word after --, which curl reads as a URL whatever it holds. curl makes a request of
-// each URL, each under its own --max-time, so two URLs are two bounds. A word before -- whose
-// value this program cannot know (an expansion of any kind, ~ and $'...' among them) may be an
-// option that turns the bound off (--max-time 0, -m 0, --retry) or a second URL.
-func s3CurlFinding(args []shellWord) string {
-	urls := 0
-	for i := 2; i < len(args); i++ {
-		w := args[i]
-		switch {
-		case (w.is("-o") || w.is("--data-binary")) && i+1 < len(args) && args[i+1].single:
-			i++
-		case w.is("-X") && i+1 < len(args) && args[i+1].literal:
-			i++
-		case w.is("--"):
-			rest := args[i+1:]
-			if len(rest) != 1 {
-				return fmt.Sprintf("an s3 call that gives curl %d words after --, where one URL alone is one request", len(rest))
-			}
-			if !rest[0].single {
-				return "an s3 call that gives curl " + rest[0].source + " after --, which the shell splits into any number of URLs"
-			}
-			urls++
-			i = len(args)
-		case w.literal && !strings.HasPrefix(w.text, "-"):
-			urls++
-		case !w.literal:
-			return "an s3 call that gives curl " + w.source + ", a word whose value this program cannot know, before --, so it may be an option that turns the bound off or a second URL"
-		default:
-			return "an s3 call that gives curl " + w.text + ", which is none of -o, -X, --data-binary and a URL, so it may turn the bound off"
-		}
-	}
-	if urls != 1 {
-		return fmt.Sprintf("an s3 call that gives curl %d URLs, not one: curl makes a request of each, each under its own --max-time", urls)
-	}
-	return ""
-}
-
-// shiftsTwo answers whether s3 takes off its seconds and what, and no more, before its curl: one
-// `shift 2` in s3, before every curl of it, so the words of a call after its first two are
-// curl's.
-func shiftsTwo(read *shellRead) bool {
-	var shifts, curls []shellCommand
-	for _, c := range read.commands {
-		if c.function == "s3" && c.name.is("shift") {
-			shifts = append(shifts, c)
-		}
-		if c.function == "s3" && c.name.is("curl") {
-			curls = append(curls, c)
-		}
-	}
-	if len(shifts) != 1 || len(shifts[0].args) != 1 || !shifts[0].args[0].is("2") {
-		return false
-	}
-	return !slices.ContainsFunc(curls, func(c shellCommand) bool { return c.offset < shifts[0].offset })
-}
-
-// isDeadline answers whether stmt is deadline=$(( $(date +%s) + <seconds> )), alone.
-func isDeadline(stmt *syntax.Stmt) bool {
+// deadlineStatement answers the assignment and the arithmetic of stmt when it is a wait's
+// deadline statement, deadline=$(( $(date +%s) + <seconds> )) alone, where seconds answers
+// whether the word after + may give the seconds in the file it stands in; nil and nil when it is
+// not.
+func deadlineStatement(stmt *syntax.Stmt, seconds func(*syntax.Word) bool) (*syntax.Assign, *syntax.ArithmExp) {
 	if stmt == nil || stmt.Negated || stmt.Background || len(stmt.Redirs) > 0 {
-		return false
+		return nil, nil
 	}
 	call, ok := stmt.Cmd.(*syntax.CallExpr)
 	if !ok || len(call.Args) > 0 || len(call.Assigns) != 1 {
-		return false
+		return nil, nil
 	}
 	a := call.Assigns[0]
 	if a.Name == nil || a.Name.Value != "deadline" || a.Value == nil || len(a.Value.Parts) != 1 {
-		return false
+		return nil, nil
 	}
 	arithmetic, ok := a.Value.Parts[0].(*syntax.ArithmExp)
 	if !ok {
-		return false
+		return nil, nil
 	}
 	sum, ok := arithmetic.X.(*syntax.BinaryArithm)
 	if !ok || sum.Op != syntax.Add {
-		return false
+		return nil, nil
 	}
 	now, ok := sum.X.(*syntax.Word)
 	if !ok || len(now.Parts) != 1 {
-		return false
+		return nil, nil
 	}
 	date, ok := now.Parts[0].(*syntax.CmdSubst)
 	if !ok || len(date.Stmts) != 1 || !callIs(date.Stmts[0], "date", "+%s") {
+		return nil, nil
+	}
+	if by, ok := sum.Y.(*syntax.Word); !ok || !seconds(by) {
+		return nil, nil
+	}
+	return a, arithmetic
+}
+
+// withinSeconds answers whether a word of the script's deadline statement gives its seconds:
+// within's own seconds, which its first statement takes from each call's first word.
+func withinSeconds(w *syntax.Word) bool { return w.Lit() == "seconds" }
+
+// isWithinDeadline answers whether stmt is within's deadline statement,
+// deadline=$(( $(date +%s) + seconds )), alone.
+func isWithinDeadline(stmt *syntax.Stmt) bool {
+	a, _ := deadlineStatement(stmt, withinSeconds)
+	return a != nil
+}
+
+// takesArguments answers whether function, an own function of read, takes its arguments as its
+// first two statements: names[i]=$<i+1> for each of names and no more, then
+// `shift <len(names)>`, with no other shift and no set that sets the arguments anywhere in it. A
+// call's first word is then its seconds, and its words after those the function takes off are
+// what its last command is given, as the shell builds them at that call. A shift that a condition
+// can skip, that runs after another statement or in a substitution, or a second one, is not this
+// form, whatever its text.
+func takesArguments(read *shellRead, function string, names ...string) bool {
+	block, ok := read.functions[function].Body.Cmd.(*syntax.Block)
+	if !ok || len(block.Stmts) < 2 || !callIs(block.Stmts[1], "shift", strconv.Itoa(len(names))) {
 		return false
 	}
-	seconds, ok := sum.Y.(*syntax.Word)
-	return ok && digits.MatchString(seconds.Lit())
-}
-
-// failsByName answers whether stmts, a block's, print an ::error:: line first and end with
-// exit 1.
-func failsByName(stmts []*syntax.Stmt) bool {
-	if len(stmts) < 2 || !callIs(stmts[len(stmts)-1], "exit", "1") {
+	first := block.Stmts[0]
+	call, ok := first.Cmd.(*syntax.CallExpr)
+	if !ok || first.Negated || first.Background || len(first.Redirs) > 0 || len(call.Args) > 0 || len(call.Assigns) != len(names) {
 		return false
 	}
-	echo, ok := stmts[0].Cmd.(*syntax.CallExpr)
-	return ok && len(echo.Args) == 2 && readWord(echo.Args[0]).is("echo") && strings.HasPrefix(readWord(echo.Args[1]).text, "::error::")
-}
-
-// endsWait answers whether stmt is the statement that ends a wait of the steps by name once its
-// deadline passes: [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::..."; ...; exit 1; }.
-func endsWait(stmt *syntax.Stmt) bool {
-	or, ok := stmt.Cmd.(*syntax.BinaryCmd)
-	if !ok || or.Op != syntax.OrStmt || !callIs(or.X, "[", `"$(date +%s)"`, "-lt", `"$deadline"`, "]") {
-		return false
-	}
-	block, ok := or.Y.Cmd.(*syntax.Block)
-	return ok && failsByName(block.Stmts)
-}
-
-// endsOnTimeout answers whether s3 (decl) ends the step by name, with exit 1, on curl's timeout:
-// if [ "$status" = 28 ]; then echo "::error::..."; ...; exit 1; fi.
-func endsOnTimeout(decl *syntax.FuncDecl) bool {
-	found := false
-	if decl != nil {
-		syntax.Walk(decl, func(n syntax.Node) bool {
-			if c, ok := n.(*syntax.IfClause); ok && len(c.Cond) == 1 && callIs(c.Cond[0], "[", `"$status"`, "=", "28", "]") && failsByName(c.Then) {
-				found = true
-			}
-			return !found
-		})
-	}
-	return found
-}
-
-// stepFindings answers what the run: text (run) of the shard job's step name breaks of the rules
-// above for the workflow's store steps.
-func stepFindings(name, run string) []string {
-	var findings []string
-	lines := strings.Split(run, "\n")
-	finding := func(line int, what string) {
-		shown := ""
-		if line >= 1 && line <= len(lines) {
-			shown = strings.TrimSpace(lines[line-1])
-		}
-		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q, line %d: %s: %s", name, line, what, shown))
-	}
-	read := readShell(run)
-	for _, refused := range read.refused {
-		finding(refused.line, refused.what)
-	}
-	selfRunning := read.selfRunning()
-	for _, function := range slices.Sorted(maps.Keys(selfRunning)) {
-		finding(int(read.functions[function].Pos().Line()), "a function that runs itself again ("+selfRunning[function]+"), so nothing but a bound ends it")
-	}
-	for _, loop := range read.loops {
-		if loop.kind != "until" {
-			finding(loop.line, "a loop that is not a wait with a deadline (an until right after its deadline)")
-			continue
-		}
-		if !isDeadline(loop.before) {
-			finding(loop.line, "a wait with no deadline=$(( $(date +%s) + <seconds> )) just before it, in the same list of statements")
-		}
-		if !slices.ContainsFunc(loop.body, endsWait) {
-			finding(loop.line, "a wait that does not end the step by name, with exit 1, once its deadline passes")
+	for i, a := range call.Assigns {
+		if a.Name == nil || a.Name.Value != names[i] || a.Value == nil || readWord(a.Value).source != "$"+strconv.Itoa(i+1) {
+			return false
 		}
 	}
-	for _, own := range ownFindings(read, "s3") {
-		finding(own.line, own.what)
-	}
-	if s3 := read.functions["s3"]; s3 != nil && !shiftsTwo(read) {
-		finding(int(s3.Pos().Line()), "s3 does not take off its seconds and what with one `shift 2` before its curl, so curl is given words of each call that are not its own")
-	}
+	changes := 0
 	for _, c := range read.commands {
-		if !c.name.literal {
-			finding(c.line, "runs "+c.name.source+", which is not in stepCommands, so it may ask the store or wait with no bound")
-			continue
-		}
-		switch command := c.name.text; {
-		case command == "s3" && read.functions[command] != nil:
-			if len(c.args) == 0 || !c.args[0].literal || !wholeSeconds.MatchString(c.args[0].text) {
-				finding(c.line, "an s3 call whose seconds are not a whole number above 0, while curl's --max-time 0 is no limit")
-			}
-			if what := s3CurlFinding(c.args); what != "" {
-				finding(c.line, what)
-			}
-		case read.functions[command] != nil:
-		case !stepCommands[command]:
-			finding(c.line, "runs "+command+", which is not in stepCommands, so it may ask the store or wait with no bound")
-		case command == "curl" && (c.function != "s3" || !s3Curl(c.args)):
-			finding(c.line, `a curl outside s3, or other than s3's own curl -q -g -sf --max-time "$seconds" "$@", so with no bound, one turned off, a .curlrc or a URL pattern`)
-		case command == "nohup" && (name != storeSteps[0] || !c.background || len(c.args) < 2 || !c.args[0].is("weed") || !c.args[1].is("server")):
-			finding(c.line, "a nohup that is not `nohup weed server ... &` in the step that starts the store, so it may hold the step")
-		case command == "sleep" && !c.waiting:
-			finding(c.line, "a sleep outside a wait with a deadline")
-		case command == "sleep" && (len(c.args) != 1 || !c.args[0].is("1")):
-			finding(c.line, "a sleep in a wait other than its sleep 1, which holds the wait past its deadline")
+		if c.function == function && changesArguments(c) {
+			changes++
 		}
 	}
-	if name == waitStep && !endsOnTimeout(read.functions["s3"]) {
-		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q: s3 does not end the step by name, with exit 1, on curl's timeout (exit 28)", name))
-	}
-	return findings
+	return changes == 1
+}
+
+// changesArguments answers whether c sets the arguments of the function it runs in: a shift, or a
+// set given more than options.
+func changesArguments(c shellCommand) bool {
+	return c.name.is("shift") || c.name.is("set") && setsArguments(c.args)
+}
+
+// setsArguments answers whether the words of a set set the arguments: any word but an option
+// (-eu, +x) does, -- and - among them, and so may one whose value this program cannot know.
+func setsArguments(args []shellWord) bool {
+	return slices.ContainsFunc(args, func(w shellWord) bool {
+		return !w.literal || w.text == "--" || w.text == "-" || !strings.HasPrefix(w.text, "-") && !strings.HasPrefix(w.text, "+")
+	})
 }

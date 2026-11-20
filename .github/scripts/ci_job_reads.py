@@ -886,9 +886,9 @@ RULES = {
                   "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
                   "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
-    f"{ENVOY}/internal/tests3/waits_test.go": reads(
+    f"{ENVOY}/internal/tests3/storesteps_test.go": reads(
         (".github/workflows/dispatch-browser.yaml",
-         "internal/tests3/waits_test.go:800 os.ReadFile (workflow :780, ../../../..): "
+         "internal/tests3/storesteps_test.go:73 os.ReadFile (workflow :53, ../../../..): "
          "TestEveryWaitAndCheckOfTheScriptHasACase holds the shard job's file-store steps to their bounds")),
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),

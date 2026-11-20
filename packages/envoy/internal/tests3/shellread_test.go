@@ -22,9 +22,10 @@ import (
 //     timeout and the script's own within run. Each comes with its name and its words as the
 //     shell resolves them, and with where it runs;
 //   - every until, while and for, with the statement before it where it stands in a list of
-//     statements of its own;
+//     statements of its own, and whether it stands inside another until or while;
 //   - every assignment: name=value, and those a for's variable, arithmetic ($((x = ...)),
 //     $((x += ...)), $((x++))) and a parameter's ${x=...} or ${x:=...} make;
+//   - every arithmetic expansion, wherever it stands;
 //   - the file's own functions, each definition of them, and which of them each runs.
 //
 // A word holding an expansion of any kind (a variable, a substitution, arithmetic, a leading ~,
@@ -89,6 +90,8 @@ type shellLoop struct {
 	// statements and not the first; nil otherwise.
 	before *syntax.Stmt
 	body   []*syntax.Stmt
+	// nested: it stands inside another until or while, in its condition or its body.
+	nested bool
 }
 
 // A shellAssign is one assignment a file makes.
@@ -109,6 +112,12 @@ type shellRefusal struct {
 	what string
 }
 
+// A shellArithmetic is one arithmetic expansion, $((...)), a file holds.
+type shellArithmetic struct {
+	line int
+	node *syntax.ArithmExp
+}
+
 // A shellDefinition is one definition of an own function, with its line.
 type shellDefinition struct {
 	line int
@@ -122,11 +131,12 @@ type shellRead struct {
 	functions   map[string]*syntax.FuncDecl
 	definitions []shellDefinition
 	// calls holds, for each own function, the own functions it runs.
-	calls    map[string][]string
-	commands []shellCommand
-	loops    []shellLoop
-	assigns  []shellAssign
-	refused  []shellRefusal
+	calls      map[string][]string
+	commands   []shellCommand
+	loops      []shellLoop
+	assigns    []shellAssign
+	arithmetic []shellArithmetic
+	refused    []shellRefusal
 }
 
 // shellScope is where the reader stands: the function, and what the shell does with a failure.
@@ -240,7 +250,7 @@ func (r *shellRead) stmt(stmt *syntax.Stmt, s shellScope, before *syntax.Stmt) {
 		if c.Until {
 			kind = "until"
 		}
-		r.loops = append(r.loops, shellLoop{s.line(c), s.function, kind, before, c.Do})
+		r.loops = append(r.loops, shellLoop{s.line(c), s.function, kind, before, c.Do, s.waiting})
 		inner := s
 		inner.waiting = true
 		cond := inner
@@ -253,7 +263,7 @@ func (r *shellRead) stmt(stmt *syntax.Stmt, s shellScope, before *syntax.Stmt) {
 			r.refuse(s.line(c), "runs a C-style for, a kind of shell this program does not read")
 			return
 		}
-		r.loops = append(r.loops, shellLoop{s.line(c), s.function, "for", before, c.Do})
+		r.loops = append(r.loops, shellLoop{s.line(c), s.function, "for", before, c.Do, s.waiting})
 		r.assigns = append(r.assigns, shellAssign{s.line(c), s.function, iter.Name.Value, shellWord{text: "for", source: "for " + iter.Name.Value}, nil})
 		for _, item := range iter.Items {
 			r.words(item, s.substitution())
@@ -381,14 +391,16 @@ func (r *shellRead) trap(words []*syntax.Word, s shellScope) {
 
 // words reads the code that a word, an assignment or a redirection holds: each command
 // substitution in it, wherever it stands (inside quotes, arithmetic, a parameter's default or a
-// here-document), is read as code, and each assignment arithmetic or a parameter makes in it is
-// an assignment of the file's.
+// here-document), is read as code, each arithmetic expansion is one of the file's, and each
+// assignment arithmetic or a parameter makes in it is an assignment of the file's.
 func (r *shellRead) words(node syntax.Node, s shellScope) {
 	syntax.Walk(node, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.CmdSubst:
 			r.list(n.Stmts, s)
 			return false
+		case *syntax.ArithmExp:
+			r.arithmetic = append(r.arithmetic, shellArithmetic{s.line(n), n})
 		case *syntax.BinaryArithm:
 			if slices.Contains(arithmeticAssigns, n.Op) {
 				r.arithmeticAssign(n, n.X, s)
@@ -410,10 +422,11 @@ func (r *shellRead) words(node syntax.Node, s shellScope) {
 }
 
 // arithmeticAssigns are the operators of arithmetic that assign to the variable on their left.
+// &&=, ||=, ^^= and **= are not among them: a POSIX parse refuses each ("`**` must be followed by
+// an expression"), so the file that holds one fails as one that does not parse.
 var arithmeticAssigns = []syntax.BinAritOperator{
 	syntax.Assgn, syntax.AddAssgn, syntax.SubAssgn, syntax.MulAssgn, syntax.QuoAssgn, syntax.RemAssgn,
 	syntax.AndAssgn, syntax.OrAssgn, syntax.XorAssgn, syntax.ShlAssgn, syntax.ShrAssgn,
-	syntax.AndBoolAssgn, syntax.OrBoolAssgn, syntax.XorBoolAssgn, syntax.PowAssgn,
 }
 
 // arithmeticAssign records the assignment arithmetic n makes to the variable x.
@@ -520,24 +533,32 @@ func plainVariable(p *syntax.ParamExp) bool {
 func (r *shellRead) selfRunning() map[string]string {
 	found := map[string]string{}
 	for name := range r.functions {
-		way := map[string]string{name: name}
-		queue := []string{name}
-		for len(queue) > 0 && found[name] == "" {
-			at := queue[0]
-			queue = queue[1:]
-			for _, next := range r.calls[at] {
-				if next == name {
-					found[name] = way[at] + " → " + name
-					break
-				}
-				if _, seen := way[next]; !seen {
-					way[next] = way[at] + " → " + next
-					queue = append(queue, next)
-				}
-			}
+		if way := r.way(name, name); way != "" {
+			found[name] = way
 		}
 	}
 	return found
+}
+
+// way answers how own function from runs own function to, at once or through others
+// (from → b → to), or "" when it does not.
+func (r *shellRead) way(from, to string) string {
+	way := map[string]string{from: from}
+	queue := []string{from}
+	for len(queue) > 0 {
+		at := queue[0]
+		queue = queue[1:]
+		for _, next := range r.calls[at] {
+			if next == to {
+				return way[at] + " → " + to
+			}
+			if _, seen := way[next]; !seen {
+				way[next] = way[at] + " → " + next
+				queue = append(queue, next)
+			}
+		}
+	}
+	return ""
 }
 
 // callIs answers whether stmt is a simple command whose words are want, each word read as its

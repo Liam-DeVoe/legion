@@ -532,17 +532,17 @@ jobs:
         # not tries, since a try can take its whole bound: the readiness wait's 60 tries of a 5 s
         # bound held a store that never answered for 361 s. With prepare's own bounds (its head says
         # how), the step ends by its own name within 10 minutes on any store, before the job's 22.
-        # TestEveryWaitAndCheckOfTheScriptHasACase, in packages/envoy/internal/tests3/waits_test.go,
+        # TestEveryWaitAndCheckOfTheScriptHasACase (internal/tests3/storesteps_test.go in envoy)
         # parses this step and the two around it as shell. It fails on a command off its list (wget,
-        # tail, weed shell, .), a curl but s3's (-q: no .curlrc; -g: no URL lists), an s3 call of 0
-        # seconds or giving curl more than -o, -X, --data-binary and one URL (after -- if a variable
-        # gives it), a wait but an until after its deadline, other loops, and shell it cannot read.
+        # tail, weed shell, .), a curl but s3's (-q: no .curlrc; -g: no URL lists; --proto =http:
+        # no file://, which --max-time does not end), an s3 call of 0 seconds or with more than -o,
+        # -X, --data-binary and one URL, a wait but an until after its deadline, or shell it cannot read.
         run: |
           # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
           s3() {
             seconds=$1 what=$2
             shift 2
-            curl -q -g -sf --max-time "$seconds" "$@" && return 0
+            curl -q -g --proto =http -sf --max-time "$seconds" "$@" && return 0
             status=$?
             if [ "$status" = 28 ]; then
               echo "::error::the file store took the connection for $what and did not answer within $seconds s"

@@ -37,11 +37,13 @@
 # its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) parses this file as POSIX
 # shell, reads every command it runs wherever it runs it (a function, a substitution, a trap,
 # within's and timeout's command), and fails on a request outside those helpers or under no bound
-# above 0, a wait outside within, a sleep but `sleep 1`, a command outside the list of those that
-# end by themselves (its scriptCommands, with tail only as `tail -n <lines> [--] <file>`, a file a
-# variable gives after --), a function that runs itself, is defined twice or takes a listed name,
-# a deadline or seconds set but within's own, an exit outside fail and usage, a return but
-# "$status", a test nothing acts on, a message no case wants, or shell that it cannot read.
+# above 0, a wait outside within or inside another wait, a sleep but `sleep 1`, a command outside
+# the list of those that end by themselves (its scriptCommands, with tail only as
+# `tail -n <lines> [--] <file>`, a file a variable gives after --), a function that runs itself,
+# is defined twice or takes a listed name, a within whose command runs within, a deadline or
+# seconds set but within's own, arithmetic but within's deadline, a within that does not take its
+# arguments as its first two statements, a set of the arguments, an exit outside fail and usage, a
+# return but "$status", a test nothing acts on, a message no case wants, or shell it cannot read.
 #
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.
