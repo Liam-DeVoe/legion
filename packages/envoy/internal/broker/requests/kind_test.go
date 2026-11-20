@@ -401,7 +401,7 @@ func TestTheNextRequestEndsAGrantWhoseTypeChanged(t *testing.T) {
 		t.Fatalf("Create after the type moved = %+v, %v; want the grant %s not handed back", again, err, *first.GrantID)
 	}
 	if by, audits := endedForGood(t, machine, *first.GrantID); by != GrantEndedActor || audits != 1 {
-		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1: the reuse ends it", by, audits, GrantEndedActor)
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1: the request ends it", by, audits, GrantEndedActor)
 	}
 	retag(t, machine, secret)
 	if release, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {

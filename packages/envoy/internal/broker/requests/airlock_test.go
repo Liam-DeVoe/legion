@@ -150,7 +150,8 @@ func TestAChangedAirlockEntryEndsTheGrantsItAffects(t *testing.T) {
 // affects at the next request that would reuse one, a grant a person approved as much as one the
 // model judge decided. The session asks again for SHARED_KEY, whose grant its person approved:
 // while the entry stands the grant is handed back, and once the entry changed the request is not
-// handed that grant, the reuse ends it for good, and the request waits for a person afresh.
+// handed that grant: Create's check of the live grants for those names (endMatchingLiveGrants)
+// ends it for good before the reuse, and the request waits for a person afresh.
 func TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged(t *testing.T) {
 	digests := map[string]string{"SHARED_KEY": "shared-one"}
 	m, enr, key := newAirlockFixture(t, digests)
@@ -174,7 +175,7 @@ func TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged(t *testing.T) {
 		t.Fatalf("Create(SHARED_KEY) once its entry changed = %+v, %v; want no grant handed back and a new pending request", again, err)
 	}
 	if by, audits := endedForGood(t, m, kept.GrantID); by != GrantEndedActor || audits != 1 {
-		t.Fatalf("the person's grant: revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+		t.Fatalf("the person's grant: revoked_by %q with %d grant.revoked rows by %s; want the request to have ended it once", by, audits, GrantEndedActor)
 	}
 }
 

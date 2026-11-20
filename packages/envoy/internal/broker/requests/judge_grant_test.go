@@ -226,7 +226,8 @@ func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
 // of a secret its owner tags as an administrator's (policy.TagAdmin). The model judge may have
 // decided a grant of it before the tag was written — the rules file gave the name judge seconds,
 // and the judge read a secret that was not yet an administrator's — and the tag moves the policy
-// version, so every release of that grant and every reuse of it re-reads what it was granted.
+// version, so every release of that grant and every request for exactly its names re-reads what
+// it was granted (checkRelease, and Create's check of the live grants, endMatchingLiveGrants).
 // Both refuse it and end the grant for good, rather than let a model's approval go on releasing
 // an administrator's credential for the rest of the seconds the rules gave it. Taking the tag
 // off again leaves the grant ended: the session asks afresh, as a new request. A grant of the
@@ -291,7 +292,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
-			t.Fatalf("the grant the reuse found = revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+			t.Fatalf("the grant the request found = revoked_by %q with %d grant.revoked rows by %s; want the request to have ended it once", by, audits, GrantEndedActor)
 		}
 	})
 }
@@ -380,7 +381,7 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 			t.Fatalf("Create once AUTO_TOKEN is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
-			t.Fatalf("the grant the reuse found = revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+			t.Fatalf("the grant the request found = revoked_by %q with %d grant.revoked rows by %s; want the request to have ended it once", by, audits, GrantEndedActor)
 		}
 
 		untag(t, m)
