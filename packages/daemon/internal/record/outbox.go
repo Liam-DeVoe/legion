@@ -1640,12 +1640,16 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // of that worker's follows (workflow's StopForChildren, dispatch://INFRA-3320 R10). Without it
 // nothing tells the worker, since the daemon's next task for a role waits for that role's turn to
 // end. Role is the recipient, From the phase that ended, To the phase the issue is in now, which is
-// awaiting_children, and Reason the open children that hold the parent. It stops nothing: the
-// recipient keeps its turn, its jobs, its process and its session.
+// awaiting_children, Reason the open children that hold the parent, and MergeForward the merge
+// forward of the parent's pull request that the move dropped before it landed, which chooses the
+// form of the message (Message). It stops nothing: the recipient keeps its turn, its jobs, its
+// process and its session.
 //
 // The kind is phase_ended, which the releases before dispatch://INFRA-4374 wrote for a head that
-// conflicts with its base, and whose queued rows INFRA-4374's migration 20261119003157 deleted;
-// the shape is that kind's, so a release that still decodes it reads a row of this one.
+// conflicts with its base, and whose queued rows INFRA-4374's migration 20261119003157 deleted. A
+// row that names no dropped merge forward has that kind's shape, so a release that still decodes
+// it reads such a row. `mergeForward` is this release's field, and a release before this one
+// decodes strictly (DisallowUnknownFields), so it refuses a row that carries it.
 type PhaseEnded struct {
 	Role   claim.Role  `json:"role"`
 	From   phase.Phase `json:"from"`
@@ -1664,21 +1668,64 @@ type DroppedMergeForward struct {
 	Base string `json:"base"`
 }
 
+// childrenFinished is when a waiting parent's next task comes, in every message of a move into
+// awaiting_children (PhaseEnded.Message, DroppedMergeForward.RoleMessageBody).
+const childrenFinished = "The daemon gives the issue its next task once its children are finished."
+
+// RoleMessageBody is the body of the role message (RoleMessage) the implementer of issue is sent
+// when a move into awaiting_children that ends no phase of the implementer's drops d (workflow's
+// awaitChildren): the issue waits on its open children, d named with the implementer's rule for
+// it (told), and when the issue's next task comes.
+func (d DroppedMergeForward) RoleMessageBody(issue string) string {
+	return fmt.Sprintf("%s: the issue moved into %s, where it waits on its open Dispatch children. %s %s",
+		issue, phase.AwaitingChildren, d.told(issue), childrenFinished)
+}
+
+// told is what the implementer of issue is told of d, in its phase-ended message
+// (PhaseEnded.Message) or in its role message (RoleMessageBody), as dispatch://INFRA-3320 R10
+// rules it: d named, with its base and its head; an implementer that has begun the merge finishes
+// it, pushes it and does nothing more, and one that has not begun it begins none; and the daemon
+// does not ask for it again, so the implementer merges the base forward in a later task only once
+// GitHub reads the pull request CONFLICTING, since the tester's merge with the base finds a
+// conflict that is still there and fails its round.
+func (d DroppedMergeForward) told(issue string) string {
+	return fmt.Sprintf("The daemon dropped the merge forward of %[2]s onto head %[3]s that it asked of you for %[1]s:"+
+		" if you have begun that merge, finish it, push it and do nothing more; if you have not begun it, begin none."+
+		" The daemon does not ask for that merge forward again: in a later task of the issue, merge %[2]s forward only once GitHub reads its pull request CONFLICTING.",
+		issue, d.Base, d.Head)
+}
+
 func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 
-// Message is what the runner publishes for issue, R10's own words: the phase ended and no task
-// follows, a completion of it is refused, the worker commits and pushes what it has and does no
-// more work on it, and the issue's next task comes once its children are finished. The reason
-// comes last, behind the `Reason:` label a started worker's task carries it under (workflow's
-// task), and names each open child.
+// Message is what the runner publishes for issue, R10's own words (dispatch://INFRA-3320 R10): the
+// phase ended and no task follows, a completion of it is refused, what the worker does with the
+// work it has, and the issue's next task comes once its children are finished. The reason comes
+// last, behind the `Reason:` label a started worker's task carries it under (workflow's task), and
+// names each open child. What the worker does with its work takes one of three forms:
+//
+//   - where the move dropped no merge forward that had not landed, the worker commits and pushes
+//     what it has and does no more work on the phase, whatever its role;
+//   - where it dropped one and the worker is the implementer, the same, with the dropped merge
+//     forward named and the implementer's rule for it (DroppedMergeForward.told);
+//   - where it dropped one and the worker is another, it writes and pushes nothing more, since
+//     the implementer may be merging in the workspace the roles share, and puts what it found on
+//     the Dispatch issue.
 func (p PhaseEnded) Message(issue string) string {
+	work := fmt.Sprintf("Commit and push what you have to the issue's branch, and do no more work on %s.", p.From)
+	if dropped := p.MergeForward; dropped != nil {
+		if p.Role == claim.RoleImplementer {
+			work += " " + dropped.told(issue)
+		} else {
+			work = fmt.Sprintf("Write and push nothing more, because the implementer may be merging in the workspace you share:"+
+				" put what you found on the Dispatch issue, and do no more work on %s.", p.From)
+		}
+	}
 	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now: it waits on its open Dispatch children, and no task of yours follows."+
 		" A completion of %s is refused (HANDOFF_NOT_CURRENT_PHASE)."+
-		" Commit and push what you have to the issue's branch, and do no more work on %s."+
-		" The daemon gives the issue its next task once its children are finished."+
+		" %s %s"+
 		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on."+
 		" Reason: %s.",
-		issue, p.From, p.To, p.From, p.From, p.Reason)
+		issue, p.From, p.To, p.From, work, childrenFinished, p.Reason)
 }
 
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
@@ -2571,6 +2618,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Reason == "" {
 			return fmt.Errorf("a phase-ended message carries the open children that hold the parent")
+		}
+		if dropped := value.MergeForward; dropped != nil && (dropped.Head == "" || dropped.Base == "") {
+			return fmt.Errorf("a phase-ended message that names a dropped merge forward names its head and its base; it names head %q and base %q", dropped.Head, dropped.Base)
 		}
 	case HookPrompt:
 		if value.Hook == "" {

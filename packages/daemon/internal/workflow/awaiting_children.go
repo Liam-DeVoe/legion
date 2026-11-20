@@ -90,8 +90,21 @@ type childrenHold struct {
 //     wakes no role of the waiting parent (R11);
 //   - tells the parent's architect once (awaitingChildrenNotice), in place of the phase-finished
 //     notice the start would have sent (R10);
-//   - and tells the role whose phase the move ends, where there is one, that its phase ended
-//     and no task of it follows (record.PhaseEnded into awaiting_children).
+//   - tells the role whose phase the move ends, where there is one, that its phase ended
+//     and no task of it follows (record.PhaseEnded into awaiting_children);
+//   - and, where the merge forward it drops had not landed (record.MergeForward.Landed empty),
+//     tells the implementer of it, named with its head and its base, and of what to do with a
+//     merge of it begun or not (R10): in the phase-ended message where the phase the move ends
+//     is the implementer's, and otherwise in one role message on the implementer's role topic
+//     (record.DroppedMergeForward.RoleMessageBody), addressed as mergeForward addresses its ask
+//     (addressRoles). The phase-ended message of any other worker carries it too, and tells that
+//     worker to write and push nothing more, since the implementer may be merging in the
+//     workspace they share (record.PhaseEnded.Message). A merge forward that landed is dropped
+//     with no word of it.
+//
+// A released implementer gets nothing of that role message, which the outbox ends with no
+// publish and no wake as it ends every role message to a released role (the daemon's
+// outbox.roleMessage).
 //
 // An issue already in awaiting_children is left as it stands and nothing is sent again. No door
 // passes one — each moves an issue standing in planning through accepting, and the admission
@@ -130,6 +143,16 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
+	// The merge forward is read before the clear drops it, so the move can name one that had not
+	// landed to the implementer.
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	var dropped *record.DroppedMergeForward
+	if pr != nil && pr.MergeForward != nil && pr.MergeForward.Landed == "" {
+		dropped = &record.DroppedMergeForward{Head: pr.MergeForward.Head, Base: pr.MergeForward.Base}
+	}
 	// Nothing asks again during the wait (awaiting_children is in no phase of
 	// record.MergeForwardPhases), so the return's implementing round merges the default branch
 	// forward.
@@ -141,10 +164,22 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
 		return err
 	}
+	if dropped != nil && hold.Ended != claim.RoleImplementer {
+		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
+		if err != nil {
+			return err
+		}
+		for _, to := range addressed {
+			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: dropped.RoleMessageBody(issue.Key)}); err != nil {
+				return err
+			}
+		}
+	}
 	if hold.Ended == "" {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, From: from, To: phase.AwaitingChildren, Reason: reason})
+	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, From: from, To: phase.AwaitingChildren, Reason: reason,
+		MergeForward: dropped})
 }
 
 // childrenHolding is the open Dispatch children of issue that hold its start of to (R9's guard),
