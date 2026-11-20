@@ -1472,18 +1472,10 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // (record.EventMark.After). Such an approval is the person's decision in the review's place,
 // whichever approval request carried it, so nothing of the review is left to tell or to act on.
 // Every sender of a task or a notice about a person's review reaches it through one predicate,
-// workflow's SupersedingApproval, which holds the guards that choose whether it is asked of a
-// review — the kind of decision, the gate of the document reviewed, whether the deployment gates
-// that step, and an approval that is the gate's own — and is asked from the gates as the record
-// holds them at that moment: the changes notice (workflow's applyArtifact, tellChanges and
-// gateRegistered, and the daemon's readNoticeTree at its delivery), the resume task of a root
-// that waited on a person (workflow's resumeTask), the kept decisions and the kept approval of an
-// architect's start or catch-up (workflow's KeptDecisionsTask, which the daemon's rootTask also
-// calls at each send and its readNoticeTree at each delivery) and the controller's relay of an
-// undelivered spec decision (the outbox's parkDecision, and its controllerNotice at a relayed
-// changes request's publish). Which reviews a sender asks about is the sender's: the daemon's
-// readNoticeTree and controllerNotice ask again of a queued notice they deliver only when it is a
-// changes request.
+// workflow's SupersedingApproval, asked from the gates as the record holds them at that moment.
+// That predicate's doc is the one list of the guards that choose whether this rule is asked of a
+// review, of the senders that ask it, and of which reviews each sender asks about, so none of
+// them is written again here.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror

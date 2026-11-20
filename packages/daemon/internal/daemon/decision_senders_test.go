@@ -99,11 +99,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 	{"and is now at version", "workflow.KeptDecisionsTask"},
 }
 
-// Every sender of a person's design decision asks the one predicate whether that decision is still
-// the person's word (workflow.SupersedingApproval), so no sender decides it for itself and no sender
-// asks the rule itself (dispatch://INFRA-3136/spec R2). Which reviews a sender asks about is the
-// sender's: the daemon's readNoticeTree and controllerNotice ask again of a queued notice they
-// deliver only when it is a changes request.
+// Every sender of a person's design decision asks the one predicate whether that decision is
+// still the person's word (workflow.SupersedingApproval), so no sender decides it for itself and
+// no sender asks the rule itself (dispatch://INFRA-3136/spec R2). The predicate's doc says which
+// reviews each sender asks about, so this test does not restate it.
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
@@ -167,9 +166,8 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // with why its read sends no person's review.
 //
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
-// reading of an approval request (ruleAskers), so the guards the predicate holds — the decision's
-// kind, the gate of its step, the document that gate holds, and whether the deployment gates that
-// step — live in one place.
+// reading of an approval request (ruleAskers), so the guards the predicate holds, which its doc
+// lists, live in one place.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any

@@ -40,27 +40,33 @@ type Approval struct {
 // a decision nobody in its tree hears (the daemon's parkDecision, and again at a relayed changes
 // request's publish, its controllerNotice); the clear of a generation asks it too, of each decision
 // kept on the issues it clears, before it deletes their gates (Engine.ClearGeneration). It holds
-// the guards that choose whether the one rule is asked of a review (classify.ReviewSuperseded):
-// the decision's kind, the gate of its step, the document that gate holds, and whether the
-// deployment gates that step, so a new step kind or a change to how an approval of the same
-// version is read is made here once. Which reviews a sender asks about is the sender's: the
+// the guards that choose whether the one rule (classify.ReviewSuperseded) is asked of a review,
+// and this doc is the one list of them, so a new step kind or a change to how an approval of the
+// same version is read is made here once. Which reviews a sender asks about is the sender's: the
 // daemon's readNoticeTree and controllerNotice ask again of a queued notice they deliver only when
 // it is a changes request, since an approval's own notice is the person's later word.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
-// review stands. A review stands when nothing the gate records can be the person's later word: a
-// decision that is no changes request or approval (an answer on an ask, a carried gate's
-// opening), a document no gate of the issue holds, which is also a gate of another step than
-// d.Step's (a step and a gate naming none are the spec step's, record.DesignStep.OrSpec), a gate
-// that now holds another document than the one reviewed, a step the deployment does not gate (its
-// approval is its registration's and no person's), and a gate with no approval. Otherwise the gate
-// is asked whether its approval followed the review: at d.Version, or, where the sender knows no
-// version, at the version the gate holds approved — a review of a lower one is answered by that
-// approval, and one of that version is placed by its mark — and at d.Mark. Both marks are
-// Dispatch's, so the two are ordered by Dispatch's sequences when both carry one and otherwise by
-// its times (record.EventMark.After), never by the daemon's clock against Dispatch's. An approval
-// the gate's approval is (the same version, and a mark that can be the same event:
-// record.EventMark.Same) is no later word than itself, so it stands.
+// review stands. The review stands at each of these guards, in the order they are asked, because
+// nothing the gate records can then be the person's later word:
+//
+//   - a decision that is no changes request or approval (an answer on an ask, a carried gate's
+//     opening);
+//   - no gate of the issue for d.Step's document, or a gate of another step (a step and a gate
+//     naming none are the spec step's, record.DesignStep.OrSpec);
+//   - a step the deployment does not gate (its approval is its registration's and no person's);
+//   - a gate with no approval;
+//   - a gate that now holds another document than the one reviewed, where the sender knows it
+//     (d.Artifact);
+//   - an approval that is the gate's own approval: the same version, and a mark that can be the
+//     same event (record.EventMark.Same), which is no later word than itself.
+//
+// Past them the gate is asked whether its approval followed the review (classify.ReviewSuperseded):
+// at d.Version, or, where the sender knows no version, at the version the gate holds approved — a
+// review of a lower one is answered by that approval, and one of that version is placed by its
+// mark — and at d.Mark. Both marks are Dispatch's, so the two are ordered by Dispatch's sequences
+// when both carry one and otherwise by its times (record.EventMark.After), never by the daemon's
+// clock against Dispatch's.
 //
 // One other function asks classify.ReviewSuperseded itself: requestStands
 // (awaiting_reconcile.go). It is no sender of a task or notice about a person's recorded decision.
