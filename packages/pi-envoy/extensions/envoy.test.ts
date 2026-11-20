@@ -179,12 +179,9 @@ function relayCarries(subject: string): boolean {
  * gives a Dispatch write names the write's key back, as Dispatch's own answers do. A row's own
  * fetch is kept behind this one; reading `globalThis.fetch` answers this wrapper, so a row that
  * wraps the fetch it found takes it from `rowFetch()`, never from `globalThis.fetch`, which would
- * call the row's own wrapper forever.
- * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
- * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
- * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
- * it grew one row's process to 118 GiB before anything stopped it.
+ * call the row's own wrapper forever. That mistake fails at once, by name: a call nested past
+ * `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once, it grew one row's process to
+ * 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
@@ -214,8 +211,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return keyedFetch(input, init);
-  return fetchDepth.run(depth, () => installedFetch(input, init));
+  return fetchDepth.run(depth, () => keyedFetch(input, init));
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -783,9 +779,6 @@ afterEach(async () => {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   // A broker client's retry loop trades on for the process's life, so each row's clients are
   // closed with it: one whose trades were failing would go on trading, and logging, into the
   // rows after it.
