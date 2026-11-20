@@ -362,8 +362,8 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	return registry
 }
 
-// poolLabel is a pool's series' label: pool, the pool's name, which is its application_name less
-// "dispatch-".
+// poolLabel is a pool's series' label: pool, the pool's name, which is its own name in
+// application_name less "dispatch-".
 func poolLabel(pool store.PoolStats) [][2]string { return [][2]string{{"pool", pool.Name}} }
 
 // poolSamples is value of each pool in stats, labelled by pool.

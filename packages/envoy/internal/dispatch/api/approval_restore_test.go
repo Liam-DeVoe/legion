@@ -202,6 +202,7 @@ func TestAnUploadOfTheApprovedTextOverTheApprovedVersionSupersedesNothing(t *tes
 	}
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, issue.PrimaryArtifactID, 1),
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	advice := adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)

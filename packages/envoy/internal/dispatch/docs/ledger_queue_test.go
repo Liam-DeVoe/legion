@@ -230,7 +230,9 @@ func TestLedgerDiscardRunsNothingItQueued(t *testing.T) {
 func TestAJoinedDocumentWriteHoldsNoTransactionIDUntilCommit(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "Alpha paragraph cites dispatch://DOC-1.\n")
-	ctx := context.Background()
+	// A live write holds its document's writer gate, taken before its transaction opens, as a
+	// handler takes it.
+	ctx := gated(t, service, context.Background(), artifactID)
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)

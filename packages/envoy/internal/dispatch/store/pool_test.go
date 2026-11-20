@@ -1119,7 +1119,7 @@ func (c *countingTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool,
 func (*countingTracer) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {}
 
 // Each pool's connections carry dispatch-<pool> in application_name, so pg_stat_activity tells
-// the pools apart, and a connection string's own application_name does not change it.
+// the pools apart.
 func TestEachPoolNamesItsConnectionsInPgStatActivity(t *testing.T) {
 	ctx := context.Background()
 	pool := openEmptyTestStore(t).Pool
@@ -1169,26 +1169,66 @@ func TestEachPoolNamesItsConnectionsInPgStatActivity(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Errorf("pg_stat_activity names %v, want %v", names, want)
 	}
+}
 
-	named, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse the test database URL: %v", err)
-	}
-	query := named.Query()
-	query.Set("application_name", "pooltest_"+randomDatabaseSuffix(t))
-	named.RawQuery = query.Encode()
-	database, err := Open(ctx, named.String())
-	if err != nil {
-		t.Fatalf("open a store whose connection string names an application: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	conn := holdOne(t, database.Pool.Acquire)
-	var name string
-	if err := conn.QueryRow(ctx, `select application_name from pg_stat_activity where pid = pg_backend_pid()`).Scan(&name); err != nil {
-		t.Fatalf("read the connection's application_name: %v", err)
-	}
-	if name != "dispatch-requests" {
-		t.Errorf("a request connection from a connection string naming an application is %q, want dispatch-requests", name)
+// A connection string that names an application_name of its own keeps it, before each pool's own
+// name: pg_stat_activity shows <name>/dispatch-<pool> for the request pool's connections and for
+// those of the separate pools copied from its configuration, wrapped and raw alike. So a
+// deployment's, or one build's, connections stay apart from another's on one database, and each
+// still names its pool. A name too long for both to fit the 63 bytes pg_stat_activity shows is
+// cut, after each byte of it outside printable ASCII became '?', and the pool's name is never what
+// is cut.
+func TestAConnectionStringsApplicationNameStaysBeforeEachPoolsName(t *testing.T) {
+	ctx := context.Background()
+	short := "pooltest_" + randomDatabaseSuffix(t)
+	long := short + "_ü_" + strings.Repeat("x", maxApplicationName)
+	for _, name := range []struct {
+		asked string
+		// shown is the name as pg_stat_activity shows it, before it is cut to fit beside a pool's.
+		shown string
+	}{
+		{asked: short, shown: short},
+		{asked: long, shown: strings.Replace(long, "ü", "??", 1)},
+	} {
+		named, err := url.Parse(testDatabaseURL(t))
+		if err != nil {
+			t.Fatalf("parse the test database URL: %v", err)
+		}
+		query := named.Query()
+		query.Set("application_name", name.asked)
+		named.RawQuery = query.Encode()
+		database, err := Open(ctx, named.String())
+		if err != nil {
+			t.Fatalf("open a store whose connection string names the application %q: %v", name.asked, err)
+		}
+		t.Cleanup(database.Pool.Close)
+		background, err := database.Pool.Background()
+		if err != nil {
+			t.Fatalf("open the background pool: %v", err)
+		}
+		roomAppends, err := database.Pool.RoomAppends()
+		if err != nil {
+			t.Fatalf("open the room-appends pool: %v", err)
+		}
+		for _, pool := range []struct {
+			name    string
+			acquire func(context.Context) (*pgxpool.Conn, error)
+		}{
+			{RequestsPool, database.Pool.Acquire},
+			{BackgroundPool, background.Acquire},
+			{RoomAppendsPool, roomAppends.Acquire},
+		} {
+			conn := holdOne(t, pool.acquire)
+			var got string
+			if err := conn.QueryRow(ctx, `select application_name from pg_stat_activity where pid = pg_backend_pid()`).Scan(&got); err != nil {
+				t.Fatalf("read the %s connection's application_name: %v", pool.name, err)
+			}
+			own := "/dispatch-" + pool.name
+			if want := name.shown[:min(len(name.shown), maxApplicationName-len(own))] + own; got != want {
+				t.Errorf("a %s connection from a connection string naming the application %q is %q in pg_stat_activity, want %q: the connection string's name, then the pool's",
+					pool.name, name.asked, got, want)
+			}
+		}
 	}
 }
 

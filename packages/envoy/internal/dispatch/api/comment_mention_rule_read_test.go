@@ -264,7 +264,10 @@ func (f *ruleReadFailer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuer
 
 // ruleReadsFail is a tracer that fails every read of the copy rule while failing is set, as
 // ruleReadFailer fails one, and counts the reads of the rule and the statements on
-// comment_deliveries the server sends, and the writes among those, since its last take.
+// comment_deliveries the server sends, and the writes among those, since its last take. It counts
+// a statement a batch sends too, as pgx reports it once it ran (TraceBatchQuery), as
+// storetest.StatementRecorder records one: an attempt's claim, settle and record are written in
+// batches behind a bounded lock (store.WriteBatch, store.LockWithinBoundAndRead).
 type ruleReadsFail struct {
 	failing                   atomic.Bool
 	mu                        sync.Mutex
@@ -272,9 +275,32 @@ type ruleReadsFail struct {
 }
 
 func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	sql := strings.ToLower(strings.Join(strings.Fields(data.SQL), " "))
+	if f.count(data.SQL) && f.failing.Load() {
+		done, cancel := context.WithCancelCause(ctx)
+		cancel(errRuleReadFails)
+		return done
+	}
+	return ctx
+}
+
+func (f *ruleReadsFail) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (*ruleReadsFail) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (f *ruleReadsFail) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	f.count(data.SQL)
+}
+
+func (*ruleReadsFail) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// count counts statement, and answers whether it is a read of the copy rule.
+func (f *ruleReadsFail) count(statement string) bool {
+	sql := strings.ToLower(strings.Join(strings.Fields(statement), " "))
 	rule := strings.Contains(sql, "k.owed_keys &&")
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case rule:
 		f.reads++
@@ -287,16 +313,8 @@ func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data p
 			}
 		}
 	}
-	f.mu.Unlock()
-	if rule && f.failing.Load() {
-		done, cancel := context.WithCancelCause(ctx)
-		cancel(errRuleReadFails)
-		return done
-	}
-	return ctx
+	return rule
 }
-
-func (f *ruleReadsFail) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // take answers the counts since the last take and starts them again.
 func (f *ruleReadsFail) take() (reads, statements, writes int) {

@@ -23,6 +23,7 @@ func TestAnUploadSupersedingAnApprovalSaysSoWhenItsAdviceIsUnavailable(t *testin
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "spec.md", "content": "# Transport\n\nThe design, rewritten.\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	if replaced.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", replaced.Code, replaced.Body.String())

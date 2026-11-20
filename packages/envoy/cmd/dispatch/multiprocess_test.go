@@ -6058,8 +6058,25 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // milliseconds, and the lease still gives each period to one process, since duty.Exclusive judges
 // the period the setting names. Nothing else about the resumption moves: a document's pending row
 // is armed only once it is settlementResumeAge (one minute) old, which the rows below reach by
-// backdating marked_at rather than by waiting.
+// backdating marked_at rather than by waiting. A row that waits for the settlement a pass arms to
+// commit runs at resumedSettlementPeriod instead, for the reason given there.
 const shortSettlementResume = 2 * time.Second
+
+// resumedSettlementPeriod and resumedSettleDelay are the resumption's period and the settle delay
+// of the process that settles, in a row that waits for a settlement the resumption arms to commit.
+// Every pass arms the settlement of each document still owing one (resumeOwedSettlements), and
+// arming it moves the room's generation, which supersedes the settlement armed before it that has
+// not committed: its timer is replaced, and a settlement already under way ends writing nothing
+// (settleRoomWithin, settlePass). In production a pass comes once a minute and the settlement it
+// arms has committed long before the next. At shortSettlementResume, with the server's own
+// two-second settle delay, each pass came as the timer the pass before it armed came due, and
+// superseded that settlement; in CI that went on for the whole thirty seconds the row waits, and
+// the document never settled. So such a row settles a fifth of a second after the pass and gives
+// the settlement the rest of a five-second period to commit before the next pass.
+const (
+	resumedSettlementPeriod = 5 * time.Second
+	resumedSettleDelay      = 200 * time.Millisecond
+)
 
 // resumeSettlementsEvery is the environment a pair's processes take to run their settlement
 // resumption at period.
@@ -6121,7 +6138,7 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 // Bob writes an ask block in his tab on B, and B is killed (SIGKILL) before it settles - B's
 // settle delay is ten minutes - so the settlement the document owes is left to the resumption on
 // A. The pending row is made older than the resumption age (one minute) by SQL rather than by
-// waiting it out, so A's next pass (one every shortSettlementResume) arms it.
+// waiting it out, so A's next pass (one every resumedSettlementPeriod) arms it.
 //
 // Alice edits the document through B after bob's block and before the kill. Without her, the
 // latest edit source the pending row names is bob's, and at this row's first commit a settlement
@@ -6131,7 +6148,7 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 // where A can read it names bob.
 func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	pair := newPair(t)
-	pair.startSettling(t, resumeSettlementsEvery(shortSettlementResume), 0, 10*time.Minute)
+	pair.startSettling(t, resumeSettlementsEvery(resumedSettlementPeriod), resumedSettleDelay, 10*time.Minute)
 	project := uniqueProjectKey(t, "ASKA")
 	pair.b.createProject(t, project, "Ask authors across processes")
 	// Created through B, whose own settlement is ten minutes away, so A never loads this
@@ -6160,10 +6177,10 @@ func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	if backdated.RowsAffected() != 1 {
 		t.Fatalf("B left no pending settlement for the document, so there is nothing for A to resume")
 	}
-	// A resumption pass runs every shortSettlementResume, and a period B's last pass served is
-	// A's to wait out, so A arms the settlement within two of them; A's settle delay (the
-	// server's own two seconds) and the settlement itself follow. Thirty seconds is all of that
-	// with room for a loaded machine.
+	// A resumption pass runs every resumedSettlementPeriod, and a period B's last pass served is
+	// A's to wait out, so A arms the settlement within two of them; A's settle delay
+	// (resumedSettleDelay) and the settlement itself follow, before the next pass. Thirty seconds
+	// is all of that with room for a loaded machine.
 	const within = 30 * time.Second
 	deadline := time.Now().Add(within)
 	for {

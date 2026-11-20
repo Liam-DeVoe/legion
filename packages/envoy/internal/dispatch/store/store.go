@@ -44,8 +44,9 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // SharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. It is the request pool (RequestsPool): its connections carry
-// dispatch-requests in application_name and the write lock bound in lock_timeout, and its acquires
-// are bounded at requestAcquireBound. Every connection it opens scans timestamptz in UTC
+// dispatch-requests in application_name, after the connection string's own name where it names one
+// (applicationName), and the write lock bound in lock_timeout, and its acquires are bounded at
+// requestAcquireBound. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration, and is
 // refused where its session does not carry the lock bound its configuration asks for
 // (requireLockBound, connected).

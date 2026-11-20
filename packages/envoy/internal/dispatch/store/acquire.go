@@ -16,8 +16,8 @@ import (
 )
 
 // The pools a Pool opens, by the name each one carries: its connections' application_name in
-// pg_stat_activity is dispatch-<name> (configurePool), and the name is its entry in Stats and what
-// Use is asked about.
+// pg_stat_activity is dispatch-<name>, after the connection string's own name and a slash where it
+// names one (applicationName), and the name is its entry in Stats and what Use is asked about.
 const (
 	// RequestsPool is the shared pool store.Open opens: what every API request reads and writes
 	// through (SharedPoolSize).
@@ -58,12 +58,38 @@ var poolNames = [...]string{
 	RegistryPool,
 }
 
-// applicationNamePrefix begins every pool's application_name: dispatch-<pool>, the one convention
-// every pool of the process shares, so pg_stat_activity groups a process's connections by pool and
-// the metrics' pool label is the part after the prefix. The connection string's own
-// application_name, if it names one, is replaced: a pool's name is what an operator reading
-// pg_stat_activity during an incident needs, and it is the same in every deployment.
+// applicationNamePrefix begins every pool's own name in application_name: dispatch-<pool>, the one
+// convention every pool of the process shares, so pg_stat_activity groups a process's connections
+// by pool and the metrics' pool label is the part after the prefix (applicationName).
 const applicationNamePrefix = "dispatch-"
+
+// maxApplicationName is how many bytes of an application_name pg_stat_activity shows: Postgres
+// keeps NAMEDATALEN - 1 of them and drops the rest.
+const maxApplicationName = 63
+
+// applicationName is the application_name of pool's connections: the pool's own name,
+// dispatch-<pool>, and, where the connection string names an application_name of its own (client),
+// that name and a slash before it, <client>/dispatch-<pool>. Each says what the other cannot. The
+// pool's is what an operator reading pg_stat_activity during an incident needs, and it is the same
+// in every deployment; the connection string's is how a deployment, or a test running two builds
+// on one database, tells its processes' connections from another's. client is cut short so the
+// whole fits maxApplicationName, so the part cut is never the pool's name. Each byte of it outside
+// printable ASCII becomes '?' first, as Postgres before 16 makes it (16 and later write it as the
+// four bytes \xNN), so what is cut here is the length pg_stat_activity shows.
+func applicationName(client, pool string) string {
+	own := applicationNamePrefix + pool
+	if client == "" {
+		return own
+	}
+	printable := []byte(client)
+	for i, c := range printable {
+		if c < ' ' || c > '~' {
+			printable[i] = '?'
+		}
+	}
+	room := maxApplicationName - len(own) - len("/")
+	return string(printable[:min(len(printable), room)]) + "/" + own
+}
 
 // The acquire bounds: how long one acquire on each pool waits for a connection before it gives up
 // with ErrPoolBusy. Before them every wait was unbounded, so past capacity callers queued until
@@ -446,12 +472,15 @@ type PoolStats struct {
 // still runs on the caller's own context. It counts the connections handed back open too
 // (TraceRelease), which pgxpool reports to a configuration's Tracer the same way.
 type acquireTracer struct {
-	// name makes the application_name, and inner is the tracer the configuration had before this
-	// one was composed with it: kept so a pool opened from this pool's configuration composes its
-	// own tracer with that one rather than with this.
-	name  string
-	bound time.Duration
-	inner pgx.QueryTracer
+	// name and client make the application_name (applicationName): client is the connection
+	// string's own, kept here because a pool opened from this pool's configuration finds this
+	// pool's name in that configuration's application_name by then. inner is the tracer the
+	// configuration had before this one was composed with it: kept so a pool opened from this
+	// pool's configuration composes its own tracer with that one rather than with this.
+	name   string
+	client string
+	bound  time.Duration
+	inner  pgx.QueryTracer
 
 	waiting  atomic.Int64
 	timeouts atomic.Uint64
@@ -612,24 +641,26 @@ func idleInTransactionSetting() string {
 	return strconv.FormatInt(requestIdleInTransaction.Milliseconds(), 10)
 }
 
-// configurePool names config's connections dispatch-<name> in application_name
-// (applicationNamePrefix), bounds an idle transaction on them where every transaction of the pool
-// can take that bound (idleInTransactionParam; the comment below names those pools), bounds every
-// lock wait of the request pool's connections at the write lock bound and asks for no bound on
-// every other pool's (lockTimeoutParam), and sets the pool's acquire tracer, bounded at bound
-// (zero is none) and composed with any tracer config already carries. A configuration copied
-// from another pool's is re-configured from that pool's original tracer, not stacked on its
-// acquire tracer.
+// configurePool names config's connections after the pool in application_name, after the
+// connection string's own name where it names one (applicationName), bounds an idle transaction on
+// them where every transaction of the pool can take that bound (idleInTransactionParam; the
+// comment below names those pools), bounds every lock wait of the request pool's connections at
+// the write lock bound and asks for no bound on every other pool's (lockTimeoutParam), and sets the
+// pool's acquire tracer, bounded at bound (zero is none) and composed with any tracer config
+// already carries. A configuration copied from another pool's is re-configured from that pool's
+// original tracer and the connection string's own application_name, which that pool's tracer
+// kept, not stacked on its acquire tracer or its name.
 func configurePool(config *pgxpool.Config, name string, bound time.Duration) *acquireTracer {
 	inner := config.ConnConfig.Tracer
+	client := config.ConnConfig.RuntimeParams["application_name"]
 	if configured := acquireTracerOf(inner); configured != nil {
-		inner = configured.inner
+		inner, client = configured.inner, configured.client
 	}
-	tracer := &acquireTracer{name: name, bound: bound, inner: inner}
+	tracer := &acquireTracer{name: name, client: client, bound: bound, inner: inner}
 	if config.ConnConfig.RuntimeParams == nil {
 		config.ConnConfig.RuntimeParams = map[string]string{}
 	}
-	config.ConnConfig.RuntimeParams["application_name"] = applicationNamePrefix + name
+	config.ConnConfig.RuntimeParams["application_name"] = applicationName(client, name)
 	// An idle transaction is bounded wherever it can hold a lock a request's write waits on - an
 	// issue's owner lock, a document's advisory lock - since a request's write waits for such a
 	// lock up to lockWait and is then refused, as is every request queued behind it: a
@@ -654,8 +685,7 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 	// from its list each bound their own transaction instead (BoundIdleInTransaction). The rooms
 	// pool's loads are read-only, and the live, leases, horizon, text-trees, registry, listen and
 	// health pools take nothing a request's write waits on, so none of them carries it. A
-	// connection string that sets the parameter itself is replaced either way, as its
-	// application_name is.
+	// connection string that sets the parameter itself is replaced either way.
 	switch name {
 	case RequestsPool, BackgroundPool, OutboxPool, RoomAppendsPool:
 		config.ConnConfig.RuntimeParams[idleInTransactionParam] = idleInTransactionSetting()
