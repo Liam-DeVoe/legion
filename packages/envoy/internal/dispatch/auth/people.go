@@ -49,18 +49,30 @@ const (
 // last sign-in's or confirmation's ID token carried, empty for none. SignedInAt is the row's
 // signed_in_at. Unopenable is a stored refresh token that does not open, which RefreshToken reads
 // as none. ReadAt is the database's now() in the read, for a person with no row too.
+//
+// The Directory fields are what the IAP Directory check (DISPATCH_IDENTITY=iap) stores, each
+// empty outside IAP. DirectoryHeld is a recorded hold later than the last active Directory answer,
+// or a recorded hold on a row with no active answer (held_since later than directory_confirmed_at,
+// or held_since set and directory_confirmed_at null). DirectoryConfirmedAt is that last active
+// answer, NotHeldUntil the deadline it fixed 24 hours later, after which a not-held answer is no
+// longer served, and DirectoryUserID the Directory user's id the first active answer stored, which
+// later answers are compared with.
 type PersonMembership struct {
-	RefreshToken string
-	Confirmed    bool
-	ConfirmedAge time.Duration
-	Subject      string
-	Kind         model.MemberKind
-	Held         bool
-	SignedOut    bool
-	HostedDomain string
-	SignedInAt   time.Time
-	Unopenable   bool
-	ReadAt       time.Time
+	RefreshToken         string
+	Confirmed            bool
+	ConfirmedAge         time.Duration
+	Subject              string
+	Kind                 model.MemberKind
+	Held                 bool
+	SignedOut            bool
+	HostedDomain         string
+	SignedInAt           time.Time
+	Unopenable           bool
+	ReadAt               time.Time
+	DirectoryHeld        bool
+	DirectoryConfirmedAt *time.Time
+	NotHeldUntil         *time.Time
+	DirectoryUserID      string
 }
 
 // PeopleStore persists the people who have signed in to Dispatch, keyed by lowercase email: the

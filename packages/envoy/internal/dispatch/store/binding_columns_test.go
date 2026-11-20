@@ -103,6 +103,20 @@ const (
 	bindingFloorGuard = `alter table session_generation_floors disable trigger session_generation_floors_guarded`
 )
 
+// bindingDirectoryRow is the address i@x.example recording account-a; bindingDirectoryActive,
+// bindingDirectoryHeld and bindingDirectoryFailed are the writes of an active, a Held and a Failed
+// Directory outcome for it (RecordDirectoryActive answered by the Directory user directory-a,
+// RecordDirectoryHeld, RecordDirectoryFailed), with their values written in.
+const (
+	bindingDirectoryRow    = `insert into people (email, sub) values ('i@x.example', 'account-a')`
+	bindingDirectoryActive = `update people set directory_user_id = coalesce(directory_user_id, 'directory-a'),
+		directory_confirmed_at = checked.at, directory_checked_at = checked.at, not_held_until = checked.at + interval '24 hours', held_since = null
+		from (select clock_timestamp() as at) as checked where email = 'i@x.example'`
+	bindingDirectoryHeld = `update people set directory_checked_at = checked.at, held_since = coalesce(held_since, checked.at)
+		from (select clock_timestamp() as at) as checked where email = 'i@x.example'`
+	bindingDirectoryFailed = `update people set directory_checked_at = clock_timestamp() where email = 'i@x.example'`
+)
+
 var bindingRefusals = []bindingRefusal{
 	{"people.email", "renamed, on a row recording no account",
 		[]string{`insert into people (email) values ('p@x.example')`},
@@ -384,6 +398,18 @@ var bindingTransitions = []bindingTransition{
 	{"people.confirm_tried_at", "claimed by the membership pass (ClaimOverdueConfirmation)",
 		[]string{`insert into people (email, sub, refresh_token, confirmed_at) values ('c@x.example', 'account-a', 'sealed', now() - interval '2 hours')`},
 		`update people set confirm_tried_at = clock_timestamp() where email = 'c@x.example'`},
+	{"people.directory_confirmed_at", "an active Directory answer after a Held one, which releases the hold (RecordDirectoryHeld, then RecordDirectoryActive)",
+		[]string{bindingDirectoryRow, bindingDirectoryHeld},
+		bindingDirectoryActive},
+	{"people.directory_checked_at", "a Failed check after an active answer, as the pass's claim stamps it too (RecordDirectoryFailed, ClaimDirectoryDue)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive},
+		bindingDirectoryFailed},
+	{"people.not_held_until", "fixed at an active answer plus 24 hours, then moved by the next (RecordDirectoryActive)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive, `select pg_sleep(0.01)`},
+		bindingDirectoryActive},
+	{"people.directory_user_id", "stored at the first active answer, then forgotten (RecordDirectoryActive, ForgetDirectoryUser)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive},
+		`update people set directory_user_id = null where email = 'i@x.example' and directory_user_id is not null`},
 	{"broker_revocations row", "recorded (the sign-in's insert, naming the holder people records)",
 		[]string{bindingRevocationHolder},
 		bindingRevocation},

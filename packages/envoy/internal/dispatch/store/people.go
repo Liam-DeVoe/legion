@@ -432,9 +432,11 @@ func (s *PgPeopleStore) refuseAMembersAddress(ctx context.Context, email, subjec
 // can judge the row. The read writes nothing: the next boot retires a token stored in plain text
 // (RetirePlainRefreshTokens), and the person's next sign-in replaces whatever the row holds. The
 // subject, the member kind, the recorded hold (held_since later than signed_in_at), the sign-out
-// that kept the token (signed_out_at later than signed_in_at), the hosted domain and signed_in_at
-// are read whatever the refresh token holds. ReadAt is the database's now() in the one statement,
-// read for a person with no row too, so an answer that rests on the read can carry its time.
+// that kept the token (signed_out_at later than signed_in_at), the hosted domain, signed_in_at and
+// the Directory columns (DirectoryHeld: held_since later than directory_confirmed_at, or set where
+// that is null) are read whatever the refresh token holds. ReadAt is the database's now() in the
+// one statement, read for a person with no row too, so an answer that rests on the read can carry
+// its time.
 func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.PersonMembership, bool, error) {
 	var found bool
 	var sealed *string
@@ -446,11 +448,14 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 		select p.email is not null, p.refresh_token, now() - p.confirmed_at, coalesce(p.sub, ''),
 			coalesce(p.member_kind, ''), coalesce(p.held_since > p.signed_in_at, false),
 			coalesce(p.signed_out_at > p.signed_in_at, false), coalesce(p.hosted_domain, ''),
-			p.signed_in_at, now()
+			p.signed_in_at, now(),
+			coalesce(p.held_since > p.directory_confirmed_at, p.held_since is not null),
+			p.directory_confirmed_at, p.not_held_until, coalesce(p.directory_user_id, '')
 		from (select 1) as one
 		left join people p on p.email = $1
 	`, email).Scan(&found, &sealed, &age, &membership.Subject, &kind, &membership.Held,
-		&membership.SignedOut, &membership.HostedDomain, &signedInAt, &membership.ReadAt)
+		&membership.SignedOut, &membership.HostedDomain, &signedInAt, &membership.ReadAt,
+		&membership.DirectoryHeld, &membership.DirectoryConfirmedAt, &membership.NotHeldUntil, &membership.DirectoryUserID)
 	if err != nil {
 		return auth.PersonMembership{}, false, fmt.Errorf("read membership of %q: %w", email, err)
 	}
