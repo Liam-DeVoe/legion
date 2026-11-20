@@ -12,6 +12,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -344,9 +345,9 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 	})
 
 	t.Run("the scratch Go source refuses every wrapped dynamic statement", testEventIDGuardReadsWrappedDynamicSQL)
+	t.Run("a sink's own argument is read", testEventIDGuardReadsASinkArgument)
 	t.Run("an unlisted Sprintf query fails closed", testEventIDGuardRefusesAnUnlistedFormattedQuery)
 	t.Run("a stale unreadable SQL entry fails closed", testEventIDGuardRefusesAStaleUnreadableSQLEntry)
-
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -427,6 +428,46 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 	if seedCopies == 0 {
 		t.Fatalf("the walk saw no pgx.Identifier naming events, not even %s's offline copies: if those "+
 			"moved or name the table another way, the copy check now passes by seeing nothing", seedTool)
+	}
+}
+
+// testEventIDGuardReadsASinkArgument plants a draw in the two places a sink takes its SQL that no
+// other reader of this guard was built for: pgx.Batch.Queue's first argument, and the argument a
+// caller hands to a helper that passes it on to a sink. The harmless row beside them is the
+// control: the same readers over a query that draws nothing must raise nothing, so a row that
+// refuses everything cannot pass for a row that reads what it refuses.
+func testEventIDGuardReadsASinkArgument(t *testing.T) {
+	const scratch = `package scratch
+
+func planted(batch *pgx.Batch) { batch.Queue("select nextval('events_id_seq')") }
+
+func forward(database *pgxpool.Pool, query string) { database.Exec(ctx, query) }
+
+func caller(database *pgxpool.Pool) { forward(database, "select setval('events_id_seq', 1)") }
+
+func harmless(batch *pgx.Batch) { batch.Queue("select 1") }
+`
+	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go", scratch, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarded := sqlSinkParameters([]*ast.File{source})
+	if !slices.Equal(forwarded["forward"], []int{1}) {
+		t.Fatalf("the scan read forward's SQL parameter as %v, want [1]", forwarded["forward"])
+	}
+	refused := map[string]bool{}
+	for _, template := range sqlTemplatesReaching(source, map[string]string{}, forwarded) {
+		if offences, _ := eventIDOffences("scratch.go:"+template.function, template.statement); len(offences) > 0 {
+			refused[template.statement] = true
+		}
+	}
+	for _, statement := range []string{"select nextval('events_id_seq')", "select setval('events_id_seq', 1)"} {
+		if !refused[statement] {
+			t.Errorf("the guard did not refuse %q at its sink", statement)
+		}
+	}
+	if refused["select 1"] {
+		t.Error("the guard refused a query that draws nothing, so these rows show nothing")
 	}
 }
 
