@@ -1291,7 +1291,7 @@ jobs:
   # (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
   # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
   # This job is where it runs, and the models lane beside it: the command bar's answers,
-  # blocks, operations and thresholds against the fake writing model and the fake decision
+  # and blocks against the fake writing model and the fake decision
   # model (e2e/fake-chat-model.ts, e2e/fake-decision-model.ts) under DISPATCH_E2E_MODELS=fake
   # (e2e/harness-models.ts), a switch of the server's too, whose rows skip everywhere else. A
   # second step of this job rather than a job of its own, since this job already holds the
@@ -1312,9 +1312,10 @@ jobs:
   # multiprocess job's measured steps, which are the same steps on the same machine: its install
   # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The
   # models step reuses the contracts and the dashboard the embedder step has just built, as the
-  # multiprocess job's sign-in step reuses its neighbour's, and runs the six model spec files its
-  # four filters match (`going-answer` also matches `going-answer-cancel` and
-  # `going-answer-safety`) on this config's one worker. Its reading is an estimate: the six ran
+  # multiprocess job's sign-in step reuses its neighbour's, and runs the four model spec files its
+  # two filters match (`going-answer` also matches `going-answer-cancel` and
+  # `going-answer-safety`) on this config's one worker. Its reading is an estimate made when the
+  # step ran six files, two since deleted with the writes they tested: the six ran
   # their 21 and 16 rows in 1.6 and 1.7 min of wall time on 3 workers on a farm runner, so on one
   # worker about three times 3.3 min, 9.9 min, and under this file's rule 9.9 min plus 15 per
   # cent, rounded up, is 12 min, until its first runs give it a reading of its own. The job
@@ -1399,7 +1400,7 @@ jobs:
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-answer going-blocks going-operations going-thresholds
+          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-answer going-blocks
         working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
       # failed row, but a row that fails after its retries fails this job and this upload runs.
