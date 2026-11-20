@@ -1258,5 +1258,8 @@ if (import.meta.main) {
     process.stderr.write(USAGE);
     process.exit(2);
   }
-  process.exit(write ? await writeFiles(paths) : await checkFiles(paths));
+  // process.exitCode, not process.exit: Bun drops the stdout writes a full pipe has not taken
+  // when a program calls process.exit, so a reader that comes late, as a test's Bun.spawnSync
+  // does on a loaded machine, would get the findings cut. Ending without it writes them all.
+  process.exitCode = write ? await writeFiles(paths) : await checkFiles(paths);
 }
