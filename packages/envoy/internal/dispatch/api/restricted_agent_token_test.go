@@ -31,10 +31,14 @@ import (
 // routes what kind of member each person is, behind Dispatch's own routes, which relay the
 // credential pages to that broker and decide every broker token by asking it. Dispatch holds ACC,
 // which alice owns and whose access list names erin, a restricted member; carol is a full member.
+// server is Dispatch's registered server, whose broker revocation pass a row runs itself
+// (revokeBrokerDebts), as the loop runs it after a removal commits.
 type restrictedTokenRig struct {
 	broker   *brokertest.Rig
 	client   *brokertest.Client
 	dispatch http.Handler
+	database *store.Store
+	server   *server
 }
 
 func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
@@ -46,7 +50,7 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
 	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
 	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	served, _ := newAccessServerWith(t, testServerOptions{
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside: true,
 		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
 			verifier, err := brokertoken.New(brokertoken.Options{
@@ -63,7 +67,7 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	return restrictedTokenRig{broker: broker, client: client, dispatch: served}
+	return restrictedTokenRig{broker: broker, client: client, dispatch: served, database: database, server: registered}
 }
 
 // machineLogin is one machine's pending device login for person: the key it holds and the device
@@ -304,18 +308,20 @@ func (r restrictedTokenRig) sessionToken(t *testing.T, machine machineLogin, dev
 }
 
 // TestADelistedMembersTokenIsNotRenewed: once ACC's owner takes erin, a restricted member, off
-// ACC's access list, Dispatch has revoked at the broker every machine login she approved, before
-// the removal commits. So her agent's session token introspects not active at once, the broker
-// refuses her device login's refresh and every further trade of its token, and the login is
-// revoked in the broker's own rows. A device login is not per project, so the removal from one
-// project's list ends all of hers, and she approves again for a project that still lists her.
+// ACC's access list, Dispatch owes the broker the revocation of every machine login she approved,
+// recorded in the removal's transaction, and the broker revocation loop's next pass pays it. Then
+// her agent's session token introspects not active, the broker refuses her device login's refresh
+// and every further trade of its token, the login is revoked in the broker's own rows, and the
+// debt is settled. A device login is not per project, so the removal from one project's list ends
+// all of hers, and she approves again for a project that still lists her.
 //
 // The control runs on the same rig: carol, a full member, is put on ACC's list and taken off it
-// again, and her token stays active and her refresh is answered, so each refusal above is the
-// delisting's and not the rig's.
+// again, owes nothing, and her token stays active and her refresh is answered, so each refusal
+// above is the delisting's and not the rig's.
 //
-// Control: drop the relay from the removal (revokeRestrictedMembersLogins answering nil at once),
-// and erin's token introspects active and her refresh is answered, each named.
+// Control: record nothing on the removal (recordMachineLoginRevocation answering nil at once), and
+// the row fails naming the revocation not owed; at the head that revoked inline, a removal from a
+// list that never named erin ended her logins (TestARemovalFromAnotherProjectLeavesTheMembersLogins).
 func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
 	r := newRestrictedTokenRig(t)
 	ctx := t.Context()
@@ -335,6 +341,16 @@ func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
 		if removed := dispatchRequest(t, r.dispatch, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+person, nil, "alice"); removed.Code != http.StatusOK {
 			t.Fatalf("alice takes %s off ACC's list: %d %s, want 200", person, removed.Code, removed.Body.String())
 		}
+	}
+	revocations := store.NewMachineLoginRevocations(r.database.Pool)
+	for person, want := range map[string]bool{accessErin: true, accessCarol: false} {
+		if owed, _, err := revocations.Owing(ctx, person); err != nil || owed != want {
+			t.Fatalf("the revocation of %s's machine logins is owed %t (%v) after the removal, want %t", person, owed, err, want)
+		}
+	}
+	r.server.revokeBrokerDebts(ctx)
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after a pass, want it settled", owed, err)
 	}
 
 	if r.introspect(t, erinsToken).Active {
@@ -359,5 +375,38 @@ func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
 	}
 	if _, err := r.client.Refresh(t, carols.key, carolsDevice); err != nil {
 		t.Errorf("carol's device login's refresh after her removal: %v, want it answered", err)
+	}
+}
+
+// TestARemovalFromAnotherProjectLeavesTheMembersLogins: an owner's removal of a person from a list
+// that does not name them leaves the list as it was, and owes the broker nothing. carol owns OTH,
+// which never named erin; her removal of erin from OTH answers 200, records no revocation of
+// erin's machine logins, and after the broker revocation loop's pass erin's ACC token still
+// introspects active and her device login's refresh is answered. So no project's owner ends the
+// logins of a person another project lists.
+//
+// Control: record the revocation on every removal, as the head before this row did, and erin's ACC
+// token introspects not active and her refresh is refused, each named.
+func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
+	r := newRestrictedTokenRig(t)
+	ctx := t.Context()
+	if created := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
+		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
+	}
+	erins, erinsDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
+	erinsToken := r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")
+
+	if removed := dispatchRequest(t, r.dispatch, http.MethodDelete, "/api/v1/projects/OTH/access/people/"+accessErin, nil, accessCarol); removed.Code != http.StatusOK {
+		t.Fatalf("carol's removal of erin from OTH, which never named her: %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(r.database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after a removal from a list that never named her, want nothing owed", owed, err)
+	}
+	r.server.revokeBrokerDebts(ctx)
+	if !r.introspect(t, erinsToken).Active {
+		t.Errorf("erin's ACC token introspects not active after carol's removal of erin from OTH, which never named her")
+	}
+	if _, err := r.client.Refresh(t, erins.key, erinsDevice); err != nil {
+		t.Errorf("erin's device login's refresh after carol's removal of erin from OTH: %v, want it answered", err)
 	}
 }

@@ -990,7 +990,12 @@ login of their own agents, and Dispatch decides for them no other credential. Th
 them, and every token they make, every read of the whole deployment,
 `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, but for that one
 decision at their browser. The secrets broker holds their agents' tokens to one project, which
-their agents name in `AGENT_SECRETS_PROJECTS`.
+their agents name in `AGENT_SECRETS_PROJECTS`. Taking such a person off a project's list ends
+their tokens for it within 325 seconds, since the broker checks every trade against Dispatch, and
+Dispatch then revokes their machine logins at the broker, after the removal commits and again until
+the broker confirms; the log line `the secrets broker revoked the machine logins of a restricted
+member taken off an access list` records each, and the person approves a new machine login for a
+project that still lists them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project

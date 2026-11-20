@@ -10,9 +10,10 @@ body: |-
   token of project scope `named` that records the credential a person made, the account it was
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. Taking a restricted member off a
-  project's access list now revokes every machine login they approved at the broker before the
-  removal commits, which ends their agents' tokens at once; while the broker does not confirm the
-  revokes, the removal is `503 MACHINE_LOGINS_NOT_REVOKED` and the member stays on the list.
+  project's access list that names them now records that Dispatch owes the broker the revocation of
+  every machine login they approved, and Dispatch pays it after the removal commits, again until the
+  broker confirms (table `machine_login_revocations`, migration 20261120150130); the removal never
+  waits on the broker, and a removal from a list that does not name the person owes nothing.
 time: 2026-11-20T10:37:31Z
 custom:
     Issue: restricted-agent-tokens-named

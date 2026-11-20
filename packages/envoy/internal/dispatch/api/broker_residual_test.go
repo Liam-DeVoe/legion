@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestTheMachineLoginKindIsTheBrokers: the kind ownMachineLogin holds a restricted member's
@@ -158,52 +159,83 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	}
 }
 
-// TestARemovalTheBrokerCannotRevokeLeavesTheMemberListed: taking a restricted member off an access
-// list revokes their machine logins at the broker in the removal's transaction
-// (revokeRestrictedMemberLogins), and fails closed. While the broker does not answer the list of
-// the member's logins, the removal is 503 MACHINE_LOGINS_NOT_REVOKED and erin stays on ACC's list,
-// so no committed removal leaves her agents' tokens alive. Once it answers, the removal revokes
-// erin's own login and no service's, whoever approved the service's, and commits.
+// TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack: taking a restricted member off an access
+// list never waits on the secrets broker. While the broker does not answer, alice's removal of erin
+// from ACC answers 200 and erin is off the list; from the commit on, erin's browser sees nothing of
+// ACC and her personal token is refused, by Dispatch's own check of the lists; and the revocation
+// of her machine logins is owed (recordMachineLoginRevocation). A pass of the broker revocation
+// loop that meets the broker
+// down revokes nothing and leaves it owed. Once the broker answers, the next pass revokes erin's own
+// login and no service's, whoever approved the service's, and settles the debt.
 //
-// Control: let the removal commit whatever the broker answers (the relay's error dropped), and the
-// first row fails naming the 200 and the list without erin.
-func TestARemovalTheBrokerCannotRevokeLeavesTheMemberListed(t *testing.T) {
+// Control: refuse the removal while the broker is down, as the head before this row did, and the
+// first row fails naming the 503.
+func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 	rig := newFakeBrokerRig(t)
-	served, _ := newAccessServerWith(t, testServerOptions{
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
 		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
 	})
+	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const list = "GET /v1/launcher-credentials"
-	stillListed := func() bool {
-		t.Helper()
-		read := dispatchRequest(t, served, http.MethodGet, "/api/v1/projects/ACC/access", nil, "alice")
-		if read.Code != http.StatusOK {
-			t.Fatalf("alice reads ACC's access: %d %s", read.Code, read.Body.String())
-		}
-		return strings.Contains(read.Body.String(), accessErin)
+	minted := dispatchRequest(t, served, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "erin's agent"}, accessErin)
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("erin mints a personal token at her browser: status=%d body=%s", minted.Code, minted.Body.String())
 	}
+	personal := decodeBody[agentTokenResponse](t, minted).Token
+	const list = "GET /v1/launcher-credentials"
+	revokes := func() []string {
+		return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
+	}
+	revocations := store.NewMachineLoginRevocations(database.Pool)
 
+	seesACC := func() bool {
+		t.Helper()
+		projects := dispatchRequest(t, served, http.MethodGet, "/api/v1/projects", nil, accessErin)
+		if projects.Code != http.StatusOK {
+			t.Fatalf("erin's browser on GET /api/v1/projects = %d %s, want 200", projects.Code, projects.Body.String())
+		}
+		return strings.Contains(projects.Body.String(), `"key":"ACC"`)
+	}
+	if !seesACC() {
+		t.Fatalf("erin's browser does not see ACC while ACC lists her")
+	}
 	rig.statusByRoute[list] = http.StatusServiceUnavailable
 	removed := dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
-	if removed.Code != http.StatusServiceUnavailable || !strings.Contains(removed.Body.String(), `"code":"MACHINE_LOGINS_NOT_REVOKED"`) || !stillListed() {
-		t.Fatalf("erin's removal while the broker does not answer = %d %s, erin still listed %t; want 503 MACHINE_LOGINS_NOT_REVOKED and erin on the list",
-			removed.Code, removed.Body.String(), stillListed())
+	if removed.Code != http.StatusOK || strings.Contains(removed.Body.String(), accessErin) {
+		t.Fatalf("erin's removal while the broker does not answer = %d %s; want 200 and erin off the list", removed.Code, removed.Body.String())
+	}
+	if seesACC() {
+		t.Errorf("erin's browser sees ACC after her removal, want it gone from the commit on")
+	}
+	if token := agentRequest(t, served, http.MethodGet, "/api/v1/whoami", nil, personal); token.Code != http.StatusUnauthorized ||
+		!strings.Contains(token.Body.String(), codeTokenOwnerNotAdmitted) {
+		t.Errorf("erin's personal token on GET /api/v1/whoami after her removal = %d %s, want 401 %s", token.Code, token.Body.String(), codeTokenOwnerNotAdmitted)
+	}
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed {
+		t.Fatalf("the revocation of erin's machine logins is owed %t (%v) after her removal, want owed", owed, err)
+	}
+	registered.revokeBrokerDebts(ctx)
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed || len(revokes()) != 0 {
+		t.Fatalf("after a pass with the broker down the revocation is owed %t (%v) and the broker was sent %v, want it owed and no revoke", owed, err, revokes())
 	}
 
+	// The broker answers again; the claim's retry window is moved past, as its 30 s would.
 	delete(rig.statusByRoute, list)
 	rig.bodyByRoute[list] = `{"credentials":[
 		{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
 		{"credential_id":"cred-daemon","host":"cluster.example","service":"legion-daemon","subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
-	rig.routes = nil
-	removed = dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
-	if removed.Code != http.StatusOK || stillListed() {
-		t.Fatalf("erin's removal once the broker answers = %d %s, erin still listed %t; want 200 and erin off the list", removed.Code, removed.Body.String(), stillListed())
+	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = now() - interval '1 minute'`); err != nil {
+		t.Fatal(err)
 	}
-	revokes := slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
-	if !slices.Equal(revokes, []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
-		t.Errorf("the removal revoked %v, want erin's own login alone", revokes)
+	rig.routes = nil
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Equal(revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the pass with the broker back revoked %v, want erin's own login alone", revokes())
+	}
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the broker confirmed it, want it settled", owed, err)
 	}
 }

@@ -27,11 +27,10 @@ const edgeLiveCheck = 25 * time.Second
 // TestARestrictedTokenEndsWithinTheBound holds the arithmetic of the bound on a removal from an
 // access list: the broker's cache of Dispatch's answer that a person sees the project, then the
 // restricted token's lifetime, then the edge listener's live check, end at most 325 seconds after
-// the removal. A token traded before the removal ends at once, since Dispatch revokes the
-// person's machine logins with the removal; this is the bound for the one traded after it, from
-// the broker's earlier answer.
+// the removal. It holds with no revoke at all, since every trade is checked against Dispatch; the
+// revocation Dispatch pays after the removal commits only ends the person's tokens sooner.
 //
-// Control: RestrictedLifetime at five minutes, and the sum is 355 s and the row fails naming it.
+// Control: RestrictedLifetime at five minutes, and the sum is 5m55s and the row fails naming it.
 func TestARestrictedTokenEndsWithinTheBound(t *testing.T) {
 	if sum := projectaccess.CacheTTL + exchange.RestrictedLifetime + edgeLiveCheck; sum > 325*time.Second {
 		t.Fatalf("the cache (%s), the restricted lifetime (%s) and the edge's check (%s) sum to %s, want at most 5m25s",

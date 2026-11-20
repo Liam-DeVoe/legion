@@ -505,6 +505,24 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
 }
 
+// NamesPerson reports whether project key's access list names the person email, read in tx: a
+// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
+// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
+// answers it.
+func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
+	name, err := principalOf(PrincipalPerson, email)
+	if err != nil {
+		return false, err
+	}
+	var named bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+	`, key, PrincipalPerson, name).Scan(&named); err != nil {
+		return false, fmt.Errorf("read whether project %s names %s: %w", key, name, err)
+	}
+	return named, nil
+}
+
 // appendProjectChange appends the event naming change on project key, records beside it what the
 // change named (recordProjectChanges), and reads the project's access as tx left it, which the
 // write answers. principal is the person or group a list change added or removed, the person an
