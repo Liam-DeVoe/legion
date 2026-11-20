@@ -10,8 +10,10 @@ var askStateTypes = []string{
 	"ask.handed_back", "ask.asked_of", "ask.anchor_refreshed",
 }
 
-// AskStateTypes are the event types the asks shadow reads an ask's state from: an index that
-// serves that read names exactly these types.
+// AskStateTypes are the event types the asks shadow reads an ask's state from. The predicate of
+// the partial index events_ask_state (migration 20261120004316) names exactly these types, in
+// this order, so that the planner can prove that the index serves that read: a change here needs
+// a new index.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
 // postCreatedTypes are the events that create a comment: comment.created, and comment.answered,

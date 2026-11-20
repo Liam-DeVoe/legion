@@ -98,11 +98,11 @@ func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 }
 
 // shadowColumns are the columns the shadow of table answers: the field descriptions of a
-// statement that reads it through the WITH list Shadows writes.
+// statement that reads it through the WITH list Shadows writes for it.
 func shadowColumns(t *testing.T, w world, cut asof.Cut, table string) []column {
 	t.Helper()
 	ctx := context.Background()
-	rows, err := w.database.Pool.Query(ctx, "with "+asof.Shadows(cut)+"\nselect * from "+table+" limit 0")
+	rows, err := w.database.Pool.Query(ctx, "with "+asof.Shadows(cut, table)+"\nselect * from "+table+" limit 0")
 	if err != nil {
 		t.Fatalf("read the %s shadow: %v", table, err)
 	}

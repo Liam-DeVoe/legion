@@ -17,16 +17,16 @@ func mustCut(t *testing.T, raw string) asof.Cut {
 	return cut
 }
 
-// Bind puts the shadows in front of the statement's own text. A statement that opens its own
-// WITH list gets the shadows as the first members of that list, since a statement holds one
-// WITH list and its members may read the shadows only from a later place in it. Text inside a
-// literal, a quoted identifier or a dollar-quoted body is not SQL, so a "with" there does not
-// open a list and a ")" there does not close a member.
+// Bind puts the shadows of the tables a statement names in front of the statement's own text. A
+// statement that opens its own WITH list gets the shadows as the first members of that list,
+// since a statement holds one WITH list and its members may read the shadows only from a later
+// place in it. Text inside a literal, a quoted identifier or a dollar-quoted body is not SQL, so a
+// "with" there does not open a list and a ")" there does not close a member.
 func TestBindKeepsTheStatementsOwnWithList(t *testing.T) {
 	cut := mustCut(t, "2026-11-10T00:00:00Z")
-	shadows := asof.Shadows(cut)
+	shadows := asof.Shadows(cut, "events")
 	if !strings.Contains(shadows, "public.events") || !strings.Contains(shadows, "'2026-11-10T00:00:00.000000Z'::timestamptz") {
-		t.Fatalf("Shadows(%s) = %q, want the events shadow reading public.events up to the cut's literal", cut, shadows)
+		t.Fatalf("Shadows(%s, events) = %q, want the events shadow reading public.events up to the cut's literal", cut, shadows)
 	}
 
 	for _, row := range []struct {
@@ -52,12 +52,12 @@ func TestBindKeepsTheStatementsOwnWithList(t *testing.T) {
 		{
 			name: "with recursive keeps recursive",
 			sql:  "with recursive chain(key, depth) as materialized (select 'A-1', 0 union all select issues.parent_key, chain.depth + 1 from issues join chain on issues.key = chain.key) select key from chain",
-			want: "with recursive " + shadows + ", chain(key, depth) as materialized (select 'A-1', 0 union all select issues.parent_key, chain.depth + 1 from issues join chain on issues.key = chain.key) select key from chain",
+			want: "with recursive " + asof.Shadows(cut, "issues") + ", chain(key, depth) as materialized (select 'A-1', 0 union all select issues.parent_key, chain.depth + 1 from issues join chain on issues.key = chain.key) select key from chain",
 		},
 		{
 			name: "search and cycle clauses stay in its list",
-			sql:  "with recursive walk(n, m) as (select 1, 1 union all select n + 1, m from walk where n < 3) search depth first by n, m set ordering cycle n, m set looped to 'Y' default 'N' using path, again as not materialized (select n from walk) select n from again",
-			want: "with recursive " + shadows + ", walk(n, m) as (select 1, 1 union all select n + 1, m from walk where n < 3) search depth first by n, m set ordering cycle n, m set looped to 'Y' default 'N' using path, again as not materialized (select n from walk) select n from again",
+			sql:  "with recursive walk(n, m) as (select 1, 1 union all select n + 1, m from walk where n < 3) search depth first by n, m set ordering cycle n, m set looped to 'Y' default 'N' using path, again as not materialized (select n from walk) select n from again where n in (select id from events)",
+			want: "with recursive " + shadows + ", walk(n, m) as (select 1, 1 union all select n + 1, m from walk where n < 3) search depth first by n, m set ordering cycle n, m set looped to 'Y' default 'N' using path, again as not materialized (select n from walk) select n from again where n in (select id from events)",
 		},
 		{
 			name: "a string literal or a dollar-quoted body holds with and insert",
@@ -134,8 +134,73 @@ func TestABoundStatementThatWritesIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Bind(%q): %v, want it bound", sql, err)
 		}
-		if want := "with " + asof.Shadows(cut) + "\n" + sql; bound != want {
+		if want := "with " + asof.Shadows(cut, "issues") + "\n" + sql; bound != want {
 			t.Errorf("Bind(%q)\n got: %q\nwant: %q", sql, bound, want)
+		}
+	})
+}
+
+// PostgreSQL parses and analyses each member of a WITH list for each statement, so Bind writes
+// only the shadows of the tables a statement names, in the order of the shadows. A table is named
+// by a word, in any case, or by a quoted identifier in the table's own case. A word in a string
+// literal, a dollar-quoted body or a comment names nothing, and a statement that names no
+// shadowed table is sent as it is written, though a write is refused still.
+func TestBindWritesOnlyTheShadowsAStatementNames(t *testing.T) {
+	cut := mustCut(t, "2026-11-10T00:00:00Z")
+
+	for _, row := range []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "a statement that names asks and issues gets those two shadows, in the shadows' order",
+			sql:  "select a.id from asks a join issues i on i.key = a.issue_key",
+			want: "with " + asof.Shadows(cut, "issues", "asks") + "\nselect a.id from asks a join issues i on i.key = a.issue_key",
+		},
+		{
+			name: "a word in capitals and a quoted identifier in the table's case name their tables",
+			sql:  `select * from ISSUES join "asks" on true join "Events" on true`,
+			want: "with " + asof.Shadows(cut, "issues", "asks") + "\n" + `select * from ISSUES join "asks" on true join "Events" on true`,
+		},
+		{
+			name: "its own WITH list gets only the shadows its members name",
+			sql:  "with mine as (select key from issues) select key from mine",
+			want: "with " + asof.Shadows(cut, "issues") + ", mine as (select key from issues) select key from mine",
+		},
+		{
+			name: "a statement that names no shadowed table",
+			sql:  "select login from people where login = $1",
+			want: "select login from people where login = $1",
+		},
+		{
+			name: "its own WITH list that names no shadowed table",
+			sql:  "with x as (select 1 as n) select n from x",
+			want: "with x as (select 1 as n) select n from x",
+		},
+		{
+			name: "table names inside a string literal, a dollar-quoted body and comments",
+			sql:  "-- events\nselect 'issues' as a, E'asks' as b, $q$ comments $q$ as c /* messages */ from people",
+			want: "-- events\nselect 'issues' as a, E'asks' as b, $q$ comments $q$ as c /* messages */ from people",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := asof.Bind(row.sql, cut)
+			if err != nil {
+				t.Fatalf("Bind(%q): %v", row.sql, err)
+			}
+			if got != row.want {
+				t.Errorf("Bind(%q)\n got: %q\nwant: %q", row.sql, got, row.want)
+			}
+		})
+	}
+
+	t.Run("a write that names no shadowed table is refused", func(t *testing.T) {
+		const sql = "insert into people (login) values ('x')"
+		bound, err := asof.Bind(sql, cut)
+		var refused *asof.RefusedError
+		if !errors.As(err, &refused) {
+			t.Fatalf("Bind(%q) = %q, %v; want an *asof.RefusedError", sql, bound, err)
 		}
 	})
 }

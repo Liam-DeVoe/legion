@@ -1,11 +1,12 @@
 // Package asof reads Dispatch as it stood at a past time, the cut. A route that answers as_of
 // runs its present statements under a context that carries the cut (WithCut). The store binds
-// each statement to the cut (Bind): it puts a definition of each shadowed table at the cut (a
-// shadow, Shadows) in front of the statement as a WITH member of the same name, and PostgreSQL
-// resolves the table's name to that member before the table. So a past-time read runs the
-// present read's own filters, joins, order and paging. The package also holds the tables a
-// past-time read reads with no shadow (MachineryTables, CutReadTables) and the fields that a
-// past-time answer can leave out (AbsentFields).
+// each statement to the cut (Bind): it puts a definition at the cut of each shadowed table that
+// the statement names (a shadow, Shadows) in front of the statement as a WITH member of the same
+// name, and PostgreSQL resolves the table's name to that member before the table. So a past-time
+// read runs the present read's own filters, joins, order and paging. The package also holds the
+// tables a past-time read reads with no shadow (MachineryTables, CutReadTables), the fields that
+// a past-time answer can leave out (AbsentFields), and the read of the newest event id at the
+// cut that bounds an event log's page (NewestEventIDStatement).
 //
 // The package imports no part of the store or of the API: the store imports it.
 package asof

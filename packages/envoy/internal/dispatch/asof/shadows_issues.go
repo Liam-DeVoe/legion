@@ -7,7 +7,10 @@ package asof
 // from the issue the write read back). An issue whose first such event is later than the cut did
 // not exist at the cut and is in no shadow.
 
-// issueStateTypes are the events whose payload is the whole issue.
+// issueStateTypes are the events whose payload is the whole issue. The predicate of the partial
+// index events_issue_state (migration 20261120004315) names exactly these types, in this order,
+// so that the planner can prove that the index serves the shadow's read: a change here needs a
+// new index.
 var issueStateTypes = []string{"issue.created", "issue.updated", "issue.closed"}
 
 // issueClaimTypes are the events whose payload is the issue's claim alone

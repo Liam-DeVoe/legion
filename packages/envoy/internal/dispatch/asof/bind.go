@@ -23,9 +23,15 @@ func (e *RefusedError) Error() string {
 	return fmt.Sprintf("asof: a read at a cut does not run %q: %s", e.Statement, e.Reason)
 }
 
-// Bind puts the shadows of cut (Shadows) in front of sql, so that each shadowed table that sql
-// names reads as it stood at the cut.
+// Bind puts the shadows at cut (Shadows) of the tables that sql names in front of sql, so that
+// each of those tables reads as it stood at the cut.
 //
+//   - A table is named by a word of sql in any case, or by a quoted identifier in the table's own
+//     case. A column, an alias or a schema-qualified name (public.events) of the same name names
+//     the table too: the statement then does not read that shadow, which costs only its parse. A
+//     table that sql reads only inside a function or a view is not named, and reads as it is now.
+//   - The shadows keep the order of the shadows list, whatever order sql names them in.
+//   - A statement that names no shadowed table gets no WITH list: Bind returns it unchanged.
 //   - Leading whitespace and comments stay where they are, in front of the WITH list.
 //   - A statement with its own leading WITH or WITH RECURSIVE list gets the shadows as the first
 //     members of that list, and RECURSIVE stays. Its own members can then read the shadows.
@@ -34,9 +40,10 @@ func (e *RefusedError) Error() string {
 //
 // Bind refuses, with a *RefusedError, a statement whose first word after its WITH list is not
 // select, values, table or "(", a statement whose own WITH list holds an insert, update, delete
-// or merge, and a string that holds more than one statement. Keywords are case-insensitive.
-// Bind reads sql with a tokenizer that skips string literals, quoted identifiers,
-// dollar-quoted bodies and comments, so a word inside them is not SQL to it.
+// or merge, and a string that holds more than one statement, whether or not it names a shadowed
+// table. Keywords are case-insensitive. Bind reads sql with a tokenizer that reads a string
+// literal, a quoted identifier and a dollar-quoted body each as one token and skips comments, so
+// a word inside a literal, a body or a comment is not SQL to it and names no table.
 func Bind(sql string, cut Cut) (string, error) {
 	scan := scanner{sql: sql}
 	first := scan.next()
@@ -56,10 +63,14 @@ func Bind(sql string, cut Cut) (string, error) {
 	if !head.reads(sql) {
 		return "", refuse(sql, first, head.notARead(sql))
 	}
-	if head.with {
-		return sql[:head.headerEnd] + " " + Shadows(cut) + "," + sql[head.headerEnd:], nil
+	if scan.named == ([len(shadows)]bool{}) {
+		return sql, nil
 	}
-	return sql[:first.start] + "with " + Shadows(cut) + "\n" + sql[first.start:], nil
+	list := shadowList(cut, &scan.named)
+	if head.with {
+		return sql[:head.headerEnd] + " " + list + "," + sql[head.headerEnd:], nil
+	}
+	return sql[:first.start] + "with " + list + "\n" + sql[first.start:], nil
 }
 
 // passes reports whether a statement that begins with word reads and sets no table: Bind
@@ -285,6 +296,16 @@ type scanner struct {
 	sql   string
 	pos   int
 	depth int
+	// named marks each shadowed table that a word or a quoted identifier of the tokens read so
+	// far names, by its place in shadows.
+	named [len(shadows)]bool
+}
+
+// mark marks the shadowed table that identifier names (shadowNamed), when it names one.
+func (s *scanner) mark(identifier string, quoted bool) {
+	if index := shadowNamed(identifier, quoted); index >= 0 {
+		s.named[index] = true
+	}
 }
 
 // next is the next token after whitespace and comments. At the end it gives a tokenEnd at
@@ -322,6 +343,10 @@ func (s *scanner) next() token {
 	case c == '"':
 		s.skipQuoted()
 		kind = tokenQuoted
+		// An unterminated identifier runs to the end, and PostgreSQL refuses the statement.
+		if s.pos-start >= 2 && s.sql[s.pos-1] == '"' {
+			s.mark(s.sql[start+1:s.pos-1], true)
+		}
 	case c == '$':
 		if tag := s.dollarTag(); tag != "" {
 			s.skipDollarQuoted(tag)
@@ -344,6 +369,8 @@ func (s *scanner) next() token {
 		if s.pos-start == 1 && (c == 'e' || c == 'E') && s.pos < len(s.sql) && s.sql[s.pos] == '\'' {
 			s.skipString(true)
 			kind = tokenString
+		} else {
+			s.mark(s.sql[start:s.pos], false)
 		}
 	case isDigit(c):
 		for s.pos < len(s.sql) && (isIdentifierPart(s.sql[s.pos]) || s.sql[s.pos] == '.') {

@@ -13,10 +13,12 @@ type shadow struct {
 
 // shadows are the shadowed tables, in the order Shadows writes them. Each one is the plan's
 // decision 2 for its table. No definition reads another shadow: each reads public.<table>, and
-// what it needs of another table at the cut it reads from public.events itself.
-var shadows = []shadow{
+// what it needs of another table at the cut it reads from public.events itself. It is an array,
+// so that Bind marks the tables a statement names in an array of its length, with no allocation.
+var shadows = [...]shadow{
 	// An event exists at the cut when the transaction that wrote it began at or before the cut:
-	// created_at is that transaction's start.
+	// created_at is that transaction's start. The index events_created_at (created_at, id) holds
+	// the events at the cut in its first key.
 	{Table: "events", Definition: func(cut string) string {
 		return "select * from public.events where created_at <= " + cut
 	}},
@@ -43,8 +45,8 @@ var shadows = []shadow{
 // ShadowedTables are the names of the shadowed tables, in the order Shadows writes them.
 func ShadowedTables() []string {
 	tables := make([]string, len(shadows))
-	for index, shadow := range shadows {
-		tables[index] = shadow.Table
+	for index := range shadows {
+		tables[index] = shadows[index].Table
 	}
 	return tables
 }
@@ -129,23 +131,72 @@ func postBodyAtCut(post, column, newest, later string) string {
 		end`
 }
 
-// Shadows is the body of a WITH list that holds one member per shadowed table,
-// `<table> as not materialized (<definition>)`, the cut written in each as a timestamptz
-// literal. Bind puts it in front of a statement. NOT MATERIALIZED lets PostgreSQL push the
-// statement's own filters into each definition, as it does for the table.
-func Shadows(cut Cut) string {
+// Shadows is the body of a WITH list that holds one member for each shadowed table that tables
+// names, `<table> as not materialized (<definition>)`, in the order of shadows, the cut written in
+// each as a timestamptz literal. A name that is not a shadowed table adds no member, so with no
+// shadowed table named the body is empty. Bind puts the shadows of the tables a statement names
+// in front of it. NOT MATERIALIZED lets PostgreSQL push the statement's own filters into each
+// definition, as it does for the table.
+func Shadows(cut Cut, tables ...string) string {
+	var named [len(shadows)]bool
+	for _, table := range tables {
+		if index := shadowNamed(table, true); index >= 0 {
+			named[index] = true
+		}
+	}
+	return shadowList(cut, &named)
+}
+
+// shadowList is the body of a WITH list that holds the shadow of each table that named marks, by
+// its place in shadows.
+func shadowList(cut Cut, named *[len(shadows)]bool) string {
 	literal := cut.literal()
 	var list strings.Builder
-	for index, shadow := range shadows {
-		if index > 0 {
+	for index := range shadows {
+		if !named[index] {
+			continue
+		}
+		if list.Len() > 0 {
 			list.WriteString(",\n")
 		}
-		list.WriteString(shadow.Table)
+		list.WriteString(shadows[index].Table)
 		list.WriteString(" as not materialized (")
-		list.WriteString(shadow.Definition(literal))
+		list.WriteString(shadows[index].Definition(literal))
 		list.WriteString(")")
 	}
 	return list.String()
+}
+
+// shadowNamed is the place in shadows of the table that identifier names, or -1 when it names no
+// shadowed table. PostgreSQL folds a word that is not quoted to lower case, so such a word names a
+// table in any case of its ASCII letters. A quoted identifier names a table only in the table's
+// own case.
+func shadowNamed(identifier string, quoted bool) int {
+	for index := range shadows {
+		table := shadows[index].Table
+		if quoted && identifier == table || !quoted && equalFoldASCII(identifier, table) {
+			return index
+		}
+	}
+	return -1
+}
+
+// equalFoldASCII reports whether word is name with any of name's lower-case ASCII letters in
+// upper case, which is how PostgreSQL folds a word that is not quoted.
+func equalFoldASCII(word, name string) bool {
+	if len(word) != len(name) {
+		return false
+	}
+	for index := range len(word) {
+		c := word[index]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != name[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // MachineryTables are the tables that a past-time read reads as they are now, each with its
