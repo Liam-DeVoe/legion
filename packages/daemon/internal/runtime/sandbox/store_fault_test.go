@@ -615,7 +615,7 @@ func (l *realLauncher) accept(listener net.Listener, pod *corev1.Pod) {
 			_ = conn.Close()
 			continue
 		}
-		session := l.g.r.launchers.accept(l.token, launcherIssue(l.token), pod.CreationTimestamp.Time, hello)
+		session := l.g.r.launchers.accept(l.token, launcherIssue(l.token), pod.CreationTimestamp.Time, l.g.keptSince(l.token), hello)
 		daemonEnd, relayEnd := net.Pipe()
 		go session.ServeLauncher(daemonEnd, bufio.NewReader(daemonEnd), shimwire.NewWriter(daemonEnd))
 		go func() {
