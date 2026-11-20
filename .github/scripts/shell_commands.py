@@ -330,14 +330,21 @@ class Scanner:
             feeds = [r for r in redirects if r[0] in ("<<<", "<")]
             loop.feed = feeds[-1] if feeds else None
         self.writes += [target for operator, target in redirects if operator in (">", ">>", ">|")]
-        if words[0] in DECLARERS or all(ASSIGNMENT.match(word) for word in words):
-            for word in words[1:] if words[0] in DECLARERS else words:
+        # A keyword that opens a body may stand before an assignment on its line (`do x="$x -e
+        # $n"`, `then dir=$(…)`), as before any command.
+        body = words
+        while body and body[0] in ("then", "do", "else", "{", "!"):
+            body = body[1:]
+        if not body:
+            return
+        if body[0] in DECLARERS or all(ASSIGNMENT.match(word) for word in body):
+            for word in body[1:] if body[0] in DECLARERS else body:
                 name, _, value = word.partition("=")
                 if ASSIGNMENT.match(word) and not name.endswith("+"):
                     self.assignments.append((name, value))
             return
-        prefix = words[1:] if words[0] == "env" else words
-        while words[0] == "env" and prefix and prefix[0].startswith("-"):
+        prefix = body[1:] if body[0] == "env" else body
+        while body[0] == "env" and prefix and prefix[0].startswith("-"):
             prefix = prefix[2:] if prefix[0] in ("-u", "--unset", "-C", "--chdir") else prefix[1:]
         for index, word in enumerate(prefix):
             if not ASSIGNMENT.match(word):
