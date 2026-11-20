@@ -99,7 +99,7 @@ new_checkout() {
     git -C "$checkout" apply "${patch_of[$source]}"
     [ -n "$(git -C "$checkout" status --porcelain)" ] || refuse "the patch of $source changes nothing at $commit"
   fi
-  (cd "$checkout" && bun install --frozen-lockfile --force >/dev/null)
+  (cd "$checkout" && bun install --force >/dev/null)
   printf '%s\t%s\n' "$label" "$checkout" >>"$tsv"
   checkout_of[$label]=$checkout
   made+=("$label")
