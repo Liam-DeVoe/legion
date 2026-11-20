@@ -271,7 +271,7 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 func (e *pauseEnvoy) hold(token claim.Token) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.held[notify.RoleTopicPrefix+string(token)] = true
+	e.held[notify.RoleTopic(string(token))] = true
 }
 
 // gone is token's role topic answering, while no session holds it, as the production listener
@@ -282,7 +282,7 @@ func (e *pauseEnvoy) hold(token claim.Token) {
 func (e *pauseEnvoy) gone(token claim.Token) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.goneTopics[notify.RoleTopicPrefix+string(token)] = true
+	e.goneTopics[notify.RoleTopic(string(token))] = true
 }
 
 // publishedTo is every publish the listener took to token's role topic.
@@ -291,7 +291,7 @@ func (e *pauseEnvoy) publishedTo(token claim.Token) []pauseEnvoyPublish {
 	defer e.mu.Unlock()
 	var to []pauseEnvoyPublish
 	for _, sent := range e.sent {
-		if sent.topic == notify.RoleTopicPrefix+string(token) {
+		if sent.topic == notify.RoleTopic(string(token)) {
 			to = append(to, sent)
 		}
 	}
