@@ -1838,6 +1838,8 @@ test("on main's wrapper since #4035, a read naming only owners outside the proje
       repositoryRefused("actions/checkout"),
     ],
     [["repo", "view", "actions/checkout", "--web"], repositoryRefused("actions/checkout")],
+    [["api", "-X", "POST", "repos/actions/checkout/tags"], repositoryRefused("actions/checkout")],
+    [["api", "-X", "get", "repos/actions/checkout/tags"], repositoryRefused("actions/checkout")],
     [
       ["search", "repos", "checkout", "--owner", "actions", "--owner", "example"],
       "legion gh: the command names more than one owner, actions (--owner actions) and example (--owner example), so it sends no token; name one repository\n",
@@ -1845,6 +1847,14 @@ test("on main's wrapper since #4035, a read naming only owners outside the proje
   ] as const)
     expect(asked(dir, "reviewer", argv, PANE_GH)).toEqual([2, "", line]);
   expect(asked(dir, "reviewer", TAG_READ)).toEqual([2, "", repositoryRefused("actions/checkout")]);
+  // A `gh api` read may name its method only as exactly GET (gh_reads.go's ghAPIReadValue).
+  const [status, , err] = asked(
+    dir,
+    "reviewer",
+    ["api", "-X", "GET", "repos/actions/checkout/tags"],
+    PANE_GH
+  );
+  expect([status, err]).toEqual([1, "gh: Not Found (HTTP 404)\n"]);
 }, 60_000);
 
 // Main's wrapper before #4035 refuses every call naming an owner outside the project, a read on a
