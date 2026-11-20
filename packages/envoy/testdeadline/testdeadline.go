@@ -102,16 +102,18 @@ func answered(t testing.TB, parent context.Context, start time.Time, once *sync.
 	return context.WithDeadline(parent, deadline.Add(-Cleanup))
 }
 
-// StartupBound is the duration a wait for a container the test starts is given — a testcontainers
-// readiness wait, whose own default is 60 s — what the test binary's own deadline leaves less
-// Cleanup, so a container that starts slowly on a loaded host is waited for and one that never
-// becomes ready fails Cleanup before the test binary's deadline, naming the wait; with no test
-// deadline, NoBound. Where nothing is left, late in a long run, it is one nanosecond, spent before
-// the strategy starts: the strategy's context ends at once (testcontainers' wait strategies take a
-// zero or negative bound the same way), and the wait fails with its own error. A -timeout too
-// short to leave any call time after Cleanup is refused once (refuseShortTimeout). The strategy
-// reads the container's state on every poll, so a container that exits ends the wait at once all
-// the same.
+// StartupBound is the duration a wait the test only needs to end is given: what the test binary's
+// own deadline leaves less Cleanup, and with no test deadline, NoBound. Its first callers were
+// testcontainers readiness waits, whose own default is 60 s, so a container that starts slowly on a
+// loaded host is waited for and one that never becomes ready fails Cleanup before the test binary's
+// deadline, naming the wait. Each module's testwait.Eventually and the polls of a database answer
+// take it too, for the same reason: a condition that is slow to hold on a loaded host is waited
+// for, and one that never holds fails naming what it waited for. Where nothing is left, late in a
+// long run, it is one nanosecond, spent before the wait starts: a testcontainers strategy's context
+// ends at once (its wait strategies take a zero or negative bound the same way), and the wait fails
+// with its own error. A -timeout too short to leave any call time after Cleanup is refused once
+// (refuseShortTimeout). A readiness strategy reads the container's state on every poll, so a
+// container that exits ends the wait at once all the same.
 func StartupBound(t testing.TB) time.Duration {
 	t.Helper()
 	return startupBound(t, started, &refused)
