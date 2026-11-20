@@ -10,11 +10,17 @@
  *  The rows take their shots in UTC (the visual projects' `timezoneId`, e2e/playwright.config.ts),
  *  so the day here is the UTC day. */
 
-/** How far past `seededAt` a row's page clock can run: the minute it is pinned after the seed
- *  (e2e/visual.e2e.ts) and the 60 s every row is given (`testTimeout`, e2e/playwright.config.ts). */
-export const ROW_CLOCK_REACH_MS = 60_000 + 60_000;
+/** The minute after `seededAt` at which each visual row pins its page clock (e2e/visual.e2e.ts),
+ *  so every relative label reads the same gap from the seed on every run. */
+export const CLOCK_AFTER_SEED_MS = 60_000;
 
-function utcDay(ms: number): string {
+/** How far past `seededAt` a row's page clock can run: the minute it is pinned after the seed
+ *  and the 60 s every row is given, which is `testTimeout` in e2e/playwright.config.ts. Written
+ *  out rather than imported, because the config's own imports would then come into the seed
+ *  script that reads this file. */
+export const ROW_CLOCK_REACH_MS = CLOCK_AFTER_SEED_MS + 60_000;
+
+export function utcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 

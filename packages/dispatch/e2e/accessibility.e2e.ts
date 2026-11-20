@@ -80,7 +80,7 @@ for (const route of scannedRoutes) {
       // `toHaveScreenshot`'s own `animations: "disabled"` (`e2e/visual.e2e.ts`). Waiting for
       // `document.getAnimations()` to empty was the other way, and is not this one: it pays
       // the full ease on every scheme of every route, and it never empties on a page holding
-      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.e2e.ts` polls the one
+      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.stub.e2e.ts` polls the one
       // colour it asserts, which a scan of every colour on the page cannot do.
       await page.addStyleTag({
         content: "*, *::before, *::after { transition: none !important; }",

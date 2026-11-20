@@ -40,7 +40,8 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * a review catches that member use, as `packages/dispatch/AGENTS.md` ("How an agent is shown")
  * asks. This search from the repository root lists each use whatever it was imported from, and
  * the review reads every hit that comes through a namespace member:
- * `rg -n --glob '!*.test.*' "LiveDot|FreshnessDot|liveDotBg|offlineDotBg|/live\`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title" packages/dispatch/web/src`.
+ *
+ *     rg -n --glob '!*.test.*' 'liveDotBg|offlineDotBorder|stalledDotBorder|unknownDotBorder|/live`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title' packages/dispatch/web/src
  */
 
 type SessionActor = Actor & { kind: "session" };

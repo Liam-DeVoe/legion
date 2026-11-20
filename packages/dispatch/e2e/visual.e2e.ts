@@ -86,6 +86,7 @@ import {
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
+import { CLOCK_AFTER_SEED_MS } from "./visual-day";
 import { inVisualOrder, visualOrder } from "./visual-order";
 import { workspaceSessions } from "./workspace";
 
@@ -157,7 +158,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     //
     // Pinned from the corpus rather than from a fixed literal, because what the label reads
     // is the gap between the two: a literal would drift against a corpus written now.
-    await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+    await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + CLOCK_AFTER_SEED_MS) });
     await page.goto(route.path(seed));
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });

@@ -55,11 +55,16 @@ built `dist/`, and a fresh checkout has no `dist/`: `bun install` makes none.
 The hook does not build it and cannot. Playwright loads
 `e2e/playwright.config.ts` before it runs any hook, and that config imports the
 package, so a run that has not built it is already dead when the hook is
-reached. Whoever starts Playwright builds it instead: `bun run e2e` and the
-package's other e2e scripts run `build:contracts` first, every CI job that runs
-the suite carries a `Build contracts for dispatch e2e` step
+reached. Whoever starts Playwright builds it instead: `bun run e2e` and each
+other e2e script that builds anything run `build:contracts` first, every CI job
+that runs the suite carries a `Build contracts for dispatch e2e` step
 (`.github/workflows/dispatch-browser.yaml`), and a Playwright command you type
-yourself needs `bun run build:contracts` once.
+yourself needs `bun run build:contracts` once. The three `:run` scripts,
+`e2e:clock:run`, `e2e:embedder:run` and `e2e:multiprocess:run`, are the
+Playwright command alone: like a command you type, each needs
+`bun run build:contracts` once and the dashboards it serves already built. So
+after `bun run e2e` from an unchanged tree, `bun run e2e:clock:run` runs the
+wall-clock rows without building again.
 The hook refuses the run before it starts a
 harness or a Postgres when Playwright has not downloaded a browser the run
 needs, naming `bun run e2e:install` and how large that download is.

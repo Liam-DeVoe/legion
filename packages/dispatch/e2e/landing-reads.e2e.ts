@@ -149,13 +149,13 @@ interface Measurement {
   readonly landing: Landing;
   readonly reads: readonly Read[];
   readonly waves: readonly (readonly Read[])[];
-  /** When the page's own route chunk was first asked for, in milliseconds from the navigation;
-   *  undefined when it never was before the landing ended. */
-  readonly routeChunkAt: number | undefined;
-  /** The path that route chunk was asked at, so the report names the chunk's file. */
-  readonly routeChunkPath: string | undefined;
-  /** When the document's transport chunk was first asked for, as `routeChunkAt` is read; undefined
-   *  for a landing that draws no document, or when it never was before the landing ended. */
+  /** When the page's own route chunk was first asked for, in milliseconds from the navigation,
+   *  and the path it was asked at, so the report names the chunk's file; undefined when it never
+   *  was before the landing ended. */
+  readonly routeChunk: { readonly at: number; readonly path: string } | undefined;
+  /** When the document's transport chunk was first asked for, as `routeChunk.at` is read;
+   *  undefined for a landing that draws no document, or when it never was before the landing
+   *  ended. */
   readonly documentChunkAt: number | undefined;
 }
 
@@ -304,14 +304,7 @@ function stamp(ms: number): string {
 /** One landing's whole waterfall: a heading, then every read in start order with its wave, then
  *  when the page's route chunk was asked for, and the document's transport chunk where the page
  *  draws a document. */
-function waterfallOf({
-  documentChunkAt,
-  landing,
-  reads,
-  routeChunkAt,
-  routeChunkPath,
-  waves,
-}: Measurement): string {
+function waterfallOf({ documentChunkAt, landing, reads, routeChunk, waves }: Measurement): string {
   const lines = [
     `${landing.name} (${landing.address}): ${reads.length} reads in ${waves.length} wave(s)`,
   ];
@@ -325,7 +318,7 @@ function waterfallOf({
     }
   }
   const routeChunkAsked =
-    routeChunkAt === undefined ? "    never" : `${stamp(routeChunkAt)}  ${routeChunkPath}`;
+    routeChunk === undefined ? "    never" : `${stamp(routeChunk.at)}  ${routeChunk.path}`;
   lines.push(`  route chunk  asked ${routeChunkAsked}`);
   if (landing.documentChunk !== undefined) {
     lines.push(
@@ -350,14 +343,12 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     const tab = await context.newPage();
     const from = performance.now();
     const { ended, reads } = recordReads(tab, from);
-    let routeChunkAt: number | undefined;
-    let routeChunkPath: string | undefined;
+    let routeChunk: Measurement["routeChunk"];
     let documentChunkAt: number | undefined;
     tab.on("request", (request) => {
       const { pathname } = new URL(request.url());
-      if (routeChunkAt === undefined && landing.routeChunk.test(pathname)) {
-        routeChunkAt = performance.now() - from;
-        routeChunkPath = pathname;
+      if (routeChunk === undefined && landing.routeChunk.test(pathname)) {
+        routeChunk = { at: performance.now() - from, path: pathname };
       }
       if (documentChunkAt === undefined && landing.documentChunk?.test(pathname)) {
         documentChunkAt = performance.now() - from;
@@ -384,8 +375,7 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
       documentChunkAt,
       landing,
       reads: measured,
-      routeChunkAt,
-      routeChunkPath,
+      routeChunk,
       waves: wavesOf(measured),
     };
   } finally {
@@ -454,6 +444,16 @@ function landingsOf(world: World): Landing[] {
         new URLSearchParams(read.search).get("project") === "CORE") ||
       landingFor(read, "board"),
   };
+  // A reader who turned the new issue page on: each landing is a context of its own, so each
+  // stores that choice, and the frame shell is the route chunk of every page that reader opens.
+  const outlineReader: Pick<Landing, "prepare" | "routeChunk"> = {
+    prepare: (context) => withIssuePage(context, "alice"),
+    routeChunk: FRAME_SHELL_CHUNK,
+  };
+  // The issue's own data, which the issue page, its tab and the outline reader's issue page
+  // each read.
+  const issueData = (read: Read): boolean =>
+    read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue");
   return [
     {
       address: `/issues/${world.issue}`,
@@ -465,8 +465,7 @@ function landingsOf(world: World): Landing[] {
       name: "issue page",
       routeChunk: /\/assets\/IssuePage-[\w-]{8}\.js$/u,
       documentChunk: TRANSPORT_CHUNK,
-      ownData: (read) =>
-        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
+      ownData: issueData,
     },
     board,
     {
@@ -513,8 +512,7 @@ function landingsOf(world: World): Landing[] {
       content: (page) => page.locator("#issue-plan-panel").getByTestId("plan-empty"),
       name: "issue tab",
       routeChunk: /\/assets\/PlanTab-[\w-]{8}\.js$/u,
-      ownData: (read) =>
-        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
+      ownData: issueData,
     },
     {
       address: `/issues/${world.issue}`,
@@ -525,10 +523,8 @@ function landingsOf(world: World): Landing[] {
       // for once it has landed on the new page.
       content: (page) => page.getByTestId("issue-column"),
       name: "issue page of an outline reader",
-      prepare: (context) => withIssuePage(context, "alice"),
-      routeChunk: FRAME_SHELL_CHUNK,
-      ownData: (read) =>
-        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
+      ...outlineReader,
+      ownData: issueData,
     },
     {
       // The board for the same reader: no issue's address, so the frame shell draws today's
@@ -536,9 +532,8 @@ function landingsOf(world: World): Landing[] {
       // from its own content and data above. What this landing adds is the frame shell's start
       // on an address that is no issue's.
       ...board,
+      ...outlineReader,
       name: "board of an outline reader",
-      prepare: (context) => withIssuePage(context, "alice"),
-      routeChunk: FRAME_SHELL_CHUNK,
     },
   ];
 }
@@ -599,12 +594,12 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
     const landingRead = reads.find((read) => read.pathname === LANDING_PATH);
     if (landingRead === undefined) {
       faults.push(`the ${landing.name} sent no landing read to time its route chunk against`);
-    } else if (measurement.routeChunkAt === undefined) {
+    } else if (measurement.routeChunk === undefined) {
       faults.push(`the ${landing.name} never asked for its route chunk`);
-    } else if (measurement.routeChunkAt >= landingRead.respondedAt) {
+    } else if (measurement.routeChunk.at >= landingRead.respondedAt) {
       faults.push(
-        `the ${landing.name} asked for its route chunk ${measurement.routeChunkPath} at ` +
-          `${stamp(measurement.routeChunkAt)}, after the landing read answered at ` +
+        `the ${landing.name} asked for its route chunk ${measurement.routeChunk.path} at ` +
+          `${stamp(measurement.routeChunk.at)}, after the landing read answered at ` +
           `${stamp(landingRead.respondedAt)}: the entry no longer starts it beside that read ` +
           "(web/src/app.tsx, preloadRouteChunk)"
       );

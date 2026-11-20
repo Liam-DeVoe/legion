@@ -29,30 +29,44 @@ if (path === undefined) {
 const seedBoundMs = 15_000;
 
 /** The corpus, written on one UTC day with room after it for every row's clock
- *  (e2e/visual-day.ts says why). A seed too close to midnight is written again just after it,
- *  which a run reaches only when it seeds in the last two minutes of a day; the second seed has
- *  the whole day ahead of it, so a second refusal is a clock this file does not understand. */
+ *  (e2e/visual-day.ts says why). A seed begun in the last two minutes of a day could not be kept
+ *  however quickly it ran, so it waits for that midnight first. A seed that runs into those two
+ *  minutes is written again just after its midnight; that second seed has the whole day ahead of
+ *  it, so a second refusal is a clock this file does not understand, and it throws. */
 async function seedOnOneDay(): Promise<{ readonly seed: ReviewSeed; readonly seededAt: number }> {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  const now = Date.now();
+  const firstMidnight = midnightToSeedAfter(now, now);
+  if (firstMidnight !== null) {
+    console.error(
+      `e2e/visual-seed.ts: it is ${new Date(now).toISOString()}, and a row's clock could reach ` +
+        `past ${new Date(firstMidnight).toISOString()} however quickly the seed ran; ` +
+        "seeding after that midnight."
+    );
+    await Bun.sleep(new Date(firstMidnight));
+  }
+  // Two seeds at most: the second throws on a refusal rather than sleeping again.
+  for (let attempt = 1; ; attempt += 1) {
     const startedAt = Date.now();
     await resetDatabase();
     const seed = await seedReviewRoutes({ boundMs: seedBoundMs });
     const seededAt = Date.now();
     const midnight = midnightToSeedAfter(startedAt, seededAt);
     if (midnight === null) return { seed, seededAt };
-    console.error(
+    const refusal =
       `e2e/visual-seed.ts: the seed ran from ${new Date(startedAt).toISOString()} to ` +
-        `${new Date(seededAt).toISOString()}, and a row's clock could reach past ` +
-        `${new Date(midnight).toISOString()}, where its day headings would read "Yesterday"; ` +
-        "seeding again after that midnight."
-    );
-    await Bun.sleep(Math.max(0, midnight - Date.now()));
+      `${new Date(seededAt).toISOString()}, and a row's clock could reach past ` +
+      `${new Date(midnight).toISOString()}, where its day headings would read "Yesterday"`;
+    if (attempt === 2) {
+      throw new Error(
+        `${refusal}. This was the second seed, begun after a midnight with the whole day ahead ` +
+          "of it, so this host's clock is not moving as Date.now() says."
+      );
+    }
+    console.error(`${refusal}; seeding again after that midnight.`);
+    // `Bun.sleep` takes the moment itself and resolves at once for one already past, so a seed
+    // that straddled its midnight is written again at once.
+    await Bun.sleep(new Date(midnight));
   }
-  throw new Error(
-    "e2e/visual-seed.ts: two seeds in a row ended too close to a UTC midnight for the rows' " +
-      "clocks (e2e/visual-day.ts); the second began after one, so this host's clock is not " +
-      "moving as Date.now() says."
-  );
 }
 
 const { seed, seededAt } = await seedOnOneDay();

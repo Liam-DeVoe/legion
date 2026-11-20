@@ -279,12 +279,9 @@ and each command runs there.
 
 ## A Dispatch browser-suite command run by hand
 
-Each script of `packages/dispatch/package.json` that runs Playwright and builds anything builds
-`@legion/contracts` first (`build:contracts`), since Playwright's runner loads that package's built
-`dist/`. The three `:run` scripts, `e2e:clock:run`, `e2e:embedder:run` and `e2e:multiprocess:run`,
-are the Playwright command alone: like a `bunx playwright test` typed by hand, each needs
-`bun run build:contracts` once and the dashboards it serves already built. So after `bun run e2e`
-from an unchanged tree, `bun run e2e:clock:run` runs the wall-clock rows without building again.
+Which of `packages/dispatch/package.json`'s e2e scripts build `@legion/contracts` before
+Playwright runs, and what the three `:run` scripts and a Playwright command typed by hand need
+built first, is in `packages/dispatch/README.md` ("End-to-end tests").
 
 One leg of CI's pull-request lane is the shard job's command without its blob reporter and its
 memory and CPU samplers, run from `packages/dispatch` with a Postgres provider

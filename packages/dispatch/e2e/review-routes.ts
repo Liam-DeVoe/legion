@@ -80,8 +80,10 @@ export type ReviewRoute =
 const bothLayers: readonly ReviewLayer[] = ["scan", "shoot"];
 
 /** The width from which the shell draws its wide layout - the Inbox's reading pane beside the
- *  list, the document margin as a column rather than a bottom sheet. Two rows below branch on
- *  it, so the number lives here and a change to the breakpoint is one edit. */
+ *  list, the document margin as a column rather than a bottom sheet. Every wait below that
+ *  differs by width reads it through `wideLayout`: the Inbox row, `heldMargin` and
+ *  `waitForInboxCountSettled`. So the number lives here and a change to the breakpoint is one
+ *  edit. */
 const WIDE_LAYOUT_MIN_PX = 1280;
 
 /** Whether `page`'s viewport is wide enough for that layout, which decides what a row has to
@@ -91,18 +93,19 @@ function wideLayout(page: Page): boolean {
 }
 
 /** The margin's last part to draw, at either width: where the margin is a column beside the
- *  page, its card for an open ask, which waits on the margin's own reads; where it is a sheet
- *  shut at the foot of the page, the sheet's toggle, which counts those same asks. The margin is
- *  a chunk of its own, fetched after the first paint on a page with no document and once the
+ *  page, the card that holds `cardText`, which waits on the margin's own reads; where it is a
+ *  sheet shut at the foot of the page, the sheet's toggle, which counts the open asks. The margin
+ *  is a chunk of its own, fetched after the first paint on a page with no document and once the
  *  document has drawn on a page with one (`web/src/features/shell/content-drawn.ts`), so every
  *  shot of a page that has a margin waits for it: a page read without it was shot with no
  *  margin at all, once on the Plan tab (run 43367787934), once on a project document (run
- *  43395925903), and once on the phone's issue page with no sheet (run 43430182487). The
- *  question defaults to the open ask of the issue the review corpus opens, which is its only
- *  one. */
-function heldMargin(page: Page, question = "Which sign-in path?"): Locator[] {
+ *  43395925903), and once on the phone's issue page with no sheet (run 43430182487).
+ *  `cardText` is the text of a margin card: an ask's question, by default the open ask of the
+ *  issue the review corpus opens, which is its only one, or a decision card's preview of a
+ *  block. */
+function heldMargin(page: Page, cardText = "Which sign-in path?"): Locator[] {
   return wideLayout(page)
-    ? [page.locator("[data-margin-item]").getByText(question)]
+    ? [page.locator("[data-margin-item]").getByText(cardText)]
     : [page.getByTestId("margin-sheet").getByText("Review (1)")];
 }
 
@@ -190,19 +193,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
     // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
-    // card is on the screen at a desktop width and only the sheet's toggle narrower; the phone row
-    // waits on the dot and that toggle (`heldMargin`).
-    ready: (page) => {
-      const connected = page.getByRole("status", { name: "connected" });
-      return wideLayout(page)
-        ? [
-            connected,
-            page
-              .locator("[data-margin-item]")
-              .getByText("One command, a seeded corpus, a signed-in browser."),
-          ]
-        : [connected, ...heldMargin(page)];
-    },
+    // card is on the screen at a desktop width and only the sheet's toggle narrower;
+    // `heldMargin` waits on whichever of the two the width draws.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      ...heldMargin(page, "One command, a seeded corpus, a signed-in browser."),
+    ],
   },
   {
     kind: "reviewed",
@@ -213,7 +209,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // difference no pixel bound can absorb. It is the same race the phone copy of this page
     // was taken out of the shot set for. The binding the shots of it carried - the docked
     // composer's `SURFACE`, in both schemes - is read off the live element by the kept row of
-    // `e2e/theme.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
+    // `e2e/theme.stub.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
     // reads the DOM and does not care which turns have landed, so this page keeps that layer.
     layers: ["scan"],
     name: "issue-conversation",
@@ -328,16 +324,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     //
     // And the margin's card for the issue's open ask, for the reason the issue-plan row gives:
     // the margin comes in after the document, and the dot is drawn before it.
-    //
-    // And the header with its ring gone. The ring marks the artifact the address named for two
-    // seconds from the moment the content drew (`ArtifactHeader.tsx`), and the margin's card can
-    // arrive after those two seconds or before them, so a shot that holds the ring is a race. A
-    // shot taken once the ring is gone holds the one state the page stays in.
-    ready: (page) => [
-      page.getByRole("status", { name: "connected" }),
-      ...heldMargin(page),
-      page.locator('[data-testid="artifact-header"]:not(.ring-2)'),
-    ],
+    ready: (page) => [page.getByRole("status", { name: "connected" }), ...heldMargin(page)],
   },
   {
     kind: "reviewed",

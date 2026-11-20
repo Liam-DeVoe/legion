@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { dayLabel } from "../../web/src/features/activity/activity-model";
-import { midnightToSeedAfter, ROW_CLOCK_REACH_MS } from "../visual-day";
+import { midnightToSeedAfter, ROW_CLOCK_REACH_MS, utcDay } from "../visual-day";
 
 const at = (iso: string): number => Date.parse(iso);
 
@@ -10,8 +10,7 @@ const at = (iso: string): number => Date.parse(iso);
  *  Each day is the UTC day, which is the local day of a page drawn in UTC, as the rows are; so
  *  the reading does not move with the zone this test runs in. */
 function headingAtReach(eventAt: number, seededAt: number): string {
-  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-  return dayLabel(day(eventAt), day(seededAt + ROW_CLOCK_REACH_MS));
+  return dayLabel(utcDay(eventAt), utcDay(seededAt + ROW_CLOCK_REACH_MS));
 }
 
 describe("a visual seed keeps its day headings on the day it was written", () => {
