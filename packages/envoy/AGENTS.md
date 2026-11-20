@@ -446,8 +446,9 @@ Each item below names a task and where its code is, then notes on it.
   one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
   Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read;
   an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
-  The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
+  A writer's read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
+  A read-only caller's read asks GitHub the same and answers the same, but stores no row and no event: it keeps GitHub's answers in memory under claims of its own (`delivery.CommitPullAnswers`, `Branches.ReadCommitOnBranch`), so a writer's later read still stores them.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
   Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
@@ -4070,7 +4071,7 @@ RFC 9449 Section 7.2 refuses a DPoP-bound token presented under any other scheme
 it is its own branch (`api.brokerTokenActor`) with its own refusals, `401 BROKER_TOKEN_NOT_ACTIVE`, `401 BROKER_TOKEN_PROOF_INVALID`, `401 BROKER_TOKEN_KEY_MISMATCH`, `401 BROKER_TOKEN_NOT_A_SESSION` for a live token that is no session's credential (`brokertoken.ErrNotASession`:
 the broker's answer names no session, or names neither a person nor a service, or the token was issued to a client other than `oauthwire.ExchangeClientID`, which a machine login's own access token is
 — DPoP-bound and perfectly live, and no exchange decided a session for it, so Dispatch acts on none of them rather than taking the session a body names
-— or its project scope and its OAuth scope together are a shape no broker mints: the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's), `429 BROKER_TOKEN_RATE_LIMITED`, and `503 BROKER_UNAVAILABLE` for a broker that answered nothing, which is a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is.
+— or its project scope and its OAuth scope together are a shape no broker mints: the scope `read` or a cut beside the project scope `named` or `person`, or the project scope `none` or a narrowed one in any shape but a read-only token's), `429 BROKER_TOKEN_RATE_LIMITED`, and `503 BROKER_UNAVAILABLE` for a broker that answered nothing, which is a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is.
 None of them repeats the token.
 It is the only credential that proves a session of its own, so its caller writes as that session with no `actor` in the body at all;
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
@@ -4080,27 +4081,40 @@ Every actor a write records says whether the write's credential proved it (`mode
 this token's session, a browser's person (the API's cookie and the document socket's) and `actingPerson`'s person carry `true`, and a session a body names under the shared token, a personal token or a service-account token carries none, as does every row recorded before the mark.
 An act's `session_proven` (`model.ActorAct.SessionProven`) is the same mark for the session beside a person, set only for this token's own session and never for one a `?session=` or a body names.
 A document version's author is every write of one writer merged by kind and id (`docs.mergeAuthor`, and the pending-author upsert in SQL), and it is proven only when every one of those writes was.
-A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNTS`): it holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
-Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
-`brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
-A verifier built without the switch answers that token `brokertoken.ErrNotASession`, as a build before the switch does.
+A read-only token is any credential that holds `read`, and it may only read.
+The broker mints two kinds of it.
+A read entry's token (`BROKER_EXCHANGE_READ_ACCOUNTS`) holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+A token narrowed to reading comes from a trade of any kind that asked for `read`: it keeps the session, the person or the service, and the projects the same trade would have named, under the narrowed project scope `read-named`, `read-person` or `read-none`, and it may carry a cut (`as_of`), the past time it reads at.
+Dispatch's verifier accepts both because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks the caller `brokertoken.Caller.ReadOnly`, with the base word of its project scope (`oauthwire.BaseProjectScope`) and its cut (`brokertoken.Caller.Cut`).
+`brokerTokenActor` carries the mark as `model.Credential.ReadOnly` and the cut as `model.Credential.Cut`.
+A `read-person` token that names its person holds the `person` scope alone, never `approve`, and every other read-only broker token holds no scope.
+A personal token minted with `read` is read-only too (below).
+The read-only gate below reads only the mark and the cut.
+A verifier built without the switch answers every read-only token `brokertoken.ErrNotASession`, as a build before the switch does, and a build before the narrowed words refuses a narrowed token the same way.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
+It also answers `cut`, the cut of a read-only credential as an RFC 3339 time, or null for a credential with no cut.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
 `DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` and `DISPATCH_SERVER_URL`, the origin a proof's `htu` is checked against).
 A deployment with no broker configured has no such kind at all, and a `DPoP` presentation there is the `401 UNAUTHORIZED` `invalid bearer token` that any non-bearer `Authorization` header has always been.
 
-Which routes a credential may reach is decided by two OAuth scopes rather than by whether it is a browser, and which routes a read-only broker token may reach is decided by the read list below.
+Which routes a credential may reach is decided by two OAuth scopes rather than by whether it is a browser, and which routes a read-only credential may reach is decided by the read class below.
 `person` is "this credential acts as its person" (`model.ScopePerson`), and every route the dashboard reaches needs it.
 `approve` adds, beside `person`, the acts that approve work or control a credential (`model.ScopeApprove`):
 a document review, the answer of an ask of kind `approval`, a machine-login decision (`/approve`, `/deny`, `machine-lookup`), a credential-grant or machine-login revoke, and minting, changing or revoking a personal token.
 No credential holds `approve` without `person`, since one that does not act as its person has nobody to approve for.
 A browser sign-in holds both.
-A personal token holds the set its own `agent_tokens.scopes` row names, both by default, changed in Settings or through `PATCH /api/v1/me/agent-tokens/{id}` (`{"scopes":[…]}`, answering the token), as `POST /api/v1/me/agent-tokens` takes an optional `scopes` at the mint.
+A personal token that writes holds the set its own `agent_tokens.scopes` row names, both by default, changed in Settings or through `PATCH /api/v1/me/agent-tokens/{id}` (`{"scopes":[…]}`, answering the token), as `POST /api/v1/me/agent-tokens` takes an optional `scopes` at the mint.
+A personal token minted with `read` is read-only.
+It holds `read` alone or beside `person`, never beside `approve` (`400 TOKEN_SCOPES_INPUT`), and Settings → Agent tokens offers it as "Read only".
+It is kept in a table of its own, `agent_read_tokens`, which a build before it never reads, so such a build answers the token `401` and never lets it write.
+`personalTokenActor` looks a bearer's hash up in both tables in one query, and marks a row of `agent_read_tokens` `model.Credential.ReadOnly`, with the `person` scope where the row holds it.
+`GET /api/v1/me/agent-tokens` lists the tokens of both tables, and `DELETE` revokes a token in either.
+No existing token changes to or from `read`: `PATCH` refuses a set that holds `read`, and any change to a read-only token, `400 TOKEN_SCOPES_INPUT`, since a person makes a new token for that.
 A broker-issued token the broker scoped to its person holds both, and one scoped to a project holds neither.
-A read-only broker token holds neither, and its one scope, `read`, is no scope a route can require.
+A read-only token holds `person` at most, as above, and `read` is no scope a route can require: it marks the credential (`model.Credential.ReadOnly`), it is never among `model.Credential.Scopes`, and no recorded act names it.
 The shared agent token and a Kubernetes service-account token hold neither.
-`GET /api/v1/whoami` answers `scopes` for every caller, `[]` for one that holds none.
+`GET /api/v1/whoami` answers `scopes` for every caller, `[]` for one that holds none, and `read` after the scopes of a read-only credential (`model.ScopeRead`).
 
 Each route's scopes stand beside the table in `api/routes_table.go`'s `routeScopes`, keyed by `"<method> <pattern>"` and stamped onto `apiRoute.OAuthScopes`, which `GET /api/v1` and `envoy-dispatch routes` both carry;
 a name in that map that is no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row does.
@@ -4111,18 +4125,30 @@ answering an ask of kind `approval` needs `approve`, read inside the transaction
 the claim's `{"force": true}` needs `person` of a caller the route itself admits whatever its scopes (`requireCallerScope`, `api/issue_claim.go`);
 and the live socket's `agent` view needs `person`, read at the upgrade, answering `OAUTH_SCOPE_REQUIRED` on the subscription id with no challenge header, since a frame carries no HTTP header.
 
-A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRoutes` lists, today `GET /api/v1/projects/{key}/architecture` alone, and no other.
-The list stands beside `routeScopes` and is not a value of it, because a scope there is one the caller must hold and no person holds `read`.
-`routes()` stamps it onto `apiRoute.ReadScope`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
-`register` refuses to mount a table whose list names anything but a GET row it mounts (`readRoutesNotMountedAsGET`), so a route added later stays closed to such a token until someone lists it.
+A read-only credential reaches the reads of the read class and no other row.
+`api/read_classes.go`'s `readClasses` gives every GET row of the table, its test hooks included, one entry (`readEntry`), keyed `"GET <pattern>"` as `routeScopes` is: a read (`readWritesNothing`), or a GET that writes (`readWritesState`).
+A read writes nothing but these, on the request's own context or on the server's context in work the request starts or waits on: the spent proof in `dpop_proofs`, a personal token's `last_used_at`, `text_trees`, a stale `route_roster`, `event_horizon`, a project's term statistics (`search_term_stats`, `search_term_totals`, `search_term_queue`), GitHub's rate limit in `github_rate_limits`, and a compaction's rewrite and delete in `doc_updates` and `doc_compaction_owed`.
+A read whose handler makes the server write on its own context carries a `WriteNote` that names the write, and every GET that writes carries one too.
+The GETs that write are, today, the going stream (`GET /api/v1/going/requests/{id}/stream`, which ends an overdue run in `going_events`) and the three delivery reads (`/delivery/timeline`, `/measures` and `/pipeline`, which insert `delivery_run_warnings`).
+`GET /api/v1/issues/{key}/results` is a read, since a read-only caller's read of it stores nothing (Recorded results, above).
+`routes()` stamps the entry onto `apiRoute.Read`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
+`register` refuses to mount a table with a GET row that has no entry or whose entry leaves its class unset, a GET that writes with no `WriteNote`, or an entry that names no GET row it mounts (`readClassRefusals`, which `TestEveryGETRowHasOneReadEntry` reads too).
+So a GET row added later is served to no read-only credential until someone has read its handler and classed it.
+`TestEveryGETRowHasADrive` (`read_class_drive_test.go`) fails for each GET row that has no drive against a seeded store.
 `api.refuseReadOnlyToken` is the gate, and it is the outermost check of every row:
-`register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade (`liveSocketHandler`).
-On every row the list does not name, and on `/ws/live`, a read-only token is `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`), with no `WWW-Authenticate` challenge, since no scope makes the route the token's to call.
-That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing but the row of its spent DPoP proof, which `decideBrokerToken` records as it verifies the token, outside the gate.
-The gate reads the decision `decideBrokerToken` carried and resolves nothing of its own, so every other credential passes it as before.
-For such a caller, a listed route writes nothing but the row of its spent DPoP proof and caches Dispatch rebuilds from what it holds (`TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches`).
-The other mounts outside the table read no broker token: `/ws/doc/{room}` answers that token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
-`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries that token as they answer any other caller, and none of the five makes a write for it.
+`register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade, with the zero entry, which classes nothing (`liveSocketHandler`).
+It reads every credential that can be read-only.
+A broker-issued token is read from the decision `decideBrokerToken` carried, since a second verification would present the request's single-use proof again.
+A personal token is resolved nowhere before the handler, so the gate resolves it once through `optionalActor` and carries the result on the context, its refusal included, for every later layer to read (`resolvePersonalToken`).
+A cookie, the shared token and a service-account JWT are never read-only, so the gate resolves none of them, and every such credential passes it as before.
+On every row that is not a read, and on `/ws/live`, a read-only credential is `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`), with one message that names no route (`readOnlyRefusal`) and no `WWW-Authenticate` challenge, since no scope makes the route the token's to call.
+On every read but `GET /api/v1/whoami`, a read-only credential that carries a cut is `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.
+`GET /api/v1/whoami` answers such a credential and names its cut.
+Both answers come before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler.
+So the refused request claims no key, and writes nothing but the record of the token's use: a broker token's spent DPoP proof, which `decideBrokerToken` records as it verifies the token, or a personal token's `last_used_at`.
+On a read, a read-only credential with no cut is answered as a credential of the same identity that writes, unless the row's own scopes refuse it first (`TestEveryRowAnswersEachReadOnlyTokenByItsClass`, `TestTheMountedServerAnswersEachReadOnlyTokenByItsClass`).
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers a read-only broker token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 
 An act an agent makes for its person is recorded with the person as the actor and `model.ActorAct` beside it (`Actor.Act`), which names the agent:
@@ -4170,11 +4196,11 @@ It refuses every write by a credential that names a service and no person — a 
 It stands in front of every mutating row whatever its class, for the reason the other two do: a route added later is covered by the table it joins rather than by a line someone remembered to write.
 Such a caller reads everything its session may read; what it may not do is write, since Dispatch records a write under the person who made it and this credential names none, so a session that accepted a delivery or answered an ask under it would write as nobody.
 Every other credential reaches the handler as before, a broker token that does name a person included, at the cost of the one header read `brokerCredentialActor` makes.
-A read-only token names a service and no person too, but it never reaches this check: the read-only gate has already answered it `403 READ_ONLY_TOKEN`, because a person's sign-in is no remedy for it.
+A read-only token may name a service and no person too, but it never reaches this check: the read-only gate has already answered it `403 READ_ONLY_TOKEN`, because a person's sign-in is no remedy for it.
 
 The project and session checks are a no-op for every credential that carries no project and proves no session (a cookie, a personal token, a Kubernetes service-account token, the shared token, and a broker token whose `project_scope` is `person`, which reaches `brokerTokenActor` with no `Project` and needs no mechanism of its own), and the sign-in check is a no-op for every one of those, none of which names a service:
 that is the rule and not a transitional measure, and it is what lets Dispatch deploy before anything presents a broker token.
-A read-only broker token carries no project either, but none of the three checks reads it, because the read-only gate answers it first on every mutating row.
+A read-only token may carry a project (a `read-named` token names the project of the token it narrows), but none of the three checks reads it, because the read-only gate answers it first on every mutating row.
 
 ## Operational notes
 
@@ -5637,7 +5663,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - The handler answers on a writer that holds its answer (`keyedAnswer`) until the row has it.
   A 2xx or a 4xx is stored and the row finished in one statement;
   a 5xx, a 401 (a session that lapsed mid-write), a 408, a 429 and a panic release the key, so the next attempt runs the handler again - unless the request had already committed something (below).
-  One route keeps no answer at all: `POST /api/v1/me/agent-tokens`, whose answer carries the plaintext token, which `request_keys` would otherwise hold for 24 hours beside `agent_tokens`' hash.
+  One route keeps no answer at all: `POST /api/v1/me/agent-tokens`, whose answer carries the plaintext token, which `request_keys` would otherwise hold for 24 hours beside the token's hash in `agent_tokens` or `agent_read_tokens`.
   A repeat of a keyed mint that minted is `409 KEY_COMMITTED` once the first has finished (`409 KEY_IN_FLIGHT` while it still runs), never a replay of the token, and no second token is minted;
   a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again.
   A route whose answer holds a credential is the one exception to "a 2xx or a 4xx is stored and replayed", and the mint is the one such route.
@@ -7156,20 +7182,20 @@ The session is everything after the third `=`, so it alone may carry one; a name
 Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
 unset, no account exchanges), `BROKER_EXCHANGE_READ_ACCOUNTS` (optional;
 whitespace-separated `<service account>=<service>=<session>` entries, such as `system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`:
-the token minted for a pod of that account holds the OAuth scope `read` alone and the project scope `none`, names that service and that session, and names no person and no project.
-That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
+the token a pod of that account trades for with no scope holds the OAuth scope `read` alone and the project scope `none`, names that service and that session, and names no person and no project, and a trade that asks for `read` gets the same token under the narrowed word `read-none`.
+That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.
 No setting holds a read entry to some projects.
 Every field is required, and the session is everything after the second `=`, so it alone may carry one.
 A namespace's `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is `shared`, an account listed twice and an account that `BROKER_EXCHANGE_ACCOUNTS` lists too are refused.
 A broker of a build older than this setting does not read it, so it mints those accounts no token at all.
 Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
-unset, no account exchanges for a read-only token), `BROKER_EXCHANGE_WORKFLOWS` (optional;
+unset, no account exchanges as a read entry), `BROKER_EXCHANGE_WORKFLOWS` (optional;
 whitespace-separated `<repository>=<workflow path>=<ref>=<project>=<person>[=<session>]` entries, such as `example-org/example-repo=.github/workflows/release.yaml=refs/heads/main=EXAMPLE=ada@example.com`.
 Every field is compared exactly and nothing is wildcarded, so a run of another workflow, or of this one on another ref, is not this entry;
 the session is everything after the fifth `=`, and a workflow listed twice is refused.
 Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
 unset, no workflow exchanges), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
-— how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike:
+— how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike, though a token narrowed to reading lasts no longer than its subject token or the launcher credential it names:
 it trades how often every caller renews against how long a revoked credential's last token stays spendable), `BROKER_ENVOY_URL` (optional;
 turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with `BROKER_ENVOY_TOKEN` — read only when the URL is set, and not itself required at startup), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
 — how long what a session holds, its grants and its pending requests, waits on the enrollment of a box the session has left, for the next enrollment of that session name under the same principal to take it:
@@ -7400,14 +7426,16 @@ Beside the session name and the cut, the exchange reads two parameters of the br
 `projects` (`oauthwire.FormProjects`, project keys separated by white space, at most `oauthwire.MaxProjects`, parsed by `oauthwire.ParseProjects` before anything else is read) is the projects the token names: a person's sign-in from the TypeScript client sends the ones `AGENT_SECRETS_PROJECTS` lists (`tradeProjects`), and a machine trading for itself sends none.
 The Go client declares the same variable and field (`brokerclient.ProjectsVar`, `brokerclient.TradeProjects`, `brokerclient.Config.Projects`), and no Go trade of this release sets them: a machine credential's probe and `agent-secrets register --projects` are the first that will.
 The other is `launcher_credential` (`oauthwire.FormLauncherCredential`), whether this trade wants the launcher credential its identity holds minted or moved onto the key it proved.
-An absent parameter asks, so `agent-secrets`, `agent-secrets-helper` and a person's sign-in — which exist to hold that credential and could enrol nothing without it — keep it by sending nothing, as does any client written before the parameter;
+On every trade that does not ask for `read`, an absent parameter asks, so `agent-secrets`, `agent-secrets-helper` and a person's sign-in — which exist to hold that credential and could enrol nothing without it — keep it by sending nothing, as does any client written before the parameter;
 `false` is the one value that declines, and any other spelling is `invalid_request` rather than a guess (`oauth.launcherCredentialAsked`).
 A trade that declines is minted none, is answered no `credential_id` and no `credential_expires_at`, and its access token is whatever it would have been.
-A person's sign-in may not decline at all: a sign-in holds its credential — `agent-secrets login` reads the `credential_id` and refuses an answer without one, and the sessions the sign-in enrols read that person's secrets under it — so a person's trade sending `false` is `invalid_request` naming it (`oauth.personDeclinesNothing`), nothing is recorded for it, and the box trades again without the parameter.
+A person's trade that does not ask for `read` may not decline at all: a sign-in holds its credential — `agent-secrets login` reads the `credential_id` and refuses an answer without one, and the sessions the sign-in enrols read that person's secrets under it — so a person's trade sending `false` is `invalid_request` naming it (`oauth.personDeclinesNothing`), nothing is recorded for it, and the box trades again without the parameter.
 `legion controller start`'s one check that the controller's machine can hold a Dispatch credential declines (`brokerclient.Config.NoLauncherCredential`): it enrols no session, reads no secret, and its key dies with the call.
 Every TypeScript client's machine trade declines (`packages/broker-client`, `brokerTokenClient`): none of them reads `credential_id`, and each makes a key per process and per session, so a trade that asked would put a `launcher_credentials` row and a `launcher_credential.token_login` audit row on the operator's machine-logins list for every `dispatch` call, every Claude Code hook run, every `envoy-send` and every session of a long-lived process, and nothing removes those rows.
 A TypeScript client's trade of a person's sign-in sends no parameter, since the broker refuses a person's trade that declines.
 It proves the sign-in's box key, so it re-uses the one credential that sign-in holds rather than minting another (`oauth.Provider.personCredential`), and each such trade writes one `launcher_credential.token_login` audit row.
+Its read trade (`DISPATCH_TOKEN_BROKER_READ`, `packages/envoy-client`) sends no parameter either, which the broker reads as declined: that trade names the credential the sign-in holds, extends nothing and writes no such audit row.
+It sends a `DPoP-Holder` proof by a key the client makes for the process (`holderKey`), and that key, not the box key, signs every proof presented beside the token.
 
 A person's sign-in on a machine is a row of `person_signins` (migration 0025, `internal/broker/store/person_signin.go`): the person, the RFC 7638 thumbprint of the box key `agent-secrets login` made and keeps with Google's refresh token, the machine's Google account, and the times it was made, last used and revoked, under a unique index on the person and the thumbprint that counts a revoked row too.
 The person is stored and compared exactly as the caller folded it (`fold.ASCII`, through `oidc.WorkspaceLogin` for the trade and `record.CanonicalLogin` for the list and the revoke): the statements apply no SQL `lower()` to it, since Postgres lowers by the database's collation, which under `en_US.utf8` maps U+212A KELVIN SIGN onto `k`, and the table's own check refuses any login that is not lowercase.
@@ -7909,7 +7937,12 @@ The stand records every call it was sent and the answer it gives a token request
 Once the broker is healthy it makes one `POST /v1/oauth/exchange/pod-sessions` with the registrar token and `pod-token`, registering that pod for `example-worker-session`, which is the one name its exchange is answered under (an unregistered name is `invalid_grant`);
 it points the broker's `BROKER_K8S_OIDC_ISSUER` at the issuer, and stops it on exit.
 It registers no pod for the read entry, because that entry fixes its session, and a registration of that pod is `409 SESSION_FIXED`.
-`packages/dispatch/e2e/read-token-live.ts` drives the read entry's token against this stack and a `bun run dispatch:local` Dispatch: the architecture route answers `200`, and a comment and an issue read answer `403 READ_ONLY_TOKEN`.
+`packages/dispatch/e2e/read-token-live.ts` drives read-only tokens against this stack and a `bun run dispatch:local` Dispatch, and prints one line for each request with its status and code.
+The read entry's token reads `GET /api/v1/issues/{key}` (`200`), and its comment answers `403 READ_ONLY_TOKEN`.
+The example entry's pod trades asking for `read`, reads the issue, and is refused its comment the same way.
+The machine login's trade asks for `read`, then for `read` with a cut, and each token introspects as `brokertoken/testdata/narrowed-answers.json` says.
+The cut token's `GET /api/v1/whoami` names the cut, and its `GET /api/v1/issues/{key}` answers `403 AS_OF_TOKEN_NOT_SERVED`.
+`GET /ws/live` answers each of these tokens `403 READ_ONLY_TOKEN`.
 The same issuer process is the broker's sign-in provider: `dev-broker.sh` generates the client secret into its workdir under umask 077, starts the issuer with `--code-flow dev-broker=<that file>` and `--sign-in-as ada@example.com`, and gives the broker `BROKER_SIGNIN_ISSUER`, `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` (the approver's own domain), which it cannot start without, so a browser on that machine approves a secret request at `<broker>/approve/<record>` with no page to fill in.
 It prints the exports a second shell needs (`AGENT_SECRETS_URL`, `AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, `AGENT_SECRETS_APPROVER`, the helper's `AGENT_SECRETS_HELPER_SOCK`, `AGENT_SECRETS_OPERATOR_FILE`, `AGENT_SECRETS_MACHINE_FILE` and `AGENT_SECRETS_STATE_FILE`, all in its workdir, where it writes the operator file, `DEV_BROKER_DIR`, the workdir itself, `DEV_BROKER_METRICS_URL`, the `/metrics` URL of the address the broker's `broker metrics listening` line names, and `DEV_BROKER_POD_UID` and `DEV_BROKER_SERVICE`, the pod uid its issuer bound and the registered service, which are what its own enrolment command names, so a check script enrols that session from the exports rather than from the banner's prose).
 It prints the stand's own exports beside them: `DEV_BROKER_GITHUB_URL`, the GitHub stand's address, `DEV_BROKER_GITHUB_RECORDS_URL`, a GET of every call that stand was sent as JSON, `DEV_BROKER_GITHUB_ANSWER_URL`, a POST of `{"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once", "repository": "<name>"}` that sets what each token request is answered from then on, the repository being `refuse-repository`'s own and `fail-once` answering the next request 503, which the broker's mint retries, and each one after it as `ordinary`, and `DEV_BROKER_GITHUB_SECRET`, `DEV_BROKER_GITHUB_OWNER`, `DEV_BROKER_GITHUB_CASE_SECRET`, `DEV_BROKER_GITHUB_CASE_OWNER` and `DEV_BROKER_GITHUB_HUMAN_SECRET`, the three secrets and the account each of the first two's tag names.

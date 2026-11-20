@@ -432,7 +432,7 @@ func walkEveryV1Route(t *testing.T, rig *brokerRig, refused []walkToken, control
 }
 
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
-// scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
+// scope none beside the one scope read, which a read entry mints for Dispatch's read class — is
 // answered 401 not_a_session on every path registerV1Routes registers (v1Walk), because the
 // verifier brokerTokens.open builds leaves the read-only switch unset
 // (brokertoken.Options.ServesReadOnly) and so refuses the token as a build before the switch

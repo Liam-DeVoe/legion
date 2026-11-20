@@ -899,7 +899,8 @@ trades that person, as the Go client does:
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+writes as that person. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person`
+alone and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -959,13 +960,14 @@ one that traded at the broker as the machine. A session that used a bearer did n
 broker, so you can resume it.
 
 Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
-audit row at the broker. The broker writes that row for every person's trade, and it lets no
-person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
-the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
-(900 seconds by default), and the client trades again five minutes before the token lapses
-(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
-calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
-`envoy-send` is a process of its own, so each one trades once.
+audit row at the broker. The broker writes that row for every person's ordinary trade, and it lets
+no such trade decline the launcher credential (`personDeclinesNothing`). A person's read trade
+declines it and writes no such row. The client also reads the issuer's discovery document once.
+A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default), and the client
+trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`). So with the
+broker's default, a long-lived session that keeps calling trades about every ten minutes. Every
+`dispatch` command, Claude Code hook and `envoy-send` is a process of its own, so each one trades
+once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. The revoke does not end a personal agent
@@ -983,6 +985,31 @@ person's envoy.json holds their `dispatch.token`. Any other value of the variabl
 naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
 `PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
 the operator's sign-in (above).
+
+`DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading. The trade
+asks the broker for the scope `read`, and the token keeps the identity the same trade would have
+had and writes nothing. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside it adds a cut
+(`as_of`), the past time the token reads at. Either setting takes the broker route as
+`DISPATCH_TOKEN_BROKER=1` does and reads no bearer, so a shell that also holds `DISPATCH_TOKEN`
+never writes with it. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone. A cut without
+`DISPATCH_TOKEN_BROKER_READ=1`, and a cut that is not an RFC 3339 time with at most six fractional
+digits, turn Dispatch off with an error that names the setting. No such error quotes the value.
+
+The two settings narrow the Dispatch trade alone (`brokerCredential`'s `read`). The Dispatch
+credential gets a broker client of its own, keyed by the session, the broker variables and the two
+settings. The Envoy listener and NATS keep the session's shared client, which asks for no scope,
+since both refuse a read-only token and a session's inbound messages must keep working. A
+person's read trade sends no `launcher_credential`, which the broker reads as declined. It makes a
+P-256 key of its own for the process and sends it as the holder key (`DPoP-Holder`) beside the box
+key's DPoP proof. That key signs every proof Dispatch sees, so the box key signs the trade alone.
+The machine's own trade already proves a key the process made, which holds no launcher credential,
+so it sends no holder key. A person's read trade is refused once the sign-in's launcher credential
+lapses, until one ordinary trade renews it (the token files, below).
+
+Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+`dispatch whoami` says that the credential may only read, and names its cut where it has one.
+Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: …` and exits 1, because Dispatch
+serves no read at a past time yet.
 
 ### The `dispatch` command
 
