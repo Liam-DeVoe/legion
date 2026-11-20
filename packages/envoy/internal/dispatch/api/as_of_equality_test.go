@@ -527,6 +527,18 @@ func (r *asOfRig) callers(t *testing.T) []asOfReader {
 	return callers
 }
 
+// cutCaller is a read-only token that holds person and carries cut, said to the stub broker: the
+// token narrowed from a machine login's trade with a cut (brokertokentest.NarrowedAnswers,
+// machine-login-with-a-cut), cut at cut and here alice's, so it is the read-only token that holds
+// person among callers but for its cut (cutTokenAnswer). Dispatch's credential of it is held to be
+// read-only, to hold person and to carry cut (sayCutToken).
+func (r *asOfRig) cutCaller(t *testing.T, cut asof.Cut) asOfReader {
+	t.Helper()
+	caller := asOfReader{name: "a read-only token that holds person, cut at the cut", token: "asof-cut", person: true}
+	sayCutToken(t, r.brokerTokenRig, r.key, caller.token, cut)
+	return caller
+}
+
 // read sends target as caller, with a fresh proof, and keeps the answer. A counted read's
 // statements are the ones markedStatements records.
 func (r *asOfRig) read(t *testing.T, caller asOfReader, target string, counted bool) asOfAnswer {
@@ -572,12 +584,18 @@ func databaseCut(t *testing.T, database *store.Store) asof.Cut {
 // withAsOf is target with as_of set to cut.
 func withAsOf(t *testing.T, target string, cut asof.Cut) string {
 	t.Helper()
+	return withAsOfValue(t, target, cut.String())
+}
+
+// withAsOfValue is target with as_of set to value as it is written, a time or not.
+func withAsOfValue(t *testing.T, target, value string) string {
+	t.Helper()
 	parsed, err := url.Parse(target)
 	if err != nil {
 		t.Fatalf("parse %s: %v", target, err)
 	}
 	query := parsed.Query()
-	query.Set("as_of", cut.String())
+	query.Set("as_of", value)
 	parsed.RawQuery = query.Encode()
 	return parsed.RequestURI()
 }
@@ -591,6 +609,10 @@ func withAsOf(t *testing.T, target string, cut asof.Cut) string {
 // is read with as_of at the cut. The as_of read is held to the read at the cut by
 // asOfComparison, and every statement it sends is held to the writes a read may make: the DPoP
 // proof's replay row, a personal token's last_used_at and the caches Dispatch rebuilds.
+//
+// Each route is then read once more, with no as_of, by a fourth caller: a read-only token whose
+// cut is the harness's cut and that is otherwise the read-only token that holds person
+// (asOfRig.cutCaller). Its answer is held to that token's read at the cut, as an as_of read is.
 //
 // Each read at the cut must reach the row's own route (the mux names its pattern) and be served:
 // 200 for a caller its scopes admit, 403 OAUTH_SCOPE_REQUIRED for a caller without person on a
@@ -628,7 +650,12 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 	world.writeAfterTheCut(t, rig.handler)
 	rig.settle(t)
 	fillTextVersionsPast(t, rig.database, cut)
-	t.Logf("the cut is %s; %d rows, %d callers", cut, len(asOfEqualityRows), len(callers))
+	cutCaller := rig.cutCaller(t, cut)
+	person := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.person })
+	if person < 0 {
+		t.Fatal("no caller of the harness holds person, so the cut token's reads have no read at the cut to be held to")
+	}
+	t.Logf("the cut is %s; %d rows, %d callers and the token cut at the cut", cut, len(asOfEqualityRows), len(callers))
 
 	for rowIndex, row := range asOfEqualityRows {
 		t.Run(row.route, func(t *testing.T) {
@@ -645,6 +672,14 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 					if len(problems) > 0 {
 						t.Errorf("%s as %s, %s:\n  %s", row.route, caller.name, read.target, strings.Join(problems, "\n  "))
 					}
+				}
+				rig.statements.take()
+				answer := rig.read(t, cutCaller, read.target, true)
+				comparison := asOfComparison{route: row.route, cut: cut, world: world, window: row.window, removed: read.removed}
+				problems := comparison.problems(then[readKey{rowIndex, readIndex, person}], answer)
+				problems = append(problems, asOfReadWrites(rig.statements.take())...)
+				if len(problems) > 0 {
+					t.Errorf("%s as %s, %s:\n  %s", row.route, cutCaller.name, read.target, strings.Join(problems, "\n  "))
 				}
 			}
 			if !moved {

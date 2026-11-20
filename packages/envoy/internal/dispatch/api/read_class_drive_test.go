@@ -148,8 +148,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/handoffs/{id}":             {target: "/api/v1/handoffs/$handoff", statement: statementOf(`\bfrom\s+handoffs\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/messages/{id}":             {target: "/api/v1/messages/$message", statement: statementOf(`\bwith\s+recursive\s+thread\s+as\b`)},
 	"GET /api/v1/messages/{id}/blocks":      {target: "/api/v1/messages/$message/blocks", statement: statementOf(`\bfrom\s+messages\s+m\s+left\s+join\s+message_bl`)},
-	"GET /api/v1/inbox":                     {target: "/api/v1/inbox", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
-	"GET /api/v1/me/answers":                {target: "/api/v1/me/answers", statement: statementOf(`\bwith\s+answered\s+as\b`)},
+	"GET /api/v1/messages/{id}/history": {target: "/api/v1/messages/$correctedMessage/history",
+		statement: statementOf(`\bfrom\s+post_body_history\s+where\s+message_id\s*=\s*p\.id\b`)},
+	"GET /api/v1/inbox":      {target: "/api/v1/inbox", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
+	"GET /api/v1/me/answers": {target: "/api/v1/me/answers", statement: statementOf(`\bwith\s+answered\s+as\b`)},
 	"GET /api/v1/me/replies": {target: "/api/v1/me/replies?state=inbox", statement: statementOf(`\bfrom\s+user_threads\s+u\b`),
 		volatile: []volatileMember{{"as_of", readTime}}},
 	"GET /api/v1/search": {target: "/api/v1/search?q=drive", statement: statementOf(`\bselect\s+numnode\(websearch_to_tsquery\b`),
@@ -183,6 +185,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}/comments": {target: "/api/v1/issues/$issue/comments", statement: statementOf(`\bfrom\s+comment_watermarks\b`)},
 	"GET /api/v1/comments/{id}":         {target: "/api/v1/comments/$comment", statement: statementOf(`\bfrom\s+comment_mentions\s+where\s+comment_id\b`)},
 	"GET /api/v1/comments/{id}/blocks":  {target: "/api/v1/comments/$comment/blocks", statement: statementOf(`\bleft\s+join\s+comment_block_state\b`)},
+	"GET /api/v1/comments/{id}/history": {target: "/api/v1/comments/$correctedComment/history",
+		statement: statementOf(`\bfrom\s+post_body_history\s+where\s+comment_id\s*=\s*p\.id\b`)},
 	// A document's own asks, comments and events are an unlinked project document's: the
 	// guide (an issue's document answers ARTIFACT_LINKED, naming its issue's routes).
 	"GET /api/v1/artifacts/{id}/asks":        {target: "/api/v1/artifacts/$guide/asks", statement: statementOf(`\bfrom\s+asks\s+a\b`)},

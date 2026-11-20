@@ -37,11 +37,13 @@ const (
 	// entry that leaves AsOf unset is a row nobody has decided for as_of yet.
 	asOfUnset asOfKind = iota
 	// asOfAnswers is a row that answers what existed at the cut, from the records Dispatch
-	// keeps (package asof). The read class's table of these rows is the plan's table "Routes
-	// and their kinds" (INFRA-4620).
+	// keeps (package asof): the cut of an as_of, or the cut of a read-only token, which wins
+	// over any as_of the request sends (asOfGate). The read class's table of these rows is the
+	// plan's table "Routes and their kinds" (INFRA-4620).
 	asOfAnswers
-	// asOfNoHistory is a row that holds no history: it answers the present only, and refuses
-	// every as_of 400 AS_OF_NOT_SERVED (asOfGate).
+	// asOfNoHistory is a row that holds no history: it answers the present only, refuses every
+	// as_of 400 AS_OF_NOT_SERVED (asOfGate), and refuses a read-only token that carries a cut
+	// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
 	asOfNoHistory
 	// asOfCaller is GET /api/v1/whoami alone: it describes the caller now, the cut its token
 	// carries included, and refuses as_of as a row that holds no history does.

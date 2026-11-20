@@ -24,8 +24,8 @@ import (
 const cutLayout = "2006-01-02T15:04:05.000000Z07:00"
 
 // Cut is the time a past-time read answers as of: a UTC time at PostgreSQL's precision, the
-// microsecond. Only ParseCut makes one, so every Cut is in UTC and holds no nanoseconds below
-// its microsecond.
+// microsecond. Only ParseCut and CutAt make one, so every Cut is in UTC and holds no nanoseconds
+// below its microsecond.
 type Cut struct {
 	t time.Time
 }
@@ -40,7 +40,14 @@ func ParseCut(raw string) (Cut, error) {
 	if err != nil {
 		return Cut{}, &InvalidError{Value: raw, Err: err}
 	}
-	return Cut{t: parsed.UTC().Truncate(time.Microsecond)}, nil
+	return CutAt(parsed), nil
+}
+
+// CutAt is the cut at instant: instant in UTC, rounded down to the microsecond, as ParseCut
+// rounds a parsed as_of. The gate makes the cut of a read-only token's cut with it
+// (model.Credential.Cut), which the broker's answer already gave as a time.
+func CutAt(instant time.Time) Cut {
+	return Cut{t: instant.UTC().Truncate(time.Microsecond)}
 }
 
 // Time is the cut as a time.Time in UTC.

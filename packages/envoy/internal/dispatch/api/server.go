@@ -648,8 +648,10 @@ type RouteMux interface {
 // (refuseChangedLogin).
 //
 // Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
-// token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
-// answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
+// token 403 READ_ONLY_TOKEN before anything else it does. A read-only token that carries a cut is
+// answered as of its cut on every row of kind answers, and GET /api/v1/whoami names its cut;
+// every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken,
+// asOfGate).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -957,13 +959,14 @@ const liveSocketPattern = "/ws/live"
 // The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
 // the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
 // its views carry, so the gate takes the zero entry, which classes nothing, and a read-only token
-// of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The socket
-// is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued token or
-// a sign-in cookie - so its heartbeat resolves that same credential again
+// of every kind is answered 403 before a socket is ever opened for it: AS_OF_TOKEN_NOT_SERVED for
+// a token that carries a cut, since the socket holds no past answer, and READ_ONLY_TOKEN for every
+// other. The socket is admitted by whichever credential optionalActor resolves - a bearer, a
+// broker-issued token or a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
+		s.refuseReadOnlyToken(liveSocketRoute, readEntry{},
 			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
 }
 
@@ -1467,12 +1470,15 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //     the gate resolves none of them: a cookie request costs it a context read and a look at an
 //     Authorization header it does not carry, and the gate writes no people row.
 //
-// Then a caller whose credential is read-only is answered 403 READ_ONLY_TOKEN on every row that
-// is not a read (readWritesNothing), every write among them, and on GET /ws/live, and next does
-// not run. On a read, a read-only credential that carries a cut (model.Credential.Cut) is
-// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
-// since this build answers no read at a past time and must not answer one with the present.
-// Every other request runs next as it always did.
+// Then a caller whose credential is read-only and carries a cut (model.Credential.Cut) is
+// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut and the row, on GET /ws/live and on every
+// read but GET /api/v1/whoami and the rows of kind answers (asOfAnswers), and next does not run:
+// such a row holds no answer at a past time, and it must not answer the token with the present.
+// The socket is refused for its cut first, since a socket delivers the present as it changes.
+// Every other caller whose credential is read-only is answered 403 READ_ONLY_TOKEN on every row
+// that is not a read (readWritesNothing), every write among them, and on GET /ws/live, and next
+// does not run. Every other request runs next as it always did: whoami names the token's cut, and
+// a row of kind answers answers as of it (asOfGate).
 //
 // Neither refusal carries a WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs,
@@ -1480,7 +1486,10 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // reads.
 func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
 	read := entry.Writes == readWritesNothing
-	answersACut := name == whoamiRoute
+	// A cut holds no answer on the socket, nor on a read that holds no history (asOfNoHistory)
+	// or describes the caller now (asOfCaller), but whoami, which names the cut.
+	refusesACut := name == liveSocketRoute || (read && entry.AsOf != asOfAnswers && name != whoamiRoute)
+	noPastAnswer := "; " + name + " holds no past answer"
 	return func(w http.ResponseWriter, r *http.Request) {
 		r, caller := s.resolvePersonalToken(r)
 		credential := caller.readOnlyCredential()
@@ -1488,17 +1497,13 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 			next(w, r)
 			return
 		}
-		if !read {
-			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, readOnlyRefusal)
+		if refusesACut && !credential.Cut.IsZero() {
+			writeError(w, contracts.DispatchAsOfTokenNotServed, http.StatusForbidden,
+				"this token reads Dispatch as of "+cutText(credential.Cut)+noPastAnswer)
 			return
 		}
-		// The cut. No read of this build answers at a past time, so every read but whoami runs
-		// nothing for a token that carries a cut, rather than answer it with the present. This
-		// branch is all the gate does with a cut.
-		if !credential.Cut.IsZero() && !answersACut {
-			writeError(w, contracts.DispatchAsOfTokenNotServed, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential is a read-only token cut at %s, and this build of Dispatch does not answer a read at a past time: nothing ran",
-				cutText(credential.Cut)))
+		if !read {
+			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, readOnlyRefusal)
 			return
 		}
 		next(w, r)
@@ -1510,12 +1515,15 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 // would be stale the day a row joins it.
 const readOnlyRefusal = "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran"
 
-// whoamiRoute is the one read that answers a read-only token that carries a cut: it reads the
-// credential rather than Dispatch's state, and names the cut it carries (whoami).
+// whoamiRoute is the one read that describes the caller now: it reads the credential rather than
+// Dispatch's state, and names the cut a read-only token carries (whoami).
 const whoamiRoute = http.MethodGet + " /api/v1/whoami"
 
+// liveSocketRoute is GET /ws/live as the read-only gate names it.
+const liveSocketRoute = http.MethodGet + " " + liveSocketPattern
+
 // cutText is a cut (model.Credential.Cut) as Dispatch writes it, in whoami's answer and in the
-// refusal of a read at a past time: RFC 3339 in UTC, with every fractional digit it has.
+// refusal of a token that carries a cut: RFC 3339 in UTC, with every fractional digit it has.
 func cutText(cut time.Time) string {
 	return cut.UTC().Format(time.RFC3339Nano)
 }
@@ -1559,7 +1567,12 @@ func (s *server) presentsPersonalToken(r *http.Request) bool {
 // and outside the row's scopes, the prefix layer, the stored-text check and the keyed layer.
 //
 // A caller whose credential carries a cut (model.Credential.Cut) reads at that cut, whatever
-// as_of it sends, so the layer reads no as_of for it. For every other caller:
+// as_of it sends, so the layer reads no as_of for it: on a row that answers as_of it runs next
+// under the token's cut (serveAtCut), as it runs next under an as_of below, and on every other
+// row it runs next as it is. The read-only gate has already refused such a caller every row but
+// whoami and the rows that answer as_of. The caller is already resolved: only a broker-issued
+// token carries a cut, and decideBrokerToken resolves it before the read-only gate. For every
+// other caller:
 //
 //   - A request with no as_of runs next as it always did. The layer reads no database and puts
 //     nothing on the context.
@@ -1583,7 +1596,11 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 	notServed := asOfParameter + ": " + name + " holds no history; it answers the present only"
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
-		if decided && caller.err == nil && caller.actor.Credential != nil && !caller.actor.Credential.Cut.IsZero() {
+		if credential := caller.readOnlyCredential(); credential != nil && !credential.Cut.IsZero() {
+			if answers {
+				serveAtCut(w, r, name, asof.CutAt(credential.Cut), next)
+				return
+			}
 			next(w, r)
 			return
 		}

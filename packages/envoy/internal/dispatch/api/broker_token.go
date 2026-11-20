@@ -36,8 +36,8 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // read-only gate inside it (refuseReadOnlyToken), which verifies no broker-issued token itself:
 // it answers a read-only token on every route outside the read class, and one that carries a cut
-// on every read but whoami. A personal token is the gate's own to resolve, and the gate carries
-// that result, its refusal included, as this carries its decision.
+// on every read that holds no past answer. A personal token is the gate's own to resolve, and the
+// gate carries that result, its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
@@ -103,10 +103,10 @@ var readOnlyPersonScopes = []string{model.ScopePerson}
 // have named without read. Its credential is marked read-only (model.Credential.ReadOnly), with
 // the token's cut (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN
 // on every route outside the read class (readClasses) and on GET /ws/live, ahead of the scope
-// gate, the sign-in check and everything else the route does. While no build answers a read at a
-// past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
+// gate, the sign-in check and everything else the route does. A token that carries a cut is
+// answered as of its cut on every read of kind answers (asOfGate), and GET /api/v1/whoami names
+// the cut; every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. On a read it
+// serves, it is the session it names, reading as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //
