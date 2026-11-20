@@ -305,8 +305,9 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // run between one letter and up to four or between two quarters of the length, two of the
 // character between two halves, the run alone, the character once first, last, in the middle, or
 // with up to 63 letters on one side and the rest on the other, and the character once and a run
-// first or last at one more place for each length, which moves along the value as the lengths
-// run. They cut each pair once (answersSlices), which catches a copy keyed on what the value
+// first or last at one more place for each length, a share of the value's places that moves along
+// it as the lengths run, in the seventh row as in the others. They cut each pair once
+// (answersSlices), which catches a copy keyed on what the value
 // holds; a third cuts the values of each kind they hold 22 times, at each edge of the ranges of
 // lengths the rows hold and one byte each side of it, and at 500 and 1,000 bytes and one byte each
 // side, which catches a copy keyed on how many times a pair was cut. A copy keyed on a value with
@@ -452,6 +453,11 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		"\u1780\u17D2", "\u1A20\u1A60", "\u1B0B\u1B44", "\u1B83\u1BAB", "\u0915\u1CF5", "\u0915\u1CF6", "\uA989\uA9C0",
 		"\uAAE0\uAAF6", "\U00010A00\U00010A3F", "\U00011103\U00011133", "\U00011380\U000113D0", "\U00011900\U0001193E",
 		"\U00011A00\U00011A3A", "\U00011A00\U00011A47", "\U00011A50\U00011A99", "\U00011F04\U00011F42",
+	}
+	// The fifth row checks each linker the list holds, so it cannot see the list emptied or short;
+	// the fourth and fifth rows would then cut after fewer linkers and still pass.
+	if len(linkers) != 23 {
+		t.Fatalf("linkers holds %d strings, not the 23 listed above, so the fourth and fifth rows would cut after fewer linkers", len(linkers))
 	}
 	// letters holds the letters of each script of Go's tables, under the script's name.
 	letters := map[string][]rune{}
@@ -675,8 +681,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	// of two, three and four bytes, the others hold letters and one run of the character, or the
 	// character once. Below, few is the remainder of the length's place in lengths divided by 64, so
 	// over each 64 lengths running it takes each count from 0 to 63, and spread is that place times
-	// 4,093, a prime, modulo the places the character has in a value of the length, so it moves
-	// along the whole value as the lengths run.
+	// 4,093 modulo 8,191, a prime, as a share of the places the character has in a value of the
+	// length, so it moves along the whole value as the lengths run, in the seventh row too, where
+	// the place is the length.
 	//   - A run first, with as many letters after it as the length leaves over, and, where it leaves
 	//     some, the run alone, as long as the length rounded down to the character's width. A run
 	//     last, after one to four letters, as many as the length needs, and a run between one letter
@@ -748,9 +755,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 					add(lettersRun[to-few : to-few+n])
 					add(runLetters[len(run)-(n-few) : len(run)-(n-few)+n])
 				}
-				// spread moves over each place of the length as the lengths run, so the character once
-				// and a run at either end stand at places away from the ends and the middle too.
-				spread := i * 4093 % (n - width + 1)
+				// spread moves over the value's places as the lengths run, so the character once and a
+				// run at either end stand at places away from the ends and the middle too.
+				spread := i * 4093 % 8191 * (n - width + 1) / 8191
 				add(once[to-spread : to-spread+n])
 				if spread += (n - spread) % width; spread <= n-2*width {
 					add(lettersRun[to-spread : to-spread+n])
