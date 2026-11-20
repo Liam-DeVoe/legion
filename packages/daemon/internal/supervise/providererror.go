@@ -85,26 +85,13 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 // status the provider answered (zero for none): a status that cannot clear (holdsTheIssue) fails
 // the claim, so that the workflow holds the issue for its architect, and this reports whether it
 // did. Both reports of such a turn decide by it. The prompt result decides a turn a daemon prompt
-// ran (providerErrored). The producer's turn-outcome report decides every turn (turnOutcome),
-// the turns no daemon prompt ran among them — a phase reminder's, an Envoy message's, the agent's
-// own continuation — whose report is all the daemon learns of them. A turn that both report is
-// failed by the first of the two to arrive, and a failed claim takes neither after it (the
-// table's failedClaim and gone rows).
-//
-// The task is kept whichever report decides, as providerErrored keeps it: a task a turn has taken
-// (confirmed) goes back to waiting, with its read mark, before the claim fails, since the settle
-// that follows a failure retires a confirmed task. On the prompt result's path providerErrored has
-// taken it back already; on the report's, the prompt's result, where one is still to come, finds
-// the claim failed and is not read, so the wait for it ends here.
+// ran (providerErrored), after it has taken the task back. The producer's turn-outcome report
+// decides a turn no daemon prompt ran (turnOutcome) — a phase reminder's, an Envoy message's, the
+// agent's own continuation — whose report is all the daemon learns of it; a report that arrives
+// while a prompt's result is still to come leaves the decision to that result.
 func (m *Machine) holdOnProviderError(ctx context.Context, status int) (bool, error) {
 	if !holdsTheIssue(status) {
 		return false, nil
-	}
-	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
-		m.outstanding = nil
-		if err := m.takeBackPending(ctx, taskRead); err != nil {
-			return true, err
-		}
 	}
 	return true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+providerErrorCause(status))
 }

@@ -136,20 +136,35 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // refusal whose status can clear, and one whose report names no status, fails nothing however
 // long the run; it counts toward the run the project's controller is told of at six
 // (tellControllerOfProviderErrors), as a turn a prompt ran does.
+//
+// A report that arrives while a prompt of the claim's task is in flight or waits on its result
+// (promptAwaited) is that prompt's turn's, since the pinned Oh My Pi and the Claude bridge each
+// run one prompt at a time: the prompt's own result decides it (providerErrored), with what only
+// it carries — Oh My Pi's retryable flag, the model, and the task it takes back — so the report
+// leaves the decision to it rather than racing it. A report that arrives after that result finds
+// the decision made: a failed claim takes no report, and a status that can clear fails nothing.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	before := m.claim.errorRun()
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
+	awaited := m.promptAwaited()
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun())
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun(), "promptResultDecides", awaited)
 	if r.Refused {
 		m.tellControllerOfProviderErrors(before, "", providerErrorCause(r.HTTPStatus))
-		if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
-			return err
+		if !awaited {
+			if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
+				return err
+			}
 		}
 	}
 	return m.persist(ctx)
 }
+
+// promptAwaited is whether a prompt of the claim's task is in flight (Machine.send) or
+// acknowledged and waiting on its result (awaitsResult): the turn running or just ended is that
+// prompt's, and its result is still to come.
+func (m *Machine) promptAwaited() bool { return m.send != nil || m.awaitsResult() }
 
 // freshSession is whether a retry explicitly asks to start a new session, and why, for the line it
 // logs. A provider refusal does not choose a new session.

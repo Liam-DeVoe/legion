@@ -170,34 +170,34 @@ func TestARefusedProviderErrorThatCannotClearFailsAtOnce(t *testing.T) {
 }
 
 // The report and the prompt result of a turn a daemon prompt ran each carry the provider's status,
-// and they reach the daemon in either order. A report whose status cannot clear that arrives first
-// fails the claim, as the result would have; the result that follows finds the claim failed and
-// changes nothing, so the claim is failed once, and it still holds the task it owes for the retry
-// that comes after its architect.
-func TestARefusalThatCannotClearReportedBeforeItsPromptResultFailsTheClaimOnce(t *testing.T) {
+// and they reach the daemon in either order. A report that arrives while the prompt's result is
+// still to come leaves the decision to that result, which carries what the report does not (Oh My
+// Pi's retryable flag, the model) and takes the task back: the claim is failed once, by the
+// result, and it still holds the task it owes for the retry that comes after its architect.
+func TestARefusalReportedBeforeItsPromptResultIsDecidedByThatResult(t *testing.T) {
 	h := workingClaim(t)
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	delivery := h.pending().ID
 
 	h.reportRefused(1, "the provider rejected the request", 400)
 
-	h.wantState(StateFailed)
-	failed := h.claim()
-	if want := "a provider error that cannot clear ended this claim's turn: a provider error (HTTP 400)"; failed.FailureCause != CauseProviderError || failed.Failure != want {
-		t.Fatalf("the claim failed with %q (%q), want %q (%q)", failed.Failure, failed.FailureCause, want, CauseProviderError)
+	if state := h.state(); state == StateFailed {
+		t.Fatalf("the report failed the claim while its prompt's result was still to come: %q", h.claim().Failure)
 	}
-
 	h.must(StreamPromptResult{
 		Claim: h.token, AgentInvoked: true, DeliveryID: delivery,
 		Error: "invalid_request_error", HTTPStatus: 400,
 	})
 
 	h.wantState(StateFailed)
-	if c := h.claim(); c.Failure != failed.Failure || !c.FailedAt.Equal(failed.FailedAt) {
-		t.Fatalf("the prompt result changed the failure to %q at %s, want %q at %s", c.Failure, c.FailedAt, failed.Failure, failed.FailedAt)
+	if c, want := h.claim(), "a provider error that cannot clear ended this claim's turn: a provider error (HTTP 400)"; c.FailureCause != CauseProviderError || c.Failure != want {
+		t.Fatalf("the claim failed with %q (%q), want %q (%q)", c.Failure, c.FailureCause, want, CauseProviderError)
 	}
 	if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText {
 		t.Fatalf("the failed claim holds %+v, want the task it owes", p)
+	}
+	if logged := h.logs.String(); !strings.Contains(logged, "the turn this task's prompt ran ended in a provider error") {
+		t.Fatalf("the prompt result's decision was not logged:\n%s", logged)
 	}
 	h.wantPrompts(1)
 }
