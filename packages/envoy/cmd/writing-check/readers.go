@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // readers gives each case its reader (INFRA-3231, spec version 12): the person who read the
@@ -66,6 +68,16 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	case *logThrough <= *logAfter:
 		fmt.Fprintln(stderr, "writing-check readers: --log-through must be above --log-after")
 		return 2
+	}
+	// The cases file and the replayed state hold Dispatch's texts and records.
+	for _, path := range [][2]string{{"--out", *out}, {"--state", *statePath}} {
+		if path[1] == "" {
+			continue
+		}
+		if err := harness.OutsideRepository(path[0], path[1]); err != nil {
+			fmt.Fprintf(stderr, "writing-check readers: %v\n", err)
+			return 2
+		}
 	}
 	state, err := loadReplayState(*statePath, *logAfter)
 	if err != nil {

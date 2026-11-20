@@ -923,7 +923,8 @@ func confirmedFixture() *dsFixture {
 }
 
 // A build refused on its confirmation read writes none of its files: a reused --out keeps the
-// files of the build before it, counts.json included, and a fresh one stays empty.
+// files of the build before it, counts.json included, and a fresh one is not left behind, by a
+// build of the inputs or of a bundle of them (--from, whose files are joined under --out).
 func TestDatasetBuildRefusedOnTheConfirmationReadLeavesOutAsItWas(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -961,19 +962,32 @@ func TestDatasetBuildRefusedOnTheConfirmationReadLeavesOutAsItWas(t *testing.T) 
 		}
 	}
 	before := dirFiles(t, reused)
-	for _, out := range []string{reused, filepath.Join(dir, "fresh")} {
+	bundle := filepath.Join(dir, "bundle", "dataset.tar.gz")
+	if err := os.MkdirAll(filepath.Dir(bundle), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed, Confirmed: swapped, ConfirmedSeed: 77}, bundle, dsPartSize); err != nil {
+		t.Fatal(err)
+	}
+	direct := []string{"--snapshot", snapshot, "--verdicts", verdicts, "--seed", strconv.Itoa(fixtureSeed), "--confirmed", swapped, "--confirmed-seed", "77"}
+	fresh, freshFrom := filepath.Join(dir, "fresh"), filepath.Join(dir, "fresh-from")
+	for _, build := range []struct {
+		out    string
+		inputs []string
+	}{{reused, direct}, {fresh, direct}, {freshFrom, []string{"--from", bundle}}} {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"dataset", "build", "--snapshot", snapshot, "--verdicts", verdicts, "--seed", strconv.Itoa(fixtureSeed),
-			"--confirmed", swapped, "--confirmed-seed", "77", "--out", out}, &stdout, &stderr)
+		code := run(t.Context(), append(append([]string{"dataset", "build"}, build.inputs...), "--out", build.out), &stdout, &stderr)
 		if says := ": item 4 is " + items[3]["case_id"].(string) + ", and the draw python3 random.Random(77).sample(sorted question cases by id, 50) gives "; code != 1 || !strings.Contains(stderr.String(), says) {
-			t.Errorf("build --out %s with two items of the draw swapped: exit %d: %s", out, code, stderr.String())
+			t.Errorf("build --out %s with two items of the draw swapped: exit %d: %s", build.out, code, stderr.String())
 		}
 	}
 	if after := dirFiles(t, reused); !maps.Equal(after, before) {
 		t.Errorf("the refused build changed the reused --out: %v, want %v", slices.Sorted(maps.Keys(after)), slices.Sorted(maps.Keys(before)))
 	}
-	if after := dirFiles(t, filepath.Join(dir, "fresh")); len(after) != 0 {
-		t.Errorf("the refused build left %v in a fresh --out", slices.Sorted(maps.Keys(after)))
+	for _, out := range []string{fresh, freshFrom} {
+		if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused build left the fresh --out %s (%v)", out, err)
+		}
 	}
 }
 
@@ -1393,6 +1407,49 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	}
 	if _, err := os.Stat(refused); !os.IsNotExist(err) {
 		t.Errorf("the refused export made its --out (%v)", err)
+	}
+}
+
+// export-sessions.sh refuses an --out inside a repository, given whole or relative to the
+// directory it runs in, before it makes the directory or reads the store, as every step of the
+// dataset refuses one.
+func TestExportSessionsScriptRefusesAnOutInsideARepository(t *testing.T) {
+	for _, tool := range []string{"bash", "python3"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("export-sessions.sh needs %s, which is not on PATH", tool)
+		}
+	}
+	script, err := filepath.Abs("export-sessions.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	repo, bin, tqLog := filepath.Join(dir, "repo"), filepath.Join(dir, "bin"), filepath.Join(dir, "tq.log")
+	list, exclude := filepath.Join(dir, "sessions.tsv"), filepath.Join(dir, "exclude.txt")
+	for path, content := range map[string]string{filepath.Join(repo, ".jj", "repo"): "", list: "", exclude: "", filepath.Join(bin, "tq"): standInTQ} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, out := range []string{filepath.Join(repo, "data", "export"), "export"} {
+		cmd := exec.Command("bash", script, "--sessions", list, "--exclude", exclude, "--out", out)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "TQ_LOG="+tqLog, "TQ_ROWS="+exclude)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		var exit *exec.ExitError
+		if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != 2 ||
+			!strings.Contains(stderr.String(), "export-sessions: --out "+out+" is inside the repository at ") || !strings.Contains(stderr.String(), "repo: its files hold Dispatch text") {
+			t.Errorf("export-sessions.sh --out %s, inside a repository: %v\n%s", out, err, stderr.String())
+		}
+	}
+	for _, made := range []string{filepath.Join(repo, "data"), filepath.Join(repo, "export"), tqLog} {
+		if _, err := os.Stat(made); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused export made %s (%v)", made, err)
+		}
 	}
 }
 

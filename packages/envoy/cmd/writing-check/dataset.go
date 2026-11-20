@@ -2737,16 +2737,28 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		}
 		toDev = list
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return fail(err)
-	}
 	in := dsInputs{Snapshot: *snapshot, Verdicts: *verdicts, Seed: *seed, Confirmed: *confirmed, ConfirmedSeed: *confirmedSeed}
 	if *from != "" {
-		dir, err := os.MkdirTemp(*out, ".bundle-")
-		if err != nil {
+		// The bundle's files are joined in a directory under --out, removed once the build ends.
+		// A refused build leaves --out as it was (buildDataset), so an --out made for the bundle
+		// is removed again with it where the build left it empty.
+		_, err := os.Stat(*out)
+		made := errors.Is(err, os.ErrNotExist)
+		dir := ""
+		defer func() {
+			if dir != "" {
+				os.RemoveAll(dir)
+			}
+			if made {
+				os.Remove(*out)
+			}
+		}()
+		if err := os.MkdirAll(*out, 0o755); err != nil {
 			return fail(err)
 		}
-		defer os.RemoveAll(dir)
+		if dir, err = os.MkdirTemp(*out, ".bundle-"); err != nil {
+			return fail(err)
+		}
 		if in, err = openBundle(*from, dir); err != nil {
 			return fail(err)
 		}
@@ -2829,47 +2841,44 @@ func correctionShapes(owner, agent string) []string {
 // It reads nothing else, so the same inputs write the same bytes. It refuses a snapshot that
 // holds an event created after its header's end, and a confirmation read that is not the draw.
 // Its four files reach out only once the whole build has passed (dsStaged), so a refused build
-// leaves out as it was, a reused out's earlier files included.
+// leaves out as it was: a reused out's earlier files stay, and an out that did not exist is not
+// made.
 func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
-	var res dsBuildResult
-	err := dsStaged(out, func(dir string) error {
-		var err error
-		res, err = writeDataset(in, dir)
-		return err
-	})
-	return res, err
+	return dsStaged(out, func(dir string) (dsBuildResult, error) { return writeDataset(in, dir) })
 }
 
 // dsStaged runs write with a new directory under out, then moves each file write left there
-// into out, over a file of the same name. A write that fails moves nothing: out is as it was,
-// and an out that did not exist is removed again. The directory is removed either way.
-func dsStaged(out string, write func(dir string) error) error {
+// into out, over a file of the same name, and answers what write answered. A write that fails
+// moves nothing: out is as it was, and an out that did not exist is removed again. The directory
+// is removed either way.
+func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
+	var res T
 	_, err := os.Stat(out)
 	made := errors.Is(err, os.ErrNotExist)
 	if err := os.MkdirAll(out, 0o755); err != nil {
-		return err
+		return res, err
 	}
 	dir, err := os.MkdirTemp(out, ".staged-")
 	if err != nil {
-		return err
+		return res, err
 	}
 	defer os.RemoveAll(dir)
-	if err := write(dir); err != nil {
+	if res, err = write(dir); err != nil {
 		if os.RemoveAll(dir) == nil && made {
 			os.Remove(out)
 		}
-		return err
+		return res, err
 	}
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return res, err
 	}
 	for _, f := range files {
 		if err := os.Rename(filepath.Join(dir, f.Name()), filepath.Join(out, f.Name())); err != nil {
-			return err
+			return res, err
 		}
 	}
-	return nil
+	return res, nil
 }
 
 // writeDataset is buildDataset's work: it builds the dataset and writes its four files to out,
@@ -4092,13 +4101,7 @@ func dsCasesFile(path string) string {
 // counts otherwise, and a case whose write time is no time. Its three files reach out only once
 // every check has passed (dsStaged), so a refused export leaves out as it was.
 func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error) {
-	var counts dsSessionCounts
-	err := dsStaged(out, func(dir string) error {
-		var err error
-		counts, err = writeSessions(manifestPath, casesPath, dir)
-		return err
-	})
-	return counts, err
+	return dsStaged(out, func(dir string) (dsSessionCounts, error) { return writeSessions(manifestPath, casesPath, dir) })
 }
 
 // writeSessions is ingestSessions' work: it checks the export and writes its three files to out,

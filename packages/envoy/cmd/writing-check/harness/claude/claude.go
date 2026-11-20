@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
+	"github.com/sjawhar/envoy/internal/dispatch/prompttags"
 )
 
 // SessionText is the part of a writer session that a case reads: the session up to the place
@@ -42,6 +43,15 @@ func (s SessionText) Digest() [sha256.Size]byte { return sha256.Sum256([]byte(s.
 func (s SessionText) Holds(quote string) bool {
 	q := QuoteForm(quote)
 	return q != "" && strings.Contains(QuoteForm(s.text), q)
+}
+
+// Embedded is the session part as a message holds it: each opening and closing of one of tags'
+// tags escaped (prompttags), so the session text opens and closes no part of the message, the
+// session part's own tag (SessionTag) among them. The harness sends it (CallWithSession) and
+// digests it as a call's input; it looks the words a reply copies up in the session part as the
+// export holds it (Holds), with the escape undone.
+func (s SessionText) Embedded(tags *prompttags.Tags) SessionText {
+	return SessionText{text: tags.Escape(s.text)}
 }
 
 // QuoteForm is text as a quote is looked up in it: lowercased, without Markdown's emphasis and

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
+	"github.com/sjawhar/envoy/internal/dispatch/prompttags"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
 )
 
@@ -357,9 +358,29 @@ type GradeInput struct {
 // ownWords says the judgement reads the person's own words: undefined, where it has some.
 func (in GradeInput) ownWords() bool { return in.Judgement == JUndefined && len(in.OwnWords) > 0 }
 
-// tag is text in a tag of its own.
+// messageTags is the escape of the tags the harness's model calls wrap their texts in: the
+// record's (Dataset.RecordPart), the grader's and the fresh reader's (tag), the added check's
+// (checkUser), the phrases call's (gradeSentences), the writer's (Writer.call) and the session
+// part's (claude.SessionTag). Each text a message holds is escaped (prompttags), so no text opens
+// or closes one of them, and each word, quote or fact a reply copies from a text is read back
+// unescaped (unembedded) before it is looked up in a text.
+var messageTags = prompttags.New(
+	"record", "issue", "project", "document", "other_documents", "thread", "entry",
+	"question", "reader_answer", "text", "original_text", "new_text", "definition", "reader_own_words", "writer_answer",
+	"listed_facts", "candidates", "your_text", "dispatch_message", claude.SessionTag,
+)
+
+// embedded is text as a message holds it: each opening and closing of a tag of messageTags
+// escaped, so it opens and closes none. A text that holds no such tag and no escape of one is
+// the message's byte for byte.
+func embedded(text string) string { return messageTags.Escape(text) }
+
+// unembedded is words of a reply as the text it copies holds them: embedded's escape undone.
+func unembedded(text string) string { return messageTags.Unescape(text) }
+
+// tag is text in a tag of its own, embedded.
 func tag(name, text string) string {
-	return "<" + name + ">\n" + strings.TrimSpace(text) + "\n</" + name + ">\n"
+	return "<" + name + ">\n" + embedded(strings.TrimSpace(text)) + "\n</" + name + ">\n"
 }
 
 // ownWordsTag is the person's own words in the tag reader_own_words, one to a line.
@@ -676,7 +697,8 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases, LostKinds: inputsFirst && in.Judgement == JLost,
 	}
 	if r.parts.Session {
-		r.session = in.Session
+		// The call sends, and its digest reads, the session part as the message holds it.
+		r.session = in.Session.Embedded(messageTags)
 	}
 	r.req.System, err = render(spec.prompt, r.data)
 	r.req.Schema = spec.schema()
@@ -831,9 +853,12 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 					continue items
 				}
 			}
+			// An item's quote and its note (a fact, a reason) are words the reply copies from the
+			// texts the message held embedded: they are read as the texts hold them.
 			var item Item
 			_ = json.Unmarshal(it[key(fields, s.itemQuote)], &item.Quote)
 			_ = json.Unmarshal(it[key(fields, s.itemNote)], &item.Note)
+			item.Quote, item.Note = unembedded(item.Quote), unembedded(item.Note)
 			if s.inText {
 				q := claude.QuoteForm(item.Quote)
 				switch {
@@ -882,6 +907,7 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 			return err
 		}
 		_ = json.Unmarshal(reply[key(startFields, "quote")], &grade.Quote)
+		grade.Quote = unembedded(grade.Quote)
 		grade.Found = &found
 		before := -1
 		if found {
@@ -975,13 +1001,14 @@ func (c readerCall) reused(done []*Answer) *Answer {
 	return nil
 }
 
-// answer makes the call.
+// answer makes the call. The answer is read as the text it copies words from holds them
+// (unembedded), so the grader's message embeds it as it embeds that text.
 func (c readerCall) answer(ctx context.Context) Answer {
 	if c.err != nil {
 		return Answer{Error: c.err.Error()}
 	}
 	resp, err := c.model.Call(ctx, c.req)
-	a := Answer{Text: strings.TrimSpace(resp.Text), Call: callOf(resp), InputSHA256: c.digest}
+	a := Answer{Text: unembedded(strings.TrimSpace(resp.Text)), Call: callOf(resp), InputSHA256: c.digest}
 	if err != nil {
 		a.Error = err.Error()
 	} else if a.Text == "" {

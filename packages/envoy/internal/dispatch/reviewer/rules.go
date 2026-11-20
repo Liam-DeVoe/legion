@@ -48,6 +48,10 @@ const (
 // AllRuleSets is every rule set, in the order DISPATCH_REVIEWER_RULES's description names them.
 var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts, RuleStructure, RuleDetector}
 
+// DefaultRules are the rule sets DISPATCH_REVIEWER_RULES names unset: cmd/dispatch's default,
+// and the one cmd/writing-check's harness reads a local Dispatch to run where it sets none.
+var DefaultRules = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts}
+
 // phrasesHeading is the heading of skills/plain-words' section of the six phrases.
 const phrasesHeading = "## The phrases to stop"
 

@@ -49,12 +49,17 @@ type parentRequest struct {
 // answers each judgement (allJudgementRules), under the full and the final input modes. The rows
 // of answered and first_paragraph are those of the calibration of answered against what the owner
 // did (INFRA-3231), which changed their shared checks and reply schema, and answered's inputs.
+// The rows of phrases have the system prompt of afdb071c with one row of its table of the phrases
+// skills/plain-words tells agents to stop as main wrote it (#4176): "name a date" says "Y is left,
+// and at the measured rate it ends on <date>", where afdb071c's copy said "it is due on <date>".
+// The prompt holds that table as the skill holds it (stoppedPhrases), and commit a30fbcd6 put main's
+// row back in the skill after a merge of main had kept the branch's; the user message is afdb071c's.
 var parentRequests = []parentRequest{
 	{"full", JAnswered, "29cf7cff1add475625fda94b560c494a12662f1f8aa3db70309e343c240b5d1b", []goldenWire{{"2b4e19b9beb3d1df279fea9ad9e219ed43a96d7a98864e1aeb9f24996e56bb7e", "6efea0719b1914bac8ddfcf8fea98d89b52949d51c3b77ed3625122b95c9d425"}}},
 	{"full", JFirstParagraph, "ab0ef191a8f6c12c249f8e7beb060da9e2cc6e12809a2f52a35f063ed6127ea4", []goldenWire{{"8d57357cb06bea44e5c013acd7a6aba24df8588ca648b5976d8a780877b2b6e7", "5885d96945177e26eadeb4284b204e4b9248bea8b471576740c371725e07027a"}}},
 	{"full", JLost, "709f23bd3823d2d77305cf0b3fa6baf176a7012d351d2df082cd3c428a24545d", []goldenWire{{"61e39e1ce2168056537289d021ff60875a4a14dde0cf05f3aca417d8f3e07c18", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"full", JAdded, "5286a22cd592b652bf8e203749a1a7b3a701b3af50de652ccb79c5c0db555972", []goldenWire{{"d41bd06c8aea8dbb67606f84fc0c1a9499a49d1a8011ab2c5ca6fc71bf7a99cd", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
-	{"full", JPhrases, "26d25ae556c25de1566f14301bf81e4f6e8f39c29a6e14c9a9a56a581d055a7a", []goldenWire{{"532192416bb6a75de0a6853b2b040493fc030b0a6914d6d2f33583e0770f0454", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},
+	{"full", JPhrases, "b02b6d6cd302980611b37386fa9a47273b2751073f25ae48ee0165394d60fa2d", []goldenWire{{"e34bc8eff67d0ac2a5b1c439d1d4dab25e52aec3bc5c873bb6f4a5353bbac6f8", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},
 	{"full", JUndefined, "d22e4dd8a7b6c6b2ff26cb450d25697642ea7b6a6679f0ccf8f6552318eea591", []goldenWire{{"f06f28c01def94b18d00102838d13591551e1015f0f19f91d1a8e2d5cab81ad6", "a6016045e58c43d1c17aaf8849041c319861e2d6e728a1f09993920bb51e8b5c"}}},
 	{"full", JAnswerStart, "bfa21846ec58be120cd822776c545eaaf9623f5415c851f83ea3ff43efecddb0", []goldenWire{{"99b1154953d07b613794b7442fa3ef3a7c4e2a40a10dadbc862169997a1dc61d", "3e87e38776fec9c543dec4c935712360d1d15bfa8fdf7dfbbc981dc0d421f0dd"}}},
 	{"full", JHarder, "101f799128e0c0a3ae01b021db60521ed7059866ae3dcc812a3f62e7c811d22a", []goldenWire{{"bf394ff3b4d42cf9a72d08f8e83272bc08ebb371f931a3022d063ad7f3cc8098", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
@@ -63,7 +68,7 @@ var parentRequests = []parentRequest{
 	{"final", JFirstParagraph, "71eaabd036636066a8ecf37c1206a2e270c258e85532f23664d948ad0c7e922f", []goldenWire{{"03d25f7806a14a6254afd7218f0463808dfb659353823de3e6c7ee2a1a3f0387", "7b86256d53eb8ed15ce3ce704ecdbe8f5237535baa2fbb61b437bed7e5fbb1da"}}},
 	{"final", JLost, "709f23bd3823d2d77305cf0b3fa6baf176a7012d351d2df082cd3c428a24545d", []goldenWire{{"61e39e1ce2168056537289d021ff60875a4a14dde0cf05f3aca417d8f3e07c18", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"final", JAdded, "5286a22cd592b652bf8e203749a1a7b3a701b3af50de652ccb79c5c0db555972", []goldenWire{{"d41bd06c8aea8dbb67606f84fc0c1a9499a49d1a8011ab2c5ca6fc71bf7a99cd", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
-	{"final", JPhrases, "26d25ae556c25de1566f14301bf81e4f6e8f39c29a6e14c9a9a56a581d055a7a", []goldenWire{{"532192416bb6a75de0a6853b2b040493fc030b0a6914d6d2f33583e0770f0454", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},
+	{"final", JPhrases, "b02b6d6cd302980611b37386fa9a47273b2751073f25ae48ee0165394d60fa2d", []goldenWire{{"e34bc8eff67d0ac2a5b1c439d1d4dab25e52aec3bc5c873bb6f4a5353bbac6f8", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},
 	{"final", JUndefined, "d22e4dd8a7b6c6b2ff26cb450d25697642ea7b6a6679f0ccf8f6552318eea591", []goldenWire{{"f06f28c01def94b18d00102838d13591551e1015f0f19f91d1a8e2d5cab81ad6", "a6016045e58c43d1c17aaf8849041c319861e2d6e728a1f09993920bb51e8b5c"}}},
 	{"final", JAnswerStart, "c4672bf5aa698051f49682dd5888d8a341a19993485ac333d4f277610ed44329", []goldenWire{{"a5a794b81c2df40ae8a8ad1e05792e216a7fd2cb2813609adc777f03e88eae99", "18e6ace5c6d0dc91b789f42a26690a19e08da02e504a1fa5c66bf2d8eaaee337"}}},
 	{"final", JHarder, "b15c1c5886c84ec97e7826d00176ccf410177c0508344b723e4cac30698ebf0f", []goldenWire{{"f1279e04da9e8f2dc0e87eb0b507eb27d809d04197ad0b3ef9a65fe9c0bc781e", "1dd92cfe55cb9302ae615dd9b244ffc743f04a65fa07e4da72d2417f449a2985"}}},

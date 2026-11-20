@@ -82,7 +82,7 @@ var reviewerActor = model.Actor{Kind: "system", ID: "dispatch-reviewer"}
 
 // ReviewerConfig is the reviewer as cmd/dispatch configured it from DISPATCH_REVIEWER_*, which
 // sets every field: the defaults of the settings it leaves unset are cmd/dispatch's, from the
-// constants below and reviewer.DefaultTimeout.
+// constants below, reviewer.DefaultRules and reviewer.DefaultTimeout.
 type ReviewerConfig struct {
 	// Asks, Issues, Comments and Messages are each kind's choice: ReviewOff, ReviewAfter or
 	// ReviewHold. The choice also says whether an agent's edit of a posted text of the kind is
@@ -120,9 +120,6 @@ type Reviewer struct {
 
 // DefaultWriterWindow is DISPATCH_REVIEWER_WRITER_WINDOW unset.
 const DefaultWriterWindow = 5 * time.Minute
-
-// DefaultReviewerRules are the rule sets DISPATCH_REVIEWER_RULES names unset.
-var DefaultReviewerRules = []reviewer.RuleSet{reviewer.RuleNoslop, reviewer.RulePhrases, reviewer.RuleReaderWords, reviewer.RuleAskParts}
 
 // NewReviewer is the reviewer cfg describes, every field of which its caller set.
 func NewReviewer(cfg ReviewerConfig) *Reviewer {

@@ -108,9 +108,9 @@ var (
 	testModelsLeastCharge    = leastChargeText(testModelSpec(modelKindAzure))
 )
 
-// leastChargeText is the least the calls of spec are charged under api.DefaultReviewerRules.
+// leastChargeText is the least the calls of spec are charged under reviewer.DefaultRules.
 func leastChargeText(spec modelGroupSpec) string {
-	charge, err := spec.leastCharge(api.DefaultReviewerRules)
+	charge, err := spec.leastCharge(reviewer.DefaultRules)
 	if err != nil {
 		panic(err)
 	}
@@ -338,7 +338,7 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 		}
 		*row.target = choice
 	}
-	if cfg.ReviewerRules, err = listSetting(env, "DISPATCH_REVIEWER_RULES", reviewer.AllRuleSets, api.DefaultReviewerRules); err != nil {
+	if cfg.ReviewerRules, err = listSetting(env, "DISPATCH_REVIEWER_RULES", reviewer.AllRuleSets, reviewer.DefaultRules); err != nil {
 		return writingSettings{}, err
 	}
 	if cfg.ReviewerTimeout, err = durationSetting(env, "DISPATCH_REVIEWER_TIMEOUT", reviewer.DefaultTimeout); err != nil {

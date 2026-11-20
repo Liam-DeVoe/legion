@@ -3,6 +3,8 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,10 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 )
 
 // Every text below is written for these tests; none comes from Dispatch.
@@ -244,7 +249,8 @@ func TestLoadedLinesHoldTheCasesOfOneSeeding(t *testing.T) {
 }
 
 // A line a run does not write is an error of the run, not a result: add answers it, and so do
-// every later add and close. `harness load` and `harness phrases-labels` append their lines so.
+// every later add and close. `harness load`, `harness phrases-labels` and `harness score` append
+// their lines so.
 func TestALineThatIsNotWrittenIsAnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.jsonl")
 	lines, err := appendLines(path)
@@ -263,6 +269,34 @@ func TestALineThatIsNotWrittenIsAnError(t *testing.T) {
 	}
 	if err := lines.close(); err == nil || !strings.Contains(err.Error(), path) {
 		t.Errorf("close after a failed write = %v, want the write's failure", err)
+	}
+}
+
+// `harness score` stops at the first case line it does not write: it scores no later case, and
+// answers that line's failure. The lane's cases.jsonl here is the device whose every write fails.
+func TestScoreStopsAtTheFirstCaseLineItDoesNotWrite(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("no /dev/full, the device whose every write fails")
+	}
+	build, _ := writeFixture(t)
+	ds, err := LoadDataset(build, PartDevelopment, docLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	path := filepath.Join(out, "cases.jsonl")
+	if err := os.Symlink("/dev/full", path); err != nil {
+		t.Fatal(err)
+	}
+	l := &lane{change: asSeen{}, out: out, todo: map[string]bool{}}
+	for _, c := range ds.Cases {
+		l.todo[c.ID] = true
+	}
+	// Change 1 leaves each text as the agent wrote it, so lost and added are given with no call.
+	s := &scorer{ds: ds, only: []Judgement{JLost, JAdded}, noExport: true}
+	err = scoreAll(t.Context(), s, []*lane{l}, ds.Cases, 1, io.Discard, time.Now())
+	if err == nil || !strings.Contains(err.Error(), path) || l.scored != 1 || len(ds.Cases) < 2 {
+		t.Errorf("a score whose first line is not written scored %d of %d cases and answered %v; want 1 case, and the line's failure", l.scored, len(ds.Cases), err)
 	}
 }
 
@@ -286,6 +320,34 @@ func TestLoadRefusesTheOutOfOtherRecords(t *testing.T) {
 	code, _, stderr := runHarness("load", "--local", local, "--cases", build, "--verdicts", verdicts, "--out", out)
 	if code != 1 || !strings.Contains(stderr, "a load continues only in the records it began in") {
 		t.Errorf("a load into reset records with the --out of the load before = %d:\n%s", code, stderr)
+	}
+}
+
+// `harness score` of a change that calls the local Dispatch refuses the loaded.jsonl of other
+// records than those the instance runs on, such as a load into a database a start has reset
+// since, before it calls a model or reaches the instance, and before a held-out run's line in the
+// exposure log.
+func TestScoreRefusesTheLoadedLinesOfOtherRecords(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, allJudgementRules(t)...)
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local.json")
+	writeJSONFile(t, local, LocalInstance{BaseURL: "http://127.0.0.1:1", Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z",
+		DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"})
+	loaded := filepath.Join(dir, "loaded.jsonl")
+	writeJSONFile(t, loaded, Loaded{CaseID: "question/comment:h5@51", Instance: LoadedInstance{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T10:00:00Z"}})
+	exposure := filepath.Join(dir, "exposure.log")
+	code, _, stderr := runHarness("score", "--change", "2", "--local", local, "--loaded", loaded, "--part", "held_out", "--commit", "c0ffee",
+		"--cases", build, "--sessions", sessions, "--out", filepath.Join(dir, "run"), "--gateway", stand.URL, "--gateway-key-file", keyFile(t),
+		"--draws", "50", "--exposure-log", exposure)
+	if code != 2 || !strings.Contains(stderr, `holds case question/comment:h5@51 loaded into database "dispatch_harness_1" as seeded "seeded 2026-11-20T10:00:00Z"`) {
+		t.Errorf("a score with the loaded.jsonl of reset records = %d:\n%s", code, stderr)
+	}
+	if _, err := os.Stat(exposure); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused held-out run wrote the exposure log (%v)", err)
+	}
+	if n := len(stand.Requests()); n != 0 {
+		t.Errorf("the refused run made %d model calls", n)
 	}
 }
 
@@ -344,5 +406,38 @@ func TestLocalRefusesAnOutWhoseLocalJSONExists(t *testing.T) {
 	}
 	if after, err := os.ReadFile(held); err != nil || string(after) != string(before) {
 		t.Errorf("the refused start changed or removed the running instance's local.json (%v)", err)
+	}
+}
+
+// A start of `harness local` that fails once its instance is up, here on the mark of the
+// instance's database, stops the instance's processes and waits for them before it answers: no
+// instance runs on that no local.json names. bun is a stand-in that prints the instance's lines.
+func TestALocalStartThatFailsStopsItsInstance(t *testing.T) {
+	bin, out := t.TempDir(), t.TempDir()
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	script := "#!/bin/sh\necho $$ > \"$HARNESS_TEST_BUN_PID\"\necho 'Open (signed in as alice): http://127.0.0.1:4100/auth/_dev/signin'\necho 'Press Ctrl-C to stop.'\nexec sleep 300\n"
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HARNESS_TEST_BUN_PID", pidFile)
+	code, _, stderr := runHarness("local", "--out", out, "--pg-dsn", "postgres://harness@127.0.0.1:1/postgres", "--database", "dispatch_harness_1", "--repo", t.TempDir())
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("the stand-in instance did not start (%v):\n%s", err, stderr)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(-pid, syscall.SIGKILL) })
+	if code != 1 || !strings.Contains(stderr, "the instance's database") {
+		t.Errorf("a start that cannot mark its database = %d:\n%s", code, stderr)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("the instance's process %d runs on after the failed start (%v)", pid, err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "local.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the failed start left local.json (%v)", err)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // pageSize is the events one read of the log asks for.
@@ -42,6 +44,11 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	case base == "" || tokenFile == "":
 		fmt.Fprintln(stderr, "writing-check fetch: DISPATCH_URL and DISPATCH_TOKEN_FILE must be set")
+		return 2
+	}
+	// The cases file holds Dispatch's texts as the log gives them.
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 2
 	}
 	c := newClient(base, tokenFile)

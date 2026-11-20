@@ -298,15 +298,16 @@ func (c *Case) author(t CaseText) string {
 }
 
 // RecordPart is Dispatch's record of the case's text as a grading call reads it, each part in a
-// tag of its own: the issue, the project, the documents, and the thread before the text.
+// tag of its own: the issue, the project, the documents, and the thread before the text. Each
+// text it holds, a document's name and an author's among them, is embedded (messageTags).
 func (ds *Dataset) RecordPart(c *Case) string {
 	var b strings.Builder
 	b.WriteString("<record>\n")
 	if is := c.Record.Issue; is != nil {
-		fmt.Fprintf(&b, "<issue key=%s>\n%s\n</issue>\n", strconv.Quote(is.Key), is.Title)
+		fmt.Fprintf(&b, "<issue key=%s>\n%s\n</issue>\n", strconv.Quote(is.Key), embedded(is.Title))
 	}
 	if c.Record.Project != "" {
-		fmt.Fprintf(&b, "<project>\n%s\n</project>\n", c.Record.Project)
+		fmt.Fprintf(&b, "<project>\n%s\n</project>\n", embedded(c.Record.Project))
 	}
 	docs := slices.Clone(c.Record.Documents)
 	own := c.textDocument()
@@ -333,12 +334,12 @@ func (ds *Dataset) RecordPart(c *Case) string {
 		if d.ArtifactID == own {
 			role = "the document the text is a version of, as it stood before the text"
 		}
-		fmt.Fprintf(&b, "<document name=%s version=%d role=%s>\n%s\n</document>\n", strconv.Quote(d.Name), d.Version, strconv.Quote(role), head(text, docLimit))
+		fmt.Fprintf(&b, "<document name=%s version=%d role=%s>\n%s\n</document>\n", strconv.Quote(embedded(d.Name)), d.Version, strconv.Quote(role), embedded(head(text, docLimit)))
 	}
 	if len(others) > 0 {
 		b.WriteString("<other_documents>\n")
 		for _, name := range others {
-			b.WriteString("- " + name + "\n")
+			b.WriteString("- " + embedded(name) + "\n")
 		}
 		b.WriteString("</other_documents>\n")
 	}
@@ -349,7 +350,7 @@ func (ds *Dataset) RecordPart(c *Case) string {
 	if len(thread) > 0 {
 		b.WriteString("<thread>\n")
 		for _, t := range thread {
-			fmt.Fprintf(&b, "<entry kind=%s author=%s at=%s>\n%s\n</entry>\n", strconv.Quote(t.Kind), strconv.Quote(c.author(t)), strconv.Quote(t.Time), head(t.Text, entryLimit))
+			fmt.Fprintf(&b, "<entry kind=%s author=%s at=%s>\n%s\n</entry>\n", strconv.Quote(t.Kind), strconv.Quote(embedded(c.author(t))), strconv.Quote(t.Time), embedded(head(t.Text, entryLimit)))
 		}
 		b.WriteString("</thread>\n")
 	}

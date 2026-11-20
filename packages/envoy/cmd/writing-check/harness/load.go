@@ -122,6 +122,11 @@ type LoadedInstance struct {
 	Seeded   string `json:"seeded"`
 }
 
+// records names the records inst runs on, as a line of loaded.jsonl names them.
+func (inst LocalInstance) records() LoadedInstance {
+	return LoadedInstance{Database: inst.Database, Seeded: inst.Seeded}
+}
+
 // LoadedDocument is one document of a record in the local Dispatch.
 type LoadedDocument struct {
 	ArtifactID string `json:"artifact_id"`
@@ -556,7 +561,7 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// The lines of loaded.jsonl are records of one database as one start seeded it: a load into
 	// other records is refused before it reaches the database.
 	path := filepath.Join(*out, "loaded.jsonl")
-	lines, done, err := openLoadedLog(path, LoadedInstance{Database: inst.Database, Seeded: inst.Seeded})
+	lines, done, err := openLoadedLog(path, inst.records())
 	if err != nil {
 		return fail(err)
 	}
@@ -627,27 +632,41 @@ type loadedLog struct {
 	instance LoadedInstance
 }
 
-// openLoadedLog reads the cases the loaded.jsonl at path holds as loaded with no error, and opens
-// it to append. It refuses a file that holds a line of another instance than inst, or of none: a
-// case loaded there is not in inst's database.
-func openLoadedLog(path string, inst LoadedInstance) (*loadedLog, map[string]bool, error) {
-	prior, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, err
+// readLoaded reads the loaded.jsonl at path: the last line of each case that holds no error. It
+// refuses a file that holds a line of another instance than inst, or of none: a case loaded there
+// is not in inst's database, so a load does not continue there and a score finds no record of it.
+func readLoaded(path string, inst LoadedInstance) (map[string]Loaded, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	done := map[string]bool{}
-	for _, line := range bytes.Split(prior, []byte("\n")) {
+	out := map[string]Loaded{}
+	for _, line := range bytes.Split(data, []byte("\n")) {
 		var l Loaded
 		if json.Unmarshal(line, &l) != nil || l.CaseID == "" {
 			continue
 		}
 		if l.Instance != inst {
-			return nil, nil, fmt.Errorf("%s holds case %s loaded into database %q as seeded %q, and this load is into database %s as seeded %q: a load continues only in the records it began in, so give another --out",
+			return nil, fmt.Errorf("%s holds case %s loaded into database %q as seeded %q, and the local instance is database %q as seeded %q: a load continues only in the records it began in, and a score reads the cases there alone, so load them into this instance with another --out",
 				path, l.CaseID, l.Instance.Database, l.Instance.Seeded, inst.Database, inst.Seeded)
 		}
 		if l.Error == "" {
-			done[l.CaseID] = true
+			out[l.CaseID] = l
 		}
+	}
+	return out, nil
+}
+
+// openLoadedLog reads the cases the loaded.jsonl at path holds as loaded with no error into inst
+// (readLoaded), none where there is no file yet, and opens it to append.
+func openLoadedLog(path string, inst LoadedInstance) (*loadedLog, map[string]bool, error) {
+	loaded, err := readLoaded(path, inst)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	done := map[string]bool{}
+	for id := range loaded {
+		done[id] = true
 	}
 	lines, err := appendLines(path)
 	if err != nil {

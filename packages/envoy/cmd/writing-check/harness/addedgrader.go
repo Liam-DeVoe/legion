@@ -111,11 +111,12 @@ func (in GradeInput) checkUser(p contextParts, listed []Item) (user, after strin
 
 // inputsHold is whether an input that p reads holds words, each in quote form: the original
 // text, the record, the writer's answer and the session part. The question is context and the
-// new text is the subject, so neither of them holds a fact.
+// new text is the subject, so neither of them holds a fact. The record is looked up as its texts
+// hold them, with RecordPart's escape undone, as the words are (Verification.read).
 func (in GradeInput) inputsHold(p contextParts) func(words string) bool {
 	inputs := []string{claude.QuoteForm(in.Original)}
 	if p.Record {
-		inputs = append(inputs, claude.QuoteForm(in.Record))
+		inputs = append(inputs, claude.QuoteForm(unembedded(in.Record)))
 	}
 	if p.WriterAnswer {
 		inputs = append(inputs, claude.QuoteForm(in.WriterAnswer))
@@ -206,6 +207,8 @@ func (v *Verification) read(value json.RawMessage, holds func(string) bool) ([]I
 		}
 		var words string
 		_ = json.Unmarshal(f[key(heldFields, "input_words")], &words)
+		// The words are an input's, which the message held embedded.
+		words = unembedded(words)
 		answers[n] = answer{held: held, words: words}
 	}
 	var kept []Item

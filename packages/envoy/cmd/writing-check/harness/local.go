@@ -117,7 +117,8 @@ func databaseSeeded(ctx context.Context, dbURL, name string, keep bool) (string,
 		}
 		return *mark, nil
 	}
-	// The mark is a time, digits and "-:.TZ" alone, so it stands in the literal as it is.
+	// The mark is "seeded " and a time of digits and "-:.TZ", none of them a quote, so it stands in
+	// the literal as it is.
 	mark := "seeded " + time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := conn.Exec(ctx, "comment on database "+pgx.Identifier{name}.Sanitize()+" is '"+mark+"'"); err != nil {
 		return "", fmt.Errorf("marking database %s: %w", name, err)
@@ -237,12 +238,22 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	inst := LocalInstance{Database: name, DatabaseURL: dbURL, AgentToken: localAgentToken, Settings: slices.Sorted(maps.Keys(env)), Values: env, Started: time.Now().UTC().Format(time.RFC3339)}
 
-	cmd := exec.CommandContext(ctx, "bun", "run", "dispatch:local")
+	// A start that fails once the instance is up cancels instance, which stops the instance's
+	// process group (cmd.Cancel) and waits for it (stopped): the harness's exit would leave it
+	// running, on a database no local.json names.
+	instance, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(instance, "bun", "run", "dispatch:local")
 	cmd.Dir = root
 	cmd.Env = localEnv(os.Environ(), dbURL, env, *keep)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 30 * time.Second
+	stopped := func(err error) int {
+		cancel()
+		cmd.Wait()
+		return fail(err)
+	}
 	logFile, err := os.OpenFile(filepath.Join(*out, "local.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fail(err)
@@ -275,11 +286,11 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			// The instance reset and seeded its database while it started, unless --keep.
 			seeded, err := databaseSeeded(ctx, dbURL, name, *keep)
 			if err != nil {
-				return fail(err)
+				return stopped(err)
 			}
 			inst.Seeded = seeded
 			if err := writeJSON(localJSON, inst); err != nil {
-				return fail(err)
+				return stopped(err)
 			}
 			fmt.Fprintf(stdout, "local Dispatch at %s on database %s; %s holds it. Stop it with Ctrl-C or SIGTERM.\n", inst.BaseURL, name, localJSON)
 		}

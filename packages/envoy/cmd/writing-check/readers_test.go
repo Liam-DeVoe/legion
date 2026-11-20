@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -361,5 +363,30 @@ func TestAnEventThatDoesNotDecodeLeavesTheReplayWhereItWas(t *testing.T) {
 	}
 	if s.Through != 3 || s.Events != 1 {
 		t.Errorf("after the refused event the replay is through %d with %d events, want through 3 with 1", s.Through, s.Events)
+	}
+}
+
+// fetch and readers, which read Dispatch's own texts, refuse an output path inside a repository
+// before they read anything: fetch's cases file, and readers' cases file and replayed state.
+func TestFetchAndReadersRefuseAnOutputInsideARepository(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(t.TempDir(), "token"))
+	in, inside := filepath.Join(t.TempDir(), "cases.jsonl"), filepath.Join(repo, "data", "cases.jsonl")
+	for _, args := range [][]string{
+		{"fetch", "--through", "10", "--out", inside},
+		{"readers", "--in", in, "--log-through", "10", "--out", inside},
+		{"readers", "--in", in, "--log-through", "10", "--out", filepath.Join(t.TempDir(), "readers.jsonl"), "--state", filepath.Join(repo, "state.json")},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(t.Context(), args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), " is inside the repository at "+repo+": its files hold Dispatch text") {
+			t.Errorf("%v = %d:\n%s", args, code, stderr.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, "data")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused command made %s (%v)", filepath.Join(repo, "data"), err)
 	}
 }

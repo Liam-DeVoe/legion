@@ -90,7 +90,8 @@ type writerTurn struct {
 
 // call makes the writer's call for prompt with the turn's inputs and its session, if any, as one
 // user message in the writer's order. The session part follows the text before it after a blank
-// line (claude.Client.CallWithSession).
+// line (claude.Client.CallWithSession). The record, the text, the message and the session part
+// are embedded (messageTags), so each text the writer writes back is read unescaped (unembedded).
 func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTurn, schema json.RawMessage) (llm.Response, error) {
 	var b strings.Builder
 	if err := writerPrompts.ExecuteTemplate(&b, prompt, writerData{
@@ -104,7 +105,7 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 	if w.Order == writerSessionFirst {
 		req.User, after = record, rest
 	}
-	return w.Model.CallWithSession(ctx, req, turn.session, after)
+	return w.Model.CallWithSession(ctx, req, turn.session.Embedded(messageTags), after)
 }
 
 // rewriteSchema is the schema of the writer's text written again.
@@ -124,7 +125,7 @@ func (w *Writer) Rewrite(ctx context.Context, purpose string, turn writerTurn) (
 	if err := json.Unmarshal(resp.Value, &reply); err != nil || strings.TrimSpace(reply.Text) == "" {
 		return "", call, fmt.Errorf("the writer's %s reply holds no text: %s", purpose, resp.Value)
 	}
-	return strings.TrimSpace(reply.Text), call, nil
+	return unembedded(strings.TrimSpace(reply.Text)), call, nil
 }
 
 // The writer's actions on a review's findings (change 3).
@@ -159,7 +160,7 @@ func (w *Writer) ActOnFindings(ctx context.Context, turn writerTurn) (FindingsAc
 	if err := json.Unmarshal(resp.Value, &reply); err != nil {
 		return FindingsAction{}, call, fmt.Errorf("the writer's findings reply: %w", err)
 	}
-	act := FindingsAction{Action: reply[numbered(0, "action")], Text: strings.TrimSpace(reply[numbered(1, "text")]), Reason: strings.TrimSpace(reply[numbered(2, "reason")])}
+	act := FindingsAction{Action: reply[numbered(0, "action")], Text: unembedded(strings.TrimSpace(reply[numbered(1, "text")])), Reason: unembedded(strings.TrimSpace(reply[numbered(2, "reason")]))}
 	switch {
 	case act.Action == actionEdit && act.Text == "":
 		return act, call, fmt.Errorf("the writer edited its text to nothing: %s", resp.Value)
@@ -177,7 +178,7 @@ func (w *Writer) Answer(ctx context.Context, turn writerTurn) (string, Call, err
 	if err != nil {
 		return "", call, err
 	}
-	answer := strings.TrimSpace(resp.Text)
+	answer := unembedded(strings.TrimSpace(resp.Text))
 	if answer == "" {
 		return "", call, fmt.Errorf("the writer gave an empty answer")
 	}

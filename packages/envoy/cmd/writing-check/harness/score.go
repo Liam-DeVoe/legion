@@ -966,7 +966,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			if inst, err = readLocalInstance(*localPath); err != nil {
 				return usage(err.Error())
 			}
-			if run.loaded, err = readLoaded(*loadedPath); err != nil {
+			if run.loaded, err = readLoaded(*loadedPath, inst.records()); err != nil {
 				return usage(err.Error())
 			}
 			if run.rules, err = instanceRules(inst, *plan); err != nil {
@@ -1326,18 +1326,30 @@ func printDryRun(w io.Writer, groups []string, selected []*Case, lanes []*lane) 
 
 // scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once
 // (scorer.scoreCase), and appends each lane's result to the lane's cases.jsonl as the case ends.
+// A result its line does not hold is scored again by the next run, so the run stops at the first
+// line that is not written, and answers it; else it answers a file's failure to close.
 func scoreAll(ctx context.Context, s *scorer, lanes []*lane, cases []*Case, workers int, progress io.Writer, started time.Time) error {
-	files := make([]*os.File, len(lanes))
-	for i, l := range lanes {
-		f, err := os.OpenFile(filepath.Join(l.out, "cases.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	files := make([]*lineFile, 0, len(lanes))
+	closeAll := func() error {
+		var first error
+		for _, f := range files {
+			if err := f.close(); err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+	for _, l := range lanes {
+		f, err := appendLines(filepath.Join(l.out, "cases.jsonl"))
 		if err != nil {
+			closeAll()
 			return err
 		}
-		defer f.Close()
-		files[i] = f
+		files = append(files, f)
 	}
+	scoreCtx, stop := context.WithCancel(ctx)
+	defer stop()
 	var mu sync.Mutex
-	var writeErr error
 	ended, failed := 0, 0
 	feed := make(chan *Case)
 	var wg sync.WaitGroup
@@ -1353,18 +1365,15 @@ func scoreAll(ctx context.Context, s *scorer, lanes []*lane, cases []*Case, work
 						in, changes = append(in, i), append(changes, l.change)
 					}
 				}
-				results := s.scoreCase(ctx, c, changes)
-				if ctx.Err() != nil {
+				results := s.scoreCase(scoreCtx, c, changes)
+				if scoreCtx.Err() != nil {
 					return
 				}
 				mu.Lock()
 				for k, res := range results {
 					l := lanes[in[k]]
-					line, err := json.Marshal(res)
-					if err == nil && writeErr == nil {
-						_, writeErr = files[in[k]].Write(append(line, '\n'))
-					} else if writeErr == nil {
-						writeErr = err
+					if err := files[in[k]].add(res); err != nil {
+						stop()
 					}
 					l.scored++
 					if res.Error != "" {
@@ -1389,11 +1398,14 @@ feeding:
 	for _, c := range cases {
 		select {
 		case feed <- c:
-		case <-ctx.Done():
+		case <-scoreCtx.Done():
 			break feeding
 		}
 	}
 	close(feed)
 	wg.Wait()
-	return writeErr
+	if err := closeAll(); err != nil {
+		return fmt.Errorf("%w: the cases scored after it have no result, so run it again to score them", err)
+	}
+	return nil
 }

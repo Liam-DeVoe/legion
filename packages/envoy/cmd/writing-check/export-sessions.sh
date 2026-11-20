@@ -10,11 +10,13 @@
 #             with the latest cut time of its cases.
 # --exclude   one session id per line: the sessions to leave out, none of whose rows is read. The
 #             owner's answer reads every session (dataset/DATASET, sessions_read), so it is empty.
-# --out       an empty directory. The script writes parts part-NNN.jsonl.gz (each at most 24 MiB)
-#             and manifest.json, then prints the rows found for each session. Before a row is
-#             written, every match of a secret pattern in any of its text values becomes a marker
-#             naming the pattern ([REDACTED:<name>]), and manifest.json counts the masks of each
-#             session by pattern (masks_by_session).
+# --out       an empty directory outside any repository: a path at or under a directory that
+#             holds .git or .jj is refused, since its files hold the sessions' text, as every
+#             step of the dataset refuses one. The script writes parts part-NNN.jsonl.gz (each at
+#             most 24 MiB) and manifest.json, then prints the rows found for each session. Before
+#             a row is written, every match of a secret pattern in any of its text values becomes
+#             a marker naming the pattern ([REDACTED:<name>]), and manifest.json counts the masks
+#             of each session by pattern (masks_by_session).
 #
 # Each row is one message part of the store's messages table, read with
 # `tq sql --format JSONEachRow`: session_id, host, seq, ts, role, kind, text, raw_file, raw_line.
@@ -50,6 +52,17 @@ command -v python3 >/dev/null || { echo "export-sessions: python3 is required" >
 tq="${TQ:-tq}"
 command -v "$tq" >/dev/null || { echo "export-sessions: $tq is not on PATH" >&2; exit 2; }
 batch="${BATCH:-50}"
+# --out is absolute and clean as the harness reads it (OutsideRepository, filepath.Abs), so each
+# directory it walks up is one that holds --out.
+dir=$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$out")
+while :; do
+	if [ -e "$dir/.git" ] || [ -e "$dir/.jj" ]; then
+		echo "export-sessions: --out $out is inside the repository at $dir: its files hold Dispatch text, so give a path under \$TMPDIR" >&2
+		exit 2
+	fi
+	[ "$dir" != / ] || break
+	dir=$(dirname -- "$dir")
+done
 mkdir -p "$out"
 if [ -n "$(ls -A "$out")" ]; then
 	echo "export-sessions: $out is not empty" >&2

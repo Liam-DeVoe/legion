@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -143,7 +144,7 @@ func newRewriteRig(t *testing.T, capabilities []string, rules ...modeltest.Rule)
 	stand := modeltest.New(t, rules...)
 	listenerURL, listener := newRewriteListener(t, capabilities...)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: DefaultReviewerRules, SideQuestionWait: 15 * time.Second}),
+		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules, SideQuestionWait: 15 * time.Second}),
 		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second,
 	})
 	rig := &rewriteRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}

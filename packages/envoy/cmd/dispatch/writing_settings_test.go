@@ -279,7 +279,7 @@ func leastCharged(t *testing.T, prefix string) (least, bound int) {
 		rewriteDefineModel: {reviewer.PurposeRewrite, reviewer.PurposeDefine},
 		testModelsPrefix:   {reviewer.PurposeReview, reviewer.PurposeRewrite, reviewer.PurposeDefine},
 	}[prefix]
-	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules, purposes...)
+	runes, err := reviewer.LeastSystemPromptRunes(reviewer.DefaultRules, purposes...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 // charges, and this holds the two together.
 func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T) {
 	least, bound := leastCharged(t, reviewerModel)
-	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules, reviewer.PurposeReview)
+	runes, err := reviewer.LeastSystemPromptRunes(reviewer.DefaultRules, reviewer.PurposeReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestAnAnthropicGroupCallsPlainHTTPOnlyInsideTheCluster(t *testing.T) {
 func writingSettingCases() map[string]func(t *testing.T) {
 	cases := map[string]func(t *testing.T){
 		"DISPATCH_REVIEWER_RULES": func(t *testing.T) {
-			if got := resolveWith(t, nil).Writing.ReviewerRules; !slices.Equal(got, api.DefaultReviewerRules) {
+			if got := resolveWith(t, nil).Writing.ReviewerRules; !slices.Equal(got, reviewer.DefaultRules) {
 				t.Errorf("unset: ReviewerRules = %v", got)
 			}
 			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": " detector, structure,,detector "}).Writing.ReviewerRules; !slices.Equal(got, []reviewer.RuleSet{reviewer.RuleDetector, reviewer.RuleStructure}) {

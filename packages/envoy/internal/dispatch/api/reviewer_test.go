@@ -255,7 +255,7 @@ func reviewerModel(url string) reviewer.Model {
 
 // testReviewer is NewReviewer of cfg with each field a test leaves zero set as cmd/dispatch sets
 // its setting unset: every kind off, reviewer.DefaultTimeout, DefaultWriterWindow, UneditedRewrite
-// and DefaultReviewerRules, and the model's time bound the review's.
+// and reviewer.DefaultRules, and the model's time bound the review's.
 func testReviewer(cfg ReviewerConfig) *Reviewer {
 	for _, choice := range []*string{&cfg.Asks, &cfg.Issues, &cfg.Comments, &cfg.Messages, &cfg.Documents, &cfg.DecisionBlocks} {
 		*choice = cmp.Or(*choice, ReviewOff)
@@ -264,7 +264,7 @@ func testReviewer(cfg ReviewerConfig) *Reviewer {
 	cfg.WriterWindow = cmp.Or(cfg.WriterWindow, DefaultWriterWindow)
 	cfg.Unedited = cmp.Or(cfg.Unedited, UneditedRewrite)
 	if cfg.Rules == nil {
-		cfg.Rules = DefaultReviewerRules
+		cfg.Rules = reviewer.DefaultRules
 	}
 	cfg.Model.Timeout = cmp.Or(cfg.Model.Timeout, cfg.Timeout)
 	return NewReviewer(cfg)

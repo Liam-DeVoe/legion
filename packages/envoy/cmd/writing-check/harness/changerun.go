@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,27 +67,22 @@ func readLocalInstance(path string) (LocalInstance, error) {
 	return inst, nil
 }
 
-// readLoaded reads loaded.jsonl: the last line of each case that holds no error.
-func readLoaded(path string) (map[string]Loaded, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]Loaded{}
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		var l Loaded
-		if json.Unmarshal(line, &l) == nil && l.CaseID != "" && l.Error == "" {
-			out[l.CaseID] = l
-		}
-	}
-	return out, nil
+// The local Dispatch's settings a change reads, and their values unset: the server's own defaults
+// (reviewer.DefaultRules and reviewer.DefaultTimeout, as cmd/dispatch writes them), and no rule
+// set beside the written rules.
+var localSettingDefaults = map[string]string{
+	"DISPATCH_REVIEWER_RULES":      ruleSetList(reviewer.DefaultRules),
+	"DISPATCH_WRITING_RULES_EXTRA": "",
+	"DISPATCH_REVIEWER_TIMEOUT":    strconv.Itoa(int(reviewer.DefaultTimeout/time.Second)) + "s",
 }
 
-// The local Dispatch's settings a change reads, and their values unset.
-var localSettingDefaults = map[string]string{
-	"DISPATCH_REVIEWER_RULES":      "noslop,phrases,reader_words,ask_parts",
-	"DISPATCH_WRITING_RULES_EXTRA": "",
-	"DISPATCH_REVIEWER_TIMEOUT":    "120s",
+// ruleSetList is sets as a comma list, as DISPATCH_REVIEWER_RULES names them.
+func ruleSetList(sets []reviewer.RuleSet) string {
+	names := make([]string, len(sets))
+	for i, set := range sets {
+		names[i] = string(set)
+	}
+	return strings.Join(names, ",")
 }
 
 // readSettings are the local Dispatch's settings a change reads, as the instance runs them: each

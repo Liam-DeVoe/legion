@@ -4,7 +4,9 @@
 of INFRA-3189. It is a development tool. No image and no release ships it.
 
 Every file it writes holds Dispatch text or model replies. Write them under `$TMPDIR`, never into
-a repository.
+a repository. The commands that read Dispatch's own texts (`fetch`, `readers` and the steps of
+`dataset`) and the harness refuse an output path inside a repository: a directory at or above it
+that holds `.git` or `.jj`.
 
 ```sh
 go run ./cmd/writing-check probe-model --kind <kind> --endpoint <url> --deployment <id> [flags]
@@ -810,8 +812,9 @@ step refuses an output path inside a repository, as the harness does.
 the snapshot's header and `owner_sha256`, the SHA-256 of its owner, and the SHA-256 of
 `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`, so a rebuild compares with `DATASET`
 on its inputs and those three outputs. `owner_sha256` is the SHA-256 of the owner's login as the
-header holds it (lower case, no blank around it), so neither `DATASET` nor the build's output
-names an address; a reader who holds the login checks it with `printf %s <login> | sha256sum`.
+header holds it (lower case, no blank around it), so neither `DATASET` nor what `build` prints
+names an address (the build's `counts.json` holds the owner as the header gives it); a reader who
+holds the login checks it with `printf %s <login> | sha256sum`.
 `build` does not read `DATASET`.
 
 `named` is not one of these steps. It builds cases from document versions and asks that it reads
@@ -943,8 +946,9 @@ snapshot that holds an event created after the `end` of its header, and a header
 event time that is no RFC 3339 time; the error gives the first such event's id and time.
 `classify`, `owner-texts` and `followups`, which read the same snapshot, refuse it too. `build`
 writes its four files into a directory under `--out` and moves them into `--out` only once the
-whole build has passed, so a refused build leaves `--out` as it was, the files of an earlier
-build in it included. It makes the four groups of R1:
+whole build has passed, so a refused build leaves `--out` as it was: the files of an earlier
+build in it stay, and an `--out` that did not exist is not left behind, with `--from` too. It
+makes the four groups of R1:
 
 - **question**: each owner text with the verdict `asks_word_meaning`, `cannot_understand` or
   `jargon_complaint`, with the agent text it answers.
@@ -1506,7 +1510,8 @@ The harness sets no cache mark on its own calls: `llm.Runner` asks agentloop for
 one user message of one text block, the layout the harness sent before it marked prefixes for the
 cache (its code at the parent of commit 00f3c570). The bytes are that code's too, except the
 fresh reader's and the `answered` and `first_paragraph` grader's prompts, and `answered`'s user
-message, which changed with the calibration of `answered` (see "Calibrating answered").
+message, which changed with the calibration of `answered` (see "Calibrating answered"), and a
+text that holds one of the messages' tags (below).
 
 - A grading call sends its judgement's own prompt (its `grade-*.md`) as its system prompt, and its
   judgement's own reply schema. Its user message holds the parts that the judgement's input mode
@@ -1518,6 +1523,18 @@ message, which changed with the calibration of `answered` (see "Calibrating answ
 - The writer sends Dispatch's record, its text, Dispatch's message and, after a blank line, its
   session part. `score --writer-order session-first` sends the session part after the record,
   before the text and the message, and `run.json` records the order as `writer_order`.
+
+Each text a message holds, the session part among them, is escaped as the server's reviewer
+escapes the texts of its record (`internal/dispatch/prompttags`): every opening and closing of one
+of the harness's tags (the record's `record`, `issue`, `project`, `document`, `other_documents`,
+`thread` and `entry`, each tag of the grader's, the check's, the fresh reader's and the writer's
+messages, and `writer_session`) has its `<` written `&lt;`, in any case, and each such escape a
+text already holds gains an `amp;`, so no text opens or closes a part of the message. A text that
+holds neither is sent byte for byte as before, and a call's `input_sha256` reads its texts as the
+message holds them. The words a reply copies from a text are read with the escape undone before
+they are looked up in it: the grader's quotes and facts, the check's input words (looked up in the
+record and the session part as their texts hold them), the fresh reader's answer and the writer's
+text.
 
 `TestTheWriterSendsWhatItSentBeforeTheCacheMarks` holds the writer's call to the SHA-256 of the
 system prompt and the user message that the code at that parent sent for a fixture written for
@@ -2070,8 +2087,9 @@ the harness sent before the flag. `TestEveryJudgementTheVariantDoesNotChangeSend
 holds each judgement's system prompt, user message and `input_sha256` to those of the code before
 the flag (commit afdb071c), on a fixture written for the test, in the full and the final input
 modes; `answered` and `first_paragraph` to those of their calibrated prompts (see "Calibrating
-answered"). Under each other variant, the test holds to them each judgement that the variant does
-not change.
+answered"); and `phrases` to that code's with the table of the phrases `skills/plain-words` tells
+agents to stop as the skill now holds it, whose "name a date" row is main's. Under each other
+variant, the test holds to them each judgement that the variant does not change.
 
 - `inputs-first` changes the requests of `lost` and `added` alone. Their reply schema and the
   system prompt of `added` do not change. The system prompt of `lost` has one more line in its
@@ -2225,7 +2243,9 @@ it does not hold) is left out and named in the case's line. `loaded.jsonl` holds
 stands, each line with the database and the `seeded` mark of `local.json`, and a load continues
 the cases it holds no line for. It refuses a `loaded.jsonl` of another database or mark, before it
 reaches the database, since those records are not in the instance; a `--keep` restart keeps both,
-so a load continues there. A line that is not written stops the load and fails it. Write times
+so a load continues there. `score --loaded` refuses such a file too, before it calls a model or
+claims a held-out run in the exposure log. A line that is not written stops the load and fails it.
+So does a line of `score`'s `cases.jsonl`. Write times
 and authors differ from
 production, so the grader reads the record from the dataset, never from the local instance.
 `load --sample N --sample-seed S --groups G` loads the cases
