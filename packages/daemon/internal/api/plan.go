@@ -150,7 +150,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 // sub-architect's (record.ArchitectOfTree, the rule every architect operation holds it to,
 // architectForIssue), and its plan is given at its generation. One the daemon has not recorded — a
 // child before release_children records it — is the tree's when Dispatch's parent chain
-// reaches the tree (dispatchTreeMember) and it has not entered the workflow, triage, backlog,
+// reaches the tree (treeChain) and it has not entered the workflow, triage, backlog,
 // icebox or todo, and its plan is given at generation 0, where it waits for the issue's first step.
 // These reads come before the fact lock, so each refusal here is an early one: the workflow judges
 // the giver and the generation again on the record its fact reads (workflow's planGiven).
@@ -175,8 +175,12 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return credential.Grant{}, 0, false
 	}
-	unrecorded, ok := s.dispatchTreeMember(w, r, grant.Tree, issue, s.cachedIssueReader(registerPlanRoute))
-	if !ok {
+	read := s.cachedIssueReader(registerPlanRoute)
+	unrecorded, found := read(w, r, issue)
+	if !found {
+		return credential.Grant{}, 0, false
+	}
+	if _, ok := treeChain(w, r, issue, unrecorded, grant.Tree, read); !ok {
 		return credential.Grant{}, 0, false
 	}
 	switch unrecorded.Status {
