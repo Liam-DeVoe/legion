@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -785,11 +786,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
 	if refused := readClassRefusals(); len(refused) > 0 {
-		// A GET row with no class is a row nobody has read for what it writes, and an entry that
-		// names no GET row reads as though it classed a route that is not there, so the table is
-		// refused rather than mounted with a read-only token served or refused by nothing anyone
+		// A GET row with no class is a row nobody has read for what it writes, a GET row with no
+		// as_of kind is a row nobody has decided an as_of for, and an entry that names no GET row
+		// reads as though it classed a route that is not there, so the table is refused rather
+		// than mounted with a read-only token or an as_of served or refused by nothing anyone
 		// decided (readClasses).
-		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
+		panic("api.Register: the route table's read class does not class every GET row exactly once with its as_of kind: " + strings.Join(refused, "; "))
 	}
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
@@ -874,6 +876,13 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// told to continue is handled as it is for every other early answer.
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
+	// Outside the scope gate and every layer inside it, so a request that sends as_of to a row
+	// that holds no history, or an as_of the row cannot read, is refused before anything the row
+	// does: before the row's own scopes, an id prefix's lookup, the stored-text check, the
+	// project and session checks and the Idempotency-Key, none of which it reaches, so it claims
+	// no key. It is inside the read-only gate, which resolves the caller first, so the cut a
+	// read-only token carries is known before as_of is read (asOfGate).
+	handler = s.asOfGate(route.Method+" "+route.Pattern, route.Read, handler)
 	// Outside the scope gate and every layer inside it, so a read-only token on a row outside
 	// the read class, or one that carries a cut on a read that answers no cut, is refused before
 	// anything the row does: before the row's own scopes, which would name a scope to ask for
@@ -1509,6 +1518,88 @@ func (s *server) presentsPersonalToken(r *http.Request) bool {
 	}
 	return s.deps.OIDC == nil || !oidc.LooksLikeJWT(token)
 }
+
+// asOfGate is the one place a request's as_of query parameter is read: register wraps every row
+// of the table in it, name being the row's "<method> <pattern>" and entry its read class
+// (apiRoute.Read), whose AsOf is the row's as_of kind and the zero kind on every row that is not
+// a GET row. It runs just inside the read-only gate (refuseReadOnlyToken), which has resolved the
+// caller (resolvedCallerKey) and refused a read-only token on every row outside the read class,
+// and outside the row's scopes, the prefix layer, the stored-text check and the keyed layer.
+//
+// A caller whose credential carries a cut (model.Credential.Cut) reads at that cut, whatever
+// as_of it sends, so the layer reads no as_of for it. For every other caller:
+//
+//   - A request with no as_of runs next as it always did. The layer reads no database and puts
+//     nothing on the context.
+//   - A request that sends as_of to a row that does not answer it (asOfNoHistory, asOfCaller, and
+//     every row that is not a GET row) is answered 400 AS_OF_NOT_SERVED, naming the row, and next
+//     does not run.
+//   - On a row that answers as_of (asOfAnswers), asof.ParseCut reads the value and rounds it down
+//     to the microsecond. A value it cannot read, an as_of sent more than once, and a cut later
+//     than the database's now() are answered 400 INVALID_AS_OF, and next does not run. Any other
+//     cut goes on the context (asof.WithCut), and next runs under it: the store binds every
+//     statement that next sends under that context to the cut, and refuses every write
+//     (store.Pool, asof.Bind). So the layer first resolves the caller, with no cut on the
+//     context, where nothing has resolved it yet: a resolution can write the caller's own
+//     bookkeeping (the people row a sign-in records, a membership's confirmation), which is no
+//     write of the read. It carries the result on the context, its refusal included
+//     (resolvedCallerKey), as resolvePersonalToken does, and every layer behind it and the
+//     handler read that result (optionalActor).
+func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
+	answers := entry.AsOf == asOfAnswers
+	notServed := asOfParameter + ": " + name + " holds no history; it answers the present only"
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		if decided && caller.err == nil && caller.actor.Credential != nil && !caller.actor.Credential.Cut.IsZero() {
+			next(w, r)
+			return
+		}
+		if r.URL.RawQuery == "" {
+			next(w, r)
+			return
+		}
+		values, sent := r.URL.Query()[asOfParameter]
+		if !sent {
+			next(w, r)
+			return
+		}
+		if !answers {
+			writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest, notServed)
+			return
+		}
+		if len(values) > 1 {
+			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+				"as_of is in the request %d times: send one as_of", len(values)))
+			return
+		}
+		cut, err := asof.ParseCut(values[0])
+		if err != nil {
+			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, err.Error())
+			return
+		}
+		// The database's present time, read once a request. The context carries no cut yet, so
+		// the store sends the statement as it is written.
+		var now time.Time
+		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select now()`).Scan(&now); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("read the database's present time to check as_of: %w", err))
+			return
+		}
+		if cut.Time().After(now) {
+			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+				"as_of %s is later than the database's present time, %s: a read at a past time answers only a time that is past",
+				cut, now.UTC().Format(time.RFC3339Nano)))
+			return
+		}
+		if !decided {
+			actor, human, err := s.optionalActor(r)
+			r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
+		}
+		next(w, r.WithContext(asof.WithCut(r.Context(), cut)))
+	}
+}
+
+// asOfParameter is the query parameter that asks a read for what existed at a past time.
+const asOfParameter = "as_of"
 
 // actingPerson answers the person a request acts for, on a route gateRouteScopes has already
 // held to the `person` scope. It names no scope of the route's own: the table decides those, and
