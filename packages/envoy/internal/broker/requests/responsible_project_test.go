@@ -1,13 +1,11 @@
 package requests
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // wantListed fails t unless exactly the logins in want, of every login in all, list recordID.
@@ -33,7 +32,9 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // none of these rows was on the reader's list, and none asked Dispatch anything. Each now asks
 // whether its own person may see it, but all of them share listFallbackBound: once it is spent,
 // the rest are left off without a question, so the list costs at most the bound's worth of
-// questions, not two per row. It counts the questions Dispatch was asked, not time.
+// questions, not two per row. It counts the questions Dispatch was asked, not time. Every row the
+// clock left off is off exactly the list it should be off, since its responsible person may see
+// it, so the list writes one line counting them and no line for any one of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	const rows = 20
 	const takes = 300 * time.Millisecond
@@ -48,6 +49,8 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	answerFrom(t, m, dispatchRows(publicTeam))
 	var asked atomic.Int32
 	m.Projects = slowAccess{inner: m.Projects, takes: takes, asked: &asked}
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
 	listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %d rows, %v; want none: every row is another person's, who may see it", insider, len(listed), err)
@@ -60,6 +63,17 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	const most = 7
 	if asked.Load() > most {
 		t.Fatalf("the list asked Dispatch %d questions for %d other people's rows; want at most %d", asked.Load(), rows, most)
+	}
+	// A row is read whole in two questions, so at most most/2 rows were, and the clock left off
+	// every other row, whether in the middle of its read or before it.
+	wantNoLine(t, capture, rowUnansweredMessage, fallbackUnreadMessage)
+	cut := linesOf(capture, fallbackCutMessage)
+	if len(cut) != 1 {
+		t.Fatalf("the list wrote %d lines counting the rows its clock left off: %v; want one", len(cut), cut)
+	}
+	n, err := strconv.Atoi(cut[0]["rows"])
+	if err != nil || n < rows-most/2 || n > rows || cut[0]["reader"] != insider || cut[0]["level"] != "WARN" {
+		t.Fatalf("the list's count line = %v; want WARN, reader %s and from %d to %d rows", cut[0], insider, rows-most/2, rows)
 	}
 }
 
@@ -99,51 +113,94 @@ func strandedRow(t *testing.T) (*Machine, string) {
 	return m, *req.RecordID
 }
 
-// capturedLog is every line the package's slog writes at WARN or above while the test runs.
-func capturedLog(t *testing.T) *bytes.Buffer {
+// wantLine fails t unless capture holds exactly one line of message, at WARN and naming the
+// record recordID, and answers its attributes.
+func wantLine(t *testing.T, capture *logtest.Recorder, message, recordID string) map[string]string {
 	t.Helper()
-	var buf bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	return &buf
+	lines := linesOf(capture, message)
+	if len(lines) != 1 || lines[0]["record"] != recordID || lines[0]["level"] != "WARN" {
+		t.Fatalf("the log holds %v of %q; want one line at WARN naming record %s", lines, message, recordID)
+	}
+	return lines[0]
+}
+
+// wantNoLine fails t when capture holds any line of the messages.
+func wantNoLine(t *testing.T, capture *logtest.Recorder, messages ...string) {
+	t.Helper()
+	for _, message := range messages {
+		if lines := linesOf(capture, message); len(lines) != 0 {
+			t.Errorf("the log holds %v of %q; want none", lines, message)
+		}
+	}
+}
+
+// wantUnreadLine fails t unless capture holds exactly one line of the fallback's failed read
+// (logFallbackUnread), naming the record recordID and its responsible person, the fixture's
+// operator, and no other line about a row the list left off.
+func wantUnreadLine(t *testing.T, capture *logtest.Recorder, recordID string) {
+	t.Helper()
+	if line := wantLine(t, capture, fallbackUnreadMessage, recordID); line["responsible"] != fixtureOperator || line["list"] != "pending" || line["error"] == "" {
+		t.Fatalf("the list's line for %s = %v; want it to name the pending list, its responsible person %s and the error", recordID, line, fixtureOperator)
+	}
+	wantNoLine(t, capture, rowUnansweredMessage, fallbackCutMessage)
 }
 
 // TestTheFallbackFailsClosed: listedInStead lists a row whose responsible person may not see it
 // only for a reader whose own read answered that they may, and whose read of that person
-// answered that they may not. A read that fails leaves the row off, whichever read it is:
-//   - control: the stranded row is on insider's list and off outsider's;
+// answered that they may not. A read that fails leaves the row off, whichever read it is, and
+// writes one line for the row, naming the record and its responsible person
+// (logFallbackUnread), so a request a failed read leaves on nobody's list says so:
+//   - control: the stranded row is on insider's list and off outsider's, and nothing is logged;
 //   - outsider's own read fails: the row stays off outsider's list, though the responsible
 //     person's read would answer;
 //   - the responsible person's read fails: the row stays off insider's list;
-//   - an outage: the stranded row is off insider's list, and the row it left off is logged,
-//     naming the record and its responsible person, so a request an outage leaves on nobody's
-//     list says so.
+//   - an outage: the stranded row is off insider's list;
+//   - an outage, read on the responsible person's own list: the row is off it, and the line is
+//     the one the reader's own rows write (logRowUnanswered), not the fallback's.
 func TestTheFallbackFailsClosed(t *testing.T) {
 	t.Run("control", func(t *testing.T) {
 		m, stranded := strandedRow(t)
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{insider, outsider}, []string{insider})
+		wantNoLine(t, capture, rowUnansweredMessage, fallbackUnreadMessage, fallbackCutMessage)
 	})
 	t.Run("the reader's own read fails", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		m.Projects = failForPerson{inner: m.Projects, person: outsider}
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{outsider}, nil)
+		wantUnreadLine(t, capture, stranded)
 	})
 	t.Run("the responsible person's read fails", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		m.Projects = failForPerson{inner: m.Projects, person: fixtureOperator}
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{insider}, nil)
+		wantUnreadLine(t, capture, stranded)
 	})
 	t.Run("an outage", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
 		dispatch.SetDown(true)
-		logged := capturedLog(t)
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{insider}, nil)
-		line := logged.String()
-		if !strings.Contains(line, rowUnansweredMessage) || !strings.Contains(line, stranded) || !strings.Contains(line, "responsible="+fixtureOperator) {
-			t.Fatalf("the list logged %q; want one line saying it left off %s, naming its responsible person %s", line, stranded, fixtureOperator)
+		wantUnreadLine(t, capture, stranded)
+	})
+	t.Run("an outage, on the responsible person's own list", func(t *testing.T) {
+		m, stranded := strandedRow(t)
+		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
+		dispatch.SetDown(true)
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
+		wantListed(t, m, stranded, []string{fixtureOperator}, nil)
+		if line := wantLine(t, capture, rowUnansweredMessage, stranded); line["list"] != "pending" || line["error"] == "" {
+			t.Fatalf("the operator's list's line for %s = %v; want it to name the pending list and the error", stranded, line)
 		}
+		wantNoLine(t, capture, fallbackUnreadMessage, fallbackCutMessage)
 	})
 }
 

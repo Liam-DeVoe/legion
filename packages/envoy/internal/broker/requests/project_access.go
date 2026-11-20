@@ -372,10 +372,10 @@ func (m *Machine) logChannelsMissing(project string) {
 }
 
 // rowUnansweredMessage is the log line for a row an approver's list leaves out because the
-// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable), or,
-// for a row whose responsible person is someone else (listedInStead), because a read failed or
-// the list's clock ran out: the row is hidden from that list alone, failing closed, and the rest
-// of the list is answered.
+// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable): the
+// row is hidden from that list alone, failing closed, and the rest of the list is answered. A
+// row whose responsible person is someone else has lines of its own (fallbackUnreadMessage,
+// fallbackCutMessage), since such a row belongs on the list only where that person may not see it.
 const rowUnansweredMessage = "an approver's list leaves out a row whose project Dispatch could not be asked about; it is listed again once Dispatch answers"
 
 // logRowUnanswered writes rowUnansweredMessage for the one row key names, with attrs and err,
@@ -384,6 +384,40 @@ const rowUnansweredMessage = "an approver's list leaves out a row whose project 
 func (m *Machine) logRowUnanswered(key string, err error, attrs ...any) {
 	if m.rowsUnansweredLogged.due(key) {
 		slog.Warn(rowUnansweredMessage, append(attrs, "error", err)...)
+	}
+}
+
+// fallbackUnreadMessage is the log line for a row whose responsible person is someone else
+// (listedInStead) that an approver's list leaves out because a read of Dispatch failed, the
+// reader's or that person's. All the broker knows is that it could not tell whether the row
+// belongs on the list, which it does only where that person may not see it; so the line names
+// the person, and an operator who finds that person off the row's project has found a request
+// waiting on nobody's list.
+const fallbackUnreadMessage = "an approver's list leaves out a row whose responsible person is someone else, since Dispatch could not be asked whether the row belongs there too; it belongs there only where that person may not see it"
+
+// logFallbackUnread writes fallbackUnreadMessage for the record recordID, naming responsible, the
+// person its record names, and err, the read's error, once per projectaccess.CacheTTL however
+// often its list is read, as logRowUnanswered does.
+func (m *Machine) logFallbackUnread(recordID, responsible string, err error) {
+	if m.rowsUnansweredLogged.due("fallback " + recordID) {
+		slog.Warn(fallbackUnreadMessage, "list", "pending", "record", recordID, "responsible", responsible, "error", err)
+	}
+}
+
+// fallbackCutMessage is the log line for the rows whose responsible person is someone else
+// (listedInStead) that an approver's list leaves out unread because its time for them ran out
+// (listFallbackBound). Each such row is listed for its responsible person wherever that person may
+// see it, and the broker read nothing that says which rows are not; so the line counts them, one
+// line for the list, rather than name every row as a request that may wait on nobody's list.
+const fallbackCutMessage = "an approver's list leaves out, unread, rows whose responsible person is someone else, since its time for reading them ran out; each belongs there only where that person may not see it"
+
+// logFallbackCut writes fallbackCutMessage for reader's list, counting rows and naming err, the
+// list's clock's error, once per reader per projectaccess.CacheTTL however often that list is
+// read: a list is read on every 15 s poll of every open Inbox tab, and while Dispatch is slow
+// every one of them runs out of the clock.
+func (m *Machine) logFallbackCut(reader string, rows int, err error) {
+	if m.rowsUnansweredLogged.due("cut " + reader) {
+		slog.Warn(fallbackCutMessage, "list", "pending", "reader", reader, "rows", rows, "bound", listFallbackBound, "error", err)
 	}
 }
 

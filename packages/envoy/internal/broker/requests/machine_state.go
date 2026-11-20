@@ -380,8 +380,9 @@ type Machine struct {
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
 	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project, and
-	// rowsUnansweredLogged rowUnansweredMessage to one per listed row, per projectaccess.CacheTTL:
-	// each machine's own, so one machine's lines never silence another's.
+	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row and
+	// fallbackCutMessage to one per reader, per projectaccess.CacheTTL: each machine's own, so one
+	// machine's lines never silence another's.
 	channelsMissingLogged logThrottle
 	rowsUnansweredLogged  logThrottle
 	reasonsUnreadLogged   logThrottle

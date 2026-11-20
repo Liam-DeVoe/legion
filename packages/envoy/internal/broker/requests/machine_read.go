@@ -1569,15 +1569,29 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// of the list is answered. A row whose responsible person is someone else is listed only where
 	// that person may not see it (listedInStead), within the list's one clock, listFallbackBound
 	// from here, so that however many people's rows touch a project, and however slowly Dispatch
-	// answers, they cannot keep the list from its caller.
+	// answers, they cannot keep the list from its caller. Such a row left off because a read
+	// failed is logged for itself, naming its responsible person (logFallbackUnread); the rows left
+	// off once the clock has run out are counted in one line for the list (logFallbackCut), since
+	// each of them is on its responsible person's list wherever that person may see it, which is
+	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
+	// list.
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
+	cut := 0
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
 			notify := reads[i].notify
 			if notify != "" && notify != record.CanonicalLogin(approver) {
-				if !m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason) {
+				listed, err := m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
+				switch {
+				case err != nil && fallback.Err() != nil:
+					cut++
+					continue
+				case err != nil:
+					m.logFallbackUnread(p.RecordID, notify, err)
+					continue
+				case !listed:
 					continue
 				}
 			} else {
@@ -1595,6 +1609,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		}
 		visible = append(visible, p)
 	}
+	if cut > 0 {
+		m.logFallbackCut(record.CanonicalLogin(approver), cut, fallback.Err())
+	}
 	return visible, nil
 }
 
@@ -1606,7 +1623,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 // (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
 // project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
-// before the fallback existed, and logged.
+// before the fallback existed, and counted in the list's one line (logFallbackCut).
 const listFallbackBound = 2 * time.Second
 
 // listedInStead answers whether reader's list holds the agent-secret row p, whose record names
@@ -1616,31 +1633,25 @@ const listFallbackBound = 2 * time.Second
 // or since), it is listed for every other reader who may see it (MaySee), so a request no longer
 // waits where nobody sees it. Both reads run on fallback, the list's one clock
 // (listFallbackBound), the reader's first, so a row the reader may not see costs no read of the
-// other person's. A read that fails, or runs out of the clock, leaves the row off, as it was
-// before the fallback, failing closed, and is logged for the row (logRowUnanswered), so a request
-// an outage or the clock leaves on nobody's list says so. A row touching no project asks
-// Dispatch nothing.
-func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) bool {
-	row := "record " + p.RecordID
-	leftOff := func(err error) bool {
-		m.logRowUnanswered("fallback "+p.RecordID, err, "list", "pending", "record", p.RecordID, "responsible", notify)
-		return false
-	}
+// other person's. A row touching no project asks Dispatch nothing. Its error is the first read's
+// that failed, or the clock's when the clock ran out before the first read; either way the row
+// is left off, as it was before the fallback, failing closed. The caller tells the two apart by
+// the clock: a read that failed once the clock had run out may be one the clock cut short, and
+// is counted with the rows the clock left unread.
+func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
 	if err := fallback.Err(); err != nil {
-		return leftOff(err)
+		return false, err
 	}
+	row := "record " + p.RecordID
 	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
-	switch {
-	case err != nil:
-		return leftOff(err)
-	case !mine:
-		return false
+	if err != nil || !mine {
+		return false, err
 	}
 	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
 	if err != nil {
-		return leftOff(err)
+		return false, err
 	}
-	return !theirs
+	return !theirs, nil
 }
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
