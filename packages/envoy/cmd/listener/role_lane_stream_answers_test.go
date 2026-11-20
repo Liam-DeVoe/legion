@@ -398,7 +398,7 @@ func TestARoleMessageTakenAfterTheStopIsKeptWithoutAResolution(t *testing.T) {
 // delivery_failed with its exception, not reported as a held message no keep could store.
 func TestARoleMessageTakenAfterTheStopThatNoKeepTakesIsDeliveryFailed(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	const role = "legion-infra-INFRA-839-architect"
+	const role = "legion-demo-Unkeepable-architect"
 	cfg := wireTestRoleForwarder(t, harness.config)
 	handler := coreNATSDeliveryHandler(cfg)
 	cfg.roleForwards.stopHolding()
