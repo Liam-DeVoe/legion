@@ -240,7 +240,7 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), 0,
+	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue, false), 0,
 		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 

@@ -74,7 +74,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 				asked, listings, blockerReadFanout)
 		}
 		again := recordOf(t, pool, record.NewStore(), startedParent)
-		if again.Phase != phase.AwaitingChildren || !sameChildrenWait(again.ChildrenWait, moved.ChildrenWait) || !again.ForwardMergeOwed {
+		if again.Phase != phase.AwaitingChildren || !sameChildrenWait(again.ChildrenWait, moved.ChildrenWait) {
 			t.Fatalf("%s after the restarted daemon's turn = phase %s, held start %+v; want it waiting still with %+v",
 				startedParent, again.Phase, again.ChildrenWait, moved.ChildrenWait)
 		}
@@ -101,6 +101,13 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 		if !strings.HasPrefix(task, moved.ChildrenWait.Task) {
 			t.Fatalf("the implementer's start carries %q, want the task it held, %q", task, moved.ChildrenWait.Task)
+		}
+		// The return asks for no forward merge (dispatch://INFRA-3320 R12, on the person's answer
+		// "Children first"), and names no child as merged: the one child moved to icebox.
+		for _, unsaid := range []string{"merge the default branch", "`children merged: full test round`", "merged during the wait"} {
+			if strings.Contains(task, unsaid) {
+				t.Fatalf("the implementer's start carries %q, want no %q in it", task, unsaid)
+			}
 		}
 	})
 

@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,10 +12,9 @@ import (
 )
 
 // A parent's wait on its open children round-trips whole: the held start it keeps in
-// awaiting_children (its phase, task, reason and when the wait began), and the two marks that
-// outlive the phase — whether a forward merge is still owed, and when the last wait began. Leaving
-// the phase takes the held start with it and keeps the two outliving marks; a plain issue carries
-// none of the three.
+// awaiting_children (its phase, task, reason, when the wait began and the children that held it),
+// and the mark that outlives the phase, when the last wait began. Leaving the phase takes the held
+// start with it and keeps the outliving mark; a plain issue carries neither.
 func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -25,8 +25,7 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 	waiting := issueFixture("LEGION-220")
 	waiting.Phase = phase.AwaitingChildren
 	waiting.ChildrenWait = &ChildrenWait{Start: phase.Implementing, Task: "merge the base and finish",
-		Reason: "a child of it is open", Since: since}
-	waiting.ForwardMergeOwed = true
+		Reason: "a child of it is open", Since: since, Children: []string{"LEGION-230", "LEGION-231"}}
 	waiting.ChildrenWaitedAt = &waitedAt
 
 	inTx(t, st, func(tx pgx.Tx) {
@@ -41,20 +40,16 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 		}
 		w := got.ChildrenWait
 		if w.Start != phase.Implementing || w.Task != waiting.ChildrenWait.Task ||
-			w.Reason != waiting.ChildrenWait.Reason || !w.Since.Equal(since) {
+			w.Reason != waiting.ChildrenWait.Reason || !w.Since.Equal(since) || !slices.Equal(w.Children, waiting.ChildrenWait.Children) {
 			t.Fatalf("held start = %+v, want %+v", w, waiting.ChildrenWait)
-		}
-		if !got.ForwardMergeOwed {
-			t.Fatalf("forward merge not owed, want it owed")
 		}
 		if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waitedAt) {
 			t.Fatalf("children waited at = %v, want %s", got.ChildrenWaitedAt, waitedAt)
 		}
 	})
 
-	// A parent that returned to its held start keeps the two outliving marks and carries no held
-	// start: the return clears the four held-start columns and leaves the forward merge owed until
-	// the implementer completes the implementing round that asks for it.
+	// A parent that returned from the wait keeps the outliving mark and carries no held start: the
+	// return clears the held-start columns, the children among them.
 	returned := waiting
 	returned.Phase = phase.Implementing
 	returned.ChildrenWait = nil
@@ -65,9 +60,8 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 		if got.ChildrenWait != nil {
 			t.Fatalf("held start after the return = %+v, want nil", got.ChildrenWait)
 		}
-		if !got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waitedAt) {
-			t.Fatalf("after the return forward_merge_owed = %t and children_waited_at = %v, want both to outlive the phase",
-				got.ForwardMergeOwed, got.ChildrenWaitedAt)
+		if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waitedAt) {
+			t.Fatalf("after the return children_waited_at = %v, want it to outlive the phase", got.ChildrenWaitedAt)
 		}
 	})
 
@@ -76,8 +70,8 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, plain))
 		got, err := records.Issue(ctx, tx, plain.Key)
 		must(t, err)
-		if got.ChildrenWait != nil || got.ForwardMergeOwed || got.ChildrenWaitedAt != nil {
-			t.Fatalf("a plain issue = %+v, want no held start, no merge owed and no wait mark", got)
+		if got.ChildrenWait != nil || got.ChildrenWaitedAt != nil {
+			t.Fatalf("a plain issue = %+v, want no held start and no wait mark", got)
 		}
 	})
 }

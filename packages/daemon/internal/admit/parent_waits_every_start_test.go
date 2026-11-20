@@ -419,9 +419,8 @@ func pwHeld(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase, cau
 	if !wait.Since.Equal(fixedNow) || !strings.Contains(wait.Task, "Phase: "+string(start)+".") {
 		t.Fatalf("the held start = %+v, want the task of %s, held since %s", wait, start, fixedNow)
 	}
-	if got.Status != "in_progress" || !got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(fixedNow) {
-		t.Fatalf("%s = status %s, merge owed %t, waited at %v; want in_progress, owed, %s", key, got.Status, got.ForwardMergeOwed,
-			got.ChildrenWaitedAt, fixedNow)
+	if got.Status != "in_progress" || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(fixedNow) {
+		t.Fatalf("%s = status %s, waited at %v; want in_progress, %s", key, got.Status, got.ChildrenWaitedAt, fixedNow)
 	}
 	if holdsSlot(t, pool, key) {
 		t.Fatalf("slots = %+v, want none for %s: awaiting_children keeps none", slots(t, pool), key)
@@ -992,7 +991,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 				Status: "in_progress", DispatchStatus: "in_progress", Rank: spChild, HandedOver: true, LastDispatchSeq: 1,
 				ChildrenWait: &record.ChildrenWait{Start: phase.Implementing, Task: pwTask(spChild, phase.Implementing),
 					Reason: "a review asked for changes, while these Dispatch children of LEGION-301 were open: LEGION-302 (backlog)", Since: waited},
-				ForwardMergeOwed: true, ChildrenWaitedAt: &waited})
+				ChildrenWaitedAt: &waited})
 			seedMirrorChild(t, pool, spChild, "in_progress", spParent)
 			seedMirrorChild(t, pool, "LEGION-302", "backlog", spChild)
 		}},
@@ -1122,8 +1121,10 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 	// The fifth parent: its tester is in the middle of testing. It moves at the pass, written
 	// in_progress over testing, its tester is sent the R10 message, and at the return the held
-	// testing start becomes implementing, whose task names the start it replaces.
-	t.Run("a tester in the middle of testing, whose held testing comes back as implementing", func(t *testing.T) {
+	// testing start comes back as testing (dispatch://INFRA-3320 R12, on the person's answer
+	// "Children first"): the tester's start names the held start and its reason and the child that
+	// merged during the wait, and asks for the round on the head merged with the base's tip.
+	t.Run("a tester in the middle of testing, whose held testing comes back as testing", func(t *testing.T) {
 		pool, admission, _ := pwStopTester(t)
 
 		const cause = "the admission pass stopped the tester's testing phase"
@@ -1132,17 +1133,23 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleTester, phase.Testing, wait.Reason, nil)
 		pwStatuses(t, pool, spParent, pwInProgressOver("testing"))
 
-		spMirror(t, pool, spChild, "done", spParent, 2)
+		pnChildMerged(t, pool, spChild, spParent, 51)
 		spPass(t, pool, admission)
 
-		if back := issue(t, pool, spParent); back.Phase != phase.Implementing || back.ChildrenWait != nil {
-			t.Fatalf("the parent after its child is done = phase %s, held start %+v; want implementing in place of testing", back.Phase, back.ChildrenWait)
+		if back := issue(t, pool, spParent); back.Phase != phase.Testing || back.ChildrenWait != nil {
+			t.Fatalf("the parent after its child is done = phase %s, held start %+v; want testing, the start it held", back.Phase, back.ChildrenWait)
 		}
 		starts := pwWorkerStarts(t, pool, spParent)
-		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !strings.Contains(starts[0].task, "in place of the start of testing") ||
-			!strings.Contains(starts[0].task, wait.Reason) {
-			t.Fatalf("starts of %s = %+v, want one implementer start naming the held testing and its reason", spParent, starts)
+		if len(starts) != 1 || starts[0].role != claim.RoleTester {
+			t.Fatalf("starts of %s = %+v, want one tester start", spParent, starts)
 		}
+		for _, want := range []string{"Phase: testing.", "start of testing", wait.Reason, pnMergedChildren(spParent, pnMerged(spChild, 51))} {
+			if !strings.Contains(starts[0].task, want) {
+				t.Fatalf("the tester's task = %q, want it to say %q", starts[0].task, want)
+			}
+		}
+		pnAsksNoForwardMerge(t, "the tester's task", starts[0].task)
+		pnBaseMergeTimes(t, "the tester's task", starts[0].task, 1)
 	})
 
 	// The third and the sixth parent: held after the claim of their phase's worker failed, each
@@ -1222,29 +1229,37 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		pwStatuses(t, pool, spParent, append(pwInProgressOver("testing"), pwInProgressOver("todo")...))
 	})
 
-	// The late completion: a completion of the phase the wait
-	// stopped is refused while the parent waits, and after the return, which takes a held testing
-	// back as implementing: the tester's entry was raised before the parent's last move into
-	// awaiting_children (record.Issue.ChildrenWaitedAt, which outlives the wait), so leftItsPhase
-	// refuses it rather than recording it. The completion is the API's handoff_complete, which
-	// applies this same fact to the engine. The tester's claim stands, so nothing but the wait's
-	// rule refuses it.
+	// The late completion: a completion of the phase the wait stopped is refused while the parent
+	// waits (HANDOFF_NOT_CURRENT_PHASE, the engine's: the tester's entry was raised before the
+	// parent's move into awaiting_children, record.Issue.ChildrenWaitedAt). The return takes the
+	// held testing back as testing, where the engine reads the stopped tester's completion as one of
+	// the current phase, and the fact carries no entry. What refuses it after the return is the
+	// completion route's entry fence (api's entryFence, behindEntryClause): the return's start is on
+	// an entry of its own, raised as a move back out of awaiting_children
+	// (record.PhaseRow.EntryMovedBack), so the tester's claim, which still serves the stopped entry
+	// (supervise's RetireStoppedTask leaves its ServedEntry), reports a completion behind an entry a
+	// move back raised, which the fence refuses HANDOFF_STALE_ENTRY whatever head it names
+	// (internal/api's TestParentWaitsHoldsEveryPhaseStart drives it through the route). Here the
+	// return's entry is read as the mark the fence reads.
 	t.Run("a late completion of the stopped phase is refused during the wait and after the return", func(t *testing.T) {
 		pool, admission, token := pwStopTester(t)
+		stopped := spPhaseRow(t, pool, spParent, claim.RoleTester)
 
 		pwRefused(t, pwApply(t, pool, admission, "api", "late-during", pwLate(spParent, claim.RoleTester, token, "test-late")),
 			"HANDOFF_NOT_CURRENT_PHASE", "the tester's completion during the wait")
-
-		spMirror(t, pool, spChild, "done", spParent, 2)
-		spPass(t, pool, admission)
-		if back := issue(t, pool, spParent); back.Phase != phase.Implementing {
-			t.Fatalf("the parent after its child is done = %s, want implementing", back.Phase)
+		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.HandoffRecord == "test-late" || !row.CompletedAt.IsZero() {
+			t.Fatalf("the tester's row = %+v, want the late completion unrecorded", row)
 		}
 
-		pwRefused(t, pwApply(t, pool, admission, "api", "late-after", pwLate(spParent, claim.RoleTester, token, "test-late")),
-			"HANDOFF_NOT_CURRENT_PHASE", "the tester's completion after the return")
-		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.HandoffRecord == "test-late" || !row.CompletedAt.IsZero() {
-			t.Fatalf("the tester's row = %+v, want neither late completion recorded", row)
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+		if back := issue(t, pool, spParent); back.Phase != phase.Testing {
+			t.Fatalf("the parent after its child is done = %s, want testing", back.Phase)
+		}
+		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry != stopped.Entry+1 || !row.EntryMovedBack ||
+			row.EntryFrom != phase.AwaitingChildren || row.HandoffRecord == "test-late" {
+			t.Fatalf("the tester's row after the return = %+v, want the entry above the stopped one (%d) raised as a move back out of awaiting_children, which the route's entry fence refuses a completion behind",
+				row, stopped.Entry)
 		}
 	})
 

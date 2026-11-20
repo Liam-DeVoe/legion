@@ -161,6 +161,18 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
+/** The clauses of the sign_off description that say where a parent waiting on its children comes
+ * back: once no child under it is open it goes back by itself to the start it held, a held test,
+ * review or acceptance as testing unless its pull request merged during the wait
+ * (dispatch://INFRA-3320 R12, on the person's answer "Children first"). */
+const SIGN_OFF_RETURN =
+  "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
+  "parent goes back by itself once none is, to that start, a held test, review or acceptance as testing unless its pull " +
+  "request merged during the wait), and while an issue beneath it is still in the workflow " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+  "to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children and it " +
+  "comes back by itself as testing, and otherwise you sign off again. ";
+
 /** The `legion` tool description Oh My Pi agents read, written out whole: the shared template
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION =
@@ -229,11 +241,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING), on an issue in awaiting_children (WAITING_ON_CHILDREN, naming its open " +
-  "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
-  "parent goes back to that start by itself once none is), and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children and it " +
-  "comes back to implementing for the forward merge of their work, and otherwise you sign off again. " +
+  SIGN_OFF_RETURN +
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
   "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
   "Past that refusal the daemon refuses it while a root whose design-gate step rests on the issue's approval is still " +

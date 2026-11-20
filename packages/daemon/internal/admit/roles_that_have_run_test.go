@@ -246,7 +246,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 			Reason: "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)", Since: waited}
 		putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 			Title: "member", Tree: root, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, ChildrenWait: &held, ForwardMergeOwed: true, ChildrenWaitedAt: &waited})
+			DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, ChildrenWait: &held, ChildrenWaitedAt: &waited})
 		seedMirrorChild(t, pool, "LEGION-210", "backlog", member)
 		tokens := hasRun(t, pool, member, claim.Roles...)
 

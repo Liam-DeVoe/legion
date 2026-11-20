@@ -33,7 +33,7 @@ func TestAWaitingParentStandsInBlockedWithItsOpenChildrenAlone(t *testing.T) {
 	waiting := treeRoot(parent, "in_progress", phase.AwaitingChildren)
 	waiting.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Continue LEGION-400. Phase: implementing.",
 		Reason: "a review asked for changes, while these Dispatch children of LEGION-400 were open: LEGION-401 (backlog)", Since: waited}
-	waiting.ForwardMergeOwed, waiting.ChildrenWaitedAt = true, &waited
+	waiting.ChildrenWaitedAt = &waited
 	children := []record.DispatchIssueRow{
 		{Key: open, Project: "LEGION", Status: "backlog", Parent: parent},
 		{Key: finished, Project: "LEGION", Status: "done", Parent: parent},

@@ -612,7 +612,7 @@ func entryWork(issue record.Issue, row record.PhaseRow) string {
 	if row.EntryTask != "" {
 		return row.EntryTask
 	}
-	return ResumePhaseTask(issue)
+	return ResumePhaseTask(issue, false)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -628,7 +628,7 @@ func entryWork(issue record.Issue, row record.PhaseRow) string {
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task := ResumePhaseTask(issue)
+	task := ResumePhaseTask(issue, false)
 	entry, sent, err := e.enter(ctx, tx, issue, role, task, "", false)
 	if err != nil {
 		return err
@@ -1029,7 +1029,10 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 //
 // An implementing task of a parent that still owes the forward merge of its children's work ends
 // with the request for it (withForwardMerge).
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
+//
+// parent says whether issue is a parent: an issue with a Dispatch child of any status in the
+// daemon's copy of Dispatch (record.Store.DispatchChildren).
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string, parent bool) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -1098,8 +1101,8 @@ func handoffWord(role claim.Role) string {
 // asks for it, and the resume task is no exception (withForwardMerge): the silence repair, the
 // boot's resume, the catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send
 // of an entry that names no task (entryWork) each hand it to a session that may have read none of
-// the task that first asked.
-func ResumePhaseTask(issue record.Issue) string {
+// the task that first asked. parent says whether issue is a parent, as task's does.
+func ResumePhaseTask(issue record.Issue, parent bool) string {
 	return withForwardMerge(continueLine(issue)+" Resume the existing phase work.", issue)
 }
 

@@ -690,7 +690,7 @@ func (r *childrenWaiter) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	waited := time.Date(2026, 11, 15, 1, 0, 0, 0, time.UTC)
 	issue.ChildrenWait = &record.ChildrenWait{Start: issue.Hold.From, Task: "Continue LEGION-209. Phase: implementing.",
 		Reason: "retry held phase, while these Dispatch children of LEGION-209 were open: LEGION-301 (todo)", Since: waited}
-	issue.Phase, issue.Hold, issue.ForwardMergeOwed, issue.ChildrenWaitedAt = phase.AwaitingChildren, nil, true, &waited
+	issue.Phase, issue.Hold, issue.ChildrenWaitedAt = phase.AwaitingChildren, nil, &waited
 	return result, records.PutIssue(ctx, tx, *issue)
 }
 

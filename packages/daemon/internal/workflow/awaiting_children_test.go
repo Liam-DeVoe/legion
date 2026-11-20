@@ -49,8 +49,8 @@ func cwSeedParent(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, 
 	return issue
 }
 
-// cwSeedWaiting records key already in awaiting_children, holding the start of start, with the
-// forward merge owed, as the move leaves a parent.
+// cwSeedWaiting records key already in awaiting_children, holding the start of start, and the
+// moment of the wait, as the move leaves a parent.
 func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase) record.Issue {
 	t.Helper()
 	waited := cwAt.Add(-time.Hour)
@@ -58,7 +58,7 @@ func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Pha
 		issue.Status = "in_progress"
 		issue.ChildrenWait = &record.ChildrenWait{Start: start, Task: "Continue parent. Issue: " + key + ". Phase: " + string(start) + ".",
 			Reason: "the tester completed testing, while these Dispatch children of " + key + " were open: " + cwChild + " (todo)", Since: waited}
-		issue.ForwardMergeOwed, issue.ChildrenWaitedAt = true, &waited
+		issue.ChildrenWaitedAt = &waited
 	})
 }
 
@@ -276,14 +276,11 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 }
 
 // The move writes what the return reads: the held start with the task the start would have given
-// its worker, carrying no forward-merge request of its own, its reason and the moment the wait
-// began; the forward merge owed; the moment of the move, which outlives the phase; and the status
-// in_progress, written to Dispatch from the status the record held.
-func TestTheMoveOwesAForwardMergeAndKeepsTheHeldStart(t *testing.T) {
+// its worker, its reason and the moment the wait began; the moment of the move, which outlives the
+// phase; and the status in_progress, written to Dispatch from the status the record held.
+func TestTheMoveKeepsTheHeldStart(t *testing.T) {
 	pool := migratedPool(t)
-	// The parent still owed a forward merge from an earlier wait, which the held task must not
-	// carry: the return adds the request to the implementing task it starts.
-	cwSeedParent(t, pool, cwParent, phase.Implementing, 42, func(issue *record.Issue) { issue.ForwardMergeOwed = true })
+	cwSeedParent(t, pool, cwParent, phase.Implementing, 42)
 	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
 
 	cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerImplementationReady, phase.Testing,
@@ -294,14 +291,14 @@ func TestTheMoveOwesAForwardMergeAndKeepsTheHeldStart(t *testing.T) {
 	if got.Phase != phase.AwaitingChildren || wait == nil || wait.Start != phase.Testing || !wait.Since.Equal(cwAt) {
 		t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding testing since %s", got.Phase, wait, cwAt)
 	}
-	if !strings.Contains(wait.Task, "Phase: testing.") || !strings.Contains(wait.Task, "Handoff commit: head.") || strings.Contains(wait.Task, childrenMergedLine) {
-		t.Fatalf("the held task = %q, want the testing task the start would have given, with no forward-merge request", wait.Task)
+	if !strings.Contains(wait.Task, "Phase: testing.") || !strings.Contains(wait.Task, "Handoff commit: head.") {
+		t.Fatalf("the held task = %q, want the testing task the start would have given", wait.Task)
 	}
 	if want := "the implementer completed implementing, while these Dispatch children of " + cwParent + " were open: " + cwChild + " (in_progress)"; wait.Reason != want {
 		t.Fatalf("the held reason = %q, want %q", wait.Reason, want)
 	}
-	if !got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(cwAt) || got.Status != "in_progress" {
-		t.Fatalf("the parent = forward merge owed %t, waited at %v, status %s; want owed, %s and in_progress", got.ForwardMergeOwed, got.ChildrenWaitedAt, got.Status, cwAt)
+	if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(cwAt) || got.Status != "in_progress" {
+		t.Fatalf("the parent = waited at %v, status %s; want %s and in_progress", got.ChildrenWaitedAt, got.Status, cwAt)
 	}
 	// Implementing already shows in_progress, which the record holds, so no status is written.
 	if writes := statusWrites(t, pool, cwParent); len(writes) != 0 {
@@ -472,93 +469,9 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 	})
 }
 
-// An implementing task asks for the forward merge while the parent owes it, and no other task
-// does. The task reads the flag alone: a merge of the pull request clears it where the merge is
-// recorded (Engine.merged, TestFactsDuringTheWaitStartNothing), so no record owes the merge of a
-// merged pull request.
-func TestAnImplementingTaskAsksForTheForwardMergeWhileItIsOwed(t *testing.T) {
-	open := &record.PullRequest{State: record.PullRequestOpen, Number: 42}
-	owed := record.Issue{Key: cwParent, Title: "parent", DefaultBranch: "main", Phase: phase.Implementing, ForwardMergeOwed: true}
-	request := cwParent + " waited on its children: before anything else, merge the default branch main into the branch, push, and complete with a new handoff record, however the children left; end your forward-merge comment with the line `children merged: full test round`."
-	for _, tc := range []struct {
-		name  string
-		issue func(record.Issue) record.Issue
-		pr    *record.PullRequest
-		asks  bool
-	}{
-		{name: "implementing, owed, open", issue: func(i record.Issue) record.Issue { return i }, pr: open, asks: true},
-		{name: "implementing, owed, no pull request yet", issue: func(i record.Issue) record.Issue { return i }, asks: true},
-		{name: "implementing, not owed", issue: func(i record.Issue) record.Issue { i.ForwardMergeOwed = false; return i }, pr: open},
-		{name: "planning, owed", issue: func(i record.Issue) record.Issue { i.Phase = phase.Planning; return i }, pr: open},
-		{name: "testing, owed", issue: func(i record.Issue) record.Issue { i.Phase = phase.Testing; return i }, pr: open},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			issue := tc.issue(owed)
-			got := task(issue, record.PhaseRow{}, tc.pr, "")
-			if asks := strings.HasSuffix(got, " "+request); asks != tc.asks {
-				t.Fatalf("the task %q asks for the forward merge = %t, want %t", got, asks, tc.asks)
-			}
-		})
-	}
-}
-
-// A transition that writes an implementing task carrying the forward merge settles nothing: the
-// merge stays owed through every start of the implementing round that owes it, a retry of a hold
-// among them, and the implementer's completion of implementing, the round that did the merge,
-// is the move that clears the debt.
-func TestOnlyTheImplementersCompletionSettlesTheForwardMerge(t *testing.T) {
-	owed := func(issue *record.Issue) { issue.ForwardMergeOwed = true }
-
-	t.Run("a move into implementing", func(t *testing.T) {
-		pool := migratedPool(t)
-		cwSeedParent(t, pool, cwParent, phase.Testing, 42, owed)
-
-		cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerTesterFailed, phase.Implementing,
-			record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "fail"}, "")
-
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the merge still owed", got.Phase, got.ForwardMergeOwed)
-		}
-		if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "`"+childrenMergedLine+"`") {
-			t.Fatalf("the implementer's task = %q, want the forward-merge request", task)
-		}
-	})
-
-	t.Run("the implementer's completion, a move into testing", func(t *testing.T) {
-		pool := migratedPool(t)
-		cwSeedParent(t, pool, cwParent, phase.Implementing, 42, owed)
-
-		cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerImplementationReady, phase.Testing,
-			record.PhaseRow{Issue: cwParent, Role: claim.RoleImplementer, HandoffCommit: "head"}, "")
-
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Testing || got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want testing with the debt cleared", got.Phase, got.ForwardMergeOwed)
-		}
-		if task := startTask(t, pool, claim.RoleTester); strings.Contains(task, childrenMergedLine) {
-			t.Fatalf("the tester's task = %q, want no forward-merge request", task)
-		}
-	})
-
-	t.Run("a retry of implementing", func(t *testing.T) {
-		pool := migratedPool(t)
-		cwSeedParent(t, pool, cwParent, phase.Held, 42, owed, func(issue *record.Issue) {
-			issue.Hold, issue.Status = &record.Hold{From: phase.Implementing}, "in_progress"
-		})
-
-		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("retry", intake.RetryOrEscalate{Issue: cwParent, Decision: intake.RetryDecision})
-
-		if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
-			t.Fatalf("the parent = phase %s, forward merge owed %t; want implementing with the merge still owed", got.Phase, got.ForwardMergeOwed)
-		}
-		if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "`"+childrenMergedLine+"`") {
-			t.Fatalf("the retried implementer's task = %q, want the forward-merge request", task)
-		}
-	})
-}
-
 // Facts that would move a phase start nothing while the parent waits (no row of the table leaves
 // awaiting_children): a conflicting head moves nothing, and a merge is recorded on the pull
-// request, ends the forward merge the parent owed, and leaves the held start for the return.
+// request and leaves the held start for the return.
 func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 	pool := migratedPool(t)
 	waiting := cwSeedWaiting(t, pool, cwParent, phase.Testing)
@@ -567,15 +480,15 @@ func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 
 	apply("conflict", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: "head",
 		Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty})
-	if got := storedIssue(t, pool, cwParent); got.Phase != phase.AwaitingChildren || !got.ForwardMergeOwed {
-		t.Fatalf("the parent after a conflict = phase %s, forward merge owed %t; want it waiting still, the merge owed", got.Phase, got.ForwardMergeOwed)
+	if got := storedIssue(t, pool, cwParent); got.Phase != phase.AwaitingChildren {
+		t.Fatalf("the parent after a conflict = phase %s; want it waiting still", got.Phase)
 	}
 
 	apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
 	got := storedIssue(t, pool, cwParent)
-	if got.Phase != phase.AwaitingChildren || got.ForwardMergeOwed || !sameChildrenWait(got.ChildrenWait, waiting.ChildrenWait) {
-		t.Fatalf("the parent after the merge = phase %s, forward merge owed %t, held start %+v; want it waiting still, the merge no longer owed and the held start as it was",
-			got.Phase, got.ForwardMergeOwed, got.ChildrenWait)
+	if got.Phase != phase.AwaitingChildren || !sameChildrenWait(got.ChildrenWait, waiting.ChildrenWait) {
+		t.Fatalf("the parent after the merge = phase %s, held start %+v; want it waiting still, the held start as it was",
+			got.Phase, got.ChildrenWait)
 	}
 	if starts := superviseRowsOf(t, pool, cwParent, "start"); len(starts) != 0 {
 		t.Fatalf("start rows = %+v, want none", starts)
@@ -664,15 +577,23 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 	})
 }
 
+// cwBackAsTesting is what waitingRefusal says of where a parent holding the start of testing,
+// reviewing or accepting (%[1]s, the start it holds) comes back once no child under it is open: as
+// testing, and to the start it holds only where its pull request merged during the wait
+// (ReturnFromChildren; dispatch://INFRA-3320 R12 on the person's answer "Children first").
+const cwBackAsTesting = "goes back to testing by itself, or to %[1]s, the start it holds, if its pull request merged during the wait"
+
 // request_backward_move — the architect's and a worker's — and sign_off on a parent in
 // awaiting_children are refused WAITING_ON_CHILDREN, naming the open children and the start the
 // parent holds, and change nothing. A parent whose last open child has gone since the last pass is
-// told that the next pass brings it back.
+// told that the next pass brings it back. The parent holds a start of reviewing, which comes back as
+// testing, and both refusals say so.
 func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 	pool := migratedPool(t)
-	cwSeedWaiting(t, pool, cwParent, phase.Testing)
+	cwSeedWaiting(t, pool, cwParent, phase.Reviewing)
 	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	back := fmt.Sprintf(cwBackAsTesting, phase.Reviewing)
 
 	for _, tc := range []struct {
 		name string
@@ -684,9 +605,9 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent}, act: "sign_off"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)", "holds, testing,")
+			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)")
 			if want := cwParent + " waits in awaiting_children on these open Dispatch children of it: " + cwChild + " (in_progress). " +
-				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; " + cwParent + " goes back to the start it holds, testing, by itself once no child under it is open. " +
+				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; once no child under it is open, " + cwParent + " " + back + ". " +
 				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent; close one, move it to icebox or take it out with park_child " + parkRule + ", and cite that reason in a comment on the child"; message != want {
 				t.Fatalf("the refusal = %q, want %q", message, want)
 			}
@@ -699,7 +620,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 
 	mirrorChild(t, pool, cwChild, cwParent, "done", 2)
 	refusedWith(t, apply("sign-off-after", intake.SignOff{Issue: cwParent}), waitingOnChildren,
-		"no Dispatch child of it is open now: the next admission pass takes it back to that start by itself")
+		"no Dispatch child of it is open now: at the next admission pass it "+back)
 }
 
 // A completion of a phase the wait stopped is refused while the parent waits and after it comes
@@ -723,7 +644,7 @@ func TestACompletionOfAPhaseTheWaitStoppedIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			cwSeedParent(t, pool, cwParent, tc.at, 42, func(issue *record.Issue) {
-				issue.Status, issue.ForwardMergeOwed, issue.ChildrenWaitedAt = "in_progress", true, &waited
+				issue.Status, issue.ChildrenWaitedAt = "in_progress", &waited
 				if tc.at == phase.AwaitingChildren {
 					issue.ChildrenWait = &record.ChildrenWait{Start: phase.Testing, Task: "test it", Reason: "a child is open", Since: waited}
 				}

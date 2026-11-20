@@ -451,6 +451,10 @@ type ChildrenWait struct {
 	Task   string
 	Reason string
 	Since  time.Time
+	// Children is the key of every Dispatch child that held the parent while it waited: the open
+	// children the move into the wait named, and each child a later admission pass found open
+	// under the waiting parent (dispatch://INFRA-3320 R12).
+	Children []string
 }
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon

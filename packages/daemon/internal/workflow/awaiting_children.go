@@ -216,7 +216,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 // transition's guard (holdForChildren) and the release of a hold (retryPhase) both hold it.
 func heldTask(issue record.Issue, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	issue.Phase, issue.ForwardMergeOwed = to, false
-	return task(issue, handoff, pr, reason)
+	return task(issue, handoff, pr, reason, false)
 }
 
 // heldCause is what a start the transition's guard held was for (childrenHold.Cause): the reason
@@ -388,7 +388,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil {
 			return false, err
 		}
-		hold.Task, hold.Cause = task(issue, review, pr, ""), "its reviewed head waited in accepting for the architect's sign-off"
+		hold.Task, hold.Cause = task(issue, review, pr, "", false), "its reviewed head waited in accepting for the architect's sign-off"
 	case owes:
 		if hold.Task, err = e.queuedTask(ctx, tx, issue, due, entry); err != nil {
 			return false, err
@@ -514,7 +514,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	work := strings.ReplaceAll(held.Task, " "+forwardMergeText(back), "")
 	if back.Phase != held.Start {
 		work = task(back, record.PhaseRow{}, pr, fmt.Sprintf("%s goes back from awaiting_children now that no Dispatch child of it is open, and starts implementing in place of the start of %s it held, since a test or a review of a head without its children's merges proves nothing. The held start of %s was for this: %s",
-			issue.Key, held.Start, held.Start, held.Reason))
+			issue.Key, held.Start, held.Start, held.Reason), false)
 	} else {
 		work = withForwardMerge(work, back)
 	}

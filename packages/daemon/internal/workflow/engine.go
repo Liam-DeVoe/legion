@@ -1978,7 +1978,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason, false), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -2278,7 +2278,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// parent owes after a wait on its children, and writing it settles nothing: the implementer's
 	// completion of implementing, the round that does the merge, is the move that clears the debt
 	// (settleForwardMerge).
-	work := task(issue, handoff, pr, reason)
+	work := task(issue, handoff, pr, reason, false)
 	settleForwardMerge(&issue, trigger)
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
