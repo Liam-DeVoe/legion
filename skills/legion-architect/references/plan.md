@@ -43,7 +43,8 @@ The steps are some of these five, in this order, with `implementer` among them:
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and you read no evidence before it. |
 
 Without `acceptance:owner`, two steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there (`skill://legion-retro`).
+a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 An issue with no `before_merge` check has neither gate, so give it that step: your acceptance is then its only gate.
 Give it to a parent with children too, because a parent's last round runs from your acceptance (`skill://legion-architect/references/acceptance.md`, "The last round"):
 without it, Legion holds the parent before its retro until its children leave, then starts the retro at the head the parent stood on.
