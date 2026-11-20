@@ -85,7 +85,7 @@ func TestARestoreLeavesACopyWrittenAfterThePodFirstAskedForThePodAfterIt(t *test
 		t.Fatalf("the pod's first role start was sent %v, want no slice: the issue held nothing", frameTypes(frames))
 	}
 	late := runningWorkspaceCopy("pod-before-this-one")
-	if err := st.PutRunningWorkspaceCopy(g.ctx, testTree, lateBegun, late); err != nil {
+	if err := st.PutRunningWorkspaceCopy(g.ctx, testProject, testTree, lateBegun, late); err != nil {
 		t.Fatalf("write the late copy of the pod before this one: %v", err)
 	}
 

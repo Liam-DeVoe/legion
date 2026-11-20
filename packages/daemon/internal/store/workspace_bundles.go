@@ -255,9 +255,11 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 // record of its attempt. A copy is project's only where project records its issue
 // (issues.project), and where project does not, the drop answers an empty runtime.WorkspaceRestore
 // and records nothing at all, the pod's first ask included, and both rows stay in the database: a
-// row names no project, so a copy another project's daemon saved for its own pod and this
-// daemon's running copy of an operator's spawn of the issue are kept alike, as the take withholds
-// both, until a copy of that issue's own pod replaces or drops the running copy.
+// row names no project, and a copy of such an issue is another project's daemon's, saved for its
+// own pod, since this daemon's cadence writes no running copy of an issue its project does not
+// record, an operator's spawn of the issue included (PutRunningWorkspaceCopy,
+// DeleteRunningWorkspaceCopy). The drop keeps such a copy as the take withholds it, for that
+// daemon's pod.
 //
 // It is one transaction under the issue's copy lock (lockWorkspaceCopies). It records the pod's
 // first ask for a restore if this is it (firstRestoreAsk), because the runtime takes nothing more

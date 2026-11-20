@@ -20,7 +20,7 @@ import (
 type unspentCopyKind struct {
 	name   string
 	copies copyTable
-	save   func(ctx context.Context, s *Store, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error
+	save   func(ctx context.Context, s *Store, project, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error
 }
 
 // unspentCopyRelease is the release every release bundle of these tests is saved under.
@@ -29,14 +29,14 @@ const unspentCopyRelease int64 = 11
 var unspentCopyKinds = []unspentCopyKind{
 	{
 		name: "release bundle", copies: releaseBundleCopies,
-		save: func(ctx context.Context, s *Store, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
+		save: func(ctx context.Context, s *Store, _, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
 			return s.PutWorkspaceBundle(ctx, issue, unspentCopyRelease, begun, b)
 		},
 	},
 	{
 		name: "running copy", copies: runningCopyCopies,
-		save: func(ctx context.Context, s *Store, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
-			return s.PutRunningWorkspaceCopy(ctx, issue, begun, b)
+		save: func(ctx context.Context, s *Store, project, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
+			return s.PutRunningWorkspaceCopy(ctx, project, issue, begun, b)
 		},
 	},
 }
@@ -51,10 +51,13 @@ func unspentCopyWork(body string) runtime.WorkspaceBundle {
 	}
 }
 
-// saveUnspentCopy stores b as issue's copy of kind, its take begun just before the write.
+// saveUnspentCopy stores b as issue's copy of kind, its take begun just before the write, with the
+// issue recorded for the project whose pods ask (recordCopyIssues), since a running copy is written
+// only for a project that records its issue (PutRunningWorkspaceCopy).
 func saveUnspentCopy(t *testing.T, s *Store, kind unspentCopyKind, issue string, b runtime.WorkspaceBundle) {
 	t.Helper()
-	if err := kind.save(context.Background(), s, issue, copyBegun(t, s), b); err != nil {
+	recordCopyIssues(t, s, issue)
+	if err := kind.save(context.Background(), s, copyProject, issue, copyBegun(t, s), b); err != nil {
 		t.Fatalf("save the %s of %s: %v", kind.name, issue, err)
 	}
 }
@@ -244,7 +247,7 @@ func TestAnUnspentCopySentAgainIsDecidedAgain(t *testing.T) {
 		requireSent(t, "pod-a", askFor(t, s, issue, "pod-a").ReleaseBundle, bundle)
 		newer := unspentCopyWork("PACK a newer copy off another pod")
 		newer.PodUID = "pod-other"
-		if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), newer); err != nil {
+		if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, copyBegun(t, s), newer); err != nil {
 			t.Fatal(err)
 		}
 

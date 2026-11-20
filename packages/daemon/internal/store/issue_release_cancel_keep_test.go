@@ -40,7 +40,7 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 	// The copy the cadence took while the pod worked, before it went quiet.
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the last turn"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: "pod-being-released"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
@@ -123,7 +123,7 @@ func TestACancelLeavesARunningCopyNewerThanItsReleasesBundleAsItIs(t *testing.T)
 	}
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of a pod that worked on"),
 		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", PodUID: "pod-that-worked-on"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), newer); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", rootIssue, copyBegun(t, st), newer); err != nil {
 		t.Fatalf("take the newer running copy: %v", err)
 	}
 	before := storedRunningCopy(t, st, rootIssue)
@@ -156,7 +156,7 @@ func TestACancelledReleaseKeepsTheRunningCopyItsFailedSaveLeft(t *testing.T) {
 	// The copy the turn's end took before the pod went quiet.
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the last turn"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: "pod-being-released"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)

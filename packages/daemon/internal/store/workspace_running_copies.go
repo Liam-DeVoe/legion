@@ -38,6 +38,13 @@ var ErrReleaseBundleSaved = errors.New("an idle release has saved its bundle off
 // that failed.
 var ErrNewerCopyStands = errors.New("the issue's running copy was taken after this copy's take began, and a copy never replaces a newer one")
 
+// ErrIssueNotRecorded is the refusal of either write of an issue's running copy, the save
+// (PutRunningWorkspaceCopy) and the cadence's delete (DeleteRunningWorkspaceCopy), by a project
+// that does not record the issue (projectRecordsIssue). It is a refusal and not a failure: the
+// row is another project's to write or no project's, so the daemon logs it apart from a write
+// that failed.
+var ErrIssueNotRecorded = errors.New("the project does not record the issue, and only a project that records an issue writes its running copy")
+
 // releaseBundleSavedOff is the condition, on issue $1 and pod $2, that the issue's release bundle
 // came off that pod. Once an idle release has saved its bundle, that bundle is the pod's last
 // copy: no running copy is taken off that pod afterwards, at a push or for any other reason. The
@@ -217,9 +224,24 @@ func (s *Store) BeginWorkspaceCopy(ctx context.Context) (WorkspaceCopyBegun, err
 // the pod before the restoring pod and written after the confirmation; that late copy's work is
 // lost to the restoring pod's own copy, which is the late-copy loss the restore accepts
 // (runtime.DecideWorkspaceRestore).
-func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
+//
+// project is the token of the daemon whose cadence took the copy (claim.ProjectToken), and the
+// save writes only where project records issue (projectRecordsIssue), the rule the take and the
+// drop of the issue's copies keep (TakeWorkspaceCopyForRestore, DropHeldWorkspaceCopies). Where
+// it does not, which the save reads under the issue's copy lock before either statement, it
+// writes nothing and answers ErrIssueNotRecorded. The daemon's cadence copies a pod of every
+// claim of its own project (internal/daemon's runningCopyClaim), and an operator's spawn makes
+// such a claim of an issue another project records. One issue has one running copy and the row
+// names no project, so on a database the two projects' daemons share, the spawn's copy would
+// replace the running copy of the project that records the issue, and that project's next pod
+// would be sent the spawn's work in place of its own. The rule is the store's, so it holds
+// whoever calls the save, and an empty project is refused, as the take refuses one.
+func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, project, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a running workspace copy needs its issue")
+	}
+	if project == "" {
+		return fmt.Errorf("the running workspace copy of %s needs the project whose cadence took it", issue)
 	}
 	if b.PodUID == "" {
 		return fmt.Errorf("the running workspace copy of %s needs the uid of the pod its work came off", issue)
@@ -237,6 +259,11 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, begun
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
+		}
+		if recorded, err := projectRecordsIssue(ctx, tx, project, issue); err != nil {
+			return err
+		} else if !recorded {
+			return fmt.Errorf("project %s: %w", project, ErrIssueNotRecorded)
 		}
 		// The unchanged workspace is answered first and without its bytes, so the common copy
 		// of a turn that changed nothing neither carries tens of megabytes to the database nor
@@ -360,12 +387,12 @@ var (
 // (heldCopy), so asks of this project's pods could push out the record of the other daemon's pod
 // the copy was sent to before any role of it registered.
 //
-// The rule withholds one copy that is this daemon's own: the cadence copies a pod of every claim
-// of the daemon's own project (internal/daemon's runningCopyClaim), the operator's spawn's among
-// them, so the running copy of an issue this project does not record can have come off this
-// project's pod, and the next pod of that claim is answered nothing of it. The row names no
-// project, so the store cannot tell that copy from another daemon's, and withholding it costs a
-// restore where taking it could spend another daemon's work.
+// The cadence copies a pod of every claim of the daemon's own project (internal/daemon's
+// runningCopyClaim), the operator's spawn's among them, and both writes of a running copy keep
+// this same rule (PutRunningWorkspaceCopy, DeleteRunningWorkspaceCopy), so this daemon's cadence
+// stores no copy of an issue this project does not record and drops none, and the next pod of the
+// spawn's claim starts on what its fetch provisioned. A row of such an issue that a daemon wrote
+// before its writes kept the rule names no project either, and is withheld as another daemon's is.
 //
 // The take holds the issue's copy lock from its first statement (lockWorkspaceCopies, in the ask
 // the take and the drop share, askWorkspaceCopies), so every write of a copy either committed
@@ -518,7 +545,8 @@ func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID s
 
 // projectRecordsIssue is whether project, a claim.ProjectToken, records issue (issues.project,
 // the Dispatch key the token lowercases), which is what makes an issue's saved copies project's to
-// take (TakeWorkspaceCopyForRestore) and to drop (DropHeldWorkspaceCopies).
+// take (TakeWorkspaceCopyForRestore) and to drop (DropHeldWorkspaceCopies), and its running copy
+// project's to write (PutRunningWorkspaceCopy) and to delete (DeleteRunningWorkspaceCopy).
 func projectRecordsIssue(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
 	var recorded bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and lower(project) = $2)`,
@@ -725,13 +753,31 @@ func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID st
 // lock (lockWorkspaceCopies), so no copy is written between them. Deleting a copy the table does
 // not hold is success, so a retried delete finishes, and a delete handed no take's begin is
 // refused: a delete the store cannot order is one it cannot keep this rule for.
-func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string, begun WorkspaceCopyBegun) error {
+//
+// project is the token of the daemon whose cadence took the empty bundle (claim.ProjectToken),
+// and the delete drops only where project records issue (projectRecordsIssue), the rule the save
+// keeps (PutRunningWorkspaceCopy). Where it does not, which the delete reads under the issue's
+// copy lock before it reads the row, it drops nothing and answers ErrIssueNotRecorded: the
+// cadence copies an operator's spawn of an issue another project records as it copies every claim
+// of its own project (internal/daemon's runningCopyClaim), and the spawn's workspace says nothing
+// of the work of the project that records the issue, so its empty bundle would delete that
+// project's running copy, the work that project's next pod is to be sent. An empty project is
+// refused, as the take refuses one.
+func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, project, issue string, begun WorkspaceCopyBegun) error {
+	if project == "" {
+		return fmt.Errorf("the delete of the running workspace copy of %s needs the project whose cadence took it", issue)
+	}
 	if begun.at.IsZero() {
 		return fmt.Errorf("the delete of the running workspace copy of %s needs the store's time its take began (BeginWorkspaceCopy)", issue)
 	}
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
+		}
+		if recorded, err := projectRecordsIssue(ctx, tx, project, issue); err != nil {
+			return err
+		} else if !recorded {
+			return fmt.Errorf("project %s: %w", project, ErrIssueNotRecorded)
 		}
 		dropped, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1 and at <= $2`, issue, begun.at)
 		if err != nil || dropped.RowsAffected() > 0 {

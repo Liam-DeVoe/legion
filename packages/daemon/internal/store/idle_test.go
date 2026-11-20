@@ -156,7 +156,7 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
 		PodUID: "pod-still-running"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
 	}
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {

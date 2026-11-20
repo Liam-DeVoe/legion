@@ -291,15 +291,14 @@ type WorkspaceBundler interface {
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
 // and whose cadence took nothing, one whose release a wake cancelled, one whose copy is spent
 // already, one the daemon's project does not record, whose copies are withheld and stay in the
-// database, this daemon's own running copy of an operator's spawn of the issue among them until
-// that spawn's next copy replaces or drops it, since
-// a row names no project and a copy of such an issue can be another project's daemon's (the whole
-// answer is then empty, and not even the pod's ask is recorded), and the pod the work was taken
-// off, or the pod that restored it, asking for its own workspace's work back. The runtime calls
-// this at every start of every role, and both the pod a release is stopping and the pod a cadence
-// copies go on starting roles, so such a start is one of those calls; the decision knows that pod
-// by the uid the copy recorded (WorkspaceBundle.PodUID), and the store leaves the row untouched
-// for the pod that replaces it.
+// database, since a row names no project and a copy of such an issue is another project's
+// daemon's (the daemon's own cadence writes no running copy of an issue its project does not
+// record, an operator's spawn of it included; the whole answer is then empty, and not even the
+// pod's ask is recorded), and the pod the work was taken off, or the pod that restored it, asking
+// for its own workspace's work back. The runtime calls this at every start of every role, and
+// both the pod a release is stopping and the pod a cadence copies go on starting roles, so such a
+// start is one of those calls; the decision knows that pod by the uid the copy recorded
+// (WorkspaceBundle.PodUID), and the store leaves the row untouched for the pod that replaces it.
 //
 // WorkspaceBundleSend is the attempt: the store records podUID against the copy before answering
 // the body, and the copy is spent once a role of that pod registers

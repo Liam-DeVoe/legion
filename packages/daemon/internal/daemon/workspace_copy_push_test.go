@@ -326,7 +326,7 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, begun, held); err != nil {
+		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.w.projectID, rig.issue.Key, begun, held); err != nil {
 			t.Fatalf("take the %s: %v", name, err)
 		}
 	}

@@ -112,7 +112,7 @@ func saveRunningCopy(t *testing.T, st *store.Store, b runtime.WorkspaceBundle) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutRunningWorkspaceCopy(ctx, testTree, begun, b); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, testProject, testTree, begun, b); err != nil {
 		t.Fatalf("take the running copy off %s: %v", b.PodUID, err)
 	}
 }

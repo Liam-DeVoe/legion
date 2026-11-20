@@ -161,20 +161,29 @@ func TestASpentCopyIsDroppedByNoKeptVolume(t *testing.T) {
 // The copies of an issue another project records, and of an issue no project records, are not
 // this project's to drop: the drop of this project's pod answers nothing, records nothing on
 // either copy and records no ask of that pod, and each row stays in the database as it was, here
-// for the pod of the daemon that saved it.
+// for the pod of the daemon that saved it. That daemon's project recorded each issue when it saved
+// the copies, as the save of a running copy needs (PutRunningWorkspaceCopy), and the record of the
+// second has gone since.
 func TestADropTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
-	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-		values ('OTHER-8', 'OTHER-8', 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
-		t.Fatalf("record OTHER-8 as OTHER's issue: %v", err)
-	}
 	for _, issue := range []string{"OTHER-8", "NOBODY-3"} {
+		if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ($1, $1, 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, issue); err != nil {
+			t.Fatalf("record %s as OTHER's issue: %v", issue, err)
+		}
 		others := unspentCopyWork("PACK of another daemon's pod")
 		for _, kind := range unspentCopyKinds {
 			others.PodUID = "pod-other-" + kind.name
-			saveUnspentCopy(t, s, kind, issue, others)
+			if err := kind.save(ctx, s, "other", issue, copyBegun(t, s), others); err != nil {
+				t.Fatalf("save OTHER's %s of %s: %v", kind.name, issue, err)
+			}
 		}
+	}
+	if _, err := s.Pool().Exec(ctx, `delete from issues where key = 'NOBODY-3'`); err != nil {
+		t.Fatalf("drop the record of NOBODY-3: %v", err)
+	}
+	for _, issue := range []string{"OTHER-8", "NOBODY-3"} {
 		rows := map[copyTable]copyRow{}
 		for _, kind := range unspentCopyKinds {
 			rows[kind.copies] = heldCopyRow(t, s, kind.copies, issue)
@@ -237,7 +246,7 @@ func TestADropOfBothCopiesDeletesEachTheVolumeHoldsAndClosesAnOlderOneBesideIt(t
 			}
 			running := unspentCopyWork("PACK the work of the pod that came back")
 			running.PodUID = cameBack
-			if err := s.PutRunningWorkspaceCopy(ctx, issue, WorkspaceCopyBegun{at: now.Add(c.runningAt)}, running); err != nil {
+			if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, WorkspaceCopyBegun{at: now.Add(c.runningAt)}, running); err != nil {
 				t.Fatal(err)
 			}
 			rows := map[copyTable]copyRow{releaseBundleCopies: heldCopyRow(t, s, releaseBundleCopies, issue), runningCopyCopies: heldCopyRow(t, s, runningCopyCopies, issue)}
@@ -294,7 +303,7 @@ func TestADropRecordsThePodsFirstAskSoALateCopyIsLeftForTheNextPod(t *testing.T)
 
 	late := unspentCopyWork("PACK a late copy of an earlier volume")
 	late.PodUID = "pod-of-an-earlier-volume"
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, WorkspaceCopyBegun{at: now.Add(-2 * time.Hour)}, late); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, WorkspaceCopyBegun{at: now.Add(-2 * time.Hour)}, late); err != nil {
 		t.Fatal(err)
 	}
 	requireNothing(t, "the drop of the pod's next role start", dropFor(t, s, issue, keptVolumePod, made).Running)

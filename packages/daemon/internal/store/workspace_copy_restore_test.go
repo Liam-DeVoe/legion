@@ -55,7 +55,7 @@ func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttempt(t *testing.T) {
 		{
 			name: "running copy", copies: runningCopyCopies, source: runningPodUID,
 			save: func(ctx context.Context, s *Store, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
-				return s.PutRunningWorkspaceCopy(ctx, issue, begun, b)
+				return s.PutRunningWorkspaceCopy(ctx, copyProject, issue, begun, b)
 			},
 			restoreID: func(id int64) bool { return id >= MinRunningWorkspaceCopyRestoreID },
 		},
@@ -177,7 +177,7 @@ func TestACopyWrittenAfterAPodFirstAskedIsLeftForThePodAfterIt(t *testing.T) {
 			recordCopyIssues(t, s, issue)
 			standing := runtime.WorkspaceBundle{Bundle: []byte("PACK the copy that stood"), Head: "c1", PodUID: ended}
 			if c.standing {
-				if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), standing); err != nil {
+				if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, copyBegun(t, s), standing); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -199,7 +199,7 @@ func TestACopyWrittenAfterAPodFirstAskedIsLeftForThePodAfterIt(t *testing.T) {
 				t.Fatalf("the new pod's first ask was answered %v, want nothing: nothing stood", first.Take)
 			}
 
-			if err := s.PutRunningWorkspaceCopy(ctx, issue, lateBegun, late); err != nil {
+			if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, lateBegun, late); err != nil {
 				t.Fatal(err)
 			}
 			row := heldCopyRow(t, s, runningCopyCopies, issue)
@@ -296,7 +296,9 @@ func TestACopyWriteInFlightWhenAPodFirstAsksIsReadAtThatAsk(t *testing.T) {
 	begun := copyBegun(t, s)
 
 	written := make(chan error, 1)
-	go func() { written <- s.PutRunningWorkspaceCopy(ForConcurrentWorker(ctx), issue, begun, copied) }()
+	go func() {
+		written <- s.PutRunningWorkspaceCopy(ForConcurrentWorker(ctx), copyProject, issue, begun, copied)
+	}()
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool { return advisoryWaiters(t, s) == 1 }) {
 		t.Fatal("the copy's write never reached the hold")
 	}
@@ -381,7 +383,7 @@ func TestARunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 		t.Fatal(err)
 	}
 	running := runtime.WorkspaceBundle{Bundle: []byte("PACK the copy before the push"), Head: "c1", PodUID: runningPodUID}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), running); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), running); err != nil {
 		t.Fatal(err)
 	}
 	recordPush(t, s, "INFRA-1117", "c1", "c2")
@@ -414,7 +416,7 @@ func TestARunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 	// The copy the daemon takes once it has recorded the push is newer than it, and is sent to the
 	// next pod to ask.
 	after := runtime.WorkspaceBundle{Bundle: []byte("PACK the copy after the push"), Head: "c3", PodUID: runningPodUID}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), after); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), after); err != nil {
 		t.Fatal(err)
 	}
 	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-1117", "pod-after-the-copy"); err != nil ||
@@ -423,7 +425,7 @@ func TestARunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 	}
 
 	// An issue whose branch has no push recorded refuses nothing by this rule.
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", copyBegun(t, s), running); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-2760", copyBegun(t, s), running); err != nil {
 		t.Fatal(err)
 	}
 	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-2760", "pod-replacement"); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
@@ -447,7 +449,7 @@ func TestARunningCopyWhoseTakeBeganBeforeAPushIsRefusedHoweverLateItIsWritten(t 
 	begun := copyBegun(t, s)
 	recordPush(t, s, issue, "c1", "c2")
 	pushed := newestPush(t, s, issue)
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, begun, read); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, begun, read); err != nil {
 		t.Fatal(err)
 	}
 	row := heldCopyRow(t, s, runningCopyCopies, issue)
@@ -465,7 +467,7 @@ func TestARunningCopyWhoseTakeBeganBeforeAPushIsRefusedHoweverLateItIsWritten(t 
 
 	// The copy the push asks for begins its take after the push's record, and is sent.
 	after := runtime.WorkspaceBundle{Bundle: []byte("PACK the workspace as read after the push"), Head: "c2", PodUID: runningPodUID}
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), after); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, copyBegun(t, s), after); err != nil {
 		t.Fatal(err)
 	}
 	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-after-the-copy"); err != nil ||
@@ -559,7 +561,7 @@ func TestTheBundleRestoreOffersTheNewerCopyAndSupersedesTheOlderInOneTake(t *tes
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the release's work"), Head: "b", PodUID: releasedPodUID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the running copy"), Head: "r", PodUID: runningPodUID}); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the running copy"), Head: "r", PodUID: runningPodUID}); err != nil {
 		t.Fatal(err)
 	}
 	restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-1117", "pod-replacement")
@@ -608,7 +610,7 @@ func TestAFailedBundleRestoreTakeLeavesBothCopiesAsTheyWere(t *testing.T) {
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the release's work"), Head: "b", PodUID: releasedPodUID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the running copy"), Head: "r", PodUID: runningPodUID}); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the running copy"), Head: "r", PodUID: runningPodUID}); err != nil {
 		t.Fatal(err)
 	}
 	refuseWrites(t, s, runningCopiesTable, "update")
@@ -638,6 +640,7 @@ func TestAFailedBundleRestoreTakeLeavesBothCopiesAsTheyWere(t *testing.T) {
 func TestSavingOrDroppingAReleaseBundleDropsTheRunningCopyInItsOwnTransaction(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
+	recordCopyIssues(t, s, "INFRA-1117")
 	copied := runtime.WorkspaceBundle{Bundle: []byte("PACK the running copy"), Head: "r", PodUID: runningPodUID}
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the release's work"), Head: "b", PodUID: releasedPodUID}
 	releaseOf := func() int64 {
@@ -649,7 +652,7 @@ func TestSavingOrDroppingAReleaseBundleDropsTheRunningCopyInItsOwnTransaction(t 
 		return release
 	}
 
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), copied); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), copied); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, copyBegun(t, s), saved); err != nil {
@@ -658,7 +661,7 @@ func TestSavingOrDroppingAReleaseBundleDropsTheRunningCopyInItsOwnTransaction(t 
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
 		t.Fatalf("the release's save left the running copy %+v", row)
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), copied); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), copied); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-1117"); err != nil {
@@ -675,7 +678,7 @@ func TestSavingOrDroppingAReleaseBundleDropsTheRunningCopyInItsOwnTransaction(t 
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, copyBegun(t, s), saved); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), copied); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, "INFRA-1117", copyBegun(t, s), copied); err != nil {
 		t.Fatal(err)
 	}
 	refuseWrites(t, s, runningCopiesTable, "delete")

@@ -249,7 +249,7 @@ func runCopyOrder(t *testing.T, s *Store, issue string, order []copyAct) (sends 
 			// began before the stored running copy's. The model counts the copy's work as work a
 			// copy carried all the same, so a refusal that dropped work no other copy holds fails
 			// the second invariant.
-			err := s.PutRunningWorkspaceCopy(ctx, issue, begun, runtime.WorkspaceBundle{
+			err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, begun, runtime.WorkspaceBundle{
 				Bundle: []byte(interleavingTakenCopy), Head: "c-taken", PodUID: interleavingWorkingPod})
 			if err != nil && !errors.Is(err, ErrReleaseBundleSaved) && !errors.Is(err, ErrNewerCopyStands) {
 				t.Fatalf("%s: write the copy: %v", o.name, err)

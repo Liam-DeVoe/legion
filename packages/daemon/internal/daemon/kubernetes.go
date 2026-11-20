@@ -681,10 +681,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 // runtime's project token (sandbox.Options.Project), in the shape the runtime calls it
 // (runtime.SavedWorkspaceBundle). A copy is project's to take only where project records its issue
 // (store.Store.TakeWorkspaceCopyForRestore): on a database shared with another project's daemon, a
-// copy of an issue project does not record is withheld from every pod of this daemon and stays in
-// the database, whether that daemon saved it or this daemon's cadence took it off an operator's
-// spawn of the issue, since a row names no project; a running copy of the spawn is replaced or
-// dropped by the spawn's next copy.
+// copy of an issue project does not record is that daemon's, and it is withheld from every pod of
+// this daemon and stays in the database, since a row names no project. This daemon's cadence
+// writes no running copy of such an issue and drops none, an operator's spawn of it included,
+// under the same rule and the same token (store.Store.PutRunningWorkspaceCopy,
+// store.Store.DeleteRunningWorkspaceCopy, workflowRuntime.storeRunningCopy), so the spawn's pods
+// are answered nothing and the other daemon's copy stands for that daemon's pod.
 func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
 		return st.TakeWorkspaceCopyForRestore(ctx, project, issue, podUID)
@@ -696,9 +698,9 @@ func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceB
 // (runtime.HeldWorkspaceCopiesDrop). project is the runtime's project token
 // (sandbox.Options.Project). The drop follows the take's project rule
 // (store.Store.DropHeldWorkspaceCopies): a pod of this daemon drops no copy of an issue that
-// project does not record, and the copy stays in the database, whether another project's daemon
-// saved it or this daemon's cadence took it off an operator's spawn of the issue, a running copy
-// the spawn's next copy replaces or drops.
+// project does not record, and the copy stays in the database for the pod of the project that
+// records the issue, since this daemon's cadence writes no running copy of such an issue, an
+// operator's spawn of it included (store.Store.PutRunningWorkspaceCopy).
 func heldWorkspaceCopies(st *store.Store, project string) runtime.HeldWorkspaceCopiesDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
 		return st.DropHeldWorkspaceCopies(ctx, project, issue, podUID, keptSince)

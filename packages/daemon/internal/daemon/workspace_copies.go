@@ -74,9 +74,10 @@ const (
 	// is live (runningCopy.retry), unless the copy was refused for its size (runningCopyTooLarge).
 	// A push's copy and an owed copy of an issue with no live role write it at Debug instead
 	// (copyWorkspaceAtPush, takeRunningCopy), and a copy off a pod an idle release has saved its
-	// bundle off writes it at Info, since nothing failed (runningCopyReleaseBundled), as does a
+	// bundle off writes it at Info, since nothing failed (runningCopyReleaseBundled), as do a
 	// copy the store refuses because the issue's running copy was taken after it
-	// (runningCopyNewerStands).
+	// (runningCopyNewerStands) and a copy of an issue the daemon's project does not record
+	// (runningCopyNotRecorded).
 	runningCopyUnsavedLine = "running copy: no copy of the issue workspace was stored"
 	// runningCopyOvertakenLine is a copy that was being built when the daemon recorded a push of
 	// the issue's branch, at Info. It is not stored: it may have read the workspace before the
@@ -144,6 +145,16 @@ const (
 	// after that. It is written at Info: it is no fault, and it is not one of the reasons above
 	// that a deployment counts.
 	runningCopyNewerStands = "newer_copy_stands"
+	// runningCopyNotRecorded: the daemon's project does not record the issue, so the store wrote
+	// no copy of it and dropped none (store.ErrIssueNotRecorded,
+	// store.Store.PutRunningWorkspaceCopy, store.Store.DeleteRunningWorkspaceCopy). The cadence
+	// copies a pod of every live claim of the project (runningCopyClaim), and an operator's spawn
+	// of an issue another project records is such a claim: on a database the two projects'
+	// daemons share, the spawn's copy would replace the running copy of the project that records
+	// the issue, and its empty bundle would delete it. It is written at Info: it is no fault, it
+	// is not one of the reasons above that a deployment counts, and it owes no retry, since a
+	// retry would be refused the same way.
+	runningCopyNotRecorded = "issue_not_recorded"
 )
 
 // tickWorkspaceCopies keeps a copy of each issue workspace's unpushed work outside its pod while
@@ -514,11 +525,22 @@ func (w *workflowRuntime) takeRunningCopyOf(ctx context.Context, asked supervise
 // the issue keeps the copy it had and owes a retry, which the cadence takes at the next period,
 // between turns as well, once a role of the issue is live (runningCopy.retry). A copy that settles
 // the issue's copy — stores it, drops it as empty, or is refused for no fault by a newer copy, by
-// the release bundle or by a push that overtook it — owes none. Nor does a bundle over the bound,
-// which the connection answers as runtime.WorkspaceBundleTooLargeError whether the shim refused it
-// with its size or it arrived whole (stream.Conn.BundleWorkspace): it is no fault to retry
-// (runningCopyTooLarge). The daemon's own stop is not a fault: the run's context ending ends the
-// copy, which is the stop and nothing an operator need read, so it is logged at Debug alone.
+// the release bundle, by a push that overtook it or by the project rule below — owes none. Nor
+// does a bundle over the bound, which the connection answers as
+// runtime.WorkspaceBundleTooLargeError whether the shim refused it with its size or it arrived
+// whole (stream.Conn.BundleWorkspace): it is no fault to retry (runningCopyTooLarge). The daemon's
+// own stop is not a fault: the run's context ending ends the copy, which is the stop and nothing
+// an operator need read, so it is logged at Debug alone.
+//
+// Both writes name the daemon's project, projectID: the claim token's spelling of it
+// (claim.ProjectToken), which the claims the cadence chooses its role from carry
+// (runningCopyClaim) and which the Kubernetes runtime's take of a pod's restore is bound to as
+// well, since the boot hands the one token to both (sandbox.Options.Project, savedWorkspaceCopy).
+// The store writes no copy of an issue that project does not record and drops none
+// (store.ErrIssueNotRecorded), an operator's spawn of an issue another project records among them,
+// so the running copy of the project that records the issue stands. Such a refusal is logged at
+// Info under runningCopyNotRecorded, with the issue, the role and the pod, and owes no retry: it
+// is no fault, and a retry would be refused the same way.
 func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, role claim.Role) (retry bool) {
 	// How long the copy took, read at whichever line is written: the bundler's own build and,
 	// where one was made, the write that stored or dropped the row. A deployment reads it to see
@@ -547,8 +569,12 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 	}
 	size := bundle.Size()
 	if size == 0 {
-		err := w.copyStore.DeleteRunningWorkspaceCopy(ctx, issue, begun)
+		err := w.copyStore.DeleteRunningWorkspaceCopy(ctx, w.projectID, issue, begun)
 		switch {
+		case errors.Is(err, store.ErrIssueNotRecorded):
+			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyNotRecorded,
+				"pod", bundle.PodUID, "bytes", 0, "took", took())
+			return false
 		case errors.Is(err, store.ErrNewerCopyStands):
 			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyNewerStands,
 				"pod", bundle.PodUID, "bytes", 0, "taken", begun.At(), "took", took())
@@ -564,8 +590,12 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 		w.log.Info(runningCopyOvertakenLine, "issue", issue, "role", role, "bytes", size, "taken", begun.At(), "took", took())
 		return false
 	}
-	err = w.copyStore.PutRunningWorkspaceCopy(ctx, issue, begun, bundle)
+	err = w.copyStore.PutRunningWorkspaceCopy(ctx, w.projectID, issue, begun, bundle)
 	switch {
+	case errors.Is(err, store.ErrIssueNotRecorded):
+		w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyNotRecorded,
+			"pod", bundle.PodUID, "bytes", size, "took", took())
+		return false
 	case errors.Is(err, store.ErrReleaseBundleSaved):
 		w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyReleaseBundled,
 			"pod", bundle.PodUID, "bytes", size, "took", took())

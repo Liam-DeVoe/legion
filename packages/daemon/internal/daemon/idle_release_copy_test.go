@@ -33,7 +33,7 @@ func (r *idleRig) copyWorkspace(t *testing.T) runtime.WorkspaceBundle {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.st.PutRunningWorkspaceCopy(ctx, r.issue.Key, begun, taken); err != nil {
+	if err := r.st.PutRunningWorkspaceCopy(ctx, r.w.projectID, r.issue.Key, begun, taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", r.issue.Key, err)
 	}
 	return taken
@@ -126,7 +126,7 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, copyBegun, runtime.WorkspaceBundle{
+	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.w.projectID, rig.issue.Key, copyBegun, runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of the pod that replaced it"), Head: "abc", Tips: []string{"abc"},
 		PodUID: "pod-that-replaced-it"}); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rig.issue.Key, err)
@@ -251,7 +251,7 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutRunningWorkspaceCopy(ctx, issue, takeBegun, taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", issue, takeBegun, taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	// The copy's own restore id, as the slices carry it to the launcher and the report brings it
@@ -292,7 +292,7 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutRunningWorkspaceCopy(ctx, issue, nextBegun, newer); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, "legion", issue, nextBegun, newer); err != nil {
 		t.Fatalf("take the running copy again: %v", err)
 	}
 	stored, _ := runningCopyOf(t, st, issue)

@@ -189,13 +189,13 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 // (internal/daemon's bundleIssueWorkspace), and a daemon's outbox runs only the rows of its own
 // project's keys, of a release its idle rule marked over a record of its own project
 // (readIdleView). So the release bundle of an issue another project records was saved by that
-// project's daemon, for its own pod, on a database the two daemons share, and here its running
-// copy was too; a running copy of such an issue can also be this daemon's, taken off an operator's
-// spawn, and the take withholds it all the same, since the row names no project. The operator's
-// spawn makes a claim of that issue under this project's token, and a new pod of that claim is
-// answered nothing of either copy and records nothing: no attempt on either row, and not its first
-// ask either, so a role of it registering spends nothing, and the other daemon's next pod is sent
-// its own copy. The copies of an issue this project records are taken as before, and a take that
+// project's daemon, for its own pod, on a database the two daemons share, and so was its running
+// copy, since this daemon's cadence writes no running copy of an issue its project does not
+// record, an operator's spawn of it included (PutRunningWorkspaceCopy). The operator's spawn
+// makes a claim of that issue under this project's token, and a new pod of that claim is answered
+// nothing of either copy and records nothing: no attempt on either row, and not its first ask
+// either, so a role of it registering spends nothing, and the other daemon's next pod is sent its
+// own copy. The copies of an issue this project records are taken as before, and a take that
 // names no project is refused, since whose copies they are rests on the project.
 func TestARestoreTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
 	ctx := context.Background()
@@ -212,7 +212,7 @@ func TestARestoreTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
 	}
 	othersRunning := runtime.WorkspaceBundle{Bundle: []byte("PACK of OTHER's running pod"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
 		PodUID: "pod-other-running"}
-	if err := s.PutRunningWorkspaceCopy(ctx, otherIssue, copyBegun(t, s), othersRunning); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "other", otherIssue, copyBegun(t, s), othersRunning); err != nil {
 		t.Fatalf("save OTHER's running copy of %s: %v", otherIssue, err)
 	}
 
@@ -487,7 +487,7 @@ func TestAConfirmedReleaseBundleLeavesANewerRunningCopyAsItIs(t *testing.T) {
 	}
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK a newer copy"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
 		PodUID: "pod-that-worked-on"}
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), newer); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, copyProject, issue, copyBegun(t, s), newer); err != nil {
 		t.Fatal(err)
 	}
 	before := storedRunningCopy(t, s, issue)
