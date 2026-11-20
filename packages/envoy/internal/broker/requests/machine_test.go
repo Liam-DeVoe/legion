@@ -1019,34 +1019,42 @@ func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
 	}
 }
 
-// TestAPauseOnTheNewestGrantStopsTheReuse: two live grants of the same names and lifetime, the
-// older one approved by the operator and the newer one by alice, while the secret was hers.
-// Create's check (endMatchingLiveGrants) keeps each grant it leaves live with its pause, and
-// reuseLiveGrant stops at the pause of the newest candidate. Once the secret is the operator's
-// again, the newer grant's approver no longer decides it, so the request is handed neither grant
-// and waits for an approval, though the older grant still releases. Once the secret is shared,
-// neither grant pauses and the newer one is handed back, which makes the first row's refusal the
-// pause's doing.
+// TestAPauseOnTheNewestGrantStopsTheReuse: two live grants of the same names, the older one
+// approved by the operator and the newer one by alice, while the secret was hers. Create's check
+// (endMatchingLiveGrants) keeps each grant it leaves live with its pause, and reuseLiveGrant stops
+// at the pause of the newest candidate, a grant of the lifetime the request asks for. Once the
+// secret is the operator's again, the newer grant's approver no longer decides it, so the request
+// is handed neither grant and waits for an approval, though the older grant still releases. Once
+// the secret is shared, neither grant pauses and the newer one is handed back, which makes the
+// first row's refusal the pause's doing. A newer grant of another lifetime is no candidate, so its
+// pause stops nothing and the older grant is handed back.
 func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 	deel := func(owner string) secrets.LocalSecret {
 		return policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1")
 	}
 	for _, c := range []struct {
-		name   string
-		owner  string
-		reused bool
+		name  string
+		owner string
+		// newerLifetime is the lifetime in seconds the newer grant's request signs. 0 signs none,
+		// so that grant gets the default lifetime, which the older grant and the request after
+		// both get.
+		newerLifetime int
+		// handed is the grant the request after is handed back: "newer", "older", or "" for none,
+		// with the request pending.
+		handed string
 	}{
 		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator},
-		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, reused: true},
+		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, handed: "newer"},
+		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handed: "older"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
 			ctx := context.Background()
-			grant := func(reason, decider string) string {
+			grant := func(compact, decider string) string {
 				t.Helper()
-				req, err := m.Create(ctx, enr, signRequest(t, m, key, reason, "DEEL_API_KEY"), "", nil)
+				req, err := m.Create(ctx, enr, compact, "", nil)
 				if err != nil || req.State != "pending" || req.RecordID == nil {
-					t.Fatalf("Create(%q) = %+v, %v; want a request pending on %s", reason, req, err, decider)
+					t.Fatalf("Create = %+v, %v; want a request pending on %s", req, err, decider)
 				}
 				dec, err := m.ApplyDecision(ctx, *req.RecordID, true, decider)
 				if err != nil || dec.GrantID == "" {
@@ -1054,9 +1062,13 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 				}
 				return dec.GrantID
 			}
-			older := grant("need it", approver)
+			older := grant(signRequest(t, m, key, "need it", "DEEL_API_KEY"), approver)
 			retag(t, m, deel(otherPerson))
-			newer := grant("need it while alice owns it", otherPerson)
+			newerRequest := signRequest(t, m, key, "need it while alice owns it", "DEEL_API_KEY")
+			if c.newerLifetime != 0 {
+				newerRequest = signRequestFor(t, m, key, c.newerLifetime, "DEEL_API_KEY")
+			}
+			newer := grant(newerRequest, otherPerson)
 			if newer == older {
 				t.Fatalf("setup made one grant %s; want two", older)
 			}
@@ -1070,10 +1082,10 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 			if again.GrantID != nil {
 				handed = "grant " + *again.GrantID
 			}
-			if c.reused && (again.GrantID == nil || *again.GrantID != newer) {
-				t.Fatalf("Create once %s = state %q with %s; want the newer grant %s handed back", c.name, again.State, handed, newer)
+			if want := map[string]string{"newer": newer, "older": older}[c.handed]; want != "" && (again.GrantID == nil || *again.GrantID != want) {
+				t.Fatalf("Create once %s = state %q with %s; want the %s grant %s handed back (older %s, newer %s)", c.name, again.State, handed, c.handed, want, older, newer)
 			}
-			if !c.reused && (again.State != "pending" || again.GrantID != nil) {
+			if c.handed == "" && (again.State != "pending" || again.GrantID != nil) {
 				t.Fatalf("Create once %s = state %q with %s; want no grant handed back, neither the newer %s nor the older %s, and a request pending", c.name, again.State, handed, newer, older)
 			}
 			if release, err := m.Values(ctx, older, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
