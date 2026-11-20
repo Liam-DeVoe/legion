@@ -1178,9 +1178,9 @@ const deathReasonCut = "… (cut)"
 
 // deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
 // line breaks between two pieces of its text written as " / " and any at either end dropped, then
-// quoted and cut as quoteBounded writes it. For a run of refused turns the sentence holds the
-// provider's message as the role's own plugin posted it (supervise's refusalCause, api's
-// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
+// quoted and cut as quoteBounded writes it. A failure an earlier daemon wrote for a run of refused
+// turns holds the provider's message as the role's own plugin posted it over the turn-outcome
+// route, which can run to a mebibyte over many lines; the claim and a failure
 // record's `detail` keep it whole (noticeFailure). The sentence is cut at runtime.PodEndRunes
 // runes before its line breaks are written, so no more of a mebibyte is read than the bound
 // keeps.
