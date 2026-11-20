@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2457,7 +2456,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 187: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 192: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -2489,12 +2498,12 @@ package api
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
 // gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
 // never said hello within the registration deadline while its process lived, which a caller from
-// a pod whose claims record a contract below 187 is served as `never_registered` in `failure.cause`
+// a pod whose claims record a contract below 192 is served as `never_registered` in `failure.cause`
 // and `pendingCause` (withoutNeverReconnected), since its plugin reads both through a strict enum
 // and refuses the whole body for a word it does not name; and
 // `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
 // reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
-// caller from a pod whose claims record a contract below 187 is served the body without (api's
+// caller from a pod whose claims record a contract below 192 is served the body without (api's
 // stateFor, withoutUnseenTaskValues), as one below 133 is served every issue without `mergeWait`,
 // one below 111 the issues without the tree's quiet time (withoutQuietTime) and one below 98 the
 // admission block without `held`. They are the last two rows of stateNarrowings, after 178's, and
@@ -2549,13 +2558,18 @@ package api
 // 171 (#4115, #4485 and #4495), 172 (#3659) and 173 (#4493) declared by open pull requests, so 174
 // was the lowest number above 168 that none declared. It took 187 at the forward merge of
 // 2026-11-20 that brought main in at c980d91b540ece46364256983f24a3f5a63b3841, which carried 178,
-// cybermonklabs/legion#4115's INFRA-3759, the entry right above and the number the base now
-// carries: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
+// cybermonklabs/legion#4115's INFRA-3759, then the entry right above and the number the base then
+// carried: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
 // on 2026-11-20 found 179 (#4540), 180 (#4049), 181 (#3831 and #4273), 182 (#4173, #4180, #4193,
 // #4392 and #4493), 183 (#2230, #3712, #4030, #4432 and #4539), 184 (#3659, #4065 and #4553), 185
 // (#4175 and #4543) and 186 (#4495 and #4573) declared by open pull requests, so 187 was the
-// lowest number above 178 that none declared. Read the base's own number and every open pull
-// request again at the next merge rather than from this line, as
+// lowest number above 178 that none declared. It took 192 at the forward merge of 2026-11-20 that
+// brought main in at 1c7c8253678fedad99b5142defc5824e2c57b9a8, which carried 188,
+// cybermonklabs/legion#4543, the entry right above and the number the base now carries: a reading
+// of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request on 2026-11-20
+// found 189 (#3831, #4592 and #4596), 190 (#4493 and #4578) and 191 (#4495) declared by open pull
+// requests, so 192 was the lowest number above 188 that none declared. Read the base's own number
+// and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 187
+const DaemonAPIVersion = 192

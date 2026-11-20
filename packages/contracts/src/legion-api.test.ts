@@ -90,7 +90,7 @@ const schemas: Record<string, z.ZodType> = {
   // refused turns the claim now ends with and whether this report failed it.
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
-  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 187).
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 192).
   "task.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
@@ -1509,7 +1509,7 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
-    // The task routes (contract 187), each under the agent's secret form and the bridge's boot
+    // The task routes (contract 192), each under the agent's secret form and the bridge's boot
     // token form, and the turn outcome that names the task and the provider error it ended in.
     [
       "task read",
@@ -1932,7 +1932,7 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
 });
 
-// A worker holds its claim's value from its registration and from `claims/task` (contract 187):
+// A worker holds its claim's value from its registration and from `claims/task` (contract 192):
 // the value, or null where the bucket holds none, beside the number of the last task the claim
 // finished. Both keys are always written, so neither may be left out, and a value always names a
 // task and a revision.
@@ -1966,7 +1966,7 @@ test("the register golden and the task read carry the claim's value and its fini
   expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
 });
 
-// A take is answered one of three ways (contract 187), each written by the Go side: accepted with
+// A take is answered one of three ways (contract 192), each written by the Go side: accepted with
 // the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
 // text and a refused one without its hold are refused; a hold a later daemon names is read.
 test("the take goldens are its three answers", () => {

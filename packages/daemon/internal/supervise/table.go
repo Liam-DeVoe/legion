@@ -2017,7 +2017,12 @@ func (m *Machine) retireNeverReady(ctx context.Context, r neverReady) error {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose %s: suspend: %w", m.claim.Token, r.whose, err)
 		}
-		m.log.Warn(r.line, "incarnation", incarnation)
+		// The line names the claim (the machine's logger carries it), what its agent never did
+		// (neverReady.line), and the launch this retirement counts against its budget
+		// (relaunchAfterFailure counts it next), so a controller whose role claim waits out its
+		// registration deadline shows in the daemon's log as that, attempt by attempt.
+		m.log.Warn(r.line, "incarnation", incarnation,
+			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
 		return m.relaunchAfterFailure(ctx, r.cause, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }

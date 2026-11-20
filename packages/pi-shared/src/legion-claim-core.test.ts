@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionTakeResponse, type LegionTask } from "@legion/contracts/legion-api";
+import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimCaller, createLegionDaemonClient } from "./daemon-client";
 import {
@@ -9,7 +10,7 @@ import {
   publishEnvoyPluginInterface,
   resetEnvoyPluginInterfaceForTests,
 } from "./interface";
-import { bootLegionClaim, type LegionClaimHost } from "./legion-claim-core";
+import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 import { createTaskTake, type TaskTake } from "./task-take";
 import { taskTurnMark } from "./task-values";
@@ -194,16 +195,21 @@ const TASK_TEXT = ACCEPTED.outcome === "accepted" ? ACCEPTED.text : "";
  * the mark the plugin interface's, held whatever value the take holds until the read after the
  * ready has answered. The Envoy entry has published the interface, as it does before any claim
  * boots. `turns` is every turn the session starts, in order: the take's text, and a card's own
- * (`card`).
+ * (`card`). `claimRole`, given, is the role claim, claimed again after a 1 ms wait on a 503.
  */
-function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | "ready" | "task">) {
+function takingHost(
+  options: Pick<Parameters<typeof claimHost>[0], "register" | "ready" | "task"> & {
+    readonly claimRole?: LegionClaimHost["claimRole"];
+  }
+) {
   resetEnvoyPluginInterfaceForTests();
   publishEnvoyPluginInterface("pi-envoy");
   const turns: string[] = [];
   let take: TaskTake | undefined;
   let readAnswered: (() => void) | undefined;
+  const { claimRole, ...daemon } = options;
   const claim = claimHost({
-    ...options,
+    ...daemon,
     overrides: {
       afterRegister: async (registered) => {
         take = createTaskTake({
@@ -220,6 +226,7 @@ function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | 
       },
       taskValue: (reading) => take?.read(reading),
       afterReadyRead: () => readAnswered?.(),
+      ...(claimRole === undefined ? {} : { claimRole, roleClaimRetryFirstDelayMs: 1 }),
     },
   });
   return {
@@ -444,6 +451,190 @@ test("a claim the listener refuses is logged naming the claim token and what sto
   expect(lines).toEqual([
     `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
   ]);
+});
+
+/** The listener's 503 to a role claim whose takeover record did not store, as envoy-client's
+ * `setRole` rejects with it after its own two tries. */
+function claimAnswered503(): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 503,
+    responseBody: JSON.stringify({
+      error: "envoy: the message bus refused the message because its stream is full",
+    }),
+  });
+}
+
+test("a claim the listener answers 503 is claimed again after a growing wait, and the session is not stopped; the claim lands on the try after the 503s end", async () => {
+  let answered503 = 0;
+  const { host, steps, lines } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (answered503 < 3) {
+          answered503++;
+          throw claimAnswered503();
+        }
+      },
+    },
+  });
+
+  // The role is claimed right after the read that follows the ready, so the boot answers once
+  // the claim has landed, and only then hears a regain.
+  await expect(bootLegionClaim(host)).resolves.toBeDefined();
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "onRoleRegained"]);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 3, so nothing was claimed; claiming it again in 4 ms`,
+  ]);
+  for (const line of lines) {
+    expect(line).toContain("the message bus refused the message because its stream is full");
+  }
+});
+
+test("control: a claim the listener refuses with any other status still stops the session at once, with no retry", async () => {
+  const { host, steps, lines } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.test/v1/roles/set",
+          status: 500,
+          responseBody: JSON.stringify({ error: "envoy: the role claim failed" }),
+        });
+      },
+    },
+  });
+
+  await expect(bootLegionClaim(host)).resolves.toBeUndefined();
+
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "stop"]);
+  expect(lines).toEqual([
+    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: envoy: the role claim failed`,
+  ]);
+});
+
+test("a host that stops while a 503 claim waits to be made again claims no more and stops nothing", async () => {
+  const stopping = new AbortController();
+  const firstClaim = Promise.withResolvers<void>();
+  let claims = 0;
+  const { host, steps } = claimHost({
+    overrides: {
+      // A wait no run of this test reaches: the abort ends it.
+      roleClaimRetryFirstDelayMs: 600_000,
+      signal: stopping.signal,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        claims++;
+        firstClaim.resolve();
+        throw claimAnswered503();
+      },
+    },
+  });
+  const booting = bootLegionClaim(host);
+
+  await firstClaim.promise;
+  stopping.abort();
+  await expect(booting).resolves.toBeUndefined();
+
+  expect(claims).toBe(1);
+  expect(steps).not.toContain("stop");
+  expect(steps).not.toContain("onRoleRegained");
+});
+
+// #4387's handover meets the take: a role claim the listener answered 503 is made again after the
+// ready and the read after it, so the take holds the task the ready decision wrote, and its mark,
+// while the claim waits. When the claim lands, the listener hands the role over with the messages
+// its previous holder did not read, and each finds the task owed and starts no turn before it. The
+// task value is no role message (the listener relays it on the session's own subject), so the
+// handover neither replays it nor drops it: the take's own text is the session's one first turn.
+test("a role claim the listener answers 503 is made again with the take's mark up, so the messages the previous holder did not read, handed over when it lands, start no turn before the task", async () => {
+  const written = { number: 5, epoch: "2026-11-13T16:21:44.123456789Z", revision: 13 };
+  let answered503 = 0;
+  const host = takingHost({
+    register: () => Response.json({ ...registered, task: null, finished: 4 }),
+    task: () => Response.json({ task: written, finished: 4 }),
+    claimRole: async () => {
+      if (answered503 < 2) {
+        answered503++;
+        throw claimAnswered503();
+      }
+      host.card("a message the previous holder did not read");
+    },
+  });
+
+  await expect(bootLegionClaim(host.host)).resolves.toBeDefined();
+
+  expect(answered503).toBe(2);
+  expect(host.turns).toEqual([]);
+  expect(envoyPluginInterface().taskTurnPending).toEqual({ session: SESSION });
+  host.take()?.ready();
+  await flush();
+  expect(host.turns).toEqual([TASK_TEXT]);
+  expect(host.steps).not.toContain("stop");
+  resetEnvoyPluginInterfaceForTests();
+});
+
+test("the daemon-launched controller's claim is made again on a 503 with the same helper, and any other refusal is thrown at once", async () => {
+  const lines: string[] = [];
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 3) throw claimAnswered503();
+    },
+    "controller",
+    { log: (line) => lines.push(line), firstDelayMs: 1 }
+  );
+  expect(tries).toBe(3);
+  expect(lines).toHaveLength(2);
+
+  const refused = new Error("Envoy role controller is held by live session ses_other");
+  await expect(
+    claimRoleAgainOnBusy(
+      async () => {
+        throw refused;
+      },
+      "controller",
+      { log: (line) => lines.push(line), firstDelayMs: 1 }
+    )
+  ).rejects.toBe(refused);
+  expect(lines).toHaveLength(2);
+});
+
+test("a claim a person waits on gives up after its counted attempts, throwing the listener's 503; the control, with no bound, lands", async () => {
+  const lines: string[] = [];
+  let tries = 0;
+  const busy = claimAnswered503();
+  await expect(
+    claimRoleAgainOnBusy(
+      async () => {
+        tries++;
+        throw busy;
+      },
+      "controller",
+      { log: (line) => lines.push(line), firstDelayMs: 1, maxAttempts: 3 }
+    )
+  ).rejects.toBe(busy);
+  expect(tries).toBe(3);
+  expect(lines).toHaveLength(2);
+
+  let unbounded = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++unbounded < 6) throw claimAnswered503();
+    },
+    "controller",
+    { log: () => {}, firstDelayMs: 1 }
+  );
+  expect(unbounded).toBe(6);
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no role claim and no regain listener", async () => {
