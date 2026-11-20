@@ -687,6 +687,8 @@ check_ci_images_test: &check_ci_images_test
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/ci_images.py'
   - '.github/ci-images.yaml'
+  - '.github/docker/**'
+  - '.github/workflows/browser-image.yaml'
 check_ci_images_rows_test: &check_ci_images_rows_test
   - *ci_router
   - *ci_filters_data
