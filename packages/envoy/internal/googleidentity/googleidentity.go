@@ -20,10 +20,8 @@ package googleidentity
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +30,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -77,14 +77,14 @@ func Token(ctx context.Context, audience string) (string, error) {
 		return "", fmt.Errorf("the metadata server at %s could not be reached (%s names its host): %w", callURL, MetadataHostVar, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := answerText(resp, 1<<20)
 	if err != nil {
 		return "", fmt.Errorf("read the metadata server's answer from %s: %w", callURL, err)
 	}
 	if resp.StatusCode/100 != 2 {
 		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
 	}
-	token := strings.TrimSpace(string(body))
+	token := strings.TrimSpace(body)
 	if token == "" {
 		return "", fmt.Errorf("the metadata server at %s answered an empty identity token", callURL)
 	}
@@ -146,14 +146,14 @@ func Probe(ctx context.Context) (string, error) {
 	if resp.Header.Get("Metadata-Flavor") != "Google" {
 		return "", fmt.Errorf("%w: what answered at %s is not a Google metadata server (its answer carries no Metadata-Flavor: Google)", ErrNoMetadataServer, callURL)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	body, err := answerText(resp, 1<<16)
 	if err != nil {
 		return "", fmt.Errorf("read the metadata server's answer from %s: %w", callURL, err)
 	}
 	if resp.StatusCode/100 != 2 {
 		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
 	}
-	email := strings.TrimSpace(string(body))
+	email := strings.TrimSpace(body)
 	if email == "" {
 		return "", fmt.Errorf("the metadata server at %s names no service account", callURL)
 	}
@@ -201,11 +201,26 @@ func (metadataTokenSource) Token() (*oauth2.Token, error) {
 		ExpiresIn   int64  `json:"expires_in"`
 		TokenType   string `json:"token_type"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&answer); err != nil {
+	read, err := redact.ReadAnswer(resp, 1<<20)
+	if err != nil || read.Decode(&answer) != nil {
 		return nil, fmt.Errorf("the metadata server at %s answered something other than an access token", callURL)
 	}
 	if answer.AccessToken == "" || answer.ExpiresIn <= 0 {
 		return nil, fmt.Errorf("the metadata server at %s answered no access token or no expiry", callURL)
 	}
 	return &oauth2.Token{AccessToken: answer.AccessToken, TokenType: answer.TokenType, Expiry: asked.Add(time.Duration(answer.ExpiresIn) * time.Second)}, nil
+}
+
+// answerText is the metadata server's answer, at most limit bytes, as the text it is
+// (redact.Answer.StreamTo): an identity token, which no caller prints, or the account's email, which
+// a caller names the machine by. A request to the metadata server carries no credential for an
+// answer to echo. A longer answer is refused (redact.ErrAnswerTooLarge).
+func answerText(resp *http.Response, limit int64) (string, error) {
+	answer, err := redact.ReadAnswer(resp, limit)
+	if err != nil {
+		return "", err
+	}
+	var text strings.Builder
+	_, _ = answer.StreamTo(&text)
+	return text.String(), nil
 }

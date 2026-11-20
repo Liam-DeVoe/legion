@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -424,7 +425,7 @@ func request(
 		t.Fatalf("%s %s%s: %v", method, path, at, err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := answertest.Read(resp)
 	if err != nil {
 		t.Fatalf("read response body of %s %s%s: %v", method, path, at, err)
 	}

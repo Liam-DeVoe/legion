@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // HTTPServer connects to a pre-existing MCP server over HTTP/SSE transport.
@@ -73,8 +76,10 @@ func (s *HTTPServer) Start() error {
 	}
 	s.sseResp = resp
 
-	// 2. Read the first SSE event (type "endpoint") to get the message POST URL.
-	scanner := bufio.NewScanner(resp.Body)
+	// 2. Read the first SSE event (type "endpoint") to get the message POST URL. The event stream
+	// is data the session reads for its whole life (redact.StreamAnswer), bounded by that life
+	// and not by its size.
+	scanner := bufio.NewScanner(redact.StreamAnswer(resp, math.MaxInt64))
 	messageURL, err := readEndpointEvent(scanner)
 	if err != nil {
 		resp.Body.Close()
@@ -90,8 +95,9 @@ func (s *HTTPServer) Start() error {
 		}
 		defer postResp.Body.Close()
 		if postResp.StatusCode >= 400 {
-			body, _ := io.ReadAll(postResp.Body)
-			return fmt.Errorf("POST to %s: status %d: %s", s.messageURL, postResp.StatusCode, body)
+			// The server's words, or a stand-in's, print as the rule reads them.
+			refused, _ := redact.ReadAnswer(postResp, 64<<10)
+			return fmt.Errorf("POST to %s: status %d: %s", s.messageURL, postResp.StatusCode, refused.Words())
 		}
 		return nil
 	}, s.onNotify, s.stopCh)
