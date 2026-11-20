@@ -188,18 +188,7 @@ func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 	ctx := context.Background()
 	own := openEmptyTestStore(t)
 	const roleSetting = "10s"
-	if _, err := own.Pool.Exec(ctx, `do $$ begin
-		execute format('alter role current_user in database %I set lock_timeout = %L', current_database(), '`+roleSetting+`');
-	end $$`); err != nil {
-		t.Fatalf("set lock_timeout on the test's role in its own database: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := own.Pool.Exec(ctx, `do $$ begin
-			execute format('alter role current_user in database %I reset lock_timeout', current_database());
-		end $$`); err != nil {
-			t.Errorf("reset the role's lock_timeout in the test's database: %v", err)
-		}
-	})
+	setRoleLockTimeout(t, ctx, own, roleSetting)
 	connString := own.Pool.Config().ConnString()
 	plain, err := pgx.Connect(ctx, connString)
 	if err != nil {
@@ -258,6 +247,113 @@ func TestARoleLockTimeoutReachesNoPoolButTheRequestPool(t *testing.T) {
 			t.Errorf("the %s pool's connection carries lock_timeout = %q, want %q, no bound, over the role's %q", pool.name, got, lockTimeoutNone, roleSetting)
 		}
 	}
+}
+
+// The boot's probe of the database (HealthyWithin, which cmd/dispatch's joinRegistry calls with
+// its thirty-second bootProbeTimeout) waits for a lock on schema_migrations under that bound
+// alone. Behind a pooler that drops startup parameters, the database role's lock_timeout - which
+// cmd/dispatch/README.md has such a deployment set for the request pool's sake - reaches the
+// health pool's session, and a probe it refused would end the boot. The probe's read-only
+// transaction sets no bound for itself (readOnlyWaitingForLocksBegin), so it waits past the
+// role's setting until the table is free, and answers the version then. The health pool opens
+// without its lock_timeout parameter here (DropLockTimeoutParameterForTest), as such a pooler
+// opens it. The version table is one this test makes, since the read needs nothing else, and the
+// role's setting is the one of this test's own database alone.
+func TestTheBootProbeWaitsForTheVersionTablePastARoleLockTimeout(t *testing.T) {
+	ctx := context.Background()
+	own := openEmptyTestStore(t)
+	const roleSetting, held, bootBound, stored = "1s", 3 * time.Second, 30 * time.Second, 20261120000000
+	if _, err := own.Pool.Exec(ctx, `create table schema_migrations (version bigint primary key)`); err != nil {
+		t.Fatalf("create the version table: %v", err)
+	}
+	if _, err := own.Pool.Exec(ctx, `insert into schema_migrations (version) values ($1)`, stored); err != nil {
+		t.Fatalf("record a version: %v", err)
+	}
+	setRoleLockTimeout(t, ctx, own, roleSetting)
+	own.Pool.DropLockTimeoutParameterForTest(HealthPool)
+
+	holder := connectForTest(t, ctx, own)
+	gate, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction holding the version table: %v", err)
+	}
+	if _, err := gate.Exec(ctx, `lock table schema_migrations in access exclusive mode`); err != nil {
+		t.Fatalf("hold the version table: %v", err)
+	}
+
+	type answer struct {
+		version int
+		err     error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		version, err := own.Pool.HealthyWithin(ctx, bootBound)
+		answered <- answer{version, err}
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var queued bool
+		if err := gate.QueryRow(ctx, `select exists (select from pg_locks
+			where not granted and pg_backend_pid() = any(pg_blocking_pids(pid)))`).Scan(&queued); err != nil {
+			t.Fatalf("inspect the locks queued behind the version table: %v", err)
+		}
+		if queued {
+			break
+		}
+		select {
+		case got := <-answered:
+			t.Fatalf("the probe answered %d, %v without queuing behind the held version table", got.version, got.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the probe did not queue behind the held version table within 10 s")
+		}
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("the probe answered %d, %v while the version table was held, before %v and past the role's lock_timeout of %s; want it to wait until the table is free", got.version, got.err, held, roleSetting)
+	case <-time.After(held):
+	}
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release the version table: %v", err)
+	}
+
+	var got answer
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the probe did not answer within 10 s of the version table being released")
+	}
+	if got.err != nil || got.version != stored {
+		t.Fatalf("the probe answered %d, %v once the version table was free, want %d", got.version, got.err, stored)
+	}
+	// What the probe waited past is the role's bound: the health pool's session carries it, as a
+	// session behind a pooler that drops startup parameters does, and not the parameter's none.
+	health, err := own.Pool.healthPool()
+	if err != nil {
+		t.Fatalf("open the health pool: %v", err)
+	}
+	if setting := readLockTimeoutSetting(t, ctx, health); setting != roleSetting {
+		t.Errorf("the health pool's connection carries lock_timeout = %q, want the role's %q", setting, roleSetting)
+	}
+}
+
+// setRoleLockTimeout sets lock_timeout to setting on the test's role in own's database alone,
+// which is the test's own, so no other test's session meets it, and resets it when the test ends,
+// before the database is dropped.
+func setRoleLockTimeout(t *testing.T, ctx context.Context, own *Store, setting string) {
+	t.Helper()
+	if _, err := own.Pool.Exec(ctx, `do $$ begin
+		execute format('alter role current_user in database %I set lock_timeout = %L', current_database(), '`+setting+`');
+	end $$`); err != nil {
+		t.Fatalf("set lock_timeout on the test's role in its own database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := own.Pool.Exec(ctx, `do $$ begin
+			execute format('alter role current_user in database %I reset lock_timeout', current_database());
+		end $$`); err != nil {
+			t.Errorf("reset the role's lock_timeout in the test's database: %v", err)
+		}
+	})
 }
 
 // readLockTimeoutSetting is lock_timeout as the session q runs on shows it (current_setting).

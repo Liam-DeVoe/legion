@@ -294,9 +294,17 @@ func waitForAdmission(ctx context.Context, pool *store.RawPool, id string, insta
 }
 
 // tryRegister is one admission of Register, in its own transaction under registryLock: admit's
-// refusal, nil once the row is written, and an error when no decision was reached.
+// refusal, nil once the row is written, and an error when no decision was reached. The
+// transaction waits for the lock without a bound, whatever lock_timeout the registry's session
+// carries (store.RawPool.BeginWaitingForLocks). Behind a pooler that drops startup parameters the
+// database role's lock_timeout reaches this pool, and a registration it refused while another
+// process held the lock - an earlier build's registration holds it across its wait for the owner
+// lock gate, up to 5 seconds each - would end the boot (cmd/dispatch's joinRegistry), where with
+// no such setting it waits until the lock is free. A heartbeat's transaction (renew) keeps the
+// session's setting: heartbeatTimeout bounds it anyway, and a failed beat is logged and the next
+// tick tries again.
 func tryRegister(ctx context.Context, pool *store.RawPool, id string, instance Instance) (refusal error, err error) {
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.BeginWaitingForLocks(ctx)
 	if err != nil {
 		return nil, err
 	}

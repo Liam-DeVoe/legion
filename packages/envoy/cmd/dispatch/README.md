@@ -76,8 +76,9 @@ Each item below names a variable, then its purpose.
   - leases: a lease is taken with `pg_try_advisory_lock`, which never waits, every lease statement is bounded at 5 seconds (`duty.LeaseCall`), and a delivery intake's take of its hold and each renewal of it at the hold's 5-second renewal interval, so those bounds end those waits first; an intake's record of its token that the refusal ends is logged, and the intake stops delivering and takes its durable over again on its next attempt.
   - horizon: an observation reads only, and one that fails is logged while the live readers wait for the next; the write of the proven horizon is bounded at 2 seconds, and a failed one is logged and leaves the stored horizon as it was.
   - text-trees: the display tree fill logs the pass the refusal ends, and its next pass goes on from what is stored.
-  - registry: a heartbeat is bounded at 2 seconds, and a failed one is logged and the next tick tries again, but the boot's registration waits for the registry's lock (`pg_advisory_xact_lock`) with no bound of its own, so a registration refused there fails the boot, and the process exits 1 before it serves anything.
+  - registry: a heartbeat is bounded at 2 seconds, and a failed one is logged and the next tick tries again; the boot's registration sets `lock_timeout` to `0` for its own transaction, `set local` in the message that carries its `BEGIN` (`store.RawPool.BeginWaitingForLocks`), so it waits for the registry's lock (`pg_advisory_xact_lock`) until the lock is free, as it does with no role setting, and the setting cannot fail the boot there.
   - health: the probe's read is bounded at 2 seconds (`store.healthProbeTimeout`), so its bound ends the wait first, and `/healthz` reports the database unreachable.
+    The boot's one probe of the database (`store.Pool.HealthyWithin`) reads in a read-only transaction that sets `lock_timeout` to `0` in the message that carries its `BEGIN`, so it waits past the role's setting, up to its own 30 seconds (`bootProbeTimeout`), as it does with no role setting.
 
 - `DISPATCH_AGENT_TOKEN`
 

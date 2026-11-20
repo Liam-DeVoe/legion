@@ -119,6 +119,30 @@ func (r *RawPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, e
 	return tx, r.busy(ctx, err, commitsNothing)
 }
 
+// waitingForLocksBegin is the statement a transaction that waits for its locks without a bound
+// opens with (BeginWaitingForLocks): BEGIN, then SET LOCAL lock_timeout at none
+// (lockTimeoutNone). readOnlyWaitingForLocksBegin is the same for a read-only transaction: the
+// boot's probe of the database (Pool.HealthyWithin).
+const (
+	waitingForLocksBegin         = "begin; set local " + lockTimeoutParam + " = '" + lockTimeoutNone + "'"
+	readOnlyWaitingForLocksBegin = "begin read only; set local " + lockTimeoutParam + " = '" + lockTimeoutNone + "'"
+)
+
+// BeginWaitingForLocks opens a transaction as Begin does, which waits for every lock it takes
+// without a bound, whatever lock_timeout its session carries: its BEGIN sets lock_timeout to none
+// for the transaction alone (SET LOCAL), in the one simple-protocol message pgx sends an
+// argument-less statement as, so it costs no round trip more than the BEGIN, as a request-pool
+// transaction's bound costs none (requestBegin). The pool's connections ask for no bound already
+// (configurePool), but a pooler that drops startup parameters drops that request too, and the
+// database role's lock_timeout, which cmd/dispatch/README.md has such a deployment set for the
+// request pool's sake, then reaches the session; a transaction's own setting holds on whatever
+// server connection the pooler hands it. It is for a transaction whose refused wait would end the
+// process: the boot's registration (processes.Register). The boot's probe of the database opens
+// its read-only transaction the same way (Pool.HealthyWithin).
+func (r *RawPool) BeginWaitingForLocks(ctx context.Context) (pgx.Tx, error) {
+	return r.BeginTx(ctx, pgx.TxOptions{BeginQuery: waitingForLocksBegin})
+}
+
 // Ping takes a connection and asks the database to answer on it.
 func (r *RawPool) Ping(ctx context.Context) error {
 	return r.busy(ctx, r.Pool.Ping(ctx), commitsNothing)
@@ -270,7 +294,15 @@ func (p *Pool) RoomAppends() (*RawPool, error) {
 // answering; once Close has closed every other pool it closes this one and Healthy refuses
 // (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
+	health, err := p.healthPool()
+	if err != nil {
+		return 0, err
+	}
+	// Derived from the caller's context, so a request the client already gave up on ends with
+	// it instead of holding the probe's one connection for the full bound.
+	ctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+	return scanSchemaVersion(health.QueryRow(ctx, schemaVersionRead))
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
@@ -282,20 +314,48 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 // (cmd/dispatch/registry.go) is the opposite case: the health pool opens on its first read
 // (healthPool), so that read always pays a fresh dial, and two seconds bounds the query where it
 // has to bound the dial as well. A caller that is always cold names a bound that covers one.
+//
+// Its read waits for a lock under bound alone, whatever lock_timeout the session carries: it runs
+// in a read-only transaction whose BEGIN sets lock_timeout to none for the transaction alone
+// (readOnlyWaitingForLocksBegin, in BeginWaitingForLocks' form), at two round trips more than
+// Healthy's read. The read waits for a lock only behind one on schema_migrations, such as the
+// migration runner's alter of its version table (prepareVersionTable). Behind a pooler that drops
+// startup parameters, the database role's lock_timeout, which cmd/dispatch/README.md has such a
+// deployment set for the request pool's sake, reaches this pool and would refuse that wait
+// (lock_not_available) and end the boot (cmd/dispatch's joinRegistry), where with no such
+// setting the read waits out its bound. Healthy keeps its one round trip, since its own two
+// seconds end such a wait first.
 func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, error) {
 	health, err := p.healthPool()
 	if err != nil {
 		return 0, err
 	}
-	// Derived from the caller's context, so a request the client already gave up on ends with
-	// it instead of holding the probe's one connection for the full bound.
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	// The cast holds the result at bigint whichever type the column has: a connection that
-	// prepared this read while schema_migrations.version was an integer would otherwise fail it
-	// once after a boot widens the column ("cached plan must not change result type").
+	tx, err := health.BeginTx(ctx, pgx.TxOptions{BeginQuery: readOnlyWaitingForLocksBegin})
+	if err != nil {
+		return 0, err
+	}
+	// A no-op once the transaction has committed.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	version, err := scanSchemaVersion(tx.QueryRow(ctx, schemaVersionRead))
+	if err != nil {
+		return 0, err
+	}
+	return version, tx.Commit(ctx)
+}
+
+// schemaVersionRead is the health probes' read of the highest schema migration Postgres has
+// applied (Healthy, HealthyWithin). The cast holds the result at bigint whichever type the column
+// has: a connection that prepared this read while schema_migrations.version was an integer would
+// otherwise fail it once after a boot widens the column ("cached plan must not change result
+// type").
+const schemaVersionRead = "select coalesce(max(version), 0)::bigint from schema_migrations"
+
+// scanSchemaVersion is the version schemaVersionRead's row answers.
+func scanSchemaVersion(row pgx.Row) (int, error) {
 	var version int
-	if err := health.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_migrations").Scan(&version); err != nil {
+	if err := row.Scan(&version); err != nil {
 		return 0, err
 	}
 	return version, nil
@@ -712,6 +772,21 @@ func (p *Pool) SetOpenFailureForTest(name string, err error) {
 	p.openFailures[name] = err
 }
 
+// DropLockTimeoutParameterForTest makes the separate pool named name open without the
+// lock_timeout startup parameter configurePool gives it (lockTimeoutParam), as a pooler that
+// drops startup parameters opens its connections, so they carry whatever lock_timeout the
+// database role or the database sets. It is for tests outside this package alone, which see what
+// that pool's work does under such a setting; nothing in production calls it, since Postgres
+// takes the parameter wherever nothing between drops it. A pool already open keeps its parameter.
+func (p *Pool) DropLockTimeoutParameterForTest(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lockTimeoutDropped == nil {
+		p.lockTimeoutDropped = make(map[string]bool)
+	}
+	p.lockTimeoutDropped[name] = true
+}
+
 // separate is the raw pool of the separate pool named name (open): its pgx pool with the acquires
 // its callers make mapped to ErrPoolBusy.
 func (p *Pool) separate(name string, size int32) (*RawPool, error) {
@@ -771,9 +846,10 @@ func (p *Pool) openLocked(name string, size int32) (openedPool, error) {
 
 // newSeparate opens one separate pool: size connections copied from this pool's configuration and
 // configured as its own (configurePool: its application_name and its acquire bound, acquireBounds'
-// where a test set one, else defaultAcquireBound's). Its callers hold mu, which is what keeps two
-// of them from opening two pools under one name and an open from racing this pool's close; pgx
-// opens no connection here, so nothing waits on the database under the lock.
+// where a test set one, else defaultAcquireBound's), with no lock_timeout startup parameter where
+// a test dropped it (lockTimeoutDropped). Its callers hold mu, which is what keeps two of them
+// from opening two pools under one name and an open from racing this pool's close; pgx opens no
+// connection here, so nothing waits on the database under the lock.
 func (p *Pool) newSeparate(ctx context.Context, name string, size int32) (openedPool, error) {
 	config := p.pool.Config()
 	config.MaxConns = size
@@ -787,6 +863,9 @@ func (p *Pool) newSeparate(ctx context.Context, name string, size int32) (opened
 		bound = defaultAcquireBound(name)
 	}
 	acquire := configurePool(config, name, bound)
+	if p.lockTimeoutDropped[name] {
+		delete(config.ConnConfig.RuntimeParams, lockTimeoutParam)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return openedPool{}, fmt.Errorf("open %s pool: %w", name, err)

@@ -203,6 +203,10 @@ type Pool struct {
 	// openFailures is the error each separate pool it names fails to open with, in place of
 	// opening (SetOpenFailureForTest): a test sees what its caller does when a pool cannot open.
 	openFailures map[string]error
+	// lockTimeoutDropped names the separate pools that open without the lock_timeout startup
+	// parameter (DropLockTimeoutParameterForTest): a test sees what a pool's work does behind a
+	// pooler that drops startup parameters.
+	lockTimeoutDropped map[string]bool
 }
 
 // NewPool wraps an open pgx pool. Its name and acquire tracer are the ones configurePool set on
