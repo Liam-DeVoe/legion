@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -341,7 +342,9 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		if err := openTreeTx(ctx, tx, upgradeProject, root.Key); err != nil {
+		// That release had no issue lifecycles: the upgrade's own 20261120095128 opens one for each
+		// issue a live claim names, so the tree's lifecycle alone is written here.
+		if _, err := records.OpenTreeLifecycle(ctx, tx, project, root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err
 		}
 		for index, shape := range shapes {

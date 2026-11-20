@@ -136,13 +136,14 @@ func (r *adoptionRig) put(issues ...record.Issue) {
 	}
 }
 
-// openTree opens root's tree lifecycle as admission opened it when the tree first ran, which a
-// tree keeps through its linger: every claim of it is bound to that lifecycle.
+// openTree opens root's tree lifecycle and the root's own issue lifecycle as admission opened them
+// when the tree first ran, which a tree keeps through its linger.
 func (r *adoptionRig) openTree(root string) {
 	r.t.Helper()
 	if _, err := r.st.OpenTreeLifecycle(r.ctx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 		r.t.Fatalf("open the lifecycle of %s: %v", root, err)
 	}
+	openIssue(r.t, r.st, "legion", root, treelifecycle.AuthorityWorkflow)
 }
 
 // adoptionSession is the session the agent of issue's role registers and the file it keeps it in:
@@ -171,10 +172,12 @@ func (r *adoptionRig) suspended(tree, issue string, role claim.Role) supervise.C
 	return c
 }
 
-// admitClaims writes each claim as the daemon admits one, bound to its tree's lifecycle.
+// admitClaims writes each claim as the daemon admits one, bound to its issue's own lifecycle, which
+// admission opened when it started the issue.
 func (r *adoptionRig) admitClaims(claims ...supervise.Claim) {
 	r.t.Helper()
 	for _, c := range claims {
+		openIssue(r.t, r.st, c.Project, c.Issue, treelifecycle.AuthorityWorkflow)
 		if _, err := r.st.AdmitClaim(r.ctx, c); err != nil {
 			r.t.Fatalf("admit %s: %v", c.Token, err)
 		}

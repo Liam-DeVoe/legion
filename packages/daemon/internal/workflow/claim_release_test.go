@@ -206,7 +206,10 @@ func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx con
 }
 
 // seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does: the workflow records nothing that acts on such a tree's claims.
+// spawn under the root's key does, and the issue lifecycle of each issue recorded in that tree
+// under it too: an operator's hold of a tree is a hold of each issue of it (R22 of
+// dispatch://INFRA-3320), and the workflow records nothing that acts on the claims of an issue the
+// operator holds (record.OperatorHolds). The tree's issues are recorded before it is seeded.
 func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -214,8 +217,24 @@ func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 		if err != nil {
 			return err
 		}
-		_, err = record.NewStore().OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityOperator)
-		return err
+		records := record.NewStore()
+		if _, err := records.OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityOperator); err != nil {
+			return err
+		}
+		rows, err := tx.Query(t.Context(), `select key from issues where tree = $1 order by key`, key)
+		if err != nil {
+			return err
+		}
+		issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if _, err := records.OpenIssueLifecycle(t.Context(), tx, project, issue, treelifecycle.AuthorityOperator); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -29,7 +29,7 @@ import (
 // applied as main's run applied them. Every version of this branch's but thirty stands below
 // main's newest: a migration's version is a timestamp rather than a place in a line, and the
 // thirty above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which this
-// branch wrote after main's claim-failure cause, and the twenty-nine the next paragraph names.
+// branch wrote after main's claim-failure cause, and the twenty-nine named below.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -98,10 +98,12 @@ import (
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but four, and it names every kind
-// the plan-record list names and its own two, phase_ended among them. The same migration deletes
-// the queued phase_ended rows, the seeded one below among them, and adds
-// pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
+// (20261119003157) stands above every other version of this list but four, INFRA-3320's
+// 20261119185013, dispatch://INFRA-4729's 20261120055717 and dispatch://INFRA-4730's
+// 20261120091044 and 20261120095128, and it names every kind the plan-record list names and its
+// own two, phase_ended among them. The same migration deletes the queued phase_ended rows, the
+// seeded one below among them, and adds pull_requests.conflict_read and
+// pull_requests.merge_forward, both null on every row it finds.
 // INFRA-3320's kind list with the two basis seeds (20261119185013) stands above it and restates
 // its kinds with the two seeds. It deletes nothing, so the phase_ended row 20261119003157 deleted
 // stays deleted.

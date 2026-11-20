@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -116,8 +117,10 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		t.Fatalf("seed the finished root and its child: %v", err)
 	}
 	// The claims live in the daemon's real store, as in production, so admission's promotion reads
-	// the implementer's stored claim as it stands: working, in the old tree.
+	// the implementer's stored claim as it stands: working, in the old tree. The child started its
+	// phase there, so admission opened the child's own lifecycle, which its claim binds.
 	trees := outboxTreeStore(t, pool, rootKey)
+	openIssue(t, trees, "legion", childKey, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	machineClock := &heldClock{at: start}
 	sup.deps.Clock, sup.deps.Timeouts.Stop, sup.deps.Store = machineClock, stopTimeout, trees

@@ -183,6 +183,7 @@ func (r *subArchitectLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.tree, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.tree, err)
 	}
+	openIssue(t, r.st, r.project, r.tree, treelifecycle.AuthorityWorkflow)
 	architect := r.token(r.tree, claim.RoleArchitect)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: architect, Project: r.project, Tree: r.tree, Issue: r.tree, Role: claim.RoleArchitect,

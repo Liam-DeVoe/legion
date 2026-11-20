@@ -2639,11 +2639,13 @@ func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 }
 
 // openTree opens tree's lifecycle under the workflow's authority, as admission's promotion of a
-// root does in the transaction that admits it. That row, and not a slot, is what says a tree runs
-// (record.TreeLive) now that a slot counts one issue at work rather than one tree, so every
-// fixture that seeds a running tree opens it as well as granting whatever slots its issues hold.
-// project is the Dispatch project key its issues are recorded under; the lifecycle is keyed by
-// the claim token of it, as every claim and runtime key is.
+// root does in the transaction that admits it, and the root's own issue lifecycle beside it, which
+// that promotion opens too and each claim of the root binds (store.Store.AdmitClaim). The tree's
+// row, and not a slot, is what says a tree runs (record.TreeLive) now that a slot counts one issue
+// at work rather than one tree, so every fixture that seeds a running tree opens it as well as
+// granting whatever slots its issues hold. project is the Dispatch project key its issues are
+// recorded under; the lifecycles are keyed by the claim token of it, as every claim and runtime
+// key is.
 func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -2654,19 +2656,40 @@ func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 }
 
 // openTreeTx is openTree inside a transaction the caller owns, for a fixture that seeds a tree's
-// record, its slots and its lifecycle in one write as the promotion does.
+// record, its slots and its lifecycles in one write as the promotion does.
 func openTreeTx(ctx context.Context, tx pgx.Tx, project, tree string) error {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return fmt.Errorf("project token of %s: %w", project, err)
 	}
-	_, err = record.NewStore().OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow)
-	return err
+	if _, err := record.NewStore().OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow); err != nil {
+		return err
+	}
+	return openIssueTx(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow)
+}
+
+// openIssueTx opens issue's own lifecycle under authority inside a transaction the caller owns, as
+// admission opens it for each issue it starts and the operator's spawn for the issue it spawns:
+// each claim of the issue binds it (store.Store.AdmitClaim). project is the claim token of the
+// issue's project. A lifecycle the other authority already holds open is left as it stands.
+func openIssueTx(ctx context.Context, tx pgx.Tx, project, issue string, authority treelifecycle.Authority) error {
+	if _, err := record.NewStore().OpenIssueLifecycle(ctx, tx, project, issue, authority); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		return fmt.Errorf("open the lifecycle of issue %s: %w", issue, err)
+	}
+	return nil
+}
+
+// openIssue is openIssueTx in a transaction of its own, through st.
+func openIssue(t *testing.T, st *store.Store, project, issue string, authority treelifecycle.Authority) {
+	t.Helper()
+	if _, err := st.OpenIssueLifecycle(context.Background(), project, issue, authority); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
+	}
 }
 
 // outboxTreeStore is the daemon's store on pool, the outbox's tree barrier as production wires it
-// (newOutbox's trees), with each root's tree lifecycle opened as admission opens it: every workflow
-// tree the daemon runs was admitted.
+// (newOutbox's trees), with each root's tree lifecycle and its own issue lifecycle opened as
+// admission opens them: every workflow tree the daemon runs was admitted.
 func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
@@ -2679,6 +2702,7 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 		if _, err := st.OpenTreeLifecycle(ctx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("admit the tree of %s: %v", root, err)
 		}
+		openIssue(t, st, "legion", root, treelifecycle.AuthorityWorkflow)
 	}
 	return st
 }

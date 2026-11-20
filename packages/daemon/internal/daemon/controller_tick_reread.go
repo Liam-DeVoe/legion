@@ -134,8 +134,8 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 // above that it is one whole-project listing, whose every summary is taken — it is one request
 // for all of them, and a summary of a key not asked for is a reading of Dispatch like any other,
 // which changes a value only where the copy holds it from an older reading or from none
-// (record.Store.PutDispatchIssue). A key of another project is read one at a time in every branch,
-// since the listing is of this daemon's project alone and names no issue of another.
+// (record.Store.PutDispatchIssue). A key of another project is read one at a time in every
+// branch, since the listing is of this daemon's project alone and names no issue of another.
 //
 // The children of parents are read from the listing, which is the one read of Dispatch the daemon
 // makes that names an issue's children (dispatch.IssueSummary.Parent). Above the bound the listing

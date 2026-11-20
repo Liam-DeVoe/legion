@@ -75,6 +75,7 @@ func newRootArchitectRig(t *testing.T) *rootArchitectRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
+	openIssue(t, st, "legion", root.Key, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	sup.deps.ClaimActivity = st.ClaimActivity

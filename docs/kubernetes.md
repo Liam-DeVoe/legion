@@ -2422,6 +2422,39 @@ Read against that time, its trees are quiet for the whole of the gap, and the fi
 The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that fences each value of the copy of Dispatch's issues
+
+The daemon keeps a copy of each Dispatch issue of its projects in `dispatch_issues`.
+This release keeps, for each value of a row (its status, parent, blockers, labels and rank), the sequence of the Dispatch reading that wrote it.
+A reading changes a value only when its sequence is higher than the sequence of that value, or when no reading has written that value yet (sequence 0).
+Migration `20261120055717_dispatch_issue_value_sequences` adds the columns `labels`, `rank`, `status_seq`, `parent_seq`, `blockers_seq`, `labels_seq` and `rank_seq` to `dispatch_issues`, each with a default.
+It also adds an index on `dispatch_issues.parent`, and the table `dispatch_issue_refills`, which holds one mark for each project that has rows in the copy.
+The first boot of each project on this release takes the mark of that project.
+That boot removes the rows of the project from the copy, fills them again from the project's listing before its first decision, and sets `refilled_at` on the mark.
+It logs one line at info that names the project, the number of rows it removed, the number of rows the listing wrote, and each removed key that the listing did not hold.
+A later boot finds the mark set and refills nothing.
+
+**A rollback needs one statement.**
+The earlier release names none of the new columns, so it writes its rows as before, and each new column keeps its default or its last value.
+Each value that the earlier release writes therefore keeps an old sequence beside it.
+After a roll forward, a reading older than such a value can replace it, and the copy then holds a value that Dispatch has changed since.
+The statement below marks each project that has rows again, so the next boot of that project on this release refills its rows.
+Run it with every daemon of the database stopped, before the earlier image is pinned:
+
+```sql
+insert into public.dispatch_issue_refills (project) select distinct project from public.dispatch_issues where project <> '' on conflict (project) do update set refilled_at = null;
+```
+
+The same statement is the last paragraph of the migration's header, which `migrations.WayBack` returns.
+The refill makes no call to Dispatch of its own.
+At the next boot of each project on this release, the daemon deletes the rows of that project and writes one row for each issue of the listing that every boot reads.
+No other statement is necessary: the earlier release reads none of the new columns and the new table, so they can stay.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `dispatch_issues` and `dispatch_issue_refills` hold the rows of every project.
+A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
+Upgrade, and roll back, every daemon of one database in the same change.
+
 #### Rolling back the release that holds a parent's start while a child of it is open
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
@@ -2584,39 +2617,6 @@ Run them only when every daemon of the database is stopped, and roll back every 
 **Each project's daemon image moves first, and its worker image with it or after it.**
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
-
-#### Rolling back the release that fences each value of the copy of Dispatch's issues
-
-The daemon keeps a copy of each Dispatch issue of its projects in `dispatch_issues`.
-This release keeps, for each value of a row (its status, parent, blockers, labels and rank), the sequence of the Dispatch reading that wrote it.
-A reading changes a value only when its sequence is higher than the sequence of that value, or when no reading has written that value yet (sequence 0).
-Migration `20261120055717_dispatch_issue_value_sequences` adds the columns `labels`, `rank`, `status_seq`, `parent_seq`, `blockers_seq`, `labels_seq` and `rank_seq` to `dispatch_issues`, each with a default.
-It also adds an index on `dispatch_issues.parent`, and the table `dispatch_issue_refills`, which holds one mark for each project that has rows in the copy.
-The first boot of each project on this release takes the mark of that project.
-That boot removes the rows of the project from the copy, fills them again from the project's listing before its first decision, and sets `refilled_at` on the mark.
-It logs one line at info that names the project, the number of rows it removed, the number of rows the listing wrote, and each removed key that the listing did not hold.
-A later boot finds the mark set and refills nothing.
-
-**A rollback needs one statement.**
-The earlier release names none of the new columns, so it writes its rows as before, and each new column keeps its default or its last value.
-Each value that the earlier release writes therefore keeps an old sequence beside it.
-After a roll forward, a reading older than such a value can replace it, and the copy then holds a value that Dispatch has changed since.
-The statement below marks each project that has rows again, so the next boot of that project on this release refills its rows.
-Run it with every daemon of the database stopped, before the earlier image is pinned:
-
-```sql
-insert into public.dispatch_issue_refills (project) select distinct project from public.dispatch_issues where project <> '' on conflict (project) do update set refilled_at = null;
-```
-
-The same statement is the last paragraph of the migration's header, which `migrations.WayBack` returns.
-The refill makes no call to Dispatch of its own.
-At the next boot of each project on this release, the daemon deletes the rows of that project and writes one row for each issue of the listing that every boot reads.
-No other statement is necessary: the earlier release reads none of the new columns and the new table, so they can stay.
-
-**Every daemon sharing the database moves together.**
-Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `dispatch_issues` and `dispatch_issue_refills` hold the rows of every project.
-A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
-Upgrade, and roll back, every daemon of one database in the same change.
 
 #### Rolling back below the release that trims an issue pod's volume
 
@@ -3295,8 +3295,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
-A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
-its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold and the daemon's store would keep as U+FFFD, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon API refuses rather than store it as U+FFFD` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
@@ -7481,7 +7481,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, the token replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name

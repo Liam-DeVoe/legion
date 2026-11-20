@@ -85,6 +85,7 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 		if _, err := st.OpenTreeLifecycle(ctx, c.Project, c.Tree, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the tree of %s: %v", c.Token, err)
 		}
+		openIssue(t, st, c.Project, c.Issue, treelifecycle.AuthorityWorkflow)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", c.Token, err)
 		}

@@ -190,8 +190,10 @@ func newIdleRig(t *testing.T) *idleRig {
 	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
+	// The claim is bound as admission binds one: to its tree's epoch and to its issue's, both the
+	// epoch one outboxTreeStore opened (store.Store.AdmitClaim).
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: claim.RoleImplementer, TreeEpoch: 1, IssueEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
 	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {

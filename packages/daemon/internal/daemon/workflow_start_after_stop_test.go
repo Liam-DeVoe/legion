@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -160,8 +161,8 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 
 // seedSlottedMember records member as an issue of a tree seedWorkflowTree has already opened,
 // holding an admission slot of its own, with worker's claim and the task that claim holds. The
-// tree's lifecycle is the root's, which the claim binds to (store.Store.AdmitClaim), so only the
-// issue, its slot and the claim are written here.
+// claim binds the member's own lifecycle (store.Store.AdmitClaim), which admission opened when it
+// started the member, so the issue, its slot, that lifecycle and the claim are written here.
 func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
@@ -191,6 +192,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}); err != nil {
 		t.Fatalf("record %s and its slot: %v", member.Key, err)
 	}
+	openIssue(t, st, worker.Project, worker.Issue, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, worker); err != nil {
 		t.Fatalf("put %s: %v", worker.Token, err)
 	}
