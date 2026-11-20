@@ -2641,6 +2641,28 @@ test("a claim state is one the supervisor has", () => {
   expect(LegionOperatorClaimResponse.safeParse(mutated).success).toBeFalse();
 });
 
+// The operator claim routes name who suspended a claim, and who a held suspension is held for, by
+// the daemon's own sources (`supervise.SuspendSource`): the work hold's `hold` among them, which
+// the operator reads apart from an operator's own suspension and a release. A word the daemon
+// has no source for is refused in either field.
+test("a suspension's source is one the daemon records, the work hold's among them", () => {
+  for (const by of ["unknown", "operator", "daemon", "exit", "released", "hold"]) {
+    const suspended = fixture("operator-claim.json") as Record<string, unknown>;
+    suspended.state = "suspended";
+    suspended.suspendedBy = by;
+    expect(LegionOperatorClaimResponse.safeParse(suspended).error?.issues ?? [], by).toEqual([]);
+
+    const held = fixture("operator-claim.json") as Record<string, unknown>;
+    held.suspensionHeldBy = by;
+    expect(LegionOperatorClaimResponse.safeParse(held).error?.issues ?? [], by).toEqual([]);
+  }
+  for (const field of ["suspendedBy", "suspensionHeldBy"]) {
+    const mutated = fixture("operator-claim.json") as Record<string, unknown>;
+    mutated[field] = "someone";
+    expect(LegionOperatorClaimResponse.safeParse(mutated).success, field).toBeFalse();
+  }
+});
+
 test("a register response without its secret is refused", () => {
   const mutated = fixture("register.json") as Record<string, unknown>;
   delete mutated.secret;

@@ -2524,6 +2524,13 @@ package api
 // back. No shape of `GET /legion/v1/state` moves. A plugin of an earlier contract never calls the
 // route, and the boot gate pairs a daemon and a plugin only at one number, so no plugin of this
 // entry meets a daemon without it.
+// The work hold's claim source joins the contract at this number too: the operator claim routes'
+// `suspendedBy` and `suspensionHeldBy` take `hold` (`legionSuspendedBy`), a claim the work hold
+// (`gates.hold: work`) stopped, or a stop of it held for the agent's turn (supervise.SuspendedByHold,
+// added to `claims.suspended_by` by `store/migrations/20261120224328_claim_suspended_by_hold.up.sql`,
+// whose header carries its way back). As for contract 48's `released`, no session-facing body
+// carries the value: an operator reads it on the operator claim routes, which no plugin calls, and
+// `legion claims list` prints such a claim `suspended:hold`.
 // (This entry takes 199, above the 189 this change's base carries and the 193 main carried at
 // 8a9540682d8a when it was read at 2026-11-20T21:25:56Z: a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 292 open pull requests of cybermonklabs/legion, made on

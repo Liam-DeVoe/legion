@@ -1608,9 +1608,11 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; `hold` is the work
+ * hold's stop (`gates.hold: work`), which keeps them until the tree's standing design gate opens
+ * again. Only an `operator` one and a `hold` one hold against the daemon's rules: the operator's
+ * until an operator resumes the claim, the hold's until the gate opens or an operator acts. */
+const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released", "hold"]);
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):

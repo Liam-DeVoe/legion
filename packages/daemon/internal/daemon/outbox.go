@@ -2399,10 +2399,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// moved phase took over while the row waited — the pause holds a wake's row for as long as
 		// it stands — is that path's to start again, not the wake's: the row finishes here, above
 		// StartedBy, so it records no start against the claim (decision 10 of dispatch://INFRA-3759).
+		// So does one the work hold took over (supervise.SuspendedByHold): the hold's end starts
+		// that role with its one task, and a wake's row left waiting would give it a second.
 		if payload.WakeKind != "" && found {
-			if held := machine.Claim(); held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon {
+			if held := machine.Claim(); held.State == supervise.StateSuspended &&
+				(held.SuspendedBy == supervise.SuspendedByDaemon || held.SuspendedBy == supervise.SuspendedByHold) {
 				r.log.Info("outbox wake start of a role the daemon took over; finished without acting", "row", row.ID,
-					"issue", issue.Key, "role", payload.Role, "wake", payload.WakeKind, "pause", payload.Pause)
+					"issue", issue.Key, "role", payload.Role, "wake", payload.WakeKind, "pause", payload.Pause, "suspendedBy", held.SuspendedBy)
 				return nil
 			}
 		}
