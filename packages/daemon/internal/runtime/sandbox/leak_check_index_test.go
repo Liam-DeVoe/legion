@@ -553,14 +553,20 @@ const testStartReserve = time.Second
 
 // bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
 // asked for it: each ask is the bundle's one restore attempt spent. err, when set, is a store
-// that does not answer the ask.
+// that does not answer the ask, and hang a store that answers nothing until the ask's own context
+// ends, as a statement the database never returns from does.
 type bundleSeam struct {
 	takes atomic.Int32
 	err   error
+	hang  bool
 }
 
-func (b *bundleSeam) take(context.Context, string, string, time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+func (b *bundleSeam) take(ctx context.Context, issue, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	b.takes.Add(1)
+	if b.hang {
+		<-ctx.Done()
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s: %w", issue, ctx.Err())
+	}
 	if b.err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, b.err
 	}
@@ -683,8 +689,9 @@ func TestALaterStartOfAPodWhoseBundleHopWasSkippedIsSentNoBundle(t *testing.T) {
 
 // A store that does not answer the ask for the saved bundle stops the start: its pod's one
 // restore attempt may still be open, and a role started now would work in a workspace a later
-// start could be sent the bundle over. No start frame goes, and the error says why; the
-// supervisor's next launch asks again.
+// start could be sent the bundle over. No start frame goes, and the error says why. It is a store
+// fault (runtime.ErrSessionStore), which the supervisor waits out every minute and charges no
+// launch failure, since the claim's agent is fine.
 func TestAStoreThatDoesNotAnswerTheBundleAskStopsTheStart(t *testing.T) {
 	var logs lockedLog
 	seam := &bundleSeam{err: errors.New("take the workspace bundle of " + testTree + ": connection refused")}
@@ -697,6 +704,37 @@ func TestAStoreThatDoesNotAnswerTheBundleAskStopsTheStart(t *testing.T) {
 	err := d.start(ctx, workerToken, "uid-pod-unanswered", shimwire.LauncherStart{ID: "start-without-the-store", Generation: 1, Argv: []string{"true"}})
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("the start answered %v, want it stopped naming the store's error", err)
+	}
+	if !errors.Is(err, runtime.ErrSessionStore) {
+		t.Fatalf("the start answered %v, want a store fault (runtime.ErrSessionStore) the supervisor charges nothing for", err)
+	}
+	if got := countOf(l.frames(), shimwire.TypeLauncherStart); got != 0 {
+		t.Fatalf("the launcher was sent %v, want no start", frameTypes(l.frames()))
+	}
+}
+
+// An ask for the saved bundle that the start's own deadline cuts is the start running out of
+// time, not the store failing: the start still stops, since the pod's attempt may be open, but
+// its error is no store fault, so the supervisor counts it as the start it was.
+func TestABundleAskCutByTheStartsOwnDeadlineIsNoStoreFault(t *testing.T) {
+	var logs lockedLog
+	seam := &bundleSeam{hang: true}
+	d := reserveLaunchers(t, readsOf(testIndex(rigNow)), seam, &logs)
+	d.startReserve = time.Hour
+	l := &indexLauncher{}
+	connectIndexLauncher(t, d, workerToken, "uid-pod-out-of-time", false, l)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err := d.start(ctx, workerToken, "uid-pod-out-of-time", shimwire.LauncherStart{ID: "start-out-of-time", Generation: 1, Argv: []string{"true"}})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the start answered %v, want it stopped by its own deadline", err)
+	}
+	if errors.Is(err, runtime.ErrSessionStore) {
+		t.Fatalf("the start answered %v, a store fault; want the start's own deadline, which the store did not cause", err)
+	}
+	if seam.takes.Load() != 1 {
+		t.Fatalf("the store was asked %d time(s), want once", seam.takes.Load())
 	}
 	if got := countOf(l.frames(), shimwire.TypeLauncherStart); got != 0 {
 		t.Fatalf("the launcher was sent %v, want no start", frameTypes(l.frames()))
