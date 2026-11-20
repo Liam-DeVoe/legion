@@ -64,7 +64,7 @@ func RoleProject(role string) string {
 		return NoProject
 	}
 	token, after, found := strings.Cut(rest, "-")
-	if !found || after == "" || token == "" || strings.Trim(token, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
+	if !found || after == "" {
 		return NoProject
 	}
 	return legionTokenProject(token)
@@ -154,6 +154,10 @@ func init() {
 		}},
 		// Where a deleted session consumer stopped, which names a session and no project.
 		{family: "notifications.envoy.resume.>", read: noProject},
+		// A role a session took from another: the role's own project, as its kept lane reads it.
+		{family: "notifications.envoy.takeover.>", read: func(rest []string) (string, string) {
+			return RoleProject(rest[0]), ""
+		}},
 	}
 }
 
@@ -299,11 +303,9 @@ func LegacyTwin(canonical string) (string, bool) {
 // refused only.
 func TopicForms(topic string) []string {
 	forms := []string{topic}
-	canonical, legacy := CanonicalTopic(topic)
-	if legacy {
+	if canonical, legacy := CanonicalTopic(topic); legacy {
 		forms = append(forms, canonical)
-	}
-	if twin, ok := LegacyTwin(canonical); ok && twin != topic {
+	} else if twin, ok := LegacyTwin(topic); ok {
 		forms = append(forms, twin)
 	}
 	return forms
@@ -367,8 +369,12 @@ func RoleClaimKey(project, role string) string {
 }
 
 // ClaimProject is the project a claim of role works for, given the project the claim requested
-// ("" for none). It is the one place a claim's project is decided, so the listener's route and
-// Dispatch's reader cannot answer it two ways.
+// ("" for none), once a claim keys on its project. Nothing calls it in this slice: while every
+// claim keys on its bare role name, the listener's POST /v1/roles/set refuses any new-form role
+// whose project is not RoleProject(role), so for a free-form role under a project
+// (PRIV.lead-reviewer) the route answers 400 where this answers PRIV. Plan C's t-c-8 wires it into
+// the route, and t-c-6 reads Dispatch's claims through it, so the two then decide a claim's
+// project one way.
 //
 // A Legion role token (legion-<token>-…) works for the project its own name gives
 // (RoleProject), whatever the claim asks for: the role is that project's by construction, and a

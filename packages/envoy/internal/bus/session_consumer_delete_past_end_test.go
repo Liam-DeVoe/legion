@@ -14,8 +14,8 @@ import (
 )
 
 // floorPastEndLine is the WARN line of a resume floor past the stream's end, which the record
-// holds at the sequence before the stream's first (recordResumeFloorAt). packages/envoy/AGENTS.md
-// ("The log lines of a start") states it whole, so the tests name it whole.
+// holds at the sequence before the stream's first (recordResumeFloorAt). The tests name it whole,
+// as they name the lines of a start (cmd/listener/session_resume_past_end_test.go).
 const floorPastEndLine = "session resume floor past the stream's end, recorded at the sequence before the stream's first"
 
 // deletePath is one path that takes a session's consumer away and records the session's resume
@@ -358,6 +358,9 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 				t.Fatalf("the stream holds %d to %d before the delete, want %d to %d, the two messages stored after the cut", end.firstSeq, end.lastSeq, held[0], held[1])
 			}
 
+			// The reconcile the restarted server made of the consumer kicked its state file's
+			// write.
+			waitForStoredState(t, owner, session)
 			floor, err := consumers.Delete(ctx, session, nil)
 			if err != nil {
 				t.Fatalf("delete: %v", err)

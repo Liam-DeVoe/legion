@@ -80,16 +80,6 @@ func detectSilentCuts(o *nats.Options) error {
 // retries, in place of the second every other connection waits.
 const reconnectJitterImmediate = 50 * time.Millisecond
 
-// reconnectImmediately is the nats.Option WithImmediateReconnect adds to every connection of a
-// client: no wait between attempts, and a jitter small enough that the client is back before the
-// clients that wait on it are.
-func reconnectImmediately(o *nats.Options) error {
-	o.ReconnectWait = 0
-	o.ReconnectJitter = reconnectJitterImmediate
-	o.ReconnectJitterTLS = reconnectJitterImmediate
-	return nil
-}
-
 // allOf applies each option that is not nil, in order.
 func allOf(options ...nats.Option) nats.Option {
 	return func(o *nats.Options) error {
@@ -247,10 +237,11 @@ func serverList(urls []string) string {
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection
-// keep working; ReconnectedCB re-subscribes and runs the reconnect hooks. DisconnectedErrCB logs
-// the disconnect and then calls disconnectedCB: the reconnect loop keeps every subscription open
-// through an outage, so a KV watcher never ends on its own and only this callback says its cache
-// stopped following the bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
+// keep working; ReconnectedCB starts the re-subscribe and a run of the reconnect hooks off nats.go's
+// callback goroutine (onReconnect). DisconnectedErrCB logs the disconnect and then calls
+// disconnectedCB: the reconnect loop keeps every subscription open through an outage, so a KV
+// watcher never ends on its own and only this callback says its cache stopped following the
+// bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
 // not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
@@ -314,7 +305,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		// what is left of the previous outage's minute.
 		throttle.reset()
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
-		// discovered inherits the configured URL's (nats.go v1.50.0 nats.go:2025-2027);
+		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
 		// ConnectedUrlRedacted keeps a token, which is a user name alone.
 		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 		if reconnectCB != nil {
@@ -335,8 +326,8 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 			// A server that closes the connection during a reconnect's CONNECT and PING handshake
 			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
 			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.50.0 nats.go:2930-2938,
-			// 3251-3258). It is a failed reconnect attempt, so it is logged as one, on the same
+			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
+			// It is a failed reconnect attempt, so it is logged as one, on the same
 			// throttle. Only that report is: the connection is still in that handshake
 			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
 			// and every other async error, an EOF on a connected connection included, stays an
