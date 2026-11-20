@@ -54,6 +54,11 @@ services:
       # external repositories with no stored mapping.
       DISPATCH_REPO_PROJECTS: ${DISPATCH_REPO_PROJECTS:-}
       DISPATCH_DEFAULT_PROJECT: ${DISPATCH_DEFAULT_PROJECT:-}
+      # The verdict App's id: the CI reconcile leaves its own check suites and legion-verdict
+      # runs out of each head's record. DISPATCH_REVIEWER_APP_ID is its former name, read while
+      # DISPATCH_VERDICT_APP_ID is unset (cmd/dispatch/README.md).
+      DISPATCH_VERDICT_APP_ID: ${DISPATCH_VERDICT_APP_ID:-}
+      DISPATCH_REVIEWER_APP_ID: ${DISPATCH_REVIEWER_APP_ID:-}
       # Session cookies are Secure by default; set this when serving the
       # OAuth dashboard over plain HTTP (local/tailnet use).
       DISPATCH_INSECURE_COOKIE: ${DISPATCH_INSECURE_COOKIE:-}
