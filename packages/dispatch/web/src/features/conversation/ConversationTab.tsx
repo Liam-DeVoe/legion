@@ -713,10 +713,10 @@ function CommentTurn({
   hideReplyComposer?: boolean;
   /** Drops the card's `New` mark. The phone thread dialog sets it: the reader has the
    *  conversation open and is reading it, so the badge says nothing above the card they are in,
-   *  and a card that never draws one cannot move the thread's rows when it goes. The mark is
-   *  written from that same card a second after it is on screen, and the `lastReadSeq` it moves
-   *  is in the `unreadBoundary` read's key, so the read re-enters `isPending`, `unreadFrom` goes
-   *  undefined and every `New` unmounts - under whatever the reader is pressing in the thread. */
+   *  and a card that never draws one cannot move the thread's rows when it goes. The tab keeps
+   *  each mark for the whole visit (`visitMarks`), through the read mark this card writes a
+   *  second after it is on screen, but a live event that brings newer activity takes the
+   *  boundary again, and a mark that goes then goes under whatever the reader is pressing. */
   hideUnreadMark?: boolean;
   isClosed: boolean;
   isPhone?: boolean;
@@ -1037,8 +1037,22 @@ export function ConversationTab({
     queryKey: ["events", issueKey, "head"],
     queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
-  const unreadFrom = unreadBoundary.data?.[0]?.created_at;
   const headSeq = head.data?.[0]?.seq ?? 0;
+  // The New marks of this visit stay where they were first drawn, as a chat's new-messages line
+  // stays where the reader came in: the boundary the visit's first settled read answered, beside
+  // the newest activity the lists held then. The read mark moves `lastReadSeq` a second after the
+  // newest card is on screen, and the read under the new key starts empty; marks that went with
+  // it would take their height out from under whatever the reader was pressing below them. The
+  // boundary is taken again only on a visit to another issue and back (`issueKey`), and when a
+  // live event brings activity newer than the lists held (a new turn, a reply, an answer), once
+  // the read under the current key has answered it.
+  const [visitMarks, setVisitMarks] = useState<{
+    readonly issueKey: string;
+    readonly unreadFrom: string | undefined;
+    readonly newestAt: string | undefined;
+  }>();
+  const marks = visitMarks?.issueKey === issueKey ? visitMarks : undefined;
+  const unreadFrom = marks?.unreadFrom;
   const conversations = useMemo(
     () =>
       buildConversations({
@@ -1050,6 +1064,31 @@ export function ConversationTab({
       }),
     [asks.data, comments.data, handoffs.data, messages.data, unreadFrom]
   );
+  const newestAt = conversations.reduce<string | undefined>(
+    (newest, item) =>
+      newest === undefined || compareTimestamps(item.at, newest) > 0 ? item.at : newest,
+    undefined
+  );
+  const boundarySettled =
+    state !== undefined &&
+    unreadBoundary.isSuccess &&
+    !unreadBoundary.isFetching &&
+    !asks.isPending &&
+    !comments.isPending &&
+    !messages.isPending &&
+    !handoffs.isPending;
+  const newerActivity =
+    marks !== undefined &&
+    newestAt !== undefined &&
+    (marks.newestAt === undefined || compareTimestamps(newestAt, marks.newestAt) > 0);
+  if (boundarySettled && (marks === undefined || newerActivity)) {
+    // Set while rendering, so the marks are drawn in the same commit as the read that placed them.
+    setVisitMarks({
+      issueKey,
+      newestAt,
+      unreadFrom: unreadBoundary.data[0]?.created_at,
+    });
+  }
   // The messages and comments the issue's reads hold, whatever the filter shows of them: a draft
   // a composer keeps for one goes back by its Reply, and one kept for a reply the reads no longer
   // hold is drawn itself (`ListedReplies`).
@@ -1306,11 +1345,9 @@ export function ConversationTab({
   // no history entry, so without that the browser's back and the drawer would leave the issue
   // unread for a reader who had just read its newest conversation in the thread.
   // A thread over any older conversation holds the mark until its own Back gives the list back:
-  // the newest conversation is behind the thread, unread, and marking the issue read would also
-  // move `lastReadSeq` under the reader - that value is in the `unreadBoundary` key above, so
-  // the read re-entering `isPending` unmounts every `New` the list still draws and reflows it by
-  // a row, under the list the reader is given back. The exits that write no mark for
-  // such a thread are the ones that never give the list back: the browser's back and the
+  // the newest conversation is behind the thread, unread, so the issue is not marked read for
+  // it. The list's `New` marks stay drawn either way (`visitMarks`). The exits that write no
+  // mark for such a thread are the ones that never give the list back: the browser's back and the
   // drawer. A dwell already counting when an older thread opens is cancelled rather than
   // completed, since `useDwell` drops its timers as `enabled` goes false.
   const newestId = conversations[0]?.id;
