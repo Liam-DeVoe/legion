@@ -75,9 +75,6 @@ func TestALabelTheDatabaseLowersToLegionFreesNoLegionIssue(t *testing.T) {
 			written := credential.send(t, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "todo"})
 			requireLegionStatusRefusal(t, written)
 			requireLegionIssueUnchanged(t, rig.database, issue, before)
-			if after := readLegionIssue(t, rig.database, issue); after.status != "in_progress" || after.parent == nil || *after.parent != labelled {
-				t.Errorf("%s after the three calls: %s; want status in_progress under %s", issue, after, labelled)
-			}
 		})
 	}
 }

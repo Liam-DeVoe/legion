@@ -534,12 +534,7 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 // an issue that carries LEGİON adds nothing, and neither R26 nor the daemon reads the issue as a
 // Legion issue.
 func labelKey(label string) string {
-	var key strings.Builder
-	key.Grow(len(label))
-	for _, r := range label {
-		key.WriteRune(leastFold(r))
-	}
-	return key.String()
+	return strings.Map(leastFold, label)
 }
 
 // leastFold is the least rune of the unicode.SimpleFold orbit of r.

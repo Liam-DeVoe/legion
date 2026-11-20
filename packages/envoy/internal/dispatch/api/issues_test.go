@@ -998,24 +998,12 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 	// labelled legion, but not the issue labelled only LEGİON (with U+0130), which
 	// strings.ToLower, and lower() in a glibc collation, map to legion.
 	umlaut := create("Umlaut", []string{"\u00c4"})
-	byUmlaut := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=CORE&label=%C3%A4", nil, "alice")
-	if byUmlaut.Code != http.StatusOK {
-		t.Fatalf("filter by \u00e4: status=%d body=%s", byUmlaut.Code, byUmlaut.Body.String())
-	}
-	if issues := decodeBody[[]model.IssueSummary](t, byUmlaut); len(issues) != 1 || issues[0].Key != umlaut.Key {
-		t.Fatalf("issues matching \u00e4 = %#v, want only %s", issues, umlaut.Key)
+	if listed := listedKeys(t, handler, "project=CORE&label=%C3%A4"); !slices.Equal(listed, []string{umlaut.Key}) {
+		t.Fatalf("issues matching \u00e4 = %v, want only %s", listed, umlaut.Key)
 	}
 	lookAlike := create("Look-alike", []string{"LEG\u0130ON"})
 	labelled := create("Labelled", []string{"legion"})
-	byLegion := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=CORE&label=legion", nil, "alice")
-	if byLegion.Code != http.StatusOK {
-		t.Fatalf("filter by legion: status=%d body=%s", byLegion.Code, byLegion.Body.String())
-	}
-	listed := []string{}
-	for _, issue := range decodeBody[[]model.IssueSummary](t, byLegion) {
-		listed = append(listed, issue.Key)
-	}
-	if !slices.Contains(listed, labelled.Key) || slices.Contains(listed, lookAlike.Key) {
+	if listed := listedKeys(t, handler, "project=CORE&label=legion"); !slices.Contains(listed, labelled.Key) || slices.Contains(listed, lookAlike.Key) {
 		t.Fatalf("issues matching legion = %v, want %s listed and %s not listed", listed, labelled.Key, lookAlike.Key)
 	}
 }
