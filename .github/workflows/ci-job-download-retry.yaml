@@ -539,14 +539,17 @@ jobs:
   # fetch of the build it is in front of — so it proves the model a build's key is priced by
   # (.github/scripts/check-download-retry.sh, rule 10): a build runs its fetches one after
   # another, pays a fault window once, through the first fetch that meets it, and every later
-  # fetch meets a healthy host.
+  # fetch meets a healthy host. Each report holds its build to the price that model puts on it
+  # where the image is built for real, and to no tighter one: the build's measured time, as the
+  # key holding that build names it, plus the longest single ladder of its Dockerfile, and the
+  # probe's 20 s. The `# why:` above each report step names that key.
   #
   # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
   # when nothing outside its own injected faults goes wrong — 300 s for the base image pulls,
   # 900 s for the unfaulted smoke build, the four faulted builds at the budgets their report
-  # steps enforce, 2720 + 920 + 500 + 384 s, and about 200 s of checkout, bypass clearing and rig
-  # steps, which is 5924 s — and the rule adds its single slowest retried step. That step is a
-  # build, priced at the longest single ladder of the Dockerfiles this job builds: a fault
+  # steps enforce, 6470 + 3373 + 3181 + 1736 s, and about 200 s of checkout, bypass clearing and
+  # rig steps, which is 16160 s — and the rule adds its single slowest retried step. That step
+  # is a build, priced at the longest single ladder of the Dockerfiles this job builds: a fault
   # window of its own, outside the injected one, is paid once, through one build's first fetch
   # that meets it, and the longest such ladder is the worker image's `go mod download`,
   # 5 x 900 + 150 = 4650 s, above the Envoy and held-port images' 5 x 600 + 150 = 3150 s, the
@@ -554,9 +557,8 @@ jobs:
   # download of this job that is not a faulted build: its `gh api` read and the POST of the
   # check run, 2 x (5 x 30 + 150) = 600 s, and two calls of runner-shutdown.sh's check-run read
   # and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s together (ci-budgets.md's Budgets
-  # note, "The ci-ok report"). So 5924 + 4650 = 10574 s -> 177 min. Each build's budget
-  # carries 20 s more than it did before the probe, for the two 10 s bounded requests the probe
-  # makes between the proxy's start and the build, which `report` measures from the former.
+  # note, "The ci-ok report"). So 16160 + 4650 = 20810 s -> 347 min, inside the 360 minutes
+  # GitHub gives a job on a hosted runner.
   # The pulls' 300 s still holds the browser image's two bases, the Playwright copy among them,
   # 990,220,611 bytes: the three images' pulls took 16 to 24 s in this job's ten runs from run
   # 43761695707 to run 43987988192, and the browser image's whole build, which fetches those
@@ -565,7 +567,7 @@ jobs:
   download-retry-images:
     if: inputs.download_retry_images == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 177
+    timeout-minutes: 347
     env:
       SMOKE_IMAGE: legion-envoy-smoke:download-retry
     steps:
@@ -635,10 +637,13 @@ jobs:
           --tag legion-worker:download-retry
           --file packages/daemon/docker/worker.Dockerfile
       - name: What the worker image build did under the recovering fault
-        run: >-
-          .github/scripts/download-retry-proof.sh report worker
-          --what "the worker image (packages/daemon/docker/worker.Dockerfile)"
-          --outcome ${{ steps.worker-build.outcome }} --attempts 5 --floor 0 --budget 2720
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 1800 + 4650 + 20 = 6470 s: worker-image.yaml's `build` job key, and the probe's 20 s.
+        run: |
+          echo "download-retry: budget 6470 s = the gate's price for this build, 1800 + 4650 s (worker-image.yaml, the build job's key: the 1800 s that hold its build and its Dockerfile's longest single ladder), + the probe's 20 s"
+          .github/scripts/download-retry-proof.sh report worker \
+            --what "the worker image (packages/daemon/docker/worker.Dockerfile)" \
+            --outcome ${{ steps.worker-build.outcome }} --attempts 5 --floor 0 --budget 6470
 
       # The Envoy image: apt, the npm registry and the Go module proxy.
       - name: Start the recovering fault for the Envoy image build
@@ -656,10 +661,13 @@ jobs:
           --tag legion-envoy:download-retry
           --file packages/envoy/docker/Dockerfile
       - name: What the Envoy image build did under the recovering fault
-        run: >-
-          .github/scripts/download-retry-proof.sh report envoy
-          --what "the Envoy image (packages/envoy/docker/Dockerfile)"
-          --outcome ${{ steps.envoy-build.outcome }} --attempts 5 --floor 0 --budget 920
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 203 + 3150 + 20 = 3373 s: this build's figures in ci-job-envoy-smoke.yaml's job key comment, and the probe's 20 s.
+        run: |
+          echo "download-retry: budget 3373 s = the gate's price for this build, 203 + 3150 s (ci-job-envoy-smoke.yaml, the job key's comment: this build's measured 203 s in job 133743044741 and its Dockerfile's longest single ladder), + the probe's 20 s"
+          .github/scripts/download-retry-proof.sh report envoy \
+            --what "the Envoy image (packages/envoy/docker/Dockerfile)" \
+            --outcome ${{ steps.envoy-build.outcome }} --attempts 5 --floor 0 --budget 3373
 
       # The held-port image: one `go mod download` in its wrapper stage, on the smoke image
       # built above as its BASE.
@@ -679,22 +687,16 @@ jobs:
           --tag legion-envoy-heldport:download-retry
           --file packages/envoy/infra/host/heldportwrapper/Dockerfile
       - name: What the held-port image build did under the recovering fault
-        run: >-
-          .github/scripts/download-retry-proof.sh report heldport
-          --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)"
-          --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 500
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 11 + 3150 + 20 = 3181 s: this build's figures in ci-job-envoy-smoke.yaml's job key comment, and the probe's 20 s.
+        run: |
+          echo "download-retry: budget 3181 s = the gate's price for this build, 11 + 3150 s (ci-job-envoy-smoke.yaml, the job key's comment: this build's measured 11 s in job 133743044741 and its Dockerfile's longest single ladder), + the probe's 20 s"
+          .github/scripts/download-retry-proof.sh report heldport \
+            --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)" \
+            --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 3181
 
       # The browser image: Ubuntu's apt mirror, which its base's sources name, and PostgreSQL's
       # signing key and apt repository, each behind one of the Dockerfile's inline retries.
-      # Its report's budget: the recovering fault lets the first attempt through no later than
-      # 100 s after the proxy starts — a first attempt just under 30 s in, its next three after
-      # the loop's sleeps of 10, 20 and 40 s, the last of them past the 60 s window — and the
-      # probe's 20 s, as every build here carries, plus 4 x 66 = 264 s for the build itself:
-      # 66 s is the slowest of the image's 33 bare builds measured in browser-image.yaml's own
-      # job (job 128991520632 of run 42565616054), and four times it is about the margin the
-      # Envoy image's 920 s keeps over its 239 s faulted build in job 133724372176, since this
-      # build runs on the runner's default builder with no cache rather than on that job's.
-      # 100 + 20 + 264 = 384 s.
       - name: Start the recovering fault for the browser image build
         id: browser-proxy
         run: |
@@ -710,10 +712,13 @@ jobs:
           --tag legion-browser:download-retry
           --file .github/docker/browser.Dockerfile
       - name: What the browser image build did under the recovering fault
-        run: >-
-          .github/scripts/download-retry-proof.sh report browser
-          --what "the browser image (.github/docker/browser.Dockerfile)"
-          --outcome ${{ steps.browser-build.outcome }} --attempts 5 --floor 0 --budget 384
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 66 + 1650 + 20 = 1736 s: browser-image.yaml's `Build and push` step key, and the probe's 20 s.
+        run: |
+          echo "download-retry: budget 1736 s = the gate's price for this build, 66 + 1650 s (browser-image.yaml, the Build and push step's key: its measured build and its Dockerfile's longest single ladder), + the probe's 20 s"
+          .github/scripts/download-retry-proof.sh report browser \
+            --what "the browser image (.github/docker/browser.Dockerfile)" \
+            --outcome ${{ steps.browser-build.outcome }} --attempts 5 --floor 0 --budget 1736
 
       # As the download-retry job: the proxy was never this job's environment, and this is where
       # that is checked rather than assumed.
