@@ -9,7 +9,7 @@ import (
 
 // The JetStream API error codes of nats-server's answers that come of its cluster's state rather
 // than of the request (ClusterStateAnswer), as nats-server v2.15.1 numbers them in
-// server/errors.json and server/jetstream_errors_generated.go. nats.go v1.53.1 names two of them
+// server/errors.json and server/jetstream_errors_generated.go. nats.go v1.55.0 names two of them
 // (nats.JSErrCodeJetStreamNotAvailable, nats.JSErrCodeInsufficientResourcesErr) and none of the
 // others.
 const (

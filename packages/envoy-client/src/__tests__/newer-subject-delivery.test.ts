@@ -112,7 +112,10 @@ describe.skipIf(!envoyStackEnabled)("a topic only a newer build's stream subject
         relay: delivery,
         ownAgentSubject: own,
         followed: [TOPIC],
-        outage: inboundUnavailable((why) => failures.push(why)),
+        outage: inboundUnavailable(
+          (why) => failures.push(why),
+          () => undefined
+        ),
         send: (topics, request) => {
           sent.push([...topics]);
           return client.subscribe({

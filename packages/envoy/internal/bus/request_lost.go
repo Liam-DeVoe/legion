@@ -30,9 +30,11 @@ import (
 // A close, and so the replacement that follows one, is the exception. nats.go then fails each
 // request in its request map and wakes each sync subscription itself, with
 // nats.ErrConnectionClosed, before it runs the close callback the watch hears. A ForceReconnect
-// fails each request in the request map the same way. So each of those callers but RequestCore,
-// whose channel subscription a close leaves open, can return nats.ErrConnectionClosed for such a
-// loss in place of this error.
+// fails each request in the request map too, with nats.ErrDisconnected, since it leaves the
+// connection open (nats.go@v1.55.0 nats.go:4962-4966, context.go:69-73). So each of those callers
+// but RequestCore, whose channel subscription a close leaves open, can return
+// nats.ErrConnectionClosed for a close and a request in the request map nats.ErrDisconnected for a
+// ForceReconnect, in place of this error.
 var ErrRequestLostWithConnection = errors.New("bus: the request was lost with its NATS connection")
 
 // connWatch follows the connection one request, or one pull's requests (SessionPull), went out on,
@@ -102,7 +104,8 @@ func (w *connWatch) lostRequest() bool {
 // as soon as the watched request is lost, and the func that releases the goroutine watching for
 // that, which the caller defers. A wait that takes no channel but a context - a sync
 // subscription's NextMsgWithContext, a JetStream request handed a context (RequestOnConnection) -
-// waits on it to end at the connection event rather than at ctx's deadline.
+// waits on it to end at the connection event rather than at ctx's deadline, and so does a wait that
+// must read no state of nats.go's itself (BoundedOnConnection), since the loss is read here.
 func (w connWatch) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithCancelCause(ctx)
 	go func() {

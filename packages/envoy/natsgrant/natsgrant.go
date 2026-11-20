@@ -190,9 +190,9 @@ func KVWrite(bucket string) []string {
 // ListenerState is the listener state bucket's part of listenerGrant for machine machineID: the
 // eleven subjects the listener's own calls on bus.ListenerStateBucket send, each no wider than its
 // call. Below, <u> is the machine's durable (bus.ListenerDurable), one subject token for any
-// listener that binds it, since nats.go refuses a consumer name holding a '.' (nats.go@v1.53.1
+// listener that binds it, since nats.go refuses a consumer name holding a '.' (nats.go@v1.55.0
 // jsm.go, checkConsumerName). Each call is named by its function: paths are packages/envoy's, and
-// nats.go's at v1.53.1 where the text says nats.go. The listener opens the bucket once
+// nats.go's at v1.55.0 where the text says nats.go. The listener opens the bucket once
 // (cmd/listener/lease_bucket.go, openListenerState), on its lease's connection, and the lease
 // (cmd/listener/main.go, openDeliveryLease), the delivery ledger (main.go, newDeliveryLedger), the
 // last-seen records (main.go's main, session.WithLastSeenBucket) and the bus client's keeper

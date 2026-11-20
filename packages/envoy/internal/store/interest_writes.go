@@ -355,7 +355,7 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 // for the same reason a conditional delete is: it stores only over the very entry its plan read,
 // so it cannot undo a write or a delete that landed after that read. A Create would not be: at
 // revision 0, refused over a marker, nats.go's Create updates at the marker's revision (nats.go
-// v1.53.1 kv.go:729-739), so a create planned before an unsubscribe or a reap, or one landing
+// v1.55.0 kv.go:729-739), so a create planned before an unsubscribe or a reap, or one landing
 // after it, would bring the record back over it.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []byte, revision uint64) (uint64, uint64, bool, error) {
 	kv, epoch := r.watcher.Handle()

@@ -230,7 +230,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// Every claim writes with the revision of the entry it read: the claim's own where a claim
 		// record stands, the revision of the release marker it read where none does, or 0 where the
 		// key held no entry (roleClaimToWrite), never through Create: a create refused over a marker
-		// updates at that marker's revision (nats.go@v1.53.1 kv.go:729-739), so it would land over a
+		// updates at that marker's revision (nats.go@v1.55.0 kv.go:729-739), so it would land over a
 		// claim and release made after this read. So the record a claim writes over is the record it
 		// read, and the holder it read - the one whose takeover record BeforeTry published - is the
 		// holder it really replaced.
@@ -393,7 +393,13 @@ const claimCleanupWindow = time.Second
 // claimTriesContext is the context a claim's own reads, merge, hooks and writes run under: ctx
 // ending claimCleanupWindow before ctx's deadline, or a third of the time left when that is less,
 // so the work after the tries (claimCleanupContext) still has ctx's budget left. A ctx with no
-// deadline is used as it is.
+// deadline is used as it is. Under it a claim that meets no conflict makes five NATS round trips
+// on a role no claim has held: the claim read and its delete-marker read (roleClaimToWrite), the
+// interest record's read and write (UpsertWithin) and the claim write. On a role another session's
+// claim holds, the claim read finds that claim and the marker read is not made; the claim route's
+// BeforeTry writes that holder's takeover record in its place. The claim route counts these with
+// its own reads before them, and names the latency a round trip may take for all of them to fit
+// (cmd/listener's roleSetHandler).
 func claimTriesContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok {

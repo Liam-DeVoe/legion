@@ -868,7 +868,7 @@ func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base Sess
 // this answer. That is safe: it is a compare-and-set on the very entry it read, a marker or no entry
 // included, so it replaces only that entry and never a write or a delete that landed since, and it
 // writes the entry the caller's retry merges again. A create would not be: refused over a marker,
-// nats.go's Create updates at the marker's revision (nats.go@v1.53.1 kv.go:729-739), so a write that
+// nats.go's Create updates at the marker's revision (nats.go@v1.55.0 kv.go:729-739), so a write that
 // read no registration and landed after a deregistration's delete would bring the entry back. The
 // write reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
 // handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.

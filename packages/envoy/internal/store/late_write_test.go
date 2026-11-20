@@ -5,7 +5,7 @@
 //
 // Before those writes went out as an Update at the revision their plan read, a plan that found no
 // entry wrote through Create, and nats.go's Create, refused over a delete marker, reads the key
-// again and updates at that marker's revision (nats.go@v1.53.1 kv.go:729-739): the late write
+// again and updates at that marker's revision (nats.go@v1.55.0 kv.go:729-739): the late write
 // landed over the delete and brought the record back.
 
 package store
@@ -201,7 +201,7 @@ func (kv *returnedKeyWrite) back(key string) {
 // and its release have overtaken it: the role is left unclaimed, as the release left it, and not
 // held by a claimant that was answered a failure. The claim writes at the revision of the entry it
 // read (roleClaimToWrite: 0 for a key that held none), never through Create, which, refused over
-// the release's delete marker, updates at that marker's revision (nats.go@v1.53.1 kv.go:729-739)
+// the release's delete marker, updates at that marker's revision (nats.go@v1.55.0 kv.go:729-739)
 // and lands.
 func TestALateOutrightClaimItsCallerAbandonedIsRefusedOverAReleaseMadeAfterItsRead(t *testing.T) {
 	conn, cleanup := connectNATS(t)

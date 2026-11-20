@@ -299,13 +299,18 @@ func TestTwoPodsReportARedeliveredNoHolderOnceUnderOneID(t *testing.T) {
 // link, a session registers through the active pod, and at once a POST /v1/messages/send to it, and
 // for another such session a role set, go to the standby. Both answer 200, read from the bucket.
 // Before INFRA-557 the standby answers from its cache alone, which has not seen the registration:
-// 404 "no live session" and 404 "session is not registered". The link is slow enough that the
-// standby's cache trails each write by far more than the test takes to make its next request, and
-// fast enough that a role set's bucket round trips up to its claim write fit the claim's tries,
-// which end claimCleanupWindow (1 s) before the route's 3.5 s budget (sendRequestBudget,
-// store's claimTriesContext): the role set takes about 2.25 s behind a 200 ms link, and behind a
-// 300 ms one the write of a role no claim has held, read with its delete marker
-// (roleClaimToWrite), runs past them.
+// 404 "no live session" and 404 "session is not registered".
+//
+// The 150 ms is this rig's means to make the standby's cache trail: it delays every byte the server
+// sends the standby, so the standby's cache sees each write long after the test has made its next
+// request. It is no latency the claim is built for. The role set is a hard claim of a role
+// no claim has held, by a claimant the standby's cache does not hold yet: ten NATS round trips up
+// to its claim write, the read of the role's delete marker among them, which must land before the
+// claim's tries end, and one more after them (roleSetHandler counts them). That fits while a round
+// trip takes at most 280 ms: the tries end at the route's 3.5 s budget less a reserve of 1 s, or of a
+// third of the time left at the claim's store call when less (store's claimTriesContext), which at
+// 280 ms is 2.8 s in. The role set takes about 2.25 s behind a 200 ms link, and behind a 300 ms one
+// its claim write (3.0 s in) runs past the tries' end (2.83 s in).
 func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")

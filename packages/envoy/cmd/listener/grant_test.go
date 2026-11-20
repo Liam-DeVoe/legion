@@ -143,7 +143,7 @@ func hasKeyWithPrefix(keys []string, prefix string) bool {
 // does; it is refused a write to another machine's lease key, hand-back mark or delivery ledger,
 // so no machine's user writes another machine's keys by a key write (what every listener user can
 // still do to the whole bucket is natsgrant.ListenerState's to say). A refused Create draws two
-// refusals, since nats.go reads the key after any failed create (nats.go@v1.53.1 kv.go:729-737):
+// refusals, since nats.go reads the key after any failed create (nats.go@v1.55.0 kv.go:729-737):
 // its write, and the direct get of the same key, which the grant refuses too
 // (TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen). Each
 // row waits for every refusal its write draws, and fails on any other answer.
@@ -217,7 +217,7 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 }
 
 // listenerStateDirectGet is the subject a read of key in the listener state bucket sends: nats.go's
-// direct get of the key's last message, on the key's own subject (nats.go@v1.53.1 kv.go:647-660).
+// direct get of the key's last message, on the key's own subject (nats.go@v1.55.0 kv.go:647-660).
 func listenerStateDirectGet(key string) string {
 	return "$JS.API.DIRECT.GET.KV_" + bus.ListenerStateBucket + ".$KV." + bus.ListenerStateBucket + "." + key
 }

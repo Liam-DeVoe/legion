@@ -57,7 +57,7 @@ func (kv *lateSessionWrite) wrote(key string, write func() (uint64, error)) (uin
 //
 // Before the write went out as an Update at the revision its read answered, a read that found no
 // entry wrote through Create, and nats.go's Create, refused over the delete marker, reads the key
-// again and updates at that marker's revision (nats.go@v1.53.1 kv.go:729-739): the abandoned
+// again and updates at that marker's revision (nats.go@v1.55.0 kv.go:729-739): the abandoned
 // write landed over the delete and brought back a registration that had ended after its caller
 // was told it was not written. A write its caller waits for cannot show that: refused, write
 // reads the delete and writes the same entry over it itself, the very writes Create makes.

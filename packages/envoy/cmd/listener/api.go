@@ -1338,10 +1338,10 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 // legacy id past envoy_interests' get bound that envoy_sessions still lists, or one outside
 // nats.go's key alphabet, which GET /v1/interests/<session_id> answers as the 413 or 400
 // writeBusUnavailable writes and the two session routes as a row whose topics are []). Any other
-// error is a read that did not answer, whatever it names. In nats.go v1.50.0 that includes ctx's
+// error is a read that did not answer, whatever it names. In nats.go v1.55.0 that includes ctx's
 // end (store.Registry.Get's bound, or the JetStream MaxWait context nats.go's direct get always
 // runs under, so it always takes requestWithContext), nats.ErrConnectionClosed,
-// nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
+// nats.ErrDisconnected, nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
 // buffer flushed onto a broken connection among them; the rule does not rest on that list being
 // complete.
 func interestReadAnswered(err error) bool {
@@ -1774,6 +1774,26 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // context, so a bus that does not answer is the bus-unavailable 503 with Retry-After: 1 inside the
 // caller's attempt (writeStoreError). The store's own answers keep the answers they had: a held
 // role is a 409, a refused key a 413 or 400, and an unreadable claim the 503 or 500 it was.
+//
+// A hard claim of a role no claim has held, by a claimant whose registration this listener's
+// cache does not hold yet, makes ten NATS round trips up to and including its claim write: two
+// reads of the claimant's session (liveSessionEntry, then bucketSessionEntry); the refresh of its
+// registration, which is the write and its last-seen record's read and write
+// (session.SessionRegistry.Amend, recordSeen); the claim read and the read of the delete marker a
+// role with no claim record may hold (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the
+// read and the write of the claimant's interest record with the role's topic
+// (store.Registry.UpsertWithin); and the claim write. One more, the read that confirms that topic,
+// runs in the reserve after the claim's tries. A claimant the cache holds saves the first read; a
+// role a claim holds saves the marker read and spends the write of a takeover record instead
+// (takeoverTries.beforeTry); each conflict of a hard claim's write adds a read and a write; and a
+// soft claim adds the reads of its decision. The ten must land before the claim's tries end
+// (store's claimTriesContext): at the request's deadline, sendRequestBudget (3.5 s) after it began,
+// less a reserve of 1 s, or of a third of the time left when the store is reached if that is less.
+// At a latency of L a round trip, the five trips before the store take 5L, so the tries end 2.5 s
+// in while L is at most 100 ms and (7 s + 5L)/3 in above that. The claim write fits while 10L is
+// within that end, so while L is at most 280 ms; at 300 ms it would land at 3.0 s, past the tries'
+// end at 2.83 s. TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails runs this claim behind a
+// 150 ms link.
 //
 // A claim that carries if_claim_revision is conditional: it lands only while the role's claim
 // record is still at that revision, the one GET /v1/roles/<role> reported as claim_revision, and
