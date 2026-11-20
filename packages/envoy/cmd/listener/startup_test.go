@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/natsversion"
 )
@@ -600,7 +601,7 @@ func startStartGate(t *testing.T, uri string) *startGate {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the relay: %v", err)
 	}
@@ -1096,7 +1097,6 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
@@ -1137,7 +1137,6 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "github-route", githubWebhookEnv...)

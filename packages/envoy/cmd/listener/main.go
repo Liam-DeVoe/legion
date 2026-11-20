@@ -1262,7 +1262,7 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // returns as the server's refusal arrives) is tried again after waitOutGrantRefusal, each try
 // logging spentProofBucketRefusedLine at ERROR with the refused subject and the server's text, as
 // a refused durable's tries do (durableReceiver.prepare). Any other failure is one no try gets
-// past, an origin brokertoken.New refuses among them, and ends the process after one ERROR naming
+// past, an origin ciphertoken.New refuses among them, and ends the process after one ERROR naming
 // it.
 func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, tokens *brokerTokens, replicas int) {
 	if tokens == nil {

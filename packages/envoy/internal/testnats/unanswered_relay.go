@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // UnansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
@@ -45,16 +47,17 @@ type UnansweredRelay struct {
 }
 
 // StartUnansweredRelayOn relays to the NATS server at target, a client URL such as URL returns, on
-// a loopback port of its own until the test ends, counting and dropping the client's sends on
-// subject. Its own URL is that one with the host and port it listens on, credentials included, as
-// StartProxy builds its own. It drops nothing until it is armed.
+// a loopback port and address of its own (testport.LoopbackIP) until the test ends, counting and
+// dropping the client's sends on subject. Its own URL is that one with the host and port it
+// listens on, credentials included, as StartProxy builds its own. It drops nothing until it is
+// armed.
 func StartUnansweredRelayOn(t testing.TB, target, subject string) *UnansweredRelay {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the relay: %v", err)
 	}

@@ -22,7 +22,6 @@ import (
 func healthzRoleViewRig(t *testing.T, machineID string) (func() (int, map[string]any), *store.Registry, *bus.Client, string) {
 	t.Helper()
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	rig := startReceiverRig(t, client.Conn.ConnectedUrl(), machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveActive, 10*time.Second)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))

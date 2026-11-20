@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // listenerRelay stands between one listener and its NATS server, so a test can fail the link the
@@ -70,7 +71,7 @@ func startListenerRelay(t *testing.T, uri string) *listenerRelay {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for relay: %v", err)
 	}

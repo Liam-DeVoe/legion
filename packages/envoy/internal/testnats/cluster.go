@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -76,7 +78,7 @@ func startCluster(t testing.TB, n, running int, config string) *Cluster {
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -98,7 +100,7 @@ func startCluster(t testing.TB, n, running int, config string) *Cluster {
 		if i < running {
 			hub = routes[:running]
 		}
-		server := newServer(t, "127.0.0.1", clusterConfig(i, hub)+config, []string{"-js"})
+		server := newServer(t, clusterConfig(i, hub, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		if i < running {
 			server.launch(t)
@@ -111,7 +113,8 @@ func startCluster(t testing.TB, n, running int, config string) *Cluster {
 }
 
 // clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
-func clusterConfig(i int, routes []string) string {
+// The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
+func clusterConfig(i int, routes []string, host string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
@@ -120,12 +123,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.

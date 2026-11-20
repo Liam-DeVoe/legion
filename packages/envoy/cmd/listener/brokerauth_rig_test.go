@@ -17,9 +17,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -44,8 +44,8 @@ type brokerRig struct {
 	// apiAuth: a test resolves a path through it (ServeMux.Handler) to the pattern registered
 	// for it.
 	routes *http.ServeMux
-	broker *brokertokentest.StubBroker
-	caller *brokertokentest.Caller
+	broker *ciphertokentest.StubBroker
+	caller *ciphertokentest.Caller
 	logs   *bytes.Buffer
 }
 
@@ -88,7 +88,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		legionAgents: newLegionAgentRegistry(agents),
 	})
 
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
 		t.Fatalf("write the listener's own account token: %v", err)
@@ -112,7 +112,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
 		routes:  routes,
 		broker:  broker,
-		caller:  brokertokentest.NewCaller(t),
+		caller:  ciphertokentest.NewCaller(t),
 		logs:    logs,
 	}
 }
@@ -160,7 +160,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 		machines = "access-token-of-a-machine"
 	)
 	rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
-	rig.broker.Says(revoked, brokertoken.Introspection{Active: false})
+	rig.broker.Says(revoked, ciphertoken.Introspection{Active: false})
 	rig.broker.Says(machines, serviceAnswer(service, "example-fleet", rig.caller.JKT()))
 	rig.register(t, bound)
 	rig.register(t, service)
@@ -338,7 +338,7 @@ const v1RoutePatterns = 15
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
 // answered 401 not_a_session on every path registerV1Routes registers, because the verifier
-// brokerTokens.open builds leaves the read-only switch unset (brokertoken.Options.ServesReadOnly)
+// brokerTokens.open builds leaves the read-only switch unset (ciphertoken.Options.ServesReadOnly)
 // and so refuses the token as a build before the switch refuses it. A token of a named project,
 // the same kind of token but for its project scope, its project and its scope, is answered
 // anything but 401 on each of the same requests, and its presentation writes no rejection line,
@@ -530,9 +530,9 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 // brokerProcessEnv is the variables that turn the broker-token credential on for a listener
 // binary a test starts: the stub broker's URL, this listener's own account token, and
 // listenerBrokerOrigin. A proof's 'htu' is checked against that origin and the request's path,
-// never against the port the request arrived on (brokertoken.Verifier.atOrigin), so one signed
+// never against the port the request arrived on (ciphertoken.Verifier.atOrigin), so one signed
 // proof is the same presentation whichever listener of a machine it is sent to.
-func brokerProcessEnv(t *testing.T, broker *brokertokentest.StubBroker) []string {
+func brokerProcessEnv(t *testing.T, broker *ciphertokentest.StubBroker) []string {
 	t.Helper()
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
@@ -548,7 +548,7 @@ func brokerProcessEnv(t *testing.T, broker *brokertokentest.StubBroker) []string
 // signedListenerCall sends one POST to the listener binary serving on port, presenting token under
 // the DPoP scheme with a proof caller signs fresh for it, as a client holding a broker token does,
 // and returns the answer's status, its Retry-After and its body.
-func signedListenerCall(t *testing.T, port int, caller *brokertokentest.Caller, token, path, body string) (int, string, string) {
+func signedListenerCall(t *testing.T, port int, caller *ciphertokentest.Caller, token, path, body string) (int, string, string) {
 	t.Helper()
 	signed := caller.Signed(t, http.MethodPost, listenerBrokerOrigin+path, token)
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
@@ -610,7 +610,7 @@ func TestAListenerWhoseSpentProofBucketDoesNotAnswerWaitsForItThenServes(t *test
 	relay := testnats.StartUnansweredRelayOn(t, uri, "$JS.API.STREAM.INFO."+stream)
 	relay.Arm(1 << 30)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), relay.URL(), machineID,
-		append(brokerProcessEnv(t, brokertokentest.NewStubBroker(t)), "ENVOY_INSTANCE_ID=pod-dpop-unanswered")...)
+		append(brokerProcessEnv(t, ciphertokentest.NewStubBroker(t)), "ENVOY_INSTANCE_ID=pod-dpop-unanswered")...)
 
 	const while = "its spent-proof bucket's open drew no answer"
 	failedOpen := func(record map[string]any) bool {
@@ -654,8 +654,8 @@ func TestAListenerWhoseSpentProofBucketDoesNotAnswerWaitsForItThenServes(t *test
 type spentProofRefusedListener struct {
 	listener *listenerProcess
 	granted  *testnats.Granted
-	broker   *brokertokentest.StubBroker
-	caller   *brokertokentest.Caller
+	broker   *ciphertokentest.StubBroker
+	caller   *ciphertokentest.Caller
 	// lookup is the first request of the bucket's open, the one the grant refuses.
 	lookup string
 }
@@ -674,8 +674,8 @@ func startSpentProofRefusedListener(t *testing.T, machineID, sessionID, token st
 		return strings.Contains(subject, stream) || strings.HasPrefix(subject, "$KV."+bus.DPoPProofBucket+".")
 	})
 	rig.granted = testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: grant})
-	rig.broker = brokertokentest.NewStubBroker(t)
-	rig.caller = brokertokentest.NewCaller(t)
+	rig.broker = ciphertokentest.NewStubBroker(t)
+	rig.caller = ciphertokentest.NewCaller(t)
 	rig.broker.Says(token, sessionAnswer(sessionID, "ada@example.com", rig.caller.JKT()))
 	rig.listener = startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), rig.granted.URL(), machineID,
 		append(brokerProcessEnv(t, rig.broker), "NATS_NKEY_SEED="+seed, "ENVOY_INSTANCE_ID=pod-"+machineID)...)

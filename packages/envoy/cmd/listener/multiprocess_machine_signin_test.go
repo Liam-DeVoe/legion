@@ -2,9 +2,9 @@
 
 // The machine sign-in check on both pods of a machine: a caller presenting an access token the
 // secrets broker issued for this machine's own Google identity (brokerauth.go, over
-// internal/brokertoken) is judged by the active pod and by the standby alike, since every pod
+// internal/ciphertoken) is judged by the active pod and by the standby alike, since every pod
 // serves /v1 and runs the same credential chain (apiAuth). The broker is the stub every other
-// row of this credential uses (internal/brokertoken/brokertokentest), and the caller's proofs
+// row of this credential uses (internal/ciphertoken/ciphertokentest), and the caller's proofs
 // come from the transport a real client signs with.
 
 package main
@@ -17,14 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // mpSignedCall sends one POST to the pod presenting token under the DPoP scheme, with a proof
 // this caller signs fresh for it, as a client holding a broker token does. The proof names
 // listenerBrokerOrigin, which both pods are configured with (brokerProcessEnv).
-func mpSignedCall(t *testing.T, p *mpPod, caller *brokertokentest.Caller, token, path, body string) mpAnswer {
+func mpSignedCall(t *testing.T, p *mpPod, caller *ciphertokentest.Caller, token, path, body string) mpAnswer {
 	t.Helper()
 	signed := caller.Signed(t, http.MethodPost, listenerBrokerOrigin+path, token)
 	start := time.Now()
@@ -54,8 +54,8 @@ func mpSignedCall(t *testing.T, p *mpPod, caller *brokertokentest.Caller, token,
 func TestTwoPodsAMachineSignInIsAnsweredByTheActivePodAndTheStandby(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	const (
 		machineSession = "ses_mp_machine"
 		signedIn       = "access-token-of-this-machines-identity"
