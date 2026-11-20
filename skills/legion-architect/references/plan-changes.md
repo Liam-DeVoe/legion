@@ -12,6 +12,7 @@ A plan's text, its steps and when to give it first: `skill://legion-architect/re
   On an issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the project's default steps (the task `default`), then stops its task.
   It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks), one that is done or left the workflow with its issue (`409 TASK_DONE`) and a stop in a tree that lingers after it left the workflow (`409 TREE_LINGERING`).
   It also refuses, changing nothing, a stop of an issue outside your tree or one that left it (`403 ISSUE_OUTSIDE_TREE`) and a stop of a run of the issue that ended before Legion applied it (`409 TASK_STALE_GENERATION`): read the issue again.
+  A stop of a root that waits on a person before its first step is refused too, changing nothing (`409 TASK_AWAITING_PERSON`): change that task with a later version of the plan, or stop it once the person has answered.
   A stop of a task already stopped changes nothing.
 
 - A stopped task stays held until you give a later version of the plan that changes it, or, on a root, until a person sets the root `todo`.

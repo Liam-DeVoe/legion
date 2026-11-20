@@ -64,6 +64,7 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"`TREE_LINGERING`",
 				"`ISSUE_OUTSIDE_TREE`",
 				"`TASK_STALE_GENERATION`",
+				"`TASK_AWAITING_PERSON`",
 				"settles the plan",
 				// sign_off's answers when the record moved under it, by their codes.
 				"`ISSUE_NOT_OWNED`",
