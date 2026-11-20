@@ -269,3 +269,13 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "reads the quoted pattern as no go command" "$(contains "$out" 'every one of the 0 go commands')"
+
+# Alone in its file: the check reads a shell file a statement at a time only when its text holds
+# a go followed by a subcommand (MAYBE), so this file is read only while that pattern lets a
+# continued line stand between the two.
+echo "case: shell: a go whose subcommand is on the next line, after a backslash, is a site, alone in its file"
+refuses sh-continued tools/continued.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+go \
+  list -deps ./...
+EOF
