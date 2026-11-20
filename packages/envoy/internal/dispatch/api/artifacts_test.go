@@ -289,7 +289,7 @@ func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t
 	}
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID, nil, "alice")
 	if held := decodeBody[model.Artifact](t, read); read.Code != http.StatusOK || len(held.Versions) != 1 {
-		t.Fatalf("the renamed document after two refused creates: status=%d body=%s, want its one version", read.Code, read.Body.String())
+		t.Fatalf("the renamed document after five refused create_only uploads and two refused uploads without it: status=%d body=%s, want its one version", read.Code, read.Body.String())
 	}
 	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/text", nil, "alice")
 	if text.Code != http.StatusOK || !strings.Contains(text.Body.String(), `"markdown":"# Notes\n"`) {
