@@ -1783,28 +1783,17 @@ export const dispatchToolSpecs = [
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If " +
-      "GitHub does not say that it does, Dispatch reads the external links of the check's issue: " +
-      "a link to a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open " +
-      "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
-      "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
-      "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and each owner/repo that Dispatch asked. It also names, with its reason " +
-      "(owner/repo#n (repository_unreadable)), each linked pull request that Dispatch could not " +
-      "read, at most 10 and a count of the rest, and every linked pull request in whose " +
-      "repository it could not read the commit, since each of those spent one of the record's 10 " +
-      "reads, and says to grant Dispatch's GitHub App that repository or to link a readable pull " +
-      "request. It says how many linked pull requests it left unread past that bound. Record the " +
-      "result after the commit is pushed. A linked repository that the App is not installed on " +
-      "or cannot read does " +
-      "not count. Where a read of " +
-      "a linked pull request or of a linked repository does not answer, and no repository is shown " +
-      "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
-      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
-      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
-      "of the check's issue, the result is recorded as before only when every linked read " +
-      "answers and no linked repository holds the commit: a linked read that does not answer " +
-      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit, then " +
+      "the repository of each other open or merged pull request of that issue, which for a pull " +
+      "request the issue links may be another repository, and then the repository of each open " +
+      "or merged pull request that an external link of the check's issue names " +
+      "(https://github.com/<owner>/<repo>/pull/<n>), in a repository that Dispatch's GitHub App " +
+      "is installed on and can read. One record reads at most 10 linked pull requests. A result " +
+      "at the head of a pull request of the issue needs no question. A commit that none of these " +
+      "repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the commit and each owner/repo " +
+      "that Dispatch asked, and says how many linked pull requests it left unread past that " +
+      "bound. Record the result after the commit is pushed. A repository Dispatch cannot read, " +
+      "and a read of GitHub that does not answer, records the result as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
