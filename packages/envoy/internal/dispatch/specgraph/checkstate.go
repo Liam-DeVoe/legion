@@ -55,7 +55,9 @@ func subjectFault(p Point, now time.Time) string {
 // gives no Ties or no History is refused too, and one that states that it has none gives
 // CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil,
 // and gets no carry, as R8 reads a tie that is not known ("A check whose tie to its code is unknown
-// runs on each push to the branch"). The command gives the ties and the history of its scenario.
+// runs on each push to the branch"). With such a tie, an empty CommitTies or a FixtureHistory of
+// no commit, a check can read true from its results at the subject's commit where a result that
+// would carry makes it read otherwise. The command gives the ties and the history of its scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
@@ -127,7 +129,8 @@ const (
 //     when it should" reads unknown). Validate refuses such a text in the files, and the pilot
 //     builds the approved spec from the store, with no reader. A problem that Validate finds in
 //     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
-//     derivation gives no clean state for a tree that the rules refuse.
+//     derivation gives no clean state for a tree that the rules refuse. Validate reads a failing
+//     example by the same test, hasWord, so the derivation and tree never read one text two ways.
 //  2. CI refused C at S.Commit (R48: "At that commit, such a check reads unknown, and no earlier
 //     result of it counts"): unknown, uncited. CI refused C at another commit A that holds a
 //     candidate of step 3 and whose results count at S by step 4's rule: the refusal cancels each
@@ -146,7 +149,8 @@ const (
 //     text or in its tied files, which stop the carry by their own rules, and a refusal about one
 //     run says nothing about another commit. A run of the job is no candidate, and no refusal
 //     cancels one: it has no time, and it only lowers a state. The steps below read the
-//     candidates that no refusal cancelled.
+//     candidates that no refusal cancelled. A check whose only failing example CI cancelled, and
+//     that keeps a run that counts, reads unknown, no_failing_example, at step 7.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -177,7 +181,10 @@ const (
 //     Detail the first such leg by name whose run ended (R7: "silence is not a pass"; R12: "Each
 //     leg of a matrix reports its own result, and no leg replaces the result of another"), else
 //     unknown, no_result, Detail the first such leg by name, since a leg whose run has not ended is
-//     no silent leg and no pass (legWithNoResult).
+//     no silent leg and no pass (legWithNoResult). A run of a check of the graph that could not
+//     run names the transaction that it tried to read, the subject's, so it counts there alone,
+//     where it gives unknown (R13: "A query that cannot read its data, or that passes a time or
+//     row limit, gives unknown").
 //  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
 //     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
@@ -185,7 +192,9 @@ const (
 //     pass does not end the report"). For each check, newest runs of two legs that disagree:
 //     unknown, disagree. A production check skips the first test: in each leg its newest run under
 //     S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is ordinary"). Then
-//     a newest run that could not run: unknown, could_not_run.
+//     a newest run that could not run: unknown, could_not_run. A query or an agent of production
+//     or of the graph has no legs, and for one of production its newest run under S.Deploy
+//     decides.
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
 //  7. The newest failing example that counts: for a code check, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of
@@ -463,7 +472,8 @@ func (j *checkJudge) state(c Check) CheckState {
 // it names the author of the fault and one or more authors of the test, and the author of the fault
 // is none of them. A record that names no author of one of the two cannot show it, and an author
 // of no letter and no digit, by the test that Validate reads a missing text with (hasWord), names
-// nobody.
+// nobody. A failing example of a query or an agent counts with no author, since only a program
+// check reads the authors of its failing example (CheckStates, step 7).
 func byAnotherAgent(fault Result) bool {
 	namesTestAuthor := slices.ContainsFunc(fault.TestAuthors, hasWord)
 	return hasWord(fault.FaultAuthor) && namesTestAuthor && !slices.Contains(fault.TestAuthors, fault.FaultAuthor)

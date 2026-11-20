@@ -21,6 +21,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
+// TestTheWayOutOfPrintNamesAWholeID holds that a line of spec-check does not cut an id of the way
+// out of print, a value that the line tells the reader to type: print refuses a run over a file
+// that holds a node that is not in its printed form and a node whose id is longer than the cut of
+// 100 bytes, and a run of print with exactly the --id words of that line exits 0.
 func TestTheWayOutOfPrintNamesAWholeID(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")

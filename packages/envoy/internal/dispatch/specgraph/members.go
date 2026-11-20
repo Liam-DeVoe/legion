@@ -50,6 +50,13 @@ import (
 // value, left out, moves a state toward true has a wrong mark, as leg had. The hand-written rows of
 // seq (TestAcceptAFailureWithNoSeqIsNeverHidden, TestAMissedFailingExampleWithNoSeqIsNeverHidden)
 // pin the one that was wrong before.
+//
+// Of the 17 members marked zero, the ten that a file can leave out, graph_tx of a subject, parent
+// of a commit of the history, and commit, deploy, graph_tx, job, attempt, fault_author,
+// test_authors and test_commit of a result, move no state toward true (the sweep). The other seven
+// are the library's: an Input with no Files, Approved or Results and an Approved with no Nodes
+// read as none, a Tie with no Why gives no reason, a Tie with no Known is a tie that is not known,
+// and a known Tie with no Paths is refused, as is a Tie that is not known and holds a path.
 type memberMark struct {
 	kind  string // "nonzero", "present", "zero" or "one of"
 	other string // the other member of a "one of" mark, by its JSON name

@@ -39,6 +39,8 @@ const recordSuffix = ".texts"
 // finishes the old directory of a run that it did not see end (cleanLeftovers) removes a spec file
 // of it only where the record holds its text, so it removes no change that another program made
 // there, also when the run that made the directory could not give it another name (keep).
+// finishOld and undoNew also remove the record when they keep its directory under another name
+// (keep).
 func recordPath(staging string) string { return staging + recordSuffix }
 
 // textsRead is the SHA-256 of each text of files, in hex, by the name of its file.

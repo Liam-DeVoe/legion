@@ -155,6 +155,8 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 // the run and that after does not hold as it was, apart from the nodes of the run, each node of
 // the run that after does not hold as the run writes it (keepsEachNode), and each problem that the
 // judgment of tree (judgeFiles) finds in after.
+// planPrint changes no file: it places the nodes and judges the files in memory, and printApproved
+// writes after with writeDir only when refusals is empty.
 func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, limit int64) (after map[string][]byte, wrote, refusals []string) {
 	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
 	run := printRun(current, named)

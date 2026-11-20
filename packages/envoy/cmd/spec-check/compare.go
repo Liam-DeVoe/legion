@@ -25,7 +25,10 @@ const ciVariable = "GITHUB_ACTIONS"
 // library reads alike, so compare trusts no reading of another form, and the not-printed line names
 // the way out, spec-check print. A problem of Parse that leaves each node as a printed file writes
 // it (specgraph.KeepsEachNode), a value that the schema refuses and the node keeps or an empty
-// file, is tree's to judge, and compare compares those files.
+// file, is tree's to judge, and compare compares those files. For files with a problem that it
+// refuses (refusedProblems), it writes one line on stderr for each such problem,
+// "<dir>/<file>:<line>: <node>: <detail>", then "<dir>: the files do not parse, or are not as
+// print writes them, so no comparison was made".
 //
 // It answers 2, before it reads an argument, in a CI job: R2 gives the comparison at each push to
 // Dispatch, and no CI job compares the files. No route of the Dispatch server calls
@@ -118,6 +121,8 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 // refusedProblems is each problem of Parse in problems for which compare refuses the files: each
 // one whose Effect is not specgraph.KeepsEachNode. So a problem with no Effect is refused, as one
 // that loses a node is, and no problem reads as one that keeps each node by default.
+// Only compare reads the Effect: tree and print (judgeFiles), and state (specgraph.ReadScenario),
+// refuse each problem of Parse whatever its Effect.
 func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
 	return slices.DeleteFunc(problems, func(p specgraph.Problem) bool { return p.Effect == specgraph.KeepsEachNode })
 }

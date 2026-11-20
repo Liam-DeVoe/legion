@@ -19,6 +19,13 @@ import (
 // one is missing; the others hold shapes that the sweep of specgraph reads. No flag of the test writes
 // want.txt, and a scenario with no want.txt fails the test, which would read nothing. The control
 // runs carry with no tie, so that no result carries: the comparison can fail.
+// It runs the binary that cmdtest.Build builds. The other scenarios are production-and-graph,
+// refusal and silent-leg, so the directory holds seven. Since no flag writes want.txt, a difference
+// is a fault of the code or a question about the spec. In refusal, the check
+// a-restart-loses-no-message passes at c1, and CI refused it at c2 (test-not-in-code), a commit
+// that holds no result of the check and has the tied files of c1: c2 reads unknown (uncited), and
+// m2, whose tree is the tree of c2, reads true from c1, since a refusal at a commit that holds no
+// result of the check counts at that commit alone.
 func TestScenarios(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")

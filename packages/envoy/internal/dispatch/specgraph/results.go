@@ -84,7 +84,9 @@ type Result struct {
 // "reads the graph at one transaction"); a run of a program check that names a job, the job; and a
 // result of a program check of production or of the graph, test_commit. A failing example of a
 // query or an agent of production or of the graph names no subject, since each one counts
-// (CheckStates, step 7).
+// (CheckStates, step 7). The reader of results.json and the entry of the derivation name the
+// result that they refuse as "result <n>", from 1, in the order of the list, as for a result that
+// names two of commit, deploy and graph_tx.
 func (r Result) fault(procedure *Check) string {
 	switch named := namedSubjects(r); {
 	case r.Check == "":
@@ -202,7 +204,8 @@ func (r JobRun) fault() string {
 // has no result that counts after a run of its job ends, it reads unknown"). A state reads no leg
 // of a failing example, so its leg is no part of the rule. Each run and each result is
 // whole (JobRun.fault, Result.fault). The reader of a scenario and the entry of the derivation both
-// refuse by it.
+// refuse by it. The refusal names the record, its job, its commit and the two legs, and the reader
+// of a scenario names the file of the record, jobs.json for a run and results.json for a result.
 func legFault(runs []JobRun, results []Result) (fault string, ofRun bool) {
 	type at struct{ job, commit string }
 	type record struct{ name, leg string }

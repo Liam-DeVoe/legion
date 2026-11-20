@@ -40,6 +40,9 @@ type Options struct {
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
 //     failing example, a component's name or purpose, or a term's name or definition (R4 and R15).
 //     A check's test part and job name code by design and are not read.
+//
+// The rule no-parent is a parent of a statement that the files do not hold as a statement, and
+// leaf-without-check is a statement that is the parent of no statement and that no check serves.
 func Validate(t Tree, o Options) []Problem {
 	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
 	for _, id := range o.Retired {

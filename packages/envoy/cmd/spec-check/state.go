@@ -20,7 +20,8 @@ import (
 // subjects (specgraph.Derive), and prints them; with units.json, it also prints whether each wait
 // on a statement ends at the head of main and the cycle of waits (specgraph.WaitCycle). It answers
 // 0 for a scenario it reads, and 2, with one line on stderr naming the file and the fault, for one
-// it does not, or for arguments it does not take.
+// it does not, or for arguments it does not take. The line of a fault of a file of the scenario is
+// "spec-check: <dir>/<file>: <fault>", with ":<line>" after the file for a line of a spec file.
 func runState(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("state", flag.ContinueOnError)
 	scenarioFlag := flags.String("scenario", "", "the directory of a scenario")

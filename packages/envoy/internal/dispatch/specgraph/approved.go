@@ -44,6 +44,8 @@ type Approved struct {
 // that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
 // time as time.RFC3339Nano writes it, such as "2026-11-10T00:00:00Z" (timeForm). An approved spec
 // that holds no node is {"nodes":[]}.
+// The form of approved.json, with the type of each value in approvedForm, is
+// {"nodes":[{"id","removed","partly_checked","versions":[{"version","at","document"}]}]}.
 type ApprovedFile struct {
 	Nodes []ApprovedNode `json:"nodes" input:"nonzero"`
 }
@@ -287,6 +289,8 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 // versionText refuses it here. A "" at a place that is not an entry of a list, such as an id, a
 // parent or the statement that a check serves, is one that the node does not set, and each entry
 // of a list is set.
+// The problem is bad-approved-document: <member> "<value>" is no id, with the value as quoted
+// prints it, and ReadApproved refuses the version with it (ApprovedNode.textFault).
 func notAnID(node any) (member, value string, found bool) {
 	type place struct {
 		member, value string

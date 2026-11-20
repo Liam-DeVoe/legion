@@ -40,6 +40,10 @@ import (
 //     takes the names that its writer picks, and a long name would make the line as long;
 //   - a text that is not JSON, in the words of encoding/json/jsontext, which name the place too.
 //
+// So no text that the format does not hold reads as a text that it holds: without these refusals,
+// a name in other letters, a name given two times, a null or text after the value would read as
+// the value of another text of the format.
+//
 // A map of the format, such as the paths of a commit's tree, takes any name, in its own letters,
 // one time. The report of go test -json is no format of this package: ReadGoTestJSON reads it as
 // go test writes it, and passes over the members that it does not name.

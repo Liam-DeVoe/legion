@@ -28,6 +28,12 @@ import (
 // schemaJSON is the schema of one node: the data of one YAML document of a spec file. It is the
 // contract of the files: the reader checks each document against it, the TypeScript test of the
 // schema reads it, and a person's editor can check a document against it.
+// The TypeScript test of the schema, packages/dispatch/e2e/__tests__/spec-node-schema.test.ts,
+// holds ajv and the TypeScript yaml library to the readings of the Go side over
+// testdata/schema-cases.json (TestSchemaCases), testdata/nodes (TestNodesDecodeToTheirData) and
+// each YAML fixture of testdata, whose data testdata/fixtures.decoded.json holds
+// (TestEachYAMLFixtureDecodesAsItsData). The package embeds the file of the schema, so the reader
+// opens no file to read it.
 //
 //go:embed schema/spec-node.schema.json
 var schemaJSON []byte
@@ -198,6 +204,8 @@ const (
 //     texts in two libraries, such as a plain date, which yaml.v3 reads as a time, or a raw U+2028,
 //     which yaml.v3 (YAML 1.1) reads as a line break and a YAML 1.2 library as a character. So the
 //     tree that yaml.v3 reads from it is no text that the file holds for each reader.
+//     The reader holds no list of such forms: it compares the file with the printed form, so each
+//     other form, such as a tag or an anchor, is not-printed too (TestReadRefuses).
 //
 // A kind keeps each node (KeepsEachNode) when the tree holds each node as the file writes it:
 //   - noNode: a file with no document, which holds no node to lose;
@@ -242,6 +250,8 @@ type document struct {
 // two times, a key that is not a string or a null at a place, keeps the document with no data. A
 // null is named by its place (nullPlace, in the order of the JSON form), as decodeJSON names a null
 // of a JSON file. A file with no document is no-node.
+// The detail of a null is bad-yaml: the value at "<JSON pointer>" is null, or bad-yaml: the
+// document is null for a document that is null.
 func readDocuments(name string, data []byte) (documents []document, problems []Problem, stopped bool) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -848,6 +858,9 @@ func ReadLayout(files map[string][]byte) (Layout, []Problem) {
 // problem. A file with no document is no-node, and a file with no other problem must be exactly
 // the documents that Print writes for its nodes, in its order (not-printed): the reader normalizes
 // nothing, so one node has one spelling in git. A node is at the line of its document's "---".
+// Print writes no comment, anchor, tag, flow list, block scalar, other order of keys, other
+// quotes, carriage return or byte order mark, so the reader refuses each of them as not-printed
+// (TestReadRefuses).
 func Parse(files map[string][]byte) (Tree, []Problem) {
 	l, problems := ReadLayout(files)
 	return l.tree(), problems

@@ -36,7 +36,10 @@ type specDirLock struct {
 // so the lock counts only when the open directory is still the directory that dir names; a run
 // holds the flock of its new directory too from before the exchange, so a run that opens dir after
 // the exchange waits for it. Each directory that it makes or removes, and each flock, goes
-// through fsys.
+// through fsys. A run that opened dir before the exchange takes the flock of the directory that
+// the exchange moved out of the place of dir, finds that dir names another directory, and, while
+// its wait has not ended, opens dir again, so it waits for the flock of the directory that dir
+// names.
 func lockSpecDir(fsys fileSystem, dir string, wait time.Duration) (*specDirLock, error) {
 	deadline := time.Now().Add(wait)
 	for {
