@@ -87,6 +87,7 @@ import {
   filterCounts,
   group,
   type InboxFilters,
+  type InboxGroup,
   inFieldFilter,
   LATER_GROUP_KEY,
   sortRows,
@@ -124,7 +125,7 @@ import {
   sectionTitles,
   UNASSIGNED_FILTER_VALUE,
 } from "./sections";
-import { SNOOZE_PRESETS } from "./snooze";
+import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
@@ -538,8 +539,9 @@ function InboxCardRow({
   assignLive: boolean;
   onAnswered: (id: string) => void;
   onAssignLive: (askId: string, live: boolean) => void;
-  /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
-   *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
+  /** The same registration for this row's snooze write; the Inbox keeps a live row in the band
+   *  the reader saw it in, drawn even when that band is folded, so `Snoozing…` and a refusal
+   *  stay where they pressed. */
   onSnoozeLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
@@ -590,7 +592,7 @@ function InboxCardRow({
             askId={ask.id}
             label={name}
             onLive={onSnoozeLive}
-            snoozedUntil={section === "later" ? ask.snoozed_until : null}
+            snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
           />
         </div>
       </div>
@@ -638,47 +640,82 @@ function ThreadCardRow({
   );
 }
 
-/** The rows of one band, with the held row - one the server no longer lists here but the
- *  reader is still on - kept after the nearest row above it that is still listed, so it does not
- *  move while they finish. */
+/** The rows of one band, with each held row - one the server no longer lists here, or lists in
+ *  another band, while the reader is still on it or its snooze is still being saved - kept after
+ *  the nearest row above it that is still drawn here, so it does not move while they finish.
+ *  `held` is in the order the reader last saw the rows, so of two held rows the lower is kept
+ *  after the upper. */
 function withHeld(
   rows: readonly InboxListRow[],
-  held: InboxListRow | undefined,
+  held: readonly InboxListRow[],
   previous: readonly PlacedRow[]
 ): readonly InboxListRow[] {
-  if (held === undefined) return rows;
-  const heldId = rowId(held);
-  const ids = rows.map((row) => rowId(row));
-  for (
-    let index = previous.findIndex((placed) => rowId(placed.row) === heldId) - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const above = previous[index];
-    const at = above === undefined ? -1 : ids.indexOf(rowId(above.row));
-    if (at !== -1) return [...rows.slice(0, at + 1), held, ...rows.slice(at + 1)];
+  let banded = rows;
+  for (const row of held) {
+    const heldId = rowId(row);
+    const ids = banded.map((each) => rowId(each));
+    let at = -1;
+    for (
+      let index = previous.findIndex((placed) => rowId(placed.row) === heldId) - 1;
+      index >= 0 && at === -1;
+      index -= 1
+    ) {
+      const above = previous[index];
+      at = above === undefined ? -1 : ids.indexOf(rowId(above.row));
+    }
+    banded = [...banded.slice(0, at + 1), row, ...banded.slice(at + 1)];
   }
-  return [held, ...rows];
+  return banded;
 }
 
-/** The row to keep where the reader last saw it, if any. Dropped from the list: kept where last
- *  seen, drawn as `current`, or as last seen while `current` is undefined. Moved to another band:
- *  what the list says about it changed under the reader's hand, so the listed row is kept in the
- *  band they saw it in. A move into or out of Later is a snooze - the reader's own click, shown
- *  at once. */
+/** `bands` with an empty band for each key of `kept` that none of them has, headed as the reader
+ *  last saw it (`previous`, the bands as last drawn) and drawn after the nearest band before it
+ *  there that is still drawn: the band a snooze keeps its row in once every other row the list
+ *  holds has left it. */
+function withHeldBands(
+  bands: readonly InboxGroup[],
+  kept: ReadonlySet<string>,
+  previous: readonly Omit<InboxGroup, "rows">[]
+): readonly InboxGroup[] {
+  let drawn = bands;
+  for (const [at, heading] of previous.entries()) {
+    if (!kept.has(heading.key) || drawn.some(({ key }) => key === heading.key)) continue;
+    let after = -1;
+    for (let index = at - 1; index >= 0 && after === -1; index -= 1) {
+      const before = previous[index];
+      after = before === undefined ? -1 : drawn.findIndex(({ key }) => key === before.key);
+    }
+    drawn = [...drawn.slice(0, after + 1), { ...heading, rows: [] }, ...drawn.slice(after + 1)];
+  }
+  return drawn;
+}
+
+/** The row to keep where the reader last saw it (`seen`), if any: the row under their hand
+ *  (`inHand`), or one whose snooze write is live (`snoozeLive`) - its own control's, or the bar's
+ *  over the rows the reader marked. Dropped from the list: the row under their hand is kept where
+ *  last seen, drawn as `current`, or as last seen while `current` is undefined. Moved to another
+ *  band: what the list says about it changed under the reader's hand or under their snooze, so
+ *  the listed row is kept in the band they saw it in. A move into or out of Later is a snooze,
+ *  the reader's own press, and it is made once its write lands: the row is kept in its band while
+ *  that write is live, and moves in the commit in which the Inbox lets go of it (`snoozing`),
+ *  which is the commit its control's hold ends (`useHeldThroughAnswer`), so a press on its own
+ *  control takes its own row away in one commit. With no snooze of it live, a move into or out of
+ *  Later is shown at once, under the reader's hand too. */
 function heldRow(
-  seen: PlacedRow | undefined,
+  seen: PlacedRow,
   listed: InboxListRow | undefined,
   current: InboxListRow | undefined,
-  now: string | undefined
+  now: string | undefined,
+  { inHand, snoozeLive }: { readonly inHand: boolean; readonly snoozeLive: boolean }
 ): PlacedRow | undefined {
-  if (seen === undefined) return undefined;
-  if (listed === undefined) return current === undefined ? seen : { ...seen, row: current };
+  if (listed === undefined) {
+    if (!inHand) return undefined;
+    return current === undefined ? seen : { ...seen, row: current };
+  }
   const movedBand =
     now !== undefined &&
     now !== seen.group &&
-    now !== LATER_GROUP_KEY &&
-    seen.group !== LATER_GROUP_KEY;
+    (snoozeLive || (now !== LATER_GROUP_KEY && seen.group !== LATER_GROUP_KEY));
   return movedBand ? { ...seen, row: listed } : undefined;
 }
 
@@ -865,9 +902,11 @@ export function Inbox({
       return next;
     });
   }, []);
-  // The same registration for snooze writes: a row whose write is live stays rendered even
-  // when Later is folded, so `Snoozing…` and a refusal are not unmounted by the fold the
-  // optimistic update triggers (see `SnoozeControl`).
+  // The same registration for snooze writes: a row whose write is live stays in the band the
+  // reader saw it in, though the optimistic moment puts it into Later or out of it, and is drawn
+  // even when that band is folded, so `Snoozing…` and a refusal stay where the reader pressed
+  // (`heldRow`). Its move is made in the commit this lets go of it, once the write lands (see
+  // `SnoozeControl`).
   const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
   const onSnoozeLive = useCallback((askId: string, live: boolean) => {
     setSnoozing((current) => {
@@ -883,9 +922,17 @@ export function Inbox({
    *  hand-on may hold. Written on every render below, and read here as the record of the
    *  render a registration arrives after. */
   const presented = useRef<readonly PlacedRow[]>([]);
-  /** The row the list held at its last render, by id, and the typed words it was held under
-   *  (`searchWords`, joined): it stays held while the reader's words are those, whatever the
-   *  server does to the text they search. Written on every render below. */
+  /** The bands this list drew at its last render, in order, with their headings, and the layout
+   *  it drew them under - the grouping, or the Dismissed view: the band a snooze keeps its row in
+   *  is drawn from this once no other row the list holds is in it, and a snooze keeps its row
+   *  only under that same layout. Written on every render below. */
+  const presentedBands = useRef<{
+    readonly headings: readonly Omit<InboxGroup, "rows">[];
+    readonly layout: string | undefined;
+  }>({ headings: [], layout: undefined });
+  /** The row under the reader's hand the list held at its last render, by id, and the typed
+   *  words it was held under (`searchWords`, joined): it stays held while the reader's words are
+   *  those, whatever the server does to the text they search. Written on every render below. */
   const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
   // And the same for a hand-on, whose control sits in the card rather than beside it
   // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
@@ -1053,7 +1100,7 @@ export function Inbox({
     showDismissed,
   });
   const paneSelection = usePaneSelection({
-    bulkSnoozing,
+    bulkSnoozing: bulkSnoozing.size,
     candidates,
     filter,
     listRef,
@@ -1582,22 +1629,41 @@ export function Inbox({
             rowId(placed.row) === handId &&
             (heldUnderWords || matchesInboxSearch(placed.row, words))
         );
-  const listed = seen === undefined ? undefined : byId.get(rowId(seen.row));
-  const nowBand =
-    listed === undefined
-      ? undefined
-      : bands.find(({ rows: banded }) => banded.includes(listed))?.key;
-  // A held row dropped from the list is drawn as its candidate, the row as the Inbox holds it
-  // now, so a pick in it shows there.
-  const held = heldRow(
-    seen,
-    listed,
-    seen === undefined || listed !== undefined
-      ? undefined
-      : candidates.find((row) => rowId(row) === handId),
-    nowBand
-  );
-  heldUnder.current = held === undefined ? undefined : { id: rowId(held.row), words: typed };
+  // A row a snooze of the reader's is live on - its own control's write, or the bar's over the
+  // rows they marked - is held as the row under their hand is, in the band they saw it in, until
+  // the Inbox lets go of it once the write lands (`heldRow`). That band is a band of the layout
+  // the row was drawn under, so a snooze holds its row only while the list is still drawn under
+  // it - the same grouping, and the same view - and the band is drawn again though no other row
+  // is left in it (`snoozeBands`): a snooze takes its row out of the band whoever else is there.
+  const layout = showDismissed ? "dismissed" : groupBy;
+  const sameLayout = presentedBands.current.layout === layout;
+  const held: PlacedRow[] = [];
+  const snoozeBands = new Set<string>();
+  let handHeld: PlacedRow | undefined;
+  for (const placed of presented.current) {
+    const id = rowId(placed.row);
+    const inHand = seen !== undefined && rowId(seen.row) === id;
+    const live = sameLayout && (snoozing.has(id) || bulkSnoozing.has(id));
+    if (!inHand && !live) continue;
+    const listed = byId.get(id);
+    const kept = heldRow(
+      placed,
+      listed,
+      // A held row dropped from the list is drawn as its candidate, the row as the Inbox holds
+      // it now, so a pick in it shows there.
+      inHand && listed === undefined ? candidates.find((row) => rowId(row) === id) : undefined,
+      listed === undefined
+        ? undefined
+        : bands.find(({ rows: banded }) => banded.includes(listed))?.key,
+      { inHand, snoozeLive: live }
+    );
+    if (kept === undefined) continue;
+    held.push(kept);
+    if (live) snoozeBands.add(kept.group);
+    if (inHand) handHeld = kept;
+  }
+  heldUnder.current =
+    handHeld === undefined ? undefined : { id: rowId(handHeld.row), words: typed };
 
   // The filtered agent as its asks wrote it (the title it stamped, its attribution), or only its
   // id when none of its asks is listed; either way its registry title names it when listed.
@@ -1934,13 +2000,14 @@ export function Inbox({
   // own to see and the focus it held is handed on (`SelectionBar`).
   const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
   const selectedCount = selectedAsks.length + selectedThreads.length;
-  // In flight the count is the press's, since the rows it moved have already left this view;
-  // settled, it is what a second press would act on - the rows still marked. Said here rather
-  // than left to the bar's own count so the bar still stands over an emptied selection, which is
-  // where a refusal of that press lands.
+  // In flight the count is the press's, since the optimistic moment has taken its rows out of
+  // the rows the selection counts as drawn (`drawnIds`), though the list keeps each where the
+  // reader saw it until the write lands; settled, it is what a second press would act on - the
+  // rows still marked. Said here rather than left to the bar's own count so the bar still stands
+  // over an emptied selection, which is where a refusal of that press lands.
   let barState: string | undefined;
   if (!bulkBarShown) barState = undefined;
-  else if (bulkSnoozing !== 0) barState = `Snoozing ${bulkSnoozing}…`;
+  else if (bulkSnoozing.size !== 0) barState = `Snoozing ${bulkSnoozing.size}…`;
   else if (allRows) barState = "Every row selected";
   else barState = `${selectedCount} selected`;
   const selectionBar = (
@@ -1964,9 +2031,10 @@ export function Inbox({
       }
       state={barState}
     >
-      {/* The picker stays while its own write is out: the optimistic fold takes every marked ask
-          off this view, and a picker unmounted under the reader's hand drops their focus. */}
-      {selectedAsks.length === 0 && bulkSnoozing === 0 ? null : (
+      {/* The picker stays while its own write is out: the optimistic moment takes every marked
+          ask out of the asks the selection counts (`selectedAsks`), and a picker unmounted under
+          the reader's hand drops their focus. */}
+      {selectedAsks.length === 0 && bulkSnoozing.size === 0 ? null : (
         <span className={badgeSelectWrapper}>
           <span
             aria-hidden="true"
@@ -1980,12 +2048,12 @@ export function Inbox({
               control that disables itself under it - dropping the reader on the document
               mid-write, with no Escape to leave and no way back to the bar. */}
           <select
-            aria-disabled={bulkSnoozing !== 0}
+            aria-disabled={bulkSnoozing.size !== 0}
             aria-label="Snooze selected asks"
             className={badgeSelectOverlay}
             data-inbox-bulk-snooze=""
             onChange={(event) => {
-              if (bulkSnoozing !== 0) return;
+              if (bulkSnoozing.size !== 0) return;
               const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
               if (preset !== undefined) snoozePick(preset.until(new Date()));
             }}
@@ -2153,7 +2221,7 @@ export function Inbox({
     </AskHandOnLiveContext>
   );
 
-  if (shown.length === 0 && held === undefined) {
+  if (shown.length === 0 && held.length === 0) {
     const emptyMessage = emptyStateMessage({
       agent,
       agentTitle,
@@ -2167,6 +2235,7 @@ export function Inbox({
     // outlives every row is the one the column is keeping for an unsent answer, and it keeps
     // its column here too: the reader's text is in it.
     presented.current = [];
+    presentedBands.current = { headings: [], layout };
     const empty = (
       <div data-testid="inbox-list">
         {emptyMessage === undefined ? null : (
@@ -2177,26 +2246,30 @@ export function Inbox({
     return page(empty, paneSelection.showing([]));
   }
 
-  // The held row is drawn in the band the reader saw it in, after the row it then followed.
-  // A band the held row has left is empty, and an empty band has nothing to head.
-  const drawn = bands
+  // Each held row is drawn in the band the reader saw it in, after the row it then followed; a
+  // band a snooze keeps its row in is drawn where it stood though no other row is left in it
+  // (`snoozeBands`). A band every row has left is empty, and an empty band has nothing to head.
+  const heldById = new Map(held.map((placed) => [rowId(placed.row), placed]));
+  const drawn = withHeldBands(bands, snoozeBands, presentedBands.current.headings)
     .map((band) => {
       const banded = withHeld(
-        band.rows.filter((row) => rowId(row) !== (held === undefined ? "" : rowId(held.row))),
-        held?.group === band.key ? held.row : undefined,
+        band.rows.filter((row) => !heldById.has(rowId(row))),
+        held.flatMap((placed) => (placed.group === band.key ? [placed.row] : [])),
         presented.current
       );
       return { band: { ...band, rows: banded }, rows: drawnIn(band.key, banded) };
     })
     .filter(({ band }) => band.rows.length > 0);
-  /** Which turn band a row is drawn in: the held row's is the one the reader saw it in. */
+  /** Which turn band a row is drawn in: a held row's is the one the reader saw it in. */
   const sectionDrawn = (row: InboxListRow): InboxSection =>
-    held !== undefined && rowId(held.row) === rowId(row)
-      ? held.section
-      : (sectionOf(row, place) ?? "human");
+    heldById.get(rowId(row))?.section ?? sectionOf(row, place) ?? "human";
   presented.current = drawn.flatMap(({ band, rows: visible }) =>
     visible.map((row) => ({ group: band.key, row, section: sectionDrawn(row) }))
   );
+  presentedBands.current = {
+    headings: drawn.map(({ band }) => ({ key: band.key, label: band.label })),
+    layout,
+  };
   // Every row the bands hold, a folded one's included: `?item=` naming a row the reader deferred
   // opens that band rather than being read as an address this list cannot answer.
   const listedRows: PlacedRow[] = drawn.flatMap(({ band }) =>
@@ -2213,7 +2286,7 @@ export function Inbox({
   const renderRow = (bandKey: string, row: InboxListRow): ReactNode => {
     const id = rowId(row);
     const section = sectionDrawn(row);
-    const onRelease = held !== undefined && rowId(held.row) === id ? release : undefined;
+    const onRelease = handHeld !== undefined && rowId(handHeld.row) === id ? release : undefined;
     const shared = {
       group: bandKey,
       marked: marked.has(id),

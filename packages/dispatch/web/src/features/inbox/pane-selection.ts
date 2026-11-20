@@ -111,11 +111,12 @@ export function usePaneSelection({
   // One record for every way a row leaves - the reader's own answer, which takes it at once
   // below, their own snooze, which takes it once the write lands, and the server withdrawing,
   // resolving or answering the question elsewhere - and read on every commit rather than when
-  // it is wanted, because a snooze folds its row into `Later` the moment they pick: while that
-  // write is out the read is held, so where they are sent is read off the list as it stood
-  // when they deferred. The commit that drops the row holds it for the same reason: the row is
-  // gone from that commit's list, and where it was heading is exactly what the settling effect
-  // is about to read this for.
+  // it is wanted, because by then the row has gone. While the selected row's snooze write is out
+  // the read is held, so where they are sent is read off the list as it stood when they
+  // deferred; the list keeps that row where it stood until the write lands, and moves it into
+  // `Later` in the commit it lets go of it. The commit that drops the row holds it for the same
+  // reason: the row is gone from that commit's list, and where it was heading is exactly what the
+  // settling effect is about to read this for.
   const stoodBetween = useRef<Neighbours>({ above: undefined, below: undefined });
   /** Where the selection goes when the row it is on leaves the bands: the next row the reader
    *  can see after it, else the nearest above it, so the column always shows something they
@@ -224,11 +225,11 @@ export function usePaneSelection({
     listedRows.current = listed;
     const visible = presented.current;
     // Read here, where the rows stand as the reader sees them, and held while a snooze of the
-    // selected row is out: that write folds its row into `Later` on the pick, so a read taken
-    // after it would answer with the row above rather than the row that took its place. Held too
-    // on a commit whose list no longer holds the selected row at all: that is the commit the
-    // settling effect reads this on, and the answer it wants is the one taken while the row was
-    // still there.
+    // selected row is out, so the answer is the one taken as the reader deferred: the list keeps
+    // that row where it stood until the write lands, and moves it into `Later` in the commit it
+    // lets go of it. Held too on a commit whose list no longer holds the selected row at all: that
+    // is the commit the settling effect reads this on, and the answer it wants is the one taken
+    // while the row was still there.
     if (selectedId === undefined) {
       stoodBetween.current = { above: undefined, below: undefined };
     } else if (!snoozing.has(selectedId) && bulkSnoozing === 0) {

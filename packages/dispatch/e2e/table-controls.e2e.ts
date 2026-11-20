@@ -4609,8 +4609,8 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.unroute("**/api/v1/inbox", unassign);
     await after(where, "Enter on Assign to me");
 
-    // A Snooze pick: the row moves into Later, which starts folded, and leaves the list once
-    // the snooze lands.
+    // A Snooze pick: the row stays in its band while the snooze saves, and folds into Later,
+    // which starts folded, once the snooze lands.
     await page.goto("/");
     const snooze = (await askControls(page, snoozed.askId)).getByRole("combobox", {
       name: /^Snooze /,
