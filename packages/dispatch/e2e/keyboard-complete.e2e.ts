@@ -806,7 +806,8 @@ function showsOther(shown: Shown, rest: Shown): boolean {
 }
 
 /** Puts the focus on `control` with the keyboard: Tab, press by press from where the focus is,
- *  until the control holds it. */
+ *  until the control holds it. A control no press reaches, one the page does not draw included
+ *  (`isActive`), fails by `message` once the presses run out. */
 async function tabTo(page: Page, control: Locator, message: string): Promise<void> {
   // A Tab moves the focus inside its own key press, so each read after one is settled.
   for (let press = 0; press < TAB_PRESSES && !(await isActive(control)); press += 1) {
@@ -1185,9 +1186,18 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
 // it). A control whose write is out is held, not disabled, so the keyboard's focus stays on it.
 // ---------------------------------------------------------------------------
 
-/** Whether `control` is the page's `document.activeElement`. */
-function isActive(control: Locator): Promise<boolean> {
-  return control.evaluate((element) => element === document.activeElement);
+/** Whether `control` is the page's `document.activeElement`, read at once: a control the page
+ *  does not draw is not, where `evaluate` would wait out its timeout for it, so `tabTo` walks
+ *  its presses and fails by its own message. A locator that matches more than one element
+ *  throws, as `evaluate`'s strict mode does. */
+async function isActive(control: Locator): Promise<boolean> {
+  // Read at once, not waited for: the Tab walk reads it after each press, which the press has
+  // settled, and a control the page does not draw must read as not active rather than wait.
+  const held = await control.evaluateAll((elements) =>
+    elements.map((element) => element === document.activeElement)
+  );
+  if (held.length > 1) throw new Error(`isActive: the control matches ${held.length} elements`);
+  return held[0] === true;
 }
 
 /** Presses `control` by the keyboard with `key`, and again while the write it sent is held, and
@@ -1532,6 +1542,8 @@ async function heldPressOpens(
   how: "click" | "Ctrl+click" | "middle click"
 ): Promise<string> {
   await link.scrollIntoViewIfNeeded();
+  // Read once the link is scrolled into view, where its line boxes are settled: the press goes to
+  // the middle of its first line box, which is the link's own words wherever the card wraps it.
   const point = await link.evaluate((anchor) => {
     const line = anchor.getClientRects()[0];
     return line === undefined
@@ -1544,6 +1556,7 @@ async function heldPressOpens(
   if (how === "Ctrl+click") await page.keyboard.down("ControlOrMeta");
   const button = how === "middle click" ? "middle" : "left";
   await page.mouse.down({ button });
+  // Held 150 ms, as a hand holds a button down, where Playwright's own click releases at once.
   await page.waitForTimeout(150);
   await page.mouse.up({ button });
   if (how === "Ctrl+click") await page.keyboard.up("ControlOrMeta");
@@ -1644,6 +1657,134 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
           `k-link-click: in ${where}, a ${how} on ${name} puts no caret in a reply box`
         )
         .not.toBe("TEXTAREA");
+    }
+  }
+});
+
+// SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses, and each of the four presses that move the page waits out 5 s for a new page that never opens.
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a click on its web link opens a new page, a click on its dispatch:// link or its key's title moves the page to the other issue, and a Ctrl+click and a middle click on its key's title open it in a new page, the comment staying folded", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const seed = await seedLinkSpec();
+  await context.route(`${OTHER_SITE}/**`, (route) =>
+    route.fulfill({
+      body: "<!doctype html><title>Another site</title><p>Another site.</p>",
+      contentType: "text/html",
+    })
+  );
+  await page.setViewportSize(WIDE);
+  const reference = `dispatch://${seed.other.key}`;
+  const margin = await createComment(seed.issueKey, {
+    anchor: { artifact: "spec", quote: "names it too" },
+    body: `Read [a page elsewhere](${AWAY}), see [the other issue](${reference}) and ${seed.other.key}.`,
+  });
+  // The folded card of each comment, as the row above opens it.
+  const places = [
+    {
+      card: () => page.locator(`[data-turn="comment:${seed.commentId}"]`),
+      open: async () => {
+        await page.goto(`/issues/${seed.issueKey}/conversation`);
+      },
+      where: "the Conversation tab's folded comment",
+    },
+    {
+      card: () => page.getByTestId(`margin-comment-${margin.id}`),
+      open: () => openSpec(page, seed.issueKey, "names it too"),
+      where: "the spec margin's folded comment",
+    },
+  ];
+  // A click on the web link, and a Ctrl+click and a middle click on the key's title, open a new
+  // page and keep the Dispatch page; a click on the `dispatch://` link or on the key's title
+  // moves the Dispatch page itself.
+  const presses = [
+    ["the web link", "click"],
+    ["the dispatch:// link", "click"],
+    ["the key's title", "click"],
+    ["the key's title", "Ctrl+click"],
+    ["the key's title", "middle click"],
+  ] as const;
+  for (const { card, open, where } of places) {
+    for (const [name, how] of presses) {
+      const step = `k-link-click: in ${where}, a ${how} on ${name}`;
+      await open();
+      // The bare key's title is the last thing the card draws as it opens (the row above).
+      const title = card().locator(`a[data-dispatch-ref="${reference}"]`).nth(1);
+      await expect(title, `k-link-click: ${where} draws the key's title`).toContainText(
+        seed.other.title
+      );
+      const link =
+        name === "the web link"
+          ? card().getByRole("link", { exact: true, name: "a page elsewhere" })
+          : name === "the dispatch:// link"
+            ? card().locator(`a[data-dispatch-ref="${reference}"]`).first()
+            : title;
+      await expect(link, `k-link-click: ${where} draws ${name}`).toBeVisible();
+      const folded = card().locator("xpath=descendant-or-self::*[@aria-expanded]").first();
+      await expect(folded, `k-link-click: ${where} is folded`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      const at = page.url();
+
+      if (how === "click" && name !== "the web link") {
+        await markDocument(page);
+        expect
+          .soft(await heldPressOpens(context, page, link, how), `${step} opens no new page`)
+          .toBe("none");
+        await expectInApp(page, seed, step);
+        continue;
+      }
+
+      // Held from before the press, the card at rest and folded, so the reads after the press
+      // tell this element from a link of the same name drawn again in its place.
+      const pressed = await link.elementHandle();
+      const address = await heldPressOpens(context, page, link, how);
+      // Soft, so one run names every place and press that goes wrong.
+      if (name === "the web link") {
+        expect.soft(address, `${step} opens a new page at ${AWAY}`).toBe(AWAY);
+      } else {
+        expect
+          .soft(address, `${step} opens a new page at the other issue`)
+          .toMatch(new RegExp(`^${new URL(`/issues/${seed.other.key}`, at).href}(/|$)`));
+      }
+      expect.soft(page.url(), `${step} keeps the Dispatch page at its address`).toBe(at);
+      await expect
+        .soft(folded, `${step} leaves the comment folded`)
+        .toHaveAttribute("aria-expanded", "false");
+      expect
+        .soft(
+          // Read after the press has settled: the held press and the reads above it waited out
+          // its new page, so a caret the press put in a reply box would be there by now.
+          await page.evaluate(() => {
+            const active = document.activeElement;
+            return active instanceof HTMLTextAreaElement ||
+              active?.closest("[data-thread-reply]") != null
+              ? `${active?.tagName} ${active?.getAttribute("aria-label") ?? ""}`
+              : "none";
+          }),
+          `${step} puts no caret in a reply box`
+        )
+        .toBe("none");
+      // The element pressed, not a link of the same name drawn again in its place: whether it is
+      // still in the page and drawn, and whether the link's own locator still finds it.
+      expect
+        .soft(
+          // Read after the press has settled, as the read above: the element pressed, and
+          // whatever the link's locator finds now.
+          await link.evaluateAll(
+            (found, held) => ({
+              connected: held.isConnected,
+              same: found.length === 1 && found[0] === held,
+              visible: held.checkVisibility(),
+            }),
+            pressed
+          ),
+          `${step} leaves the pressed link in the page`
+        )
+        .toEqual({ connected: true, same: true, visible: true });
+      await pressed.dispose();
     }
   }
 });
