@@ -884,17 +884,17 @@ test(
       expect(text).toContain(from);
       return budgetProblems(text.replace(from, to)).problems;
     };
-    expect(planted("deadline_seconds: 3360", "deadline_seconds: 3300")).toEqual([
-      "web: deadline_seconds 3300 is under 2 x the slowest 1661 s",
+    expect(planted("deadline_seconds: 3960", "deadline_seconds: 3900")).toEqual([
+      "web: deadline_seconds 3900 is under 2 x the slowest 1954 s",
     ]);
-    expect(planted("slowest_seconds: 1441", "slowest_seconds: 1500")).toEqual([
-      "harness: deadline_seconds 2940 is under 2 x the slowest 1500 s",
+    expect(planted("slowest_seconds: 1496", "slowest_seconds: 1550")).toEqual([
+      "harness: deadline_seconds 3000 is under 2 x the slowest 1550 s",
     ]);
     expect(planted("step_minutes: 8 ", "step_minutes: 7 ")).toEqual([
       "web-cold: step_minutes 7 is under the deadline, the 60 s kill-after and 60 s",
     ]);
-    expect(planted("job_minutes: 59 ", "job_minutes: 58 ")).toEqual([
-      "harness: job_minutes 58 is under step_minutes and 2 x the other steps' 229 s",
+    expect(planted("job_minutes: 60 ", "job_minutes: 59 ")).toEqual([
+      "harness: job_minutes 59 is under step_minutes and 2 x the other steps' 229 s",
     ]);
     expect(
       planted(`--kill-after=60 \${{ matrix.deadline_seconds }}`, "--kill-after=60 600")
