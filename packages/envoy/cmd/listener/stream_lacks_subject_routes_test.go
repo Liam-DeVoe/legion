@@ -38,19 +38,22 @@ func subjectsWithout(t *testing.T, subject string) []string {
 // notifications stream did not take because, as the listener read it, the deployed stream
 // captures no subject of the message's (bus.ErrStreamLacksSubject) at once: the 503 with
 // Retry-After: 1 whose body opens with streamLacksSubjectPrefix and names the subject and the
-// stream's generation, recorded stream_lacks_subject, with nothing stored. One row per route:
+// stream's generation, recorded stream_lacks_subject, with nothing stored, before the route's own
+// window for that publish ends. One row per route, each with that window:
 //
-//   - the send route, over a stream that dropped the agent subject;
+//   - the send route, over a stream that dropped the agent subject, inside the send's budget
+//     (sendRequestBudget);
 //   - the publish route's role send to a live holder, whose forward goes to the holder's agent
 //     subject: one forward, not the forty a send makes over 4 s for a forward the stream did not
-//     acknowledge, since every attempt would meet the same refusal;
+//     acknowledge, since every attempt would meet the same refusal, inside the role send's window
+//     (publishDeliveryWindow);
 //   - the publish route's role send to a role nobody claims, whose keep goes to the role's kept
 //     lane, over a stream that dropped that lane: not the 404 of a role nothing was kept for,
 //     since the keep failed for want of the subject and the sender learns that nothing stored the
-//     message and why;
+//     message and why, inside the keep's window (roleKeepPublishWindow);
 //   - the send route's send marked with a role whose claim names another session than the
 //     target, or none (answerRoleSend), which keeps the message on the role's kept lane over a
-//     stream that dropped that lane, for the same reason;
+//     stream that dropped that lane, for the same reason and inside the same window;
 //   - the publish route's topic publish, whose topic the stream leaves out: refused 400 before
 //     anything is published (ReachesNoSession), as it was, since no session's consumer would hold
 //     it.
@@ -78,8 +81,10 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		t.Logf("status %d, Retry-After %q, after %s, body %s, record %s", a.status, a.retryAfter, a.elapsed, strings.TrimSpace(recorder.Body.String()), line)
 		return a
 	}
-	// lacks asserts the answer of a stored publish the stream lacks subject of.
-	lacks := func(t *testing.T, a answer, subject string) {
+	// lacks asserts the answer of a stored publish the stream lacks subject of, made inside
+	// window, the route's own bound for that publish: an answer that comes only once window has
+	// passed is one the route made after it waited, or tried again, for the whole of it.
+	lacks := func(t *testing.T, a answer, subject string, window time.Duration) {
 		t.Helper()
 		if a.status != http.StatusServiceUnavailable || a.retryAfter != "1" {
 			t.Errorf("status %d, Retry-After %q; want 503 and 1", a.status, a.retryAfter)
@@ -89,6 +94,9 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		}
 		if a.record["outcome"] != string(outcomeStreamLacksSubject) || a.record["status"] != float64(http.StatusServiceUnavailable) {
 			t.Errorf("the record's outcome is %v with status %v, want %s and 503", a.record["outcome"], a.record["status"], outcomeStreamLacksSubject)
+		}
+		if a.elapsed >= window {
+			t.Errorf("the refusal was answered after %s, the route's whole window of %s for it", a.elapsed, window)
 		}
 	}
 	// connect deploys a newer build's stream of subjects on a server of the row's own and
@@ -115,7 +123,7 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		}
 		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return sendHandler(rig.deps, logger) },
 			postJSON("/v1/messages/send", sendBody(map[string]any{"target_session": target, "source": "agent", "source_session": "ses_lacks_route_sender", "message": "are you there?"})))
-		lacks(t, a, subject)
+		lacks(t, a, subject, sendRequestBudget)
 		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
 			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
 		}
@@ -158,12 +166,9 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 			t.Fatalf("claim %s for %s: status %d, body %s", role, holder, claim.Code, claim.Body.String())
 		}
 		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) }, rolePublish(role))
-		lacks(t, a, subject)
+		lacks(t, a, subject, publishDeliveryWindow)
 		if got := forwards.Load(); got != 1 {
 			t.Errorf("the send made %d forwards, want 1: a forward to a subject the stream does not capture is refused the same way every time", got)
-		}
-		if a.elapsed >= publishDeliveryWindow {
-			t.Errorf("the send was answered after %s, its whole window of %s", a.elapsed, publishDeliveryWindow)
 		}
 		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
 			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
@@ -176,7 +181,7 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		client, _ := connect(t, subjectsWithout(t, subject))
 		deps, _, forwards := publishRig(t, client)
 		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) }, rolePublish(role))
-		lacks(t, a, subject)
+		lacks(t, a, subject, roleKeepPublishWindow)
 		if got := forwards.Load(); got != 0 {
 			t.Errorf("the send made %d forwards to a role nobody claims, want none", got)
 		}
@@ -198,7 +203,7 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		request := postJSON("/v1/messages/send", fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"a role event","role":%q}`, target, role))
 		request = request.WithContext(withVerifiedPrincipal(request.Context(), principal))
 		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return sendHandler(deps, logger) }, request)
-		lacks(t, a, subject)
+		lacks(t, a, subject, roleKeepPublishWindow)
 		if got := forwards.Load(); got != 0 {
 			t.Errorf("the send made %d forwards for a role nobody claims, want none", got)
 		}
