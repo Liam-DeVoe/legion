@@ -1459,6 +1459,8 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
     // more than its box shows, which is what an ellipsis or a clamp needs.
     const expectWhole = async (table: Locator, key: string, where: string) => {
       const row = table.getByRole("row", { exact: true, name: `${key} ${title}` });
+      // The row first: a tab just chosen draws its table's headers with its rows, not before.
+      await expect(row).toBeVisible();
       const text = (await cellUnder(table, row, "Title")).getByText(title, { exact: true });
       await expect(text).toBeVisible();
       await soft
