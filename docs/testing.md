@@ -328,7 +328,7 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
-`packages/envoy/internal/dispatch/api` alone took close to that, 665 s in the last CI run that ran it whole without `-race` (`envoy-go-test-json-2` of run 41703055842).
+`packages/envoy/internal/dispatch/api` alone took more than that, 665 s in the last CI run that ran it whole without `-race` (`envoy-go-test-json-2` of run 41703055842).
 Its claim model, `TestTheMentionSenderClaimModel`, searches every interleaving of the mention sender's code and took 19 min 18 s on its own (`.github/workflows/ci-job-envoy-go-claim-model.yaml`), so it runs by name in a job of its own.
 So every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m` and leaves the claim model to its job:
 
