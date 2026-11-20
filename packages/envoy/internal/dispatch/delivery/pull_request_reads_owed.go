@@ -25,8 +25,8 @@ package delivery
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its facts line a merged
 // one while its texts do not describe its head, and a closed one stays closed, which is no basis.
-// And a link by hand records a failure for each pull request that it adds, also where a head row
-// of it is stored (OweLinkedPullRequestReads). No event carries a link. An envelope leaves the
+// And a link by hand records a failure for each pull request that it adds and whose head row is
+// not stored (OweLinkedPullRequestReads). No event carries a link. An envelope leaves the
 // intake with no record of its pull request only where it names no pull request GitHub can have
 // (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
 // its repository's canonical name is no name GitHub can have, the read is owed under the name the
@@ -94,6 +94,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -260,16 +261,22 @@ func owedName(ctx context.Context, db refs.Queryer, given string, number int) (s
 const pullRequestURLPrefix = "https://github.com/"
 
 // linkedPullRequest is the repository and the number of the pull request link names, with ok
-// true. GitHub gives a pull request's own URL as https://github.com/<owner>/<repo>/pull/<number>,
-// and serves the same pull request at https://github.com/<owner>/<repo>/issues/<number>, which is
-// the URL `dispatch issue --external <owner>/<repo>#<number>` stores (api's externalURL): a pull
-// request and an issue of one repository share one sequence of numbers, so either form names at
-// most one of them. The statement ties a link to a pull request in either form where lower() of
-// the URLs is equal (attributedTerms, PullRequestURLAsIssueSQL). So this takes those two forms in any
-// letter case, and no other: no other part, and no zero before the number. An /issues/ link that
-// names an issue owes one read, which GitHub answers as no pull request and the reconcile settles
+// true: the one rule of which link names which pull request. GitHub gives a pull request's own
+// URL as https://github.com/<owner>/<repo>/pull/<number>, and serves the same pull request at
+// https://github.com/<owner>/<repo>/issues/<number>, which is the URL
+// `dispatch issue --external <owner>/<repo>#<number>` stores (api's externalURL): a pull request
+// and an issue of one repository share one sequence of numbers, so either form names at most one
+// of them. So this takes those two forms in any letter case, and no other: no other part, no
+// character outside ASCII, and no zero before the number. An /issues/ link that names an issue
+// owes one read, which GitHub answers as no pull request and the reconcile settles
 // (pullRequestAbsent). ok is false for each other URL, and for a name or a number that no pull
 // request of GitHub can have (checkPullRequestKey). The repository keeps the letters of the link.
+//
+// A link names the pull request under the name its repository is called today
+// (refs.CanonicalRepo), so a link written before a rename names the pull request of the
+// repository it was renamed to. The link write owes the read under that name (owedName), and the
+// statement gives the pull request to the linking issue under it (LinkedPullRequestSQL,
+// PullRequestLinksSQL, attributedTerms).
 func linkedPullRequest(link string) (repo string, number int, ok bool) {
 	for i := range len(link) {
 		if link[i] >= utf8.RuneSelf {
@@ -298,6 +305,46 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 	return repo, number, true
 }
 
+// LinkedPullRequestSQL is linkedPullRequest in SQL, a subquery for a lateral join over url, an
+// expression of a link's URL: one row (repo, number) where linkedPullRequest takes the link, the
+// repository as the link spells it, and no row where it does not. The statement reads the links
+// of an issue by it (byIssueJudged), and api's link check by it, so a reader of the database and
+// the link write take one link to one pull request. TestTheLinkRuleInSQLIsTheLinkRuleInGo holds
+// it to linkedPullRequest link by link.
+//
+// The pattern is githubRepositoryName's, split at the slash, with the two parts of the path after
+// it; the scheme and the host are compared in lower case, and `pull` and `issues` in any case. A
+// link of a character outside ASCII is no link of a pull request, as in Go: octet_length counts
+// the bytes of UTF-8 text and length its characters. The number is cast to int only where it is
+// at most math.MaxInt32, inside a case, so no order the planner gives the conditions casts a
+// number of ten digits past int's bound.
+func LinkedPullRequestSQL(url string) string {
+	prefix := strconv.Itoa(len(pullRequestURLPrefix))
+	inBound := `p.m[4]::bigint <= ` + strconv.Itoa(math.MaxInt32)
+	return `(select p.m[1] || '/' || p.m[2] as repo, case when ` + inBound + ` then p.m[4]::int end as number
+		from (select regexp_match(lower(left(` + url + `, ` + prefix + `)) || substr(` + url + `, ` + prefix + ` + 1),
+			'^https://github\.com/([A-Za-z0-9_-]{1,39})/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
+			where octet_length(` + url + `) = length(` + url + `)) p
+		where lower(p.m[3]) in ('pull', 'issues') and p.m[2] not in ('.', '..')
+			and case when ` + inBound + ` then true else false end)`
+}
+
+// PullRequestLinksSQL is every link that names pull request number of repo (linkedPullRequest),
+// lowercased, as an array: the /pull/ and the /issues/ form of number under each name whose
+// canonical name is repo's (refs.CanonicalRepoSQL), that is the canonical name itself and each
+// name a repo_projects row renames to it. repo and number are expressions, a column or a bound
+// parameter each. A reader compares lower() of a link with the array, which
+// issue_external_links_url_lower serves with one probe a form, and takes the link only where
+// LinkedPullRequestSQL takes it too (attributedTerms): lower() of a character outside ASCII can
+// be an ASCII letter, and a renamed name that GitHub cannot have names nothing.
+func PullRequestLinksSQL(repo, number string) string {
+	return `array(select lower('https://github.com/' || n.name || '/' || f.form || '/' || ` + number + `)
+		from (select ` + refs.CanonicalRepoSQL(repo) + ` as name
+			union select renamed.repo from repo_projects renamed where renamed.renamed_to is not null) n
+		cross join (values ('pull'), ('issues')) f(form)
+		where lower(` + refs.CanonicalRepoSQL("n.name") + `) = lower(` + refs.CanonicalRepoSQL(repo) + `))`
+}
+
 // OweLinkedPullRequestReads owes a read of GitHub for each pull request that a person or an agent
 // links to an issue by hand, where Dispatch holds no head of it. It writes in tx, the transaction
 // of the link write (api's patchIssue). urls are the links that the write adds. This is R5 of the
@@ -305,10 +352,11 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 // an event. No event carries a link, so without the owe a pull request with no event and no
 // result has no head row, and the checks of the issue compare with nothing.
 //
-// Each URL of a pull request owes the read (linkedPullRequest), in any repository: the read needs
-// only that GitHub can read the repository, not that Dispatch maps it. Each other link owes
-// nothing. Where GitHub does not let the App read the repository, the read stays owed until a
-// read succeeds (R4), as a refusal after its first read (recordOwedReadOutcome).
+// Each URL of a pull request owes the read (linkedPullRequest), in any repository, under the name
+// the repository is called today (owedName): the read needs only that GitHub can read the
+// repository, not that Dispatch maps it. Each other link owes nothing. Where GitHub does not let
+// the App read the repository, the read stays owed until a read succeeds (R4), as a refusal after
+// its first read (recordOwedReadOutcome).
 //
 // A link owes no read where a head row of the pull request is stored (oweLinkedRead): a link says
 // nothing of the head, the row holds the head that a read of GitHub or an event gave, and the
@@ -328,22 +376,34 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 // (settleOwedRead).
 //
 // A new row is a failure, as for an event whose read failed. So the next reconcile pass reads it
-// before any refusal (readOwedPullRequests), and a read of GitHub that answers settles it. The owes
-// go in the order of the repository and the number. So two link writes lock the rows of
-// pull_request_reads_owed in one order.
+// before any refusal (readOwedPullRequests), and a read of GitHub that answers settles it. A pull
+// request is owed once in every letter case: a row owed already under another spelling takes the
+// owe (oweLinkedRead), and two links of one pull request in two spellings owe one row, under the
+// spelling first in byte order. The owes go in the order of the owed name in lower case, the
+// number and the owed name. So two link writes lock the rows of pull_request_reads_owed in one
+// order. The backfill of the links stored before this release owes what this owes for those links
+// (migration 20261120171308_pull_request_reads_owed_link_backfill), which its test holds by
+// running this over the same links (TestTheLinkBackfillOwesWhatALinkWriteOwes).
 func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) error {
-	type linked struct {
+	type owed struct {
 		repo   string
 		number int
 	}
-	var links []linked
+	var links []owed
 	for _, url := range urls {
-		if repo, number, ok := linkedPullRequest(url); ok {
-			links = append(links, linked{repo: repo, number: number})
+		given, number, ok := linkedPullRequest(url)
+		if !ok {
+			continue
 		}
+		repoFull, err := linkedOwedName(ctx, tx, given, number)
+		if err != nil {
+			return err
+		}
+		links = append(links, owed{repo: repoFull, number: number})
 	}
-	slices.SortFunc(links, func(a, b linked) int {
-		return cmp.Or(strings.Compare(strings.ToLower(a.repo), strings.ToLower(b.repo)), cmp.Compare(a.number, b.number))
+	slices.SortFunc(links, func(a, b owed) int {
+		return cmp.Or(strings.Compare(strings.ToLower(a.repo), strings.ToLower(b.repo)), cmp.Compare(a.number, b.number),
+			strings.Compare(a.repo, b.repo))
 	})
 	for _, link := range links {
 		if err := oweLinkedRead(ctx, tx, link.repo, link.number); err != nil {
@@ -353,30 +413,40 @@ func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) er
 	return nil
 }
 
-// oweLinkedRead owes the read of pull request number of the repository given for a link by hand
-// (OweLinkedPullRequestReads), under the name and within the bound of owePullRequestRead, where no
-// head row of that pull request is stored: a row whose repository, under its canonical name, is
-// the owed name in any letter case, and whose number is number. Where one is stored it writes
-// nothing. A new row is a failure whose linked_revision is its revision. A row that is owed
-// already takes a new revision and the time of now, and keeps its reason, its refusal and its
-// count of reads. It keeps linked_revision equal to its revision only where a link alone owed the
-// read before.
-func oweLinkedRead(ctx context.Context, tx pgx.Tx, given string, number int) error {
+// linkedOwedName is owedName of a link's repository and number, within owedReadWriteTimeout.
+func linkedOwedName(ctx context.Context, tx pgx.Tx, given string, number int) (string, error) {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
-	repoFull, err := owedName(ctx, tx, given, number)
-	if err != nil {
-		return err
-	}
+	return owedName(ctx, tx, given, number)
+}
+
+// oweLinkedRead owes the read of pull request number of repoFull, the owed name of a link by hand
+// (OweLinkedPullRequestReads), within the bound of owePullRequestRead, where no head row of that
+// pull request is stored: a row whose repository, under its canonical name, is repoFull in any
+// letter case, and whose number is number. Where one is stored it writes nothing. A row owed
+// already under repoFull in another letter case is the row it owes: GitHub reads a name in any
+// case, so a second row would cost a second read of one pull request. A new row is a failure
+// whose linked_revision is its revision. A row that is owed already takes a new revision and the
+// time of now, and keeps its reason, its refusal and its count of reads. It keeps linked_revision
+// equal to its revision only where a link alone owed the read before.
+func oweLinkedRead(ctx context.Context, tx pgx.Tx, repoFull string, number int) error {
+	ctx, cancel := owedTableBound(ctx)
+	defer cancel()
 	var held bool
+	var owedAs *string
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from pull_request_heads h
-			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1))
-	`, repoFull, number).Scan(&held); err != nil {
+			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1)),
+			(select o.repo from pull_request_reads_owed o where lower(o.repo) = lower($1) and o.number = $2
+				order by o.repo collate "C" limit 1)
+	`, repoFull, number).Scan(&held, &owedAs); err != nil {
 		return fmt.Errorf("read whether the head of %s#%d is stored for a link: %w", repoFull, number, err)
 	}
 	if held {
 		return nil
+	}
+	if owedAs != nil {
+		repoFull = *owedAs
 	}
 	return recordLinkedOwe(ctx, tx, repoFull, number)
 }

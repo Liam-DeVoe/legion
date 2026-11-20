@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -33,24 +34,43 @@ func deleteIssueExternalLinks(ctx context.Context, tx pgx.Tx, key string) error 
 // pull request it links (lockLinkedPullRequests), so they share no key with another advisory lock.
 const linkedPullRequestLockSpace = "dispatch-issue-external-link"
 
+// linkFormsSQL is every link, lowercased, that holds what link holds, link being an expression of
+// one URL: where link names a pull request (delivery.LinkedPullRequestSQL, the link write's rule),
+// each link of that pull request, in its /pull/ and its /issues/ form under each name whose
+// canonical name is its repository's (delivery.PullRequestLinksSQL), which is what the statement
+// reads as that pull request; and else link itself, lowercased, a URL in any letter case. The
+// link check of a write and of a create compares other issues' links with it under lower(), which
+// issue_external_links_url_lower serves with one probe a form.
+func linkFormsSQL(link string) string {
+	return `coalesce((select ` + delivery.PullRequestLinksSQL("lp.repo", "lp.number") + ` from ` +
+		delivery.LinkedPullRequestSQL(link) + ` lp), array[lower(` + link + `)])`
+}
+
+// linkLockFormSQL is the one text every link that holds what link holds reads as (linkFormsSQL):
+// for a link of a pull request, its /pull/ URL under the canonical name of its repository,
+// lowercased, and for any other URL, the URL lowercased.
+func linkLockFormSQL(link string) string {
+	return `coalesce((select lower('https://github.com/' || ` + refs.CanonicalRepoSQL("lp.repo") + ` || '/pull/' || lp.number) from ` +
+		delivery.LinkedPullRequestSQL(link) + ` lp), lower(` + link + `))`
+}
+
 // lockLinkedPullRequests takes, in tx, one transaction lock for each pull request the links name,
-// under the one form both of its URLs read as: the /pull/ form, lowercased
-// (delivery.LinkURLAsPullRequestSQL), so /pull/N and /issues/N of one pull request in any letter
-// case take one lock. The link check of a write reads committed rows, so without the lock two
-// writes at once could each find the other's form absent and both store it on two issues. With
-// it, the second write waits for the first to commit or roll back, and its check then reads the
-// first's row and refuses with 409 EXTERNAL_LINK_TAKEN. The forms are locked one at a time in
-// byte order, so two writes that link the same pull requests take their locks in one order and
-// cannot wait on each other. A URL that names no pull request takes a lock of its own text, which
-// costs one lock and holds nothing else back. Two forms whose hashes meet only make one write
-// wait for the other.
+// under the one form all of its links read as (linkLockFormSQL), so /pull/N and /issues/N of one
+// pull request, in any letter case and under any name of its repository, take one lock. The link
+// check of a write reads committed rows, so without the lock two writes at once could each find
+// the other's link absent and both store it on two issues. With it, the second write waits for
+// the first to commit or roll back, and its check then reads the first's row and refuses with 409
+// EXTERNAL_LINK_TAKEN. The forms are locked one at a time in byte order, so two writes that link
+// the same pull requests take their locks in one order and cannot wait on each other. A URL that
+// names no pull request takes a lock of its own text in lower case, which costs one lock and holds
+// nothing else back. Two forms whose hashes meet only make one write wait for the other.
 func lockLinkedPullRequests(ctx context.Context, tx pgx.Tx, links []model.ExternalLink) error {
 	urls := make([]string, 0, len(links))
 	for _, link := range links {
 		urls = append(urls, link.URL)
 	}
 	rows, err := tx.Query(ctx, `
-		select distinct lower(`+delivery.LinkURLAsPullRequestSQL("u.url")+`) collate "C" as form
+		select distinct `+linkLockFormSQL("u.url")+` collate "C" as form
 		from unnest($1::text[]) u(url) order by form`, urls)
 	if err != nil {
 		return fmt.Errorf("read the pull requests the links name: %w", err)
@@ -535,22 +555,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			if kind == "" {
 				kind = "url"
 			}
-			// A pull request's issue is read through lower() of its links (delivery's
-			// attributedTerms), so another issue that holds the URL in any letter case holds it
-			// here. GitHub serves a pull request at /pull/N and at /issues/N, and the statement
-			// reads either form as that pull request, so another issue that holds the other form
-			// holds it too: the check probes the link's /pull/ form and its /issues/ form
-			// (delivery.LinkURLAsPullRequestSQL, PullRequestURLAsIssueSQL), each under lower(),
-			// which issue_external_links_url_lower serves. Two issues that held the two forms
-			// before this check give the pull request to the issue whose key comes first in byte
-			// order, as the statement ends any tie. The check compares with other issues only, and
-			// never refuses a URL this issue held before the write, in any case or form: the
-			// client sends the issue's links again with each write, and an issue of a pair two
-			// writes at once stored keeps its own. The lesser key in byte order is named, so the
-			// answer turns on no row order.
+			// A pull request's issue is read through every link that names it (delivery's
+			// attributedTerms), so another issue that holds a link of that pull request holds it
+			// here: its /pull/N or /issues/N form, in any letter case, under the name its
+			// repository has today or one it was renamed away from (linkFormsSQL), each under
+			// lower(), which issue_external_links_url_lower serves. Another URL is held by another
+			// issue that holds it in any letter case. Two issues that held one pull request before
+			// this check give it to the issue whose key comes first in byte order, as the
+			// statement ends any tie. The check compares with other issues only, and never refuses
+			// a link this issue held before the write, in any case, form or name: the client
+			// sends the issue's links again with each write, and an issue of a pair two writes at
+			// once stored keeps its own. The lesser key in byte order is named, so the answer turns
+			// on no row order.
 			var owner string
-			asPull := delivery.LinkURLAsPullRequestSQL("$1::text")
-			forms := `array[lower(` + asPull + `), lower(` + delivery.PullRequestURLAsIssueSQL(asPull) + `)]`
+			forms := linkFormsSQL("$1::text")
 			err := tx.QueryRow(r.Context(), `
 				select l.issue_key from issue_external_links l
 				where lower(l.url) = any(`+forms+`) and l.issue_key <> $2

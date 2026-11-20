@@ -14,15 +14,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A pull request's issue is the issue whose external link is the pull request's own URL, in any
+// A pull request's issue is the issue whose external link names the pull request, in any
 // repository, and else the first issue its other four ranked sources name that resolves to the
 // repository the pull request is in: a candidate of those four ranked above it that resolves to
 // another repository, or to no repository at all, is passed over, and a pull request no candidate
 // of which is held attributes nobody, with the source "none". Every candidate of one source ranks
 // above any of the next (attributedTerms):
 //
-//  1. the issue whose external link is the pull request's own URL, whatever repository the issue
-//     resolves to;
+//  1. the issue whose external link names the pull request by the link write's rule
+//     (linkedPullRequest): its /pull/ or /issues/ URL under any name of its repository, the one
+//     it has today or one it was renamed away from, whatever repository the issue resolves to;
 //  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
 //     the first such citation in body order;
@@ -141,19 +142,6 @@ const attributionSubjects = `subjects as (
 // The text names the schema of the reading's two functions, which only the database knows, so it
 // is built once at start (PrepareAttribution) and never per read.
 
-// githubURLBound is the most bytes a pull request's own URL may have for a link to match it. It
-// is the bound of the partial index pull_request_heads_url_lower (migration 20261117111040): a
-// longer URL is no URL of GitHub, and no index holds it. Each arm that matches a link with the
-// pull request's own URL takes the bound (urlBound), the arm of a reader by key as the arm of a
-// reader by issue, so both match the same URLs and the reader by issue reads that index.
-const githubURLBound = 1024
-
-// urlBound is the condition each arm on a pull request's own URL takes: the predicate of the
-// partial index, so the planner reads it.
-func urlBound(column string) string {
-	return `octet_length(` + column + `) <= ` + strconv.Itoa(githubURLBound)
-}
-
 // linkURLAsCited is a link's URL folded the way the reading folds a cited URL: ASCII lower case,
 // under the collation "C", whatever the database's own collation folds besides. The cited list
 // is in that fold, so an arm that compares a link with it compares in that fold too, by key and by
@@ -164,29 +152,14 @@ func urlBound(column string) string {
 // (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
 const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 
-// PullRequestURLAsIssueSQL is the column of a pull request's own URL (https://github.com/o/r/pull/N)
-// in the form GitHub also serves it at, https://github.com/o/r/issues/N: the URL
-// `dispatch issue --external o/r#N` stores (api's externalURL). The arm of a reader by key matches
-// a link with either form, each under lower(), which issue_external_links_url_lower serves with
-// one probe each (linkedPullRequest says why either form names one pull request at most), and
-// api's link check probes both forms of a new link the same way.
-func PullRequestURLAsIssueSQL(column string) string {
-	return `regexp_replace(` + column + `, '/pull/([0-9]+)$', '/issues/\1', 'i')`
-}
-
 // LinkURLAsPullRequestSQL is column, a link's URL, with an /issues/N ending read as /pull/N: the one
-// form GitHub's two URLs of a pull request share (linkedPullRequest), and the form
-// pull_request_heads_url_lower holds. A link in any other form is its own URL. The arm of a reader
-// by issue compares a link in this form (linkURLAsPullRequest), and api's link check compares a new
-// link with each link of another issue in it under lower(), so no two issues hold one pull request
-// in its two forms.
+// form GitHub's two URLs of a pull request share (linkedPullRequest), lowercased by its caller. A
+// link in any other form is its own URL. api's link check and lock read a link that names no pull
+// request in it (linkFormsSQL), and dispatch attribution counts the links that two issues hold in
+// it where they name no pull request (ReadAttributionCounts).
 func LinkURLAsPullRequestSQL(column string) string {
 	return `regexp_replace(` + column + `, '/issues/([0-9]+)$', '/pull/\1', 'i')`
 }
-
-// linkURLAsPullRequest is LinkURLAsPullRequestSQL of l.url, the link the arm of a reader by issue
-// compares with a pull request's own URL.
-var linkURLAsPullRequest = LinkURLAsPullRequestSQL("l.url")
 
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
@@ -213,9 +186,12 @@ var linkURLAsPullRequest = LinkURLAsPullRequestSQL("l.url")
 //   - named to picked: the five sources in the order of the list at the top of this file, from
 //     facts whose head is the pull request's own repository's (own_head), bounded at
 //     attributionCandidateBound and held to the pull request's repository (attributionHeld), but
-//     for a link of the pull request's own URL, which is held in any repository. A tie of rank
-//     and place, two links of one URL in two letter cases, is ended by the key in byte order, so
-//     no collation, plan or row order picks the issue.
+//     for a link that names the pull request, which is held in any repository. A link names it
+//     by the one rule of the link write (linkedPullRequest): its /pull/ or its /issues/ URL, in
+//     any letter case, under any name whose canonical name is the pull request's repository, so a
+//     link written before a rename names it too (PullRequestLinksSQL, LinkedPullRequestSQL). A tie
+//     of rank and place, two links of one pull request in two spellings, is ended by the key in
+//     byte order, so no collation, plan or row order picks the issue.
 //   - attributed: one of three states. The rule's answer where the pull request has facts: its
 //     texts are current, and its messages are read or a held candidate of a higher source
 //     decides. Not known where its texts are current, its messages are not read and no held
@@ -277,8 +253,9 @@ func attributedTermsOver(schema, judged, texts string) string {
 	), named as (
 		select src.repo as pr_repo, src.number as pr_number, l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
 		from batch src cross join lateral (select l.issue_key from issue_external_links l
-			where lower(l.url) in (lower(src.url), lower(` + PullRequestURLAsIssueSQL("src.url") + `)) offset 0) l
-		where src.texts_current and src.own_head and ` + urlBound("src.url") + `
+			where lower(l.url) = any(` + PullRequestLinksSQL("src.repo", "src.number") + `)
+				and exists (select 1 from ` + LinkedPullRequestSQL("l.url") + ` lp) offset 0) l
+		where src.texts_current and src.own_head
 		union all
 		select src.repo, src.number, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
 		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
@@ -323,9 +300,10 @@ func attributedTermsOver(schema, judged, texts string) string {
 // headsByIssue is the judged rows of a read by issue $1: every pull request whose answer can be
 // $1, under the name it is stored under. Each arm but the last reads one index of migration
 // 20261117111040 or of the tables it reads: the results rows and the timeline rows that store
-// $1; the texts rows whose stored keys name it; the results rows whose own URL a link of $1
-// names, under the bound of the partial index; the texts rows that cite a URL a link of $1 names,
-// folded as the reading folds it (linkURLAsCited); and, only while some texts row is on another
+// $1; the texts rows whose stored keys name it; the pull request each link of $1 names, under
+// the name the link gives (LinkedPullRequestSQL), which judged reads under its canonical name;
+// the texts rows that cite a URL a link of $1 names, folded as the reading folds it
+// (linkURLAsCited); and, only while some texts row is on another
 // reading, every such row, whose stored keys say nothing. The last is a one-time filter, so it
 // reads no row outside that window. A row an arm takes that the statement answers for another
 // issue is dropped by the reader's own `issue_key = $1`.
@@ -347,8 +325,8 @@ func byIssueJudged(is, names func(string) string) string {
 	union select repo, number from delivery_pull_requests where ` + is("issue_key") + `
 	union select repo, number from pull_request_texts
 		where ` + names("branch_keys") + ` or ` + names("title_keys") + ` or ` + names("commit_keys") + `
-	union select h.repo, h.number from pull_request_heads h
-		where lower(h.url) in (select lower(` + linkURLAsPullRequest + `) from issue_external_links l where ` + is("l.issue_key") + `) and ` + urlBound("h.url") + `
+	union select lp.repo, lp.number from issue_external_links l cross join lateral ` + LinkedPullRequestSQL("l.url") + ` lp
+		where ` + is("l.issue_key") + `
 	union select repo, number from pull_request_texts
 		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where ` + is("l.issue_key") + `)
 	union select t.repo, t.number from pull_request_texts t

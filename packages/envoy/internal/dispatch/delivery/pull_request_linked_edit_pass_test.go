@@ -1,10 +1,15 @@
 package delivery
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
@@ -14,14 +19,15 @@ import (
 // until a `dispatch result` at its head read it through (ReadThroughCommitPulls): a head read only
 // when a result names it. That deployment carries no release of this change, and its intake binds
 // no durable without a delivery_settings row. Here, with no delivery settings, the same order runs:
-// the link by hand (OweLinkedPullRequestReads), the `edited` envelope (the intake reads the pull
-// request from GitHub and writes its head, R1 and R2), one reconcile pass, and then the results'
-// read of the issue's heads (HeadsAttributedTo), with no result recorded and no read-through. The
-// issue's head is #4612 at GitHub's head, read. The second case is the same order with the edit's
-// event lost: the pass reads the read the link owed (R5) and writes the head. The control is a pull
-// request whose `opened` event arrived, which reads as before. Each case runs with GitHub serving
-// the pull request, and with GitHub's reads counted, so a head that came from a read-through would
-// show as a read made after the pass.
+// the link by hand (OweLinkedPullRequestReads), the `edited` envelope through the intake's own
+// delivery (Intake.deliver and its route, with the settings production holds: none; the intake
+// reads the pull request from GitHub and writes its head, R1 and R2), one reconcile pass, and then
+// the results' read of the issue's heads (HeadsAttributedTo), with no result recorded and no
+// read-through. The issue's head is #4612 at GitHub's head, read. The second case is the same
+// order with the edit's event lost: the pass reads the read the link owed (R5) and writes the
+// head. The control is a pull request whose `opened` event arrived, which reads as before. Each
+// case runs with GitHub serving the pull request, and with GitHub's reads counted, so a head that
+// came from a read-through would show as a read made after the pass.
 func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -65,10 +71,15 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 				}
 			}
 			if c.action != "" {
-				intake := newIntake(nil, pool, nil, client, nil, nil)
-				if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", number, c.action, head, "topic", body, at)); err != nil {
-					t.Fatalf("handle the %s envelope with no delivery settings: %v", c.action, err)
+				intake := newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil))
+				payload, err := json.Marshal(prEnvelope("acme/widgets", number, c.action, head, "topic", body, at))
+				if err != nil {
+					t.Fatal(err)
 				}
+				intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+					msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
+					envelope: &contracts.Envelope{Payload: string(payload)},
+				})
 			}
 			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
 			readsAfterPass := github.reads.Load()

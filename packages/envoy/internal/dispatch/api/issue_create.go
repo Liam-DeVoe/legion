@@ -475,11 +475,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		asPull := delivery.LinkURLAsPullRequestSQL("$1::text")
+		// Another issue holds the link where it holds any link of the pull request or issue the
+		// URL names, in any form, letter case or name of its repository (linkFormsSQL), as the
+		// statement reads them and the issue PATCH's check compares them.
 		var taken bool
 		if err := tx.QueryRow(r.Context(), `
 			select exists (select 1 from issue_external_links
-				where lower(url) = any(array[lower(`+asPull+`), lower(`+delivery.PullRequestURLAsIssueSQL(asPull)+`)]))
+				where lower(url) = any(`+linkFormsSQL("$1::text")+`))
 		`, url).Scan(&taken); err != nil {
 			s.writeHandlerError(w, err)
 			return

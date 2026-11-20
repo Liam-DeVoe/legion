@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -13,8 +14,9 @@ import (
 // part of them that has no facts, R4's number; FactsRefused the part whose last read was refused.
 // Reading is the identity of the reading that runs now, and KeysOnAnotherReading the texts rows
 // whose keys another reading made. MovesQueued is the moves that wait for their events.
-// LinksInTwoCases is the folded URLs that more than one issue links: one URL in two letter cases,
-// or one pull request in its /pull/ and its /issues/ form (LinkURLAsPullRequestSQL). OwedFailures and
+// LinksInTwoCases is the links that more than one issue holds for one thing: one pull request
+// under any of its spellings, forms and names (linkedPullRequest, under its canonical name), or
+// one other URL in two letter cases. OwedFailures and
 // OwedRefusals count the pull requests whose head is not read while a read is owed: GitHub did
 // not answer the read, or GitHub refuses it. OwedFailuresOldestAt is the oldest time that a
 // failure is owed since. OwedRefusalsSince is the oldest time that a refusal is refused since, or
@@ -48,8 +50,10 @@ var attributionCountsSelect = `
 		(select r.id from now_reading r),
 		(select count(*) from pull_request_texts t where t.reading <> (select r.id from now_reading r)),
 		(select count(*) from pull_request_attribution_moves),
-		(select count(*) from (select lower(` + linkURLAsPullRequest + `) from issue_external_links l
-			group by 1 having count(distinct l.issue_key) > 1) tie)`
+		(select count(*) from (select coalesce(
+				(select lower(` + refs.CanonicalRepoSQL("lp.repo") + `) || '#' || lp.number from ` + LinkedPullRequestSQL("l.url") + ` lp),
+				lower(` + LinkURLAsPullRequestSQL("l.url") + `))
+			from issue_external_links l group by 1 having count(distinct l.issue_key) > 1) tie)`
 
 // ReadAttributionCounts counts, at the call, what the attribution of the stored pull requests
 // still waits on (AttributionCounts). It reads no setting and no GitHub. A pull request GitHub

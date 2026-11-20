@@ -501,36 +501,56 @@ func TestAReaderByIssueMatchesACitationInAnotherCase(t *testing.T) {
 	wantAnswer(t, ctx, pool, statementRepo, 8, "ACME-8 from github_issue_link")
 }
 
-// A link matches a pull request's own URL of at most 1,024 bytes, the bound of the index on
-// lower(url); a longer URL is no URL of GitHub, and no link matches it. Control in the same test:
-// the statement without the bound on its two URL arms names the link's issue for 2,000 bytes.
-func TestALinkMatchesAURLOfAtMostTheBound(t *testing.T) {
+// A link names its pull request by the link write's rule (linkedPullRequest), under any name of
+// the pull request's repository: its /pull/ or /issues/ form, in any letter case, by the name the
+// repository has today or by one it was renamed away from. acme/old is renamed to acme/new here,
+// and every row is stored under acme/new with GitHub's URL. ACME-51 links #51 by the old name,
+// ACME-52 #52 by the old name in the /issues/ form and other letters: each is its pull request's
+// issue, by key and by issue, and the timeline names it too. ACME-53 links #53 by a URL the rule
+// takes no pull request from, a review comment's, which is the URL its stored row holds: a link
+// names a pull request by what it says, not by matching the stored text. The control is ACME-54,
+// which links #54 by the name it has today. The issues resolve to acme/stmt, so each pull request
+// is a link's in another repository. When the statement matched a link with the stored URL
+// alone, #51 and #52 answered nobody, which main's linked reader did not (review of #4209, B1).
+func TestALinkNamesItsPullRequestUnderAnyNameOfItsRepository(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	urls := map[int]string{}
-	for number, length := range map[int]int{21: 1024, 22: 1025, 23: 2000} {
-		issue := fmt.Sprintf("ACME-%d", number)
-		statementIssues(t, ctx, pool, issue)
-		prefix := fmt.Sprintf("https://github.com/acme/stmt/pull/%d#", number)
-		urls[number] = prefix + strings.Repeat("a", length-len(prefix))
-		if _, err := pool.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')`, issue, urls[number]); err != nil {
+	statementIssues(t, ctx, pool, "RENM-1", "ACME-51", "ACME-52", "ACME-53", "ACME-54")
+	renameStatementRepo(t, ctx, pool)
+	links := map[string]string{
+		"ACME-51": "https://github.com/acme/old/pull/51",
+		"ACME-52": "https://github.com/ACME/Old/ISSUES/52",
+		"ACME-53": "https://github.com/acme/new/pull/53#discussion_r1",
+		"ACME-54": "https://github.com/acme/new/pull/54",
+	}
+	for issue, url := range links {
+		if _, err := pool.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')`, issue, url); err != nil {
 			t.Fatal(err)
 		}
-		storeStatementRow(t, ctx, pool, statementRow{number: number, branch: "main", title: "no key", url: urls[number], texts: readTexts("")})
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 21, "ACME-21 from external_link")
-	wantAnswer(t, ctx, pool, statementRepo, 22, "nobody from none")
-	wantAnswer(t, ctx, pool, statementRepo, 23, "nobody from none")
-	wantListed(t, ctx, pool, "ACME-21", "#21")
-	wantListed(t, ctx, pool, "ACME-22")
-	wantListed(t, ctx, pool, "ACME-23")
-
-	unbounded := strings.ReplaceAll(pullRequestIssuesStatement(readingSchema(t, ctx, pool)), urlBound("src.url"), "true")
-	var issue *string
-	if err := pool.QueryRow(ctx, unbounded, []string{statementRepo}, []int{23}).Scan(new(string), new(int), &issue, new(string), new(bool), new(bool)); err != nil {
-		t.Fatalf("the control's statement: %v", err)
+	for _, number := range []int{51, 52, 53, 54} {
+		row := statementRow{repo: "acme/new", number: number, branch: "main", title: "no key", texts: readTexts(""), timeline: &statementTimeline{}}
+		if number == 53 {
+			row.url = links["ACME-53"]
+		}
+		storeStatementRow(t, ctx, pool, row)
 	}
-	if issue == nil || *issue != "ACME-23" {
-		t.Errorf("the control: the statement without the bound names %v for #23, want ACME-23", issue)
+	wantAnswer(t, ctx, pool, "acme/new", 51, "ACME-51 from external_link")
+	wantAnswer(t, ctx, pool, "acme/new", 52, "ACME-52 from external_link")
+	wantAnswer(t, ctx, pool, "acme/new", 53, "nobody from none")
+	wantAnswer(t, ctx, pool, "acme/new", 54, "ACME-54 from external_link")
+	wantAnswer(t, ctx, pool, renamedRepo, 51, "ACME-51 from external_link")
+	wantListed(t, ctx, pool, "ACME-51", "#51")
+	wantListed(t, ctx, pool, "ACME-52", "#52")
+	wantListed(t, ctx, pool, "ACME-53")
+	wantListed(t, ctx, pool, "ACME-54", "#54")
+	for issue, want := range map[string]string{"ACME-51": "acme/new#51", "ACME-52": "acme/new#52", "ACME-54": "acme/new#54"} {
+		listed, err := ListPullRequestsOfIssues(ctx, pool, []string{issue})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed) != 1 || fmt.Sprintf("%s#%d", listed[0].Repo, listed[0].Number) != want {
+			t.Errorf("the timeline lists %+v for %s, want %s", listed, issue, want)
+		}
 	}
 }
 
