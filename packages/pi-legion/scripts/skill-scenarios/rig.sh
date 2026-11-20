@@ -2438,16 +2438,30 @@ $checks
     # routes that carry `review`, the template of each ($review: the head, the login of the rig,
     # which is no member or collaborator of the repository and so has the association NONE, the
     # pull request, and the lines of each file the diff adds, the lines a comment can be on), and
-    # read back through those that carry `reviews` (the header of gh-standin.ts). The comments a
-    # role posts on its own, on the pull request or on a line, are not kept: GitHub opens a review
-    # of its own for a line comment posted alone, so from then on the reviews and their comments
-    # are a state the rig cannot state too. A read of them answers what was kept until the role
-    # has posted one, and from then on is unmodeled. The one reviewer login is the one
-    # `gh api user` answers, and the viewer of GraphQL is that login too.
+    # read back through those that carry `reviews` (the header of gh-standin.ts). A comment a role
+    # posts on a line is not kept: GitHub opens a review of its own for a line comment posted
+    # alone, so from then on the reviews and their comments are a state the rig cannot state too.
+    # A read of them answers what was kept until the role has posted one, and from then on is
+    # unmodeled. The one comment a role posts on the conversation of the pull request is kept
+    # (INFRA-1303, D9: e-head-3 of the batch of record at 9c3bd9df read back the comment it had
+    # posted), under $comment, its keys in the order GitHub answers them (measured on
+    # cybermonklabs/legion, github-answers/README.txt): the stand-in fills its body and its two
+    # times, and answers its read back, its edit and the list of the comments of the pull request
+    # from what it kept (`issue_comment`, the header of gh-standin.ts). Its user is the reviewer of
+    # the world as $review names it, and it names no App, which the world holds none of. The one
+    # reviewer login is the one `gh api user` answers, and the viewer of GraphQL is that login too.
       {id:6002, comment_id:6101, commit_id:$head, user:{login:"rig[bot]"}, author_association:"NONE",
        html_url:$url, pull_request_url:("https://api.github.com/repos/" + $repo + "/pulls/" + $n),
        added_lines:($files | map(select(.status == "added") | {(.filename):.additions}) | add // {})}
       as $review
+    | ("https://api.github.com/repos/" + $repo + "/issues/comments/6001") as $comment_url
+    | {url:$comment_url, html_url:($url + "#issuecomment-6001"),
+       issue_url:("https://api.github.com/repos/" + $repo + "/issues/" + $n), id:6001,
+       node_id:node_id("IC"; 0; [1, 6001]), user:$review.user, created_at:null, updated_at:null,
+       author_association:$review.author_association, body:null,
+       reactions:{url:($comment_url + "/reactions"), total_count:0, "+1":0, "-1":0, laugh:0,
+                  hooray:0, confused:0, heart:0, rocket:0, eyes:0},
+       performed_via_github_app:null, minimized:null, pin:null} as $comment
     | api_post("pulls/" + $n + "/comments(?:/\\d+/replies)?") as $line_comment
     | api_post("issues/" + $n + "/comments") as $issue_comment
     # The world GraphQL reads (gh-graphql.ts): the repository (its owner and name in lower case,
@@ -2548,15 +2562,20 @@ $checks
       {match:"^gh pr list(?: --|$)", stdout:$pr, program:$pr_list},
       {match:("^gh pr diff " + $n + "(?=.*\\s--name-only(?:\\s|$))"), stdout:($files | map(.filename) | join("\n"))},
       {match:("^gh pr diff " + $n + "(?:\\s|$)"), stdout:$diff},
-      {match:("^gh pr comment " + $n + "(?:\\s|$)"), stdout:($url+"#issuecomment-6001"), counts_as:$issue_comment},
+      {match:("^gh pr comment " + $n + "(?:\\s|$)"), stdout:($url+"#issuecomment-6001"), counts_as:$issue_comment,
+       issue_comment:"post"},
       {match:("^gh pr review " + $n + "(?:\\s|$)"), stdout:"", counts_as:api_post("pulls/" + $n + "/reviews"),
        review:$review},
       {match:("^gh pr edit " + $n + "(?:\\s|$)"), stdout:$url},
       {match:graphql, graphql:true, head_read:"graphql", stdout:$graphql},
-      {match:$issue_comment, stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
+      {match:$issue_comment, issue_comment:"post"},
+      {match:api("issues/comments/(?<id>\\d+)"), issue_comment:"read"},
+      {match:rest("PATCH"; "issues/comments/(?<id>\\d+)"; json_only), issue_comment:"edit"},
       {match:api_post("pulls/" + $n + "/reviews"), review:$review},
       {match:$line_comment, stdout:{id:6003, html_url:($url+"#discussion_r6003")}},
-      ({match:api("issues/" + $n + "/comments")} + until_posted($issue_comment)),
+      # The list of the comments of the pull request answers every kept comment whatever its
+      # `per_page` and `page` ask, as the list of the reviews below does.
+      {match:api("issues/" + $n + "/comments"), issue_comment:"list"},
       # A limit, ruled off the measured path (the architect, 2026-11-19): the list answers every kept
       # review whatever its `per_page` and `page` ask, where GitHub answers that page (no archived
       # read of it carried a query, 0 of 126).
@@ -2643,7 +2662,7 @@ $checks
       ({match:api("pulls/(?!" + $n + "/)\\d+/reviews")} + github("reviews-404")),
       ({match:api("issues/(?!" + $n + "/)\\d+/comments")} + github("comments-404")),
       {match:"^gh api GET user(?:\\s|$)", stdout:{login:"rig[bot]"}}
-    ]}' >"$R/fixtures.json"
+    ], comment_template:$comment}' >"$R/fixtures.json"
   # The world the scorer reads, beside the repository and the base world_repository wrote: head
   # is the PR's head, the implementer's code commit. It names the base the pull request merges
   # into, its commit, and the pull request's title, which red_fixture reads here.
@@ -3874,12 +3893,25 @@ run_routes() {
        # the state of the head has it: its log, its fields under --json, or the text gh 2.98.0
        # prints for it (measured, $run_view_program); a run or a job of any other id is refused as
        # gh refuses it, and its REST read answers the 404 of GitHub. A job read under --json is
-       # not modeled. A read that names an attempt (--attempt) is the log of attempt 1 of the run
-       # of the red in world `h`, past retention, whose 410 names that attempt (measured); any other
-       # read of an attempt is not modeled.
+       # not modeled. A read that names an attempt (--attempt) of a run of the head reads the log
+       # of that attempt, from the same model as the log read of the run: the failing line of each
+       # failed job of that attempt, as the state of the head holds it (INFRA-1303, D10: the
+       # red-again re-run of world j, whose attempt-2 log j-head-3 read at 9c3bd9df). An attempt the state
+       # holds before the last has ended; the last is refused as gh refuses a log read while its run
+       # runs. In world `h` attempt 1 of the run of the red is past retention, whose 410 names that
+       # attempt (measured). An attempt the state does not hold yet, and every other read of an
+       # attempt (`--json` among them), is not modeled: gh asks GitHub for an attempt it does not
+       # have, and that answer is not measured.
        (if $log_gone
         then {match:(view($run_id) + "(?=.*\\s--attempt 1(?:\\s|$))" + logs)} + log_expired($run_id; 1)
         else empty end),
+       ($runs[] | . as $w
+        | range(1; ($w.states[-1].attempts | length) + 1) as $n
+        | run_route(view($w.id) + "(?=.*\\s--attempt " + ($n|tostring) + "(?:\\s|$))" + logs; $w;
+                    if .attempts[$n - 1] == null then {unmodeled:true}
+                    elif $n == (.attempts | length) and .run.status != "completed"
+                    then still("run"; .run.id)
+                    else log_reply(.attempts[$n - 1]) end)),
        {match:"^gh run view(?=.*\\s--attempt\\s)", unmodeled:true},
        ($all_jobs[] | .id as $id
         | job_route(view_job($id|tostring) + logs; $id;

@@ -4673,6 +4673,53 @@ redRun("trial-a-head-30", {}, [
   ),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
+// INFRA-1303 D8: a-head-4 of the batch of record at 9c3bd9df, whose message to the controller
+// opened a paragraph with "No Dispatch issue tracks this test". The message is the publish's JSON
+// carried as text, so its paragraph break reaches a reader of JSON.stringify as `\\n`.
+redRun("trial-a-head-32", {}, [
+  ...header,
+  turn[0],
+  redPage,
+  ...redRead(redLine),
+  writeHandoff,
+  toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+  redSubscribe,
+  redSearch,
+  result("call-s", `No results for "${redTest}".`),
+  redTold(
+    `Flaky-test occurrence from the tester.\n\nNo Dispatch issue tracks this test (${redTest}): it failed at the head and passed on the re-run.`
+  ),
+  ...redComplete("pass", "The re-run of test (notify) passed."),
+]);
+// INFRA-1303 D7: b-head-2 and j-head-1 of the batch of record at 9c3bd9df, whose full record named
+// the attempts in camel-case keys of their own, and a record that names the attempt as GitHub's
+// `run_attempt` does.
+redRun("trial-a-head-33", {
+  "handoffs.json": handoffs(
+    redRecord({
+      red: [
+        (({ attempt: _attempt, ...rest }) => ({ ...rest, firstRedAttempt: 1, rerunAttempt: 2 }))(
+          redEntry()
+        ),
+      ],
+    })
+  ),
+});
+redRun("trial-a-head-34", {
+  "handoffs.json": handoffs(
+    redRecord({
+      red: [(({ attempt: _attempt, ...rest }) => ({ ...rest, run_attempt: 1 }))(redEntry())],
+    })
+  ),
+});
+// The boundary: an entry that names no attempt in any spelling.
+redRun("trial-a-head-35", {
+  "handoffs.json": handoffs(
+    redRecord({
+      red: [(({ attempt: _attempt, ...rest }) => rest)(redEntry())],
+    })
+  ),
+});
 // A search that names another test, and a message that says no issue tracks that other test: the
 // occurrence of the world's test went nowhere.
 redRun("trial-a-head-31", {}, [
@@ -5532,6 +5579,25 @@ test("a run that neither searched nor said no issue tracks the test fails what b
 test("a paraphrased search scores by its outcome: the message says no issue tracks the test", () => {
   expect(rowOf("trial-a-head-30")).toMatch(/^trial-a-head-30\tpass=true\t.* told=true /);
   expect(rowOf("trial-a-head-30")).toContain("searched=false posted=true controller=true");
+});
+
+// INFRA-1303 D8: catches a scorer that reads the controller message through JSON.stringify, where
+// the paragraph break before "No Dispatch issue tracks this test" is `\\n` and no word boundary
+// falls before `No`, so a run whose message said no issue tracks the test fails `told`
+// (a-head-4 of the batch of record at 9c3bd9df).
+test("a message that says no issue tracks the test at the start of a paragraph is read as it says", () => {
+  expect(rowOf("trial-a-head-32")).toMatch(/^trial-a-head-32\tpass=true\t.* told=true /);
+  expect(rowOf("trial-a-head-32")).toContain("posted=true controller=true");
+});
+
+// INFRA-1303 D7: catches a scorer that reads the attempt as the bare word `attempt`, so a record
+// naming the attempts in keys of its own (`firstRedAttempt`, `rerunAttempt`, b-head-2 and
+// j-head-1 of the batch at 9c3bd9df) or as GitHub's `run_attempt` fails `wrote`, though it names
+// all eight facts. An entry that names no attempt in any spelling still fails.
+test("a record names the attempt in any key spelling, and an entry with none names no attempt", () => {
+  expect(rowOf("trial-a-head-33")).toMatch(/^trial-a-head-33\tpass=true\t.* wrote=true /);
+  expect(rowOf("trial-a-head-34")).toMatch(/^trial-a-head-34\tpass=true\t.* wrote=true /);
+  redFails("trial-a-head-35", "wrote=false", 'recordProblems=["its entry names no attempt"]');
 });
 
 // Catches: a scorer that stops judging the test once it stops judging the query: a run that searched

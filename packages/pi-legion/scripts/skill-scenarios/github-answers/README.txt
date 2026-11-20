@@ -53,6 +53,8 @@ Measured the same way on 2026-11-19 (gh 2.98.0 against api.github.com, through I
 read-only measure-gh.sh, which logs each request it sends to its requests.log before sending it):
 contents-404   gh api repos/cybermonklabs/legion/contents/.github/no-such-dir-infra-1303   (exit 1; requests.log line 63)
 compare-404    gh api repos/cybermonklabs/legion/compare/no-such-ref-infra-1303...b2cf98a035b469bb6eb1d5314a106c18d754f451   (exit 1; requests.log line 69)
+Measured the same way on 2026-11-20 by the INFRA-1303 tester, as the legion-reviewer App (a read):
+issue-comment-404   gh api repos/cybermonklabs/legion/issues/comments/1   (exit 1)
 GraphQL requests GitHub refuses before it reads anything (gh prints the body and its message, exit 1;
 gh-graphql.ts writes these errors for the call's own query, in this shape):
 graphql-variable-null     gh api graphql -f query='query($n:Int!){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'   (no n given)
@@ -93,6 +95,13 @@ answers follow (no file: each is stated here and in the comment of the code that
     15 skipped), all at run_attempt 2. The 2 failed jobs were re-run; each of the 56 others is
     carried to attempt 2 with an id and a check run of its own (its check_run_url names its own id),
     its attempt-1 conclusion, steps, runner and started_at and completed_at, and a new created_at.
+- A comment on a pull request's conversation (measured by the INFRA-1303 tester on 2026-11-20,
+  `gh api repos/cybermonklabs/legion/issues/comments/6846500183`, a comment of #3514): its keys in
+  GitHub's order are url, html_url, issue_url, id, node_id, user, created_at, updated_at,
+  author_association, body, reactions, performed_via_github_app, minimized and pin; its node_id
+  IC_kwDORFy7ds8AAAABmBVNVw is [0, the repository id, the comment id]; its html_url is the pull
+  request's URL and `#issuecomment-<id>`, its issue_url the issue of the pull request; reactions
+  holds its url and nine counts, each 0; minimized and pin are null.
 - Measured by the reviewer on 2026-11-19 (infra-1303-github-fields-measured): a check run, a job and
   a run of GitHub Actions as GitHub answers each, which red_model writes key for key; and that a
   commit's default check-runs read keeps the latest of each name in each check suite

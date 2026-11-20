@@ -44,6 +44,12 @@
 // route's own pull request with the reviews beside it). A `pr` route's `comments` names the route
 // that posts a comment on the pull request. A route's own reply that is unmodeled (a read that
 // follows a write the stand-in does not keep) is refused before any of these reads.
+// The one comment a role posts on the conversation of the pull request is kept too, under the
+// fixture's `comment_template`: a route that carries `issue_comment` posts it (`post`, from
+// `gh pr comment`'s body or a REST call's `body`), reads it back by the id its `id` group takes
+// (`read`, GitHub's measured 404 for an id the role did not post), edits its body (`edit`) or
+// lists it (`list`). A second comment, and an edit of a comment the role did not post, are refused
+// as unmodeled.
 // A route that carries `graphql` answers a GraphQL query from the world its answer holds (its
 // stdout's `graphql` tree and `$refs`, gh-graphql.ts): the query's own selection of it, or GitHub's
 // error for a name it cannot resolve, the body on stdout and `gh: <message>` on stderr, exit 1.
@@ -156,17 +162,30 @@ const Reply = z.object({
   /** The match group whose text stands for the commit the measured answer names. */
   sha: z.string().optional(),
 });
+/** A comment on the pull request's conversation as GitHub's REST API answers one (worker_fixture's
+ * `comment_template`, its keys as measured on cybermonklabs/legion), and the comments the role
+ * posted, kept under that template with the body it sent. A record rather than an object schema,
+ * which would move the keys it declares ahead of the rest: the comment prints its keys in the
+ * order GitHub gives them. */
+const IssueComment = z
+  .record(z.string(), z.unknown())
+  .refine((comment) => typeof comment.id === "number", "a comment names its numeric id");
+/** What a route does with the comments the role posts on the pull request (INFRA-1303, D9):
+ * `post` keeps the one it sends, `read` answers the kept comment its `id` group names, `edit`
+ * changes the body of that kept comment, and `list` answers every kept comment. */
+const IssueCommentMode = z.enum(["post", "read", "edit", "list"]);
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
  * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
  * `replies`, `follows`, `spends` and `publish`. A `follows` names the `match` of a route of the
  * same file, and so does a `counts_as`: each call the route answers counts as a call of that route
  * as well, so a press of the re-run through another command moves every read that follows the
  * re-run. A `program` is jq the stand-in runs over the answer (the header). A route that keeps the
- * reviews the role sends carries `review`, one that reads them `reviews`, and one that answers
- * GraphQL `graphql` (the header). `answered`, `reviews` and `review_comments` at the top of the
- * file are the stand-in's own: the count of calls the route has answered, and the reviews and the
- * inline comments kept, in the order the role sent them. A route is parsed loosely, as the file
- * is, so a key of the rig's own outlives the write back. */
+ * reviews the role sends carries `review`, one that reads them `reviews`, one that keeps or reads
+ * the comments the role posts on the pull request `issue_comment`, and one that answers GraphQL
+ * `graphql` (the header). `answered`, `reviews`, `review_comments` and `issue_comments` at the top
+ * of the file are the stand-in's own: the count of calls the route has answered, and the reviews,
+ * the inline comments and the comments on the pull request kept, in the order the role sent them.
+ * A route is parsed loosely, as the file is, so a key of the rig's own outlives the write back. */
 const Fixtures = z
   .looseObject({
     routes: z.array(
@@ -185,10 +204,13 @@ const Fixtures = z
         reviews: ReviewMode.optional(),
         comments: z.string().optional(),
         graphql: z.boolean().optional(),
+        issue_comment: IssueCommentMode.optional(),
       })
     ),
     reviews: z.array(KeptReview).optional(),
     review_comments: z.array(KeptComment).optional(),
+    comment_template: IssueComment.optional(),
+    issue_comments: z.array(IssueComment).optional(),
   })
   .superRefine(({ routes }, ctx) => {
     const matches = new Set(routes.map((route) => route.match));
@@ -644,20 +666,25 @@ if (fields !== undefined) {
 // What the call hands GitHub: a body, a review, fields and an --input.
 const prEdit = command === "pr edit";
 const prReview = command === "pr review";
+const prComment = command === "pr comment";
 let body: string | undefined;
 /** The `-f`/`-F` fields of a `gh api` call, each as gh sends it: a `-F` value typed as gh types it
  * (true, false, null and an integer as JSON, `@file` the file's text) and a `-f` value a string. */
 const apiFields: Record<string, unknown> = {};
 /** The body of a `gh pr review`, from `-b/--body` or `-F/--body-file`. */
 let reviewBody: string | undefined;
+/** The body of a `gh pr comment`, from `-b/--body` or `-F/--body-file`. */
+let commentBody: string | undefined;
 for (const [{ long }, value] of given) {
   if (value === undefined) continue;
   if (prEdit && long === "--body") body = value;
   else if (prReview && long === "--body") reviewBody = value;
-  else if ((prEdit || prReview) && long === "--body-file") {
+  else if (prComment && long === "--body") commentBody = value;
+  else if ((prEdit || prReview || prComment) && long === "--body-file") {
     files[value] = await readSource(value);
     if (prEdit) body = files[value];
-    else reviewBody = files[value];
+    else if (prReview) reviewBody = files[value];
+    else commentBody = files[value];
   } else if (long === "--input") files[value] = await readSource(value);
   else if (long === "--raw-field" || long === "--field") {
     const [key = "", ...rest] = value.split("=");
@@ -892,7 +919,68 @@ const read = keptRead(
   sequenced
 );
 if (read === null) refuse();
-const answer: z.infer<typeof Reply> = read ?? sequenced;
+/** The body a call that posts or edits a comment on the pull request sends: `gh pr comment`'s own,
+ * or a REST call's `body` field or the `body` of its --input. */
+function commentText(): string | undefined {
+  if (prComment) return commentBody;
+  if (typeof apiFields.body === "string") return apiFields.body;
+  if (input === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(files[input] ?? "null");
+  } catch {
+    return undefined;
+  }
+  return typeof parsed === "object" &&
+    parsed !== null &&
+    "body" in parsed &&
+    typeof parsed.body === "string"
+    ? parsed.body
+    : undefined;
+}
+/** The comments the role posted on the pull request, kept (INFRA-1303, D9: e-head-3 of the batch
+ * of record at 9c3bd9df read back the comment it had just posted, and the rig had kept none), and
+ * the kept list this call leaves where it changed it. One comment is kept: a second would need an
+ * id and a URL of its own, which the route of `gh pr comment` does not answer, so it is refused as
+ * unmodeled. A read of a comment the role did not post answers GitHub's 404 (measured on
+ * cybermonklabs/legion, github-answers/issue-comment-404); an edit of one is not modeled, since
+ * GitHub's answer to that write is not measured. */
+const keptComments = fixtures.issue_comments ?? [];
+let comments: z.infer<typeof IssueComment>[] | undefined;
+let commentAnswer: z.infer<typeof Reply> | undefined;
+if (matched.issue_comment !== undefined) {
+  const template = fixtures.comment_template;
+  if (template === undefined) refuse();
+  const stamp = at.replace(/\.\d+Z$/, "Z");
+  const namedComment = keptComments.find((comment) => String(comment.id) === groups.id);
+  const text = commentText();
+  switch (matched.issue_comment) {
+    case "post": {
+      if (text === undefined || keptComments.length > 0) refuse();
+      const posted = { ...template, body: text, created_at: stamp, updated_at: stamp };
+      comments = [posted];
+      // `gh pr comment` prints the comment's URL, its route's own answer; the REST POST answers
+      // the comment, as GitHub's 201 does.
+      if (!prComment) commentAnswer = { stdout: posted };
+      break;
+    }
+    case "read":
+      commentAnswer =
+        namedComment === undefined ? { github: "issue-comment-404" } : { stdout: namedComment };
+      break;
+    case "edit": {
+      if (namedComment === undefined || text === undefined) refuse();
+      const edited = { ...namedComment, body: text, updated_at: stamp };
+      comments = keptComments.map((comment) => (comment.id === namedComment.id ? edited : comment));
+      commentAnswer = { stdout: edited };
+      break;
+    }
+    case "list":
+      commentAnswer = { stdout: keptComments };
+      break;
+  }
+}
+const answer: z.infer<typeof Reply> = commentAnswer ?? read ?? sequenced;
 /** The time GitHub stamps on what this call sends, to the second. */
 const sentAt = at.replace(/\.\d+Z$/, "Z");
 /** The review this call sends through a route that keeps one (review-keep.ts). */
@@ -1119,6 +1207,7 @@ writeFileSync(
           reviews: [...keptReviews.reviews, sent.review],
           review_comments: [...keptReviews.comments, ...sent.comments],
         }),
+    ...(comments === undefined ? {} : { issue_comments: comments }),
   })
 );
 renameSync(temporary, `${run}/fixtures.json`);

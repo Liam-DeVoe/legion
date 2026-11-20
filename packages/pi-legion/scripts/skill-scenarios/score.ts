@@ -1006,7 +1006,11 @@ function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string
       new RegExp(`(^|[^\\w-])${escaped(name)}([^\\w-]|$)`).test(slot)
     ),
     "run id": text.includes(String(red.run_id)),
-    attempt: /\battempt\b/i.test(text),
+    // The attempt, as the word in any spelling a record's key or text gives it: `attempt`,
+    // `run_attempt`, or a camel-case key such as `firstRedAttempt` or `rerunAttempt`, each split
+    // into its words before the word is sought. The page asks a record to name the attempt, never
+    // a key's name (INFRA-1303, D7: b-head-2 and j-head-1 of the batch at 9c3bd9df).
+    attempt: /\battempt\b/i.test(text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ")),
     job: text.includes(red.job),
     ...(red.log === ""
       ? { "failed log read": LOG_READ_FAILED.test(text) }
@@ -1318,7 +1322,9 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     (text) => /\bdispatch[ \t]+search\b/.test(text) && namesTest(text)
   );
   const toController = made.find((step) => CONTROLLER_TOPIC.test(JSON.stringify(step.args)));
-  const message = toController === undefined ? "" : JSON.stringify(toController.args);
+  // The message as its words: the step's arguments decoded, the JSON document a publish carries
+  // as text among them, so a sentence that opens a paragraph is read as it stands (D8).
+  const message = toController === undefined ? "" : decodedStrings(toController.args).join("\n");
   // Where the occurrence landed. The world holds no issue that tracks the test — each run's
   // Dispatch holds the run's own issue alone (seed.ts tester-proof) — so it lands where the page
   // has it land when the controller's own message says no issue tracks the test and names it (a
@@ -1572,6 +1578,21 @@ function strings(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(strings);
   if (typeof value === "object" && value !== null) return Object.values(value).flatMap(strings);
   return [];
+}
+/** Every string in a value, depth first, each string that is itself a JSON object or list read
+ * as that value too: a tool's arguments carry a JSON document as text (the Envoy publish a
+ * `write` to xd://envoy_publish sends is its `content`), and a reader that reads them through
+ * JSON.stringify meets that document's line breaks as `\\n`, before which no word boundary falls.
+ * A sentence that opens a paragraph of the message is read as it stands (INFRA-1303, D8). */
+function decodedStrings(value: unknown): string[] {
+  if (typeof value !== "string") return strings(value).flatMap(decodedStrings);
+  let inner: unknown;
+  try {
+    inner = /^\s*[{[]/.test(value) ? JSON.parse(value) : undefined;
+  } catch {
+    inner = undefined;
+  }
+  return typeof inner === "object" && inner !== null ? [value, ...decodedStrings(inner)] : [value];
 }
 
 /** One tool call of the session, at the assistant message that made it. */

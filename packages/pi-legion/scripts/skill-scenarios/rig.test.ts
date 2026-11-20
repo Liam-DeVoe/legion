@@ -2883,6 +2883,50 @@ describe("red_fixture", () => {
     expect((await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"])).exit).not.toBe(0);
   });
 
+  // INFRA-1303 D10: catches a stand-in that refuses as unmodeled the log read of an attempt the
+  // world holds, `gh run view <run> --attempt <n> --log-failed`, which GitHub answers: j-head-3 of
+  // the batch of record at 9c3bd9df read world j's red-again attempt 2 that way and became a rig
+  // error. Each attempt's log answers from the same model as the run's own log read: attempt 1
+  // holds the red, attempt 2 does not exist before the press, runs in the turn that pressed it,
+  // and, once settled, holds what the run's latest log holds, red again in `j` and green in `a`.
+  test.each([
+    "a",
+    "j",
+  ] as const)("world %s: each attempt's log is read as the run's log of that attempt", async (world) => {
+    const run = ownFixture(world);
+    const attemptLog = (attempt: number) =>
+      gh(run, [
+        "run",
+        "view",
+        String(RED_RUN_ID),
+        "--repo",
+        RED_REPO,
+        "--attempt",
+        String(attempt),
+        "--log-failed",
+      ]);
+    const runLog = () =>
+      gh(run, ["run", "view", String(RED_RUN_ID), "--repo", RED_REPO, "--log-failed"]);
+    const before = await runLog();
+    expect(before.exit).toBe(0);
+    expect(before.stdout).toContain("retries a refused send");
+    expect(await attemptLog(1)).toEqual(before);
+    expect((await attemptLog(2)).stderr).toStartWith("rig: request not modeled: ");
+    expect((await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"])).exit).toBe(0);
+    expect(await attemptLog(2)).toEqual({
+      stdout: "",
+      stderr: `run ${RED_RUN_ID} is still in progress; logs will be available when it is complete\n`,
+      exit: 1,
+    });
+    expect(await attemptLog(1)).toEqual(before);
+    await settleRerun(run);
+    const after = await runLog();
+    expect(await attemptLog(2)).toEqual(after);
+    expect(after.stdout.includes("retries a refused send")).toBe(RED_WORLD[world].after === "red");
+    expect(await attemptLog(1)).toEqual(before);
+    expect((await attemptLog(3)).stderr).toStartWith("rig: request not modeled: ");
+  }, 120_000);
+
   // Catches: a pull request body whose check line contradicts the world's Verification document.
   // A reviewer world whose round goes on (world i) holds k1 as `after_merge` (worker_world, through
   // seed.ts tester-proof after-merge-check), and worker_fixture wrote "Check k1 (before_merge):
@@ -3656,27 +3700,93 @@ describe("the reads of the repository and the pull request", () => {
     }).toEqual({ failing: true, passing: false, other: ["gh: Not Found (HTTP 404)\n", 1] });
   });
 
-  // Catches: a list of comments that answers empty after the role posted one, which the stand-in
-  // does not keep, through the REST list or `gh pr view --json comments`.
-  test("comments answer none until the role posts one, and are unmodeled after", async () => {
+  // INFRA-1303 D9: catches a stand-in that keeps no comment the role posts on the conversation of
+  // the pull request, so a read back of it is unmodeled where GitHub answers it: e-head-3 of the
+  // batch of record at 9c3bd9df posted the occurrence, read it back by its id and edited it, and
+  // became a rig error. Catches too a list that answers empty after the post, a read of a comment
+  // the role never posted that answers anything but GitHub's 404, and an edit that does not reach
+  // the next read. `gh pr view --json comments` stays unmodeled after a post: gh reads it through
+  // GraphQL, in a shape the world does not state.
+  test("the comment the role posts is kept: read back by its id, listed, edited, and no other", async () => {
     const run = builtWorld("a");
     const list = ["api", `repos/${RED_REPO}/issues/${RED_PR}/comments`];
     const view = ["pr", "view", String(RED_PR), "--json", "comments"];
-    const before = [await gh(run, list), await gh(run, view)];
-    await gh(run, ["pr", "comment", String(RED_PR), "--body", "Re-ran the red check."]);
-    const after = [await gh(run, list), await gh(run, view)];
+    const one = (id: number) => ["api", `repos/${RED_REPO}/issues/comments/${id}`];
+    const before = [await gh(run, list), await gh(run, view), await gh(run, one(6001))];
+    const posted = await gh(run, [
+      "pr",
+      "comment",
+      String(RED_PR),
+      "--body",
+      "Re-ran the red check.",
+    ]);
+    const kept = await gh(run, one(6001));
+    const edit = path.join(run, "edited.md");
+    writeFileSync(edit, "Re-ran the red check: green.");
+    const edited = await gh(run, [
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${RED_REPO}/issues/comments/6001`,
+      "-F",
+      `body=@${edit}`,
+      "--jq",
+      ".body",
+    ]);
+    const after = [await gh(run, list), await gh(run, view), await gh(run, one(6001))];
+    const comment = JSON.parse(kept.stdout);
     expect({
-      before: before.map((read) => [read.stdout, read.exit]),
-      after: after.map((read) => [read.stderr, read.exit]),
+      before: before.map((read) => [read.stdout, read.stderr, read.exit]),
+      posted: [posted.stdout, posted.exit],
+      kept: Object.keys(comment),
+      fields: [comment.id, comment.body, comment.html_url, comment.node_id, comment.user.login],
+      edited: [edited.stdout, edited.exit],
+      afterList: (JSON.parse(after[0]?.stdout ?? "[]") as { body: string }[]).map((c) => c.body),
+      afterView: [after[1]?.stderr, after[1]?.exit],
+      afterOne: JSON.parse(after[2]?.stdout ?? "{}").body,
+      other: [(await gh(run, one(6002))).stderr],
+      second: (await gh(run, ["pr", "comment", String(RED_PR), "--body", "again"])).exit,
     }).toEqual({
       before: [
-        ["[]", 0],
-        ['{"comments":[]}\n', 0],
+        ["[]", "", 0],
+        ['{"comments":[]}\n', "", 0],
+        [
+          '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/issues/comments#get-an-issue-comment","status":"404"}',
+          "gh: Not Found (HTTP 404)\n",
+          1,
+        ],
       ],
-      after: [
-        [`rig: request not modeled: gh api repos/${RED_REPO}/issues/${RED_PR}/comments\n`, 1],
-        [`rig: request not modeled: gh pr view ${RED_PR} --json comments\n`, 1],
+      posted: [`https://github.com/${RED_REPO}/pull/${RED_PR}#issuecomment-6001\n`, 0],
+      // GitHub's keys of an issue comment, in its order (github-answers/README.txt).
+      kept: [
+        "url",
+        "html_url",
+        "issue_url",
+        "id",
+        "node_id",
+        "user",
+        "created_at",
+        "updated_at",
+        "author_association",
+        "body",
+        "reactions",
+        "performed_via_github_app",
+        "minimized",
+        "pin",
       ],
+      fields: [
+        6001,
+        "Re-ran the red check.",
+        `https://github.com/${RED_REPO}/pull/${RED_PR}#issuecomment-6001`,
+        "IC_kwABzRdx",
+        "rig[bot]",
+      ],
+      edited: ["Re-ran the red check: green.\n", 0],
+      afterList: ["Re-ran the red check: green."],
+      afterView: [`rig: request not modeled: gh pr view ${RED_PR} --json comments\n`, 1],
+      afterOne: "Re-ran the red check: green.",
+      other: ["gh: Not Found (HTTP 404)\n"],
+      second: 1,
     });
   });
 
