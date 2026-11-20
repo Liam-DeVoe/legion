@@ -531,7 +531,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 // stores, rather than a tree the settlement repairs after the write has answered. The repair is
 // the operation's own update.
 func (s *Service) repairOwedBeforeMutate(ctx context.Context, op *liveOperation, before *pmdoc.Node, rendering string) (bool, error) {
-	if !textHoldsAt(before) {
+	if !pmdoc.TextHoldsAt(before) {
 		return false, nil
 	}
 	if !knownSettlementOwed(ctx) {
@@ -543,9 +543,10 @@ func (s *Service) repairOwedBeforeMutate(ctx context.Context, op *liveOperation,
 	return op.repairEmailLinks(before, rendering)
 }
 
-// repairEmailLinks writes into op's fork, as a change of op's own (change), the base's email links
-// where those of tree - the fork's tree as it stands - do not read back (fallBackEmailLinks, given
-// rendering, tree's rendering, or "" where the caller knows none), and reports whether it wrote. It
+// repairEmailLinks writes into op's fork, as a change of op's own (change), the tree the write
+// path's fallback gives where tree - the fork's tree as it stands - does not read back, which on
+// this path differs from tree in its links alone (fallBackEmailLinks, given rendering, tree's
+// rendering, or "" where the caller knows none), and reports whether it wrote. It
 // is the repair a write makes before its mutate and after it (applyLiveWritten), computed from the
 // tree and the rendering the operation already holds rather than read and rendered from the fork
 // again: only the operation's own goroutine writes the fork, so that tree is the fork's. The check
@@ -570,7 +571,7 @@ func (op *liveOperation) repairEmailLinks(tree *pmdoc.Node, rendering string) (b
 // of after is the write's where before is nil, a tree outside the schema the write repaired.
 func writesTextHoldingAt(before, after *pmdoc.Node) bool {
 	if before == nil {
-		return textHoldsAt(after)
+		return pmdoc.TextHoldsAt(after)
 	}
 	return changesTextHoldingAt(before, after)
 }
@@ -583,9 +584,9 @@ func writesTextHoldingAt(before, after *pmdoc.Node) bool {
 // which every process's append and commit writes and its settlement deletes: a process holding no
 // room of the document, one whose room another process wrote past, or one restarted before its
 // settlement's resumption, has no record of a settlement the store owes. Its callers walk the tree
-// for an `@` first (textHoldsAt), with no query, wherever they hold one, so a document whose text
-// holds none pays nothing for the repair, and one that does pays the record's read and at most one
-// indexed query, where the record says nothing; only then is the tree rendered and parsed
+// for an `@` first (pmdoc.TextHoldsAt), with no query, wherever they hold one, so a document whose
+// text holds none pays nothing for the repair, and one that does pays the record's read and at
+// most one indexed query, where the record says nothing; only then is the tree rendered and parsed
 // (fallBackEmailLinks). A version or an edit with no operation over a document no room here holds
 // has no tree to walk before it opens the write that reads one (repairUnjoinedEmailLinks), and
 // pays the query alone.
@@ -1425,7 +1426,7 @@ func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmd
 	if ledgerFrom(ctx).inTransaction() {
 		return false
 	}
-	if tree != nil && !textHoldsAt(tree) || tree == nil && strings.IndexByte(rendering, '@') < 0 {
+	if tree != nil && !pmdoc.TextHoldsAt(tree) || tree == nil && strings.IndexByte(rendering, '@') < 0 {
 		return false
 	}
 	owed, err := s.settlementOwed(ctx, room, nil)
@@ -2152,7 +2153,7 @@ func (s *Service) unjoinedRepairNeeded(ctx context.Context, artifactID string) (
 		return s.settlementOwed(ctx, artifactID, nil)
 	}
 	tree, err := s.liveTree(artifactID, live)
-	if err != nil || !textHoldsAt(tree) {
+	if err != nil || !pmdoc.TextHoldsAt(tree) {
 		// A tree this read cannot read is the answer's own refusal, which it reads for itself.
 		return false, nil
 	}
@@ -2173,7 +2174,7 @@ func (s *Service) unjoinedRepairNeeded(ctx context.Context, artifactID string) (
 // holding no `@` costs the walk alone.
 func (s *Service) repairJoinedEmailLinks(ctx context.Context, artifactID string, tree *pmdoc.Node) (bool, error) {
 	write := joinedLiveWrite(ctx, artifactID)
-	if write == nil || write.emailLinksChecked || !textHoldsAt(tree) {
+	if write == nil || write.emailLinksChecked || !pmdoc.TextHoldsAt(tree) {
 		return false, nil
 	}
 	owed, err := s.settlementOwed(ctx, artifactID, write.state)

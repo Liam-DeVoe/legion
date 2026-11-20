@@ -65,18 +65,11 @@ type emailShape struct{ text, container, markdown string }
 // follows: an HTML block (`<?`, `<!`) or a text directive (`:name{`).
 func emailShapes(seed uint64, bound int) []emailShape {
 	draw := rand.New(rand.NewPCG(seed, seed))
-	pick := func(from []string, most int) string {
-		var b strings.Builder
-		for range 1 + draw.IntN(most) {
-			b.WriteString(from[draw.IntN(len(from))])
-		}
-		return b.String()
-	}
 	domains := []string{"example.com", "e.co", "d.co"}
 	seen := map[string]bool{}
 	var shapes []emailShape
 	for len(shapes) < bound {
-		text := pick(emailShapeBefore, 3) + pick(emailShapeLocal, 3) + "@" + domains[draw.IntN(len(domains))] + emailShapeAfter[draw.IntN(len(emailShapeAfter))]
+		text := drawEntries(draw, emailShapeBefore, 3) + drawEntries(draw, emailShapeLocal, 3) + "@" + domains[draw.IntN(len(domains))] + emailShapeAfter[draw.IntN(len(emailShapeAfter))]
 		if strings.HasPrefix(text, "<?") || strings.HasPrefix(text, "<!") || strings.HasPrefix(text, ":") && strings.Contains(text, "{") {
 			continue
 		}
@@ -205,16 +198,25 @@ func classicSeedShapes() []string {
 	return shapes
 }
 
-// baseParseRefusal is the base's refusal of a write of markdown, its parse (parseForWrite) read
-// with the base's email links (baseEmailReader), as a write read an address before Dispatch's
+// baseParseRefusal is the base's refusal of a write of markdown, read with the base's email links
+// as a write's parse reads it (parseWriteAsBase), as a write read an address before Dispatch's
 // rule, or nil where that parse reads it. The write's check of its rendering is not the base's
 // here: this build's renderer spells a run for the rule's reader (runSpelling), so the base's
 // read-back of its rendering would refuse text the base stores, as it reads `**see:
 // a&~&#x2D;@a.b.c.test_**`, rendered `**see: a&~-@a.b.c.test\_**`, with a link on
 // `-@a.b.c.test`.
 func baseParseRefusal(markdown string) error {
-	_, err := parseMarkdown(baseEmailReader, LineFeeds(markdown), fromStart, true, NewWriteBudget(), nil)
+	_, err := parseWriteAsBase(markdown)
 	return err
+}
+
+// drawEntries is one to most entries of from in a row, drawn from draw: how many, then each.
+func drawEntries(draw *rand.Rand, from []string, most int) string {
+	var b strings.Builder
+	for range 1 + draw.IntN(most) {
+		b.WriteString(from[draw.IntN(len(from))])
+	}
+	return b.String()
 }
 
 // R4 (INFRA-4224) stores every text the base stores, each address as the rule reads it or, where

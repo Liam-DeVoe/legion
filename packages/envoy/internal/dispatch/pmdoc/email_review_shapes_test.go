@@ -2,8 +2,8 @@ package pmdoc
 
 // The email-address shapes of the round 6 deep review of PR #4369 (INFRA-4224, finding 1): its
 // generator, rebuilt with its draws unchanged, at seed 4369 and bound 20,000. Main e4584fae stores
-// 19,914 of the shapes, and the write before the fallback's three tiers (aba569ba) refused 40 of
-// those; TestWriteStoresEveryReviewShapeMainStores holds the write to every one main stores.
+// 19,914 of the shapes; TestWriteStoresEveryReviewShapeMainStores holds the write to every one
+// main stores.
 
 import (
 	"crypto/sha256"
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,8 +64,8 @@ const reviewShapesSHA256 = "6ee575d9ed1a807274b49e6563244328eac61da1cca5a2ddb19b
 
 // mainRefusedReviewShapes are the indexes of the shapes main e4584fae refuses to store, 86 of the
 // 20,000; main stores every other one. They are main's own verdicts, the base's write itself: the
-// review's program (main_verdicts.go) took them on 2026-11-20, on a `git archive e4584fae` copy of
-// packages/envoy, by calling main's ParseForWrite(markdown, nil) on each row of the file
+// review's program took them on 2026-11-20, on a `git archive e4584fae` copy of packages/envoy,
+// by calling main's ParseForWrite(markdown, nil) on each row of the file
 // PMDOC_REVIEW_SHAPES_OUT writes (TestWriteStoresEveryReviewShapeMainStores) and listing each
 // index where it answers an error. To take them again, write that file at this build and run the
 // same call over its rows at main.
@@ -80,19 +81,10 @@ var mainRefusedReviewShapes = []int{
 // reviewShape is one drawn shape: the container's name and the markdown.
 type reviewShape struct{ container, markdown string }
 
-// reviewShapePick is one to most entries of from in a row.
-func reviewShapePick(draw *rand.Rand, from []string, most int) string {
-	var b strings.Builder
-	for range 1 + draw.IntN(most) {
-		b.WriteString(from[draw.IntN(len(from))])
-	}
-	return b.String()
-}
-
 // reviewShapeSegment is one segment: what stands before the local part, the local part, an `@`,
 // the domain and what follows it.
 func reviewShapeSegment(draw *rand.Rand) string {
-	return reviewShapePick(draw, reviewShapeBefore, 3) + reviewShapePick(draw, reviewShapeLocal, 3) + "@" + reviewShapeDomain[draw.IntN(len(reviewShapeDomain))] + reviewShapeAfter[draw.IntN(len(reviewShapeAfter))]
+	return drawEntries(draw, reviewShapeBefore, 3) + drawEntries(draw, reviewShapeLocal, 3) + "@" + reviewShapeDomain[draw.IntN(len(reviewShapeDomain))] + reviewShapeAfter[draw.IntN(len(reviewShapeAfter))]
 }
 
 // reviewShapes draws the shapes: one to three segments, each wrapped; a text opening `<?`, `<!` or
@@ -113,7 +105,7 @@ func reviewShapes() []reviewShape {
 		}
 		container := reviewShapeContainers[draw.IntN(len(reviewShapeContainers))]
 		if strings.HasPrefix(container.format, "|") {
-			if strings.Contains(text, `\|`) || strings.Contains(text, "\\") && strings.HasSuffix(text, "\\") {
+			if strings.Contains(text, `\|`) || strings.HasSuffix(text, "\\") {
 				continue
 			}
 			text = strings.ReplaceAll(text, "|", `\|`)
@@ -273,4 +265,55 @@ func TestWriteStoresEveryReviewShapeMainStores(t *testing.T) {
 	if failures > shown {
 		t.Errorf("%d failures, the first %d shown", failures, shown)
 	}
+}
+
+// linksOff is doc as written (asWritten) with every link mark taken off: two trees that differ in
+// their links alone are one tree here.
+func linksOff(doc *Node) *Node {
+	out := cloneNode(doc)
+	Walk(out, func(node *Node) bool {
+		node.Marks = withoutMark(node.Marks, "link")
+		return true
+	})
+	return asWritten(out)
+}
+
+// The fallback changes nothing but links in a text the base refuses. Of the shapes main e4584fae
+// refuses (mainRefusedReviewShapes), most read back otherwise in a way the base reads the same:
+// emphasis beside an address read back with its delimiters as text, or without its emphasis. The
+// live path's second tier took the base's reading of the rendering for the tree, so the fallback
+// of the rule's tree (FallBackEmailLinks of Parse) and an edit inserting the shape after a
+// paragraph (FallBackMisreadWrite) stored 46 of the 62 Parse reads with text no one wrote,
+// `_$}@e.co_` as `*$}@e.co*` among them, and one more, shape 2140, without the emphasis on its
+// `*#*`, where main refuses the edit. For each shape Parse reads, the tree the live path answers,
+// and the tree an edit stores where it is not refused, is the rule's tree but for its links: the
+// same blocks, text, marks and attributes (linksOff).
+func TestTheFallbackChangesOnlyLinksOfAReviewShapeMainRefuses(t *testing.T) {
+	shapes := reviewShapes()
+	before := parseFixture(t, "First.\n")
+	read, refused := 0, 0
+	for _, index := range mainRefusedReviewShapes {
+		markdown := shapes[index].markdown
+		doc, err := Parse(markdown)
+		if err != nil {
+			continue
+		}
+		read++
+		live, _, err := FallBackEmailLinks(doc)
+		if err != nil {
+			t.Errorf("shape %d: FallBackEmailLinks(Parse(%q)): %v", index, markdown, err)
+		} else if !linksOff(live).Equal(linksOff(doc)) {
+			t.Errorf("shape %d: the fallback of Parse(%q) = %s, which differs from %s in more than its links", index, markdown, inlineSummaries(live), inlineSummaries(doc))
+		}
+		after := &Node{Type: "doc", Children: append(slices.Clone(before.Children), doc.Children...)}
+		stored, err := FallBackMisreadWrite(before, after)
+		if err != nil {
+			refused++
+			continue
+		}
+		if !linksOff(stored).Equal(linksOff(after)) {
+			t.Errorf("shape %d: an edit inserting %q stores %s, which differs from %s in more than its links", index, markdown, inlineSummaries(stored), inlineSummaries(after))
+		}
+	}
+	t.Logf("Parse reads %d of the %d shapes main refuses; an edit inserting one is refused for %d", read, len(mainRefusedReviewShapes), refused)
 }

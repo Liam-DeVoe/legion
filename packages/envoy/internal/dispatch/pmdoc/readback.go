@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // skip names what a comparison leaves aside: the attributes it names, or all of them, and with
@@ -173,49 +174,80 @@ func readsBackAsWritten(doc, back *Node) bool {
 // stored unjudged. Only a refusal (ErrSchema) reading either back is a verdict; any other error, a
 // panic (ErrPanic) among them, is this package's bug, not a misread, and is the error. An edit
 // judges its write with it through the write path's fallback (FallBackMisread,
-// FallBackMisreadWrite).
-func newMisread(before, after *Node, spanCells int) (string, error) {
+// FallBackMisreadWrite). before is read back once, the first time a judge needs it, however many
+// trees a write judges against it (staleMisreadsOf).
+func newMisread(before func() (staleMisreads, error), after *Node, spanCells int) (string, error) {
 	backAfter, err := readBack(after, spanCells)
 	if err != nil && !errors.Is(err, ErrSchema) {
 		return "", err
 	}
-	return misreadSince(before, after, backAfter, err, spanCells)
+	return misreadSince(after, backAfter, err, before)
 }
 
 // misreadSince is newMisread of after, whose read-back is backAfter, or the refusal refused where
-// the parser refused after's rendering: the write path's fallback judges the tree it stores where
-// no reading reads back under the rule by a read-back of its own (readBackEither).
-func misreadSince(before, after, backAfter *Node, refused error, spanCells int) (string, error) {
+// the parser refused after's rendering: the write path's fallback judges the tree it stores by a
+// read-back it made already, or where no reading reads back under the rule by one of its own
+// (readBackEither).
+func misreadSince(after, backAfter *Node, refused error, before func() (staleMisreads, error)) (string, error) {
 	written := asWritten(after)
 	if refused == nil && readDifference(written, backAfter, skip{}) == "" {
 		return "", nil
 	}
-	backBefore, beforeErr := readBack(before, spanCells)
-	if beforeErr != nil && !errors.Is(beforeErr, ErrSchema) {
-		return "", beforeErr
-	}
-	if errors.Is(beforeErr, ErrTablePadding) {
-		return beforeErr.Error(), nil
-	}
-	if beforeErr != nil {
+	stale, err := before()
+	switch {
+	case err != nil:
+		return "", err
+	case stale.verdict != "":
+		return stale.verdict, nil
+	case stale.unread:
 		return "", nil
-	}
-	if refused != nil {
+	case refused != nil:
 		return refused.Error(), nil
 	}
-	previous := asWritten(before)
-	drift := skip{names: attributeDrift(previous, backBefore)}
-	type sameMisread struct{ id, differs string }
-	known := map[sameMisread]bool{}
-	for _, stale := range misreads(previous, backBefore, drift) {
-		known[sameMisread{stale.id, stale.differs}] = true
-	}
-	for _, found := range misreads(written, backAfter, drift) {
-		if found.id == "" || !known[sameMisread{found.id, found.differs}] {
+	for _, found := range misreads(written, backAfter, stale.drift) {
+		if found.id == "" || !stale.known[staleMisread{found.id, found.differs}] {
 			return found.reason, nil
 		}
 	}
 	return "", nil
+}
+
+// staleMisreads is what newMisread judges a write into before against: verdict, the refusal of
+// before's read-back where it would pad more cells than a read-back's budget (ErrTablePadding),
+// which is the verdict on every write into it; unread, where the parser refuses before's rendering,
+// which leaves nothing to judge against; and otherwise drift, the attributes before reads back
+// with other values (attributeDrift), and known, each misread before already holds.
+type staleMisreads struct {
+	verdict string
+	unread  bool
+	drift   skip
+	known   map[staleMisread]bool
+}
+
+// staleMisread is a misread as newMisread finds it again: its block id and what differs.
+type staleMisread struct{ id, differs string }
+
+// staleMisreadsOf is before's staleMisreads, its tables' spans adding at most spanCells cells to
+// its read-back, read the first time it is asked and answered again every time after. An error
+// reading before back that is no refusal (ErrSchema) is this package's bug, and is the error.
+func staleMisreadsOf(before *Node, spanCells int) func() (staleMisreads, error) {
+	return sync.OnceValues(func() (staleMisreads, error) {
+		backBefore, err := readBack(before, spanCells)
+		switch {
+		case err != nil && !errors.Is(err, ErrSchema):
+			return staleMisreads{}, err
+		case errors.Is(err, ErrTablePadding):
+			return staleMisreads{verdict: err.Error()}, nil
+		case err != nil:
+			return staleMisreads{unread: true}, nil
+		}
+		previous := asWritten(before)
+		stale := staleMisreads{drift: skip{names: attributeDrift(previous, backBefore)}, known: map[staleMisread]bool{}}
+		for _, found := range misreads(previous, backBefore, stale.drift) {
+			stale.known[staleMisread{found.id, found.differs}] = true
+		}
+		return stale, nil
+	})
 }
 
 // documentMisread names how doc, a whole document a write makes, reads back otherwise, or is ""

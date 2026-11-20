@@ -123,6 +123,14 @@ func parseRenderingAsBase(markdown string) (*Node, error) {
 	return parseMarkdown(baseEmailReader, markdown, fromStart, true, readBackBudget(), nil)
 }
 
+// parseWriteAsBase is markdown, a caller's write, read with the base's email links
+// (baseEmailReader) before EnsureBlockIDs: its line endings and front matter read as a write's
+// parse reads them (parseForWrite) and its elements spending a write's budget. The fallback's
+// second tier reads a write so (writtenAsBase).
+func parseWriteAsBase(markdown string) (*Node, error) {
+	return parseMarkdown(baseEmailReader, LineFeeds(markdown), fromStart, true, NewWriteBudget(), nil)
+}
+
 // ParseWithSourceStarts parses markdown as Parse does and also answers, for each of the tree's
 // top-level children, the byte offset in markdown where the goldmark block it was converted from
 // starts (startOf): a paragraph's first line, and every other block's recorded position, so a
@@ -242,11 +250,8 @@ func parseWritten(markdown string, live *Node) (*Node, WrittenReadBack, fallback
 	}
 	read, misread, refused, err := documentMisread(doc)
 	if misread != "" {
-		reading, err := writtenAsBase(markdown, doc)
-		if err != nil {
-			return nil, WrittenReadBack{}, noFallback, err
-		}
-		fallen, tier, fallenRead, err := fallBack(doc, read, func(*Node) *Node { return reading }, readsBackDone, readsBackStored)
+		reading := func(*Node) (*Node, error) { return writtenAsBase(markdown, doc) }
+		fallen, tier, fallenRead, err := fallBack(doc, read, reading, readsBackJudge, readsBackJudge)
 		if err != nil {
 			return nil, WrittenReadBack{}, noFallback, err
 		}

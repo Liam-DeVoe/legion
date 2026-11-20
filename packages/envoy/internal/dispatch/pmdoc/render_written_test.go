@@ -365,8 +365,8 @@ func TestRenderAndReadBackLeaveTheirInputUntouched(t *testing.T) {
 			{"Render", func() { _, _ = Render(tree) }},
 			{"RenderWithBlockOffsets", func() { _, _, _ = RenderWithBlockOffsets(tree) }},
 			{"ReadBack", func() { _, _ = ReadBack(tree) }},
-			{"newMisread", func() { _, _ = newMisread(tree, variant, maxSpanCells) }},
-			{"newMisread of the variant", func() { _, _ = newMisread(variant, tree, maxSpanCells) }},
+			{"newMisread", func() { _, _ = newMisread(staleMisreadsOf(tree, maxSpanCells), variant, maxSpanCells) }},
+			{"newMisread of the variant", func() { _, _ = newMisread(staleMisreadsOf(variant, maxSpanCells), tree, maxSpanCells) }},
 			{"RefuseMisreadDocument", func() { _ = RefuseMisreadDocument(tree) }},
 		} {
 			step.run()

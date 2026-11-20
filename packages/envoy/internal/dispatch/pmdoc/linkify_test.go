@@ -572,9 +572,8 @@ func TestLinkifyFallsBackToTheBaseWhereTheRuleDoesNotReadBack(t *testing.T) {
 	}
 }
 
-// fallbackShape is a text a write stores only through the write path's fallback (fallbackTier):
-// ParseWritten refused each before the fallback started from any misread, whatever its cause, and
-// main 1c7c8253 stores each. They read back otherwise under the rule, so they do not fit
+// fallbackShape is a text a write stores only through the write path's fallback (fallbackTier),
+// as the text main 1c7c8253 stores. Each reads back otherwise under the rule, so it does not fit
 // testdata/refused-email-shapes.jsonl, whose every row's rule tree reads back as itself
 // (TestLinkifyStoresEveryRefusedShape, TestLinkifyFallsBackToTheBaseWhereTheRuleDoesNotReadBack).
 // tier is the tier a write of markdown stores it through (parseWritten), live the tier the
@@ -588,12 +587,12 @@ type fallbackShape struct {
 	again      string
 }
 
-// fallbackShapes are texts ParseWritten refused while the fallback started only from an email
-// link's misread. In the four `**…**`/`_…_` rows and `***x@y.co/…` the rule leaves an address
-// unlinked and the emphasis beside it has no spelling that reads back; in `*<http://example.com>*…`
-// a web address reads on into the address; in the rest an email link written explicit reads back
-// with a link on `www`, and written bare (the base's spelling, inlineWithEscapes) it reads back
-// under the rule with the later address unlinked.
+// fallbackShapes are texts only a tier of the fallback stores, each as main stores it. In the four
+// `**…**`/`_…_` rows and `***x@y.co/…` the rule leaves an address unlinked and the emphasis beside
+// it has no spelling that reads back; in `*<http://example.com>*…` a web address reads on into the
+// address; in the rest an email link written explicit reads back with a link on `www`, and written
+// bare (the base's spelling, inlineWithEscapes) it reads back under the rule with the later
+// address unlinked.
 var fallbackShapes = []fallbackShape{
 	{"**projects/p/agent-hosts@example.com**_)_\n", baseLinksTier, baseLinksTier, "**projects/p/agent-**[**hosts@example.com**](mailto:hosts@example.com)*)*\n", ""},
 	{"Mail **a/b-c@example.com**_._\n", baseLinksTier, baseLinksTier, "Mail **a/b-**[**c@example.com**](mailto:c@example.com)*.*\n", ""},
@@ -680,10 +679,7 @@ func TestLinkifyStoresWhatOnlyTheFallbackStores(t *testing.T) {
 // as a paragraph after another, or replaces that paragraph with it (FallBackMisreadWrite), is
 // stored so too.
 func TestFallBackEmailLinksStoresWhatOnlyTheFallbackStores(t *testing.T) {
-	before, err := Parse("First.\n")
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := parseFixture(t, "First.\n")
 	for _, shape := range fallbackShapes {
 		doc, err := Parse(shape.markdown)
 		if err != nil {
@@ -695,7 +691,7 @@ func TestFallBackEmailLinksStoresWhatOnlyTheFallbackStores(t *testing.T) {
 			t.Errorf("read back Parse(%q): %v", shape.markdown, err)
 			continue
 		}
-		tree, tier, _, err := fallBackLive(doc, read)
+		tree, tier, err := fallBackLive(doc, read)
 		if err != nil || tier != shape.live {
 			t.Errorf("the fallback of Parse(%q) answers %s through tier %d (%v), want tier %d", shape.markdown, inlineSummaries(tree), tier, err, shape.live)
 		}

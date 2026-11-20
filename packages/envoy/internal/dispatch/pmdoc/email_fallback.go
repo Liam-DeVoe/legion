@@ -87,45 +87,44 @@ func FallBackEmailLinksRendered(doc *Node, rendering string) (tree *Node, change
 // fallBackEmailLinksRead is FallBackEmailLinks of doc, whose rendering read reads back as it
 // does, otherwise or not.
 func fallBackEmailLinksRead(doc *Node, read WrittenReadBack) (*Node, bool, error) {
-	tree, _, _, err := fallBackLive(doc, read)
+	tree, _, err := fallBackLive(doc, read)
 	return tree, tree != doc, err
 }
 
 // fallBackLive is FallBackEmailLinks of doc, whose rendering read reads back as it does, with the
-// tier that gave the tree answered and that tree's read-back.
-func fallBackLive(doc *Node, read WrittenReadBack) (*Node, fallbackTier, WrittenReadBack, error) {
+// tier that gave the tree answered.
+func fallBackLive(doc *Node, read WrittenReadBack) (*Node, fallbackTier, error) {
 	if readsBackAsWritten(doc, read.Tree) {
-		return doc, noFallback, read, nil
+		return doc, noFallback, nil
 	}
-	return fallBack(doc, read, func(base *Node) *Node { return withBaseReading(doc, read.Tree, base) }, readsBackDone, readsBackStored)
+	reading := func(base *Node) (*Node, error) { return withBaseReading(doc, read.Tree, base), nil }
+	tree, tier, _, err := fallBack(doc, read, reading, readsBackJudge, readsBackJudge)
+	return tree, tier, err
 }
 
-// readsBackDone takes a tree of the first two tiers whose rendering reads back as written.
-func readsBackDone(next *Node, back WrittenReadBack) (bool, error) {
-	return readsBackAsWritten(next, back.Tree), nil
-}
-
-// readsBackStored takes the third tier's tree where back, its rendering's read-back with each
-// textblock the rule reads otherwise read by the base reader (readBackEither), is the tree as
-// written.
-func readsBackStored(next, back *Node) (bool, error) {
+// readsBackJudge takes a tree of the fallback where back, what its rendering reads back as, is the
+// tree as written: the read-back itself for a tree of the first two tiers, and for the third
+// tier's that read-back with each textblock the rule reads otherwise read by the base reader
+// (readBackEither).
+func readsBackJudge(next, back *Node) (bool, error) {
 	return readsBackAsWritten(next, back), nil
 }
 
 // fallBack is the write path's fallback for doc, whose rendering read reads back otherwise: the
 // tree of the first tier (fallbackTier) that gives one a write stores, that tier, and the tree's
 // read-back, or doc, noFallback and read where no tier does. reading is the second tier's tree,
-// given the base's reading of doc's rendering, or nil where there is none. done judges a tree of
-// the first two tiers by its read-back; stored judges the third tier's by its rendering's
-// read-back with each textblock the rule reads otherwise read by the base reader
-// (readBackEither). The third tier's tree is reading, or doc where reading is doc. err is any
-// error but a refusal (ErrSchema), which is this package's bug; a refused step ends its tier.
+// given the base's reading of doc's rendering, or nil where there is none; it is asked only where
+// the first tier gives no tree. done judges a tree of the first two tiers by its read-back;
+// stored judges the third tier's by its rendering's read-back with each textblock the rule reads
+// otherwise read by the base reader (readBackEither). The third tier's tree is reading, or doc
+// where reading is doc. err is reading's error or any other error but a refusal (ErrSchema), which
+// is this package's bug; a refused step ends its tier.
 //
 // A reader links an address only from text holding an `@`, so where doc's text holds none
-// (textHoldsAt) every reading of the base is the rule's, and no tier is tried: a tree of the base
+// (TextHoldsAt) every reading of the base is the rule's, and no tier is tried: a tree of the base
 // there would only be the misread itself.
-func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) *Node, done func(next *Node, back WrittenReadBack) (bool, error), stored func(next, back *Node) (bool, error)) (*Node, fallbackTier, WrittenReadBack, error) {
-	if !textHoldsAt(doc) {
+func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) (*Node, error), done, stored func(next, back *Node) (bool, error)) (*Node, fallbackTier, WrittenReadBack, error) {
+	if !TextHoldsAt(doc) {
 		return doc, noFallback, read, nil
 	}
 	base, err := parseRenderingAsBase(read.Markdown)
@@ -133,7 +132,15 @@ func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) *Node, d
 		return doc, noFallback, read, notRefusal(err)
 	}
 	tree, back, treeBase := doc, read, base
-	for range maxEmailFallbackRounds {
+	for round := range maxEmailFallbackRounds {
+		if round > 0 {
+			if treeBase, err = parseRenderingAsBase(back.Markdown); err != nil {
+				if errors.Is(err, ErrSchema) {
+					break
+				}
+				return doc, noFallback, read, err
+			}
+		}
 		next, ok := withBaseLinks(tree, back.Tree, treeBase)
 		if !ok {
 			break
@@ -144,7 +151,7 @@ func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) *Node, d
 			}
 			return doc, noFallback, read, err
 		}
-		finished, err := done(next, back)
+		finished, err := done(next, back.Tree)
 		if err != nil {
 			return doc, noFallback, read, err
 		}
@@ -152,14 +159,11 @@ func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) *Node, d
 			return next, baseLinksTier, back, nil
 		}
 		tree = next
-		if treeBase, err = parseRenderingAsBase(back.Markdown); err != nil {
-			if errors.Is(err, ErrSchema) {
-				break
-			}
-			return doc, noFallback, read, err
-		}
 	}
-	whole := reading(base)
+	whole, err := reading(base)
+	if err != nil {
+		return doc, noFallback, read, err
+	}
 	if whole == nil {
 		return doc, noFallback, read, nil
 	}
@@ -168,7 +172,7 @@ func fallBack(doc *Node, read WrittenReadBack, reading func(base *Node) *Node, d
 		if wholeBack, err = readBackWritten(whole, maxSpanCells); err != nil {
 			return doc, noFallback, read, notRefusal(err)
 		}
-		finished, err := done(whole, wholeBack)
+		finished, err := done(whole, wholeBack.Tree)
 		if err != nil {
 			return doc, noFallback, read, err
 		}
@@ -230,49 +234,52 @@ func FallBackMisreadWrite(before, after *Node) (*Node, error) {
 }
 
 // fallBackMisread is FallBackMisread reading before and each tree back with their tables' spans
-// adding at most spanCells empty cells, as newMisread does.
+// adding at most spanCells empty cells, as newMisread does. before is read back once, for after
+// and every tree a tier tries (staleMisreadsOf). Where spanCells is maxSpanCells, a tree of the
+// first two tiers is judged by the read-back the tier made of it; spanless, it is read back again
+// as newMisread reads it.
 func fallBackMisread(before, after *Node, spanCells int) (*Node, string, error) {
-	tree, _, misread, err := fallBackMisreadTier(before, after, spanCells)
-	return tree, misread, err
-}
-
-// fallBackMisreadTier is fallBackMisread with the tier that gave the tree answered, noFallback
-// where after is answered itself.
-func fallBackMisreadTier(before, after *Node, spanCells int) (*Node, fallbackTier, string, error) {
-	misread, err := newMisread(before, after, spanCells)
+	stale := staleMisreadsOf(before, spanCells)
+	misread, err := newMisread(stale, after, spanCells)
 	if err != nil || misread == "" {
-		return after, noFallback, misread, err
+		return after, misread, err
+	}
+	if !TextHoldsAt(after) {
+		return after, misread, nil
 	}
 	read, err := readBackWritten(after, maxSpanCells)
 	switch {
 	case errors.Is(err, ErrSchema):
-		return after, noFallback, misread, nil
+		return after, misread, nil
 	case err != nil:
-		return after, noFallback, "", err
+		return after, "", err
 	}
-	fallen, tier, _, err := fallBack(after, read,
-		func(base *Node) *Node { return withBaseReading(after, read.Tree, base) },
-		func(next *Node, _ WrittenReadBack) (bool, error) {
-			left, err := newMisread(before, next, spanCells)
+	judge := func(next, back *Node) (bool, error) {
+		left, err := misreadSince(next, back, nil, stale)
+		return left == "", err
+	}
+	done := judge
+	if spanCells != maxSpanCells {
+		done = func(next, _ *Node) (bool, error) {
+			left, err := newMisread(stale, next, spanCells)
 			return left == "", err
-		},
-		func(next, back *Node) (bool, error) {
-			left, err := misreadSince(before, next, back, nil, spanCells)
-			return left == "", err
-		})
+		}
+	}
+	reading := func(base *Node) (*Node, error) { return withBaseReading(after, read.Tree, base), nil }
+	fallen, tier, _, err := fallBack(after, read, reading, done, judge)
 	if err != nil || tier == noFallback {
-		return after, noFallback, misread, err
+		return after, misread, err
 	}
-	return fallen, tier, "", nil
+	return fallen, "", nil
 }
 
-// writtenAsBase is markdown, a write's, read by the base reader, with the block ids and attributes
-// doc, the write's parse of the same markdown (parseForWrite), gives its blocks: doc with each
-// textblock holding the base's inline nodes where they differ, doc itself where none does, or nil
-// where the base reader refuses the markdown or reads other blocks. It is the second tier's tree
-// of a write whose markdown is known (baseReadingTier).
+// writtenAsBase is markdown, a write's, read by the base reader (parseWriteAsBase), with the block
+// ids and attributes doc, the write's parse of the same markdown (parseForWrite), gives its
+// blocks: doc with each textblock holding the base's inline nodes where they differ, doc itself
+// where none does, or nil where the base reader refuses the markdown or reads other blocks. It is
+// the second tier's tree of a write whose markdown is known (baseReadingTier).
 func writtenAsBase(markdown string, doc *Node) (*Node, error) {
-	base, err := parseMarkdown(baseEmailReader, LineFeeds(markdown), fromStart, true, NewWriteBudget(), nil)
+	base, err := parseWriteAsBase(markdown)
 	if err != nil {
 		return nil, notRefusal(err)
 	}
@@ -312,12 +319,16 @@ func pairReadings(doc, reading *Node, inline map[*Node][]*Node) bool {
 
 // withBaseReading is the live path's second tier (baseReadingTier): doc, whose rendering reads
 // back as back and as base under the base reader, with each textblock that reads back otherwise
-// and whose text holds an `@` (textHoldsAt) holding base's inline nodes, where they are not doc's
+// and whose text holds an `@` (TextHoldsAt) holding base's inline nodes, where they are not doc's
 // as written already: in a textblock whose text holds none, base reads what the rule reads, the
 // misread itself. Every block keeps doc's node, its id and every attribute. It is doc itself where
-// no textblock changes, and nil where the three do not pair block for block (pairTextblocks) or a
-// textblock to change holds a mark the rendering does not write (an anchor), which base's reading
-// would drop.
+// no textblock changes, and nil where the three do not pair block for block (pairTextblocks), or
+// where a textblock to change holds a mark the rendering does not write (an anchor), which base's
+// reading would drop, or where base reads it otherwise than doc writes it in anything but its
+// links (withoutLinks): base then misreads the textblock's text or marks too, as `_$}@e.co_`
+// beside bold, read back as `*$}@e.co*` with its delimiters as text, and a write that stored that
+// reading would store text or marks no one wrote, where the base refuses an edit writing them. So
+// the tier changes only a textblock's links.
 func withBaseReading(doc, back, base *Node) *Node {
 	var triples []textblockReadings
 	if !pairTextblocks(doc, back, base, &triples) {
@@ -325,11 +336,14 @@ func withBaseReading(doc, back, base *Node) *Node {
 	}
 	inline := map[*Node][]*Node{}
 	for _, triple := range triples {
-		written := writtenInline(triple.tree)
-		if inlineEqual(written, triple.back.Children) || inlineEqual(written, triple.base.Children) || !textHoldsAt(triple.tree) {
+		if !TextHoldsAt(triple.tree) {
 			continue
 		}
-		if holdsUnwrittenMark(triple.tree.Children) {
+		written := asWritten(triple.tree).Children
+		if inlineEqual(written, triple.back.Children) || inlineEqual(written, triple.base.Children) {
+			continue
+		}
+		if holdsUnwrittenMark(triple.tree.Children) || !inlineEqual(withoutLinks(written), withoutLinks(triple.base.Children)) {
 			return nil
 		}
 		inline[triple.tree] = triple.base.Children
@@ -340,8 +354,27 @@ func withBaseReading(doc, back, base *Node) *Node {
 	return withInline(doc, inline)
 }
 
-// textHoldsAt reports whether a text node at or under node holds an `@`.
-func textHoldsAt(node *Node) bool {
+// withoutLinks is nodes, a textblock's inline nodes, with no link mark: each node without its
+// link, its other marks in order (sortedMarks), and neighbouring text nodes under the same marks
+// joined, as the parser joins them. nodes is not written.
+func withoutLinks(nodes []*Node) []*Node {
+	out := make([]*Node, 0, len(nodes))
+	for _, node := range nodes {
+		marks := withoutMark(sortedMarks(node.Marks), "link")
+		if last := len(out) - 1; node.Type == "text" && last >= 0 && out[last].Type == "text" && marksEqual(out[last].Marks, marks) {
+			out[last] = &Node{Type: "text", Attrs: out[last].Attrs, Text: out[last].Text + node.Text, Marks: marks}
+			continue
+		}
+		out = append(out, &Node{Type: node.Type, Attrs: node.Attrs, Text: node.Text, Marks: marks, Children: node.Children})
+	}
+	return out
+}
+
+// TextHoldsAt reports whether a text node at or under node holds an `@`. A reader links an email
+// address only from text, and every address holds an `@`, so the write path's fallback leaves a
+// tree whose text holds none as it is (FallBackEmailLinks), and a caller asks this before it
+// renders such a tree for the fallback.
+func TextHoldsAt(node *Node) bool {
 	held := false
 	Walk(node, func(child *Node) bool {
 		held = child.Type == "text" && strings.IndexByte(child.Text, '@') >= 0
@@ -377,7 +410,7 @@ func readBackEither(tree, back, base *Node) *Node {
 	}
 	inline := map[*Node][]*Node{}
 	for _, triple := range triples {
-		written := writtenInline(triple.tree)
+		written := asWritten(triple.tree).Children
 		if !inlineEqual(written, triple.back.Children) && inlineEqual(written, triple.base.Children) {
 			inline[triple.back] = triple.base.Children
 		}
@@ -386,12 +419,6 @@ func readBackEither(tree, back, base *Node) *Node {
 		return back
 	}
 	return withInline(back, inline)
-}
-
-// writtenInline is a textblock's inline nodes as its markdown writes them, as asWritten writes
-// them in a document.
-func writtenInline(textblock *Node) []*Node {
-	return nulsWrittenTree(writtenTree(textblock, true)).Children
 }
 
 // withBaseLinks is the first tier (baseLinksTier): tree with the base's links where back, tree's
@@ -408,7 +435,7 @@ func withBaseLinks(tree, back, base *Node) (*Node, bool) {
 	}
 	inline := map[*Node][]*Node{}
 	for _, triple := range triples {
-		if inlineEqual(writtenInline(triple.tree), triple.back.Children) {
+		if inlineEqual(asWritten(triple.tree).Children, triple.back.Children) {
 			continue
 		}
 		children, changed, aligned := baseLinksInline(triple.tree.Children, triple.back.Children, triple.base.Children)

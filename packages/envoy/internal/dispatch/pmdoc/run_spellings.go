@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"cmp"
 	"crypto/sha256"
+	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -75,14 +76,14 @@ import (
 // A run none of whose writings reads back under inlineMarkdown, where the rule for the whole
 // address (wholeEmailLinks) moved or dropped a link in a read of one of them, is judged once more,
 // with every writing read back under the three readers with the base's email links
-// (renderer.baseEmails), as Dispatch read an address before that rule: the run is written as the
-// build before the rule wrote it, where the rule's reading of it has no spelling, which is what
-// the write path stores when no reading of a text reads back under the rule (R4 of INFRA-4224,
-// baseStoredTier). A run that reads back under the rule is never judged so, so a tree that reads
-// back keeps its bytes. A writing in none of whose reads the rule moved or dropped a link reads
-// the same under the base's links (parseInlineWithDefinitions' moved), so the second judge reads
-// back only the writings the rule changed, and is not made at all where it changed none, since
-// every writing would then read back as it did.
+// (readsBackUnder's baseEmails), as Dispatch read an address before that rule: the run is written
+// as the build before the rule wrote it, where the rule's reading of it has no spelling, which is
+// what the write path stores when no reading of a text reads back under the rule (R4 of
+// INFRA-4224, baseStoredTier). A run that reads back under the rule is never judged so, so a tree
+// that reads back keeps its bytes. A writing in none of whose reads the rule moved or dropped a
+// link reads the same under the base's links (parseInlineWithDefinitions' moved), so the second
+// judge reads back only the writings the rule changed, and is not made at all where it changed
+// none, since every writing would then read back as it did.
 func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlineContext) {
 	from := r.b.Len()
 	fused := r.writeInlineRun(nodes, prefix, context, runSpelling{})
@@ -91,27 +92,78 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 		return
 	}
 	labels, signature := referencedLabels(nodes), inlineSignature(nodes)
-	first := r.readsBackUnder(from, prefix, labels, signature)
+	first := r.readsBackUnder(from, prefix, labels, signature, false)
 	if first.count == readBackReaderCount {
 		return
 	}
+	// reads is what each writing read back so far reads back as, by the digest of its bytes.
 	reads := map[[sha256.Size]byte]runReads{sha256.Sum256(r.b.Bytes()[from:]): first}
-	if r.respell(nodes, prefix, context, needs, from, labels, signature, reads) {
-		return
-	}
-	moved := false
-	for digest, read := range reads {
-		if read.moved {
-			moved = true
-			delete(reads, digest)
+	// respell chooses how to write nodes, from their first writing, each writing read back with
+	// the base's email links where baseEmails says so and read no more than once (reads): it
+	// leaves the writing it keeps written, and reports whether that writing reads back under the
+	// first of the readers, where the first writing is left written when no writing does.
+	respell := func(baseEmails bool) bool {
+		// readBack is what the writing written since from reads back as.
+		readBack := func() runReads {
+			digest := sha256.Sum256(r.b.Bytes()[from:])
+			read, held := reads[digest]
+			if !held {
+				read = r.readsBackUnder(from, prefix, labels, signature, baseEmails)
+				reads[digest] = read
+			}
+			return read
 		}
+		// firstReads is how many of the readers, from the first, the first writing reads back
+		// under.
+		firstReads := readBack().count
+		if firstReads == readBackReaderCount {
+			return true
+		}
+		written := string(r.b.Bytes()[from:])
+		// keepsDeeper writes each of spellings once and reports whether one of them reads back
+		// deeper than the first writing, leaving the earliest writing of the greatest depth written.
+		keepsDeeper := func(spellings []runSpelling) bool {
+			// depths is each spelling's depth, or -1 for one that orders marks otherwise and still
+			// fuses a delimiter run, which is never kept.
+			depths := make([]int, len(spellings))
+			for index, spelling := range spellings {
+				r.b.Truncate(from)
+				if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
+					depths[index] = -1
+					continue
+				}
+				if depths[index] = readBack().count; depths[index] == readBackReaderCount {
+					return true
+				}
+			}
+			for under := readBackReaderCount - 1; under > firstReads; under-- {
+				for index, spelling := range spellings {
+					if depths[index] >= under {
+						r.b.Truncate(from)
+						r.writeInlineRun(nodes, prefix, context, spelling)
+						return true
+					}
+				}
+			}
+			return false
+		}
+		spellings := runSpellings(needs)
+		if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
+			return true
+		}
+		r.b.Truncate(from)
+		r.b.WriteString(written)
+		return firstReads > 0
 	}
-	if !moved {
+	if respell(false) {
 		return
 	}
-	r.baseEmails = true
-	r.respell(nodes, prefix, context, needs, from, labels, signature, reads)
-	r.baseEmails = false
+	held := len(reads)
+	maps.DeleteFunc(reads, func(_ [sha256.Size]byte, read runReads) bool { return read.moved })
+	if len(reads) == held {
+		return
+	}
+	respell(true)
 }
 
 // runReads is what readsBackUnder found of a writing of a run: how many of the
@@ -120,65 +172,6 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 type runReads struct {
 	count int
 	moved bool
-}
-
-// respell is inlineWithEscapes' choice of how to write nodes, written from from in their first
-// writing, whose needs, footnote labels and inlineSignature they are: it leaves the writing it
-// keeps written, and reports whether that writing reads back under the first of the readers
-// (readsBackUnder), where the first writing is left written when no writing does. reads is what
-// each writing read back so far reads back as, by the digest of its bytes, which respell adds to
-// and reads no writing again that it holds.
-func (r *renderer) respell(nodes []*Node, prefix string, context inlineContext, needs runNeeds, from int, labels, signature []string, reads map[[sha256.Size]byte]runReads) bool {
-	// readBack is what the writing written since from reads back as.
-	readBack := func() runReads {
-		digest := sha256.Sum256(r.b.Bytes()[from:])
-		read, held := reads[digest]
-		if !held {
-			read = r.readsBackUnder(from, prefix, labels, signature)
-			reads[digest] = read
-		}
-		return read
-	}
-	// firstReads is how many of the readers, from the first, the first writing reads back under.
-	firstReads := readBack().count
-	if firstReads == readBackReaderCount {
-		return true
-	}
-	written := string(r.b.Bytes()[from:])
-	// keepsDeeper writes each of spellings once and reports whether one of them reads back deeper
-	// than the first writing, leaving the earliest writing of the greatest depth written.
-	keepsDeeper := func(spellings []runSpelling) bool {
-		// depths is each spelling's depth, or -1 for one that orders marks otherwise and still
-		// fuses a delimiter run, which is never kept.
-		depths := make([]int, len(spellings))
-		for index, spelling := range spellings {
-			r.b.Truncate(from)
-			if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
-				depths[index] = -1
-				continue
-			}
-			if depths[index] = readBack().count; depths[index] == readBackReaderCount {
-				return true
-			}
-		}
-		for under := readBackReaderCount - 1; under > firstReads; under-- {
-			for index, spelling := range spellings {
-				if depths[index] >= under {
-					r.b.Truncate(from)
-					r.writeInlineRun(nodes, prefix, context, spelling)
-					return true
-				}
-			}
-		}
-		return false
-	}
-	spellings := runSpellings(needs)
-	if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
-		return true
-	}
-	r.b.Truncate(from)
-	r.b.WriteString(written)
-	return firstReads > 0
 }
 
 // runNeeds is what a run's first writing and its text call for beyond the escape rules, each a
@@ -600,9 +593,9 @@ func writesAddressSyntax(nodes []*Node) (colons, dots, ats bool) {
 // flankingMarkdown reads a source as storedMarkdown does unless the stored parse reported a `*` or
 // `_` run that could open or close otherwise under flankingRules (parseInlineWithDefinitions). A
 // label's `~` is the source's own: the run writes every label it refers to as `[^label]`, and
-// escapeFootnoteLabel escapes no `~`. Each reader reads with the base's email links where the
-// renderer judges the run under them (renderer.baseEmails).
-func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string) runReads {
+// escapeFootnoteLabel escapes no `~`. Each reader reads with the base's email links where
+// baseEmails says so (inlineReader's baseEmails).
+func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string, baseEmails bool) runReads {
 	written := r.b.Bytes()[from:]
 	var lines strings.Builder
 	lines.Grow(len(written))
@@ -614,7 +607,7 @@ func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []s
 	source := lines.String()
 	var read runReads
 	readsBack := func(reader inlineReader) (bool, bool) {
-		reader.baseEmails = r.baseEmails
+		reader.baseEmails = baseEmails
 		if readBackObserver != nil {
 			readBackObserver(source, reader)
 		}

@@ -341,16 +341,17 @@ func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*
 	return live, nil
 }
 
-// fallBackEmailLinks is tree as a write stores it where the renderer cannot write tree's email
-// links so that they read back (pmdoc.FallBackEmailLinks), and whether that is another tree: the
-// same blocks and text, each address whose links read back otherwise holding the base's reading.
+// fallBackEmailLinks is tree as a write stores it where the renderer cannot write tree so that it
+// reads back (pmdoc.FallBackEmailLinks), and whether that is another tree: the tree of the first
+// of the write path's tiers that gives one, which keeps tree's blocks, their ids and attributes,
+// and takes the base's reading of the text where the rule's reading does not read back.
 // rendered is tree's rendering where the caller has one, or "" for the fallback to render tree
 // itself. The email rule reads an address only from text, and every address holds an `@`, so a
-// tree whose text holds none (textHoldsAt) is answered itself, with no render and no read-back. So
-// is a tree whose rendering or read-back is refused, which is stored as it is: the version's own
-// render meets the first. Any other error is pmdoc's bug, and is the error.
+// tree whose text holds none (pmdoc.TextHoldsAt) is answered itself, with no render and no
+// read-back. So is a tree whose rendering or read-back is refused, which is stored as it is: the
+// version's own render meets the first. Any other error is pmdoc's bug, and is the error.
 func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, error) {
-	if !textHoldsAt(tree) {
+	if !pmdoc.TextHoldsAt(tree) {
 		return tree, false, nil
 	}
 	var fallen *pmdoc.Node
@@ -372,12 +373,12 @@ func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, e
 
 // versionedEmailLinks is rendered, a tree a version is about to store with its rendering, as the
 // repair of its email links would leave it where no write gives the document that repair before
-// the version: where the renderer cannot write the tree's email links so that they read back, the
-// tree with the base's links (fallBackEmailLinks), rendered again, with rendered's head; rendered
-// itself otherwise. So the version's markdown, token and index name one tree. Its two callers are
-// a settlement whose versioned tree is not the one it judged and repaired - read again after its
-// writes, or one its live repair wrote nothing into (commitVersion) - and a version taken from the
-// stored document with no write of its transaction (captureLiveTextAndAuthors).
+// the version: where the renderer cannot write the tree so that it reads back, the fallback's tree
+// (fallBackEmailLinks), rendered again, with rendered's head; rendered itself otherwise. So the
+// version's markdown, token and index name one tree. Its two callers are a settlement whose
+// versioned tree is not the one it judged and repaired - read again after its writes, or one its
+// live repair wrote nothing into (commitVersion) - and a version taken from the stored document
+// with no write of its transaction (captureLiveTextAndAuthors).
 func versionedEmailLinks(rendered renderedTree) (renderedTree, error) {
 	fallen, changed, err := fallBackEmailLinks(rendered.tree, rendered.markdown)
 	if err != nil || !changed {
@@ -390,10 +391,10 @@ func versionedEmailLinks(rendered renderedTree) (renderedTree, error) {
 	return renderedTree{tree: fallen, markdown: markdown, offsets: offsets, head: rendered.head}, nil
 }
 
-// fallBackEmailLinksLive gives doc's tree as it stands the base's email links where its own do not
+// fallBackEmailLinksLive gives doc's tree as it stands the fallback's tree where its own does not
 // read back (fallBackEmailLinks), in one transaction tagged with origin (rewriteLive), and writes
-// nothing where the tree reads back or no fallback does. Its caller, the settlement's repair of
-// the room (commitRepairs), decides from a read of its own whether the tree needs it, so a
+// nothing where the tree reads back or no fallback gives one. Its caller, the settlement's repair
+// of the room (commitRepairs), decides from a read of its own whether the tree needs it, so a
 // document that does not opens no transaction. A live write repairs its own fork from the tree it
 // read already (liveOperation.repairEmailLinks).
 func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
@@ -411,17 +412,6 @@ func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
 		return err
 	}
 	return fallErr
-}
-
-// textHoldsAt reports whether a text node of tree, a whole document, holds an `@`: whether a node
-// of tree holds one in its own text (ownTextHoldsAt).
-func textHoldsAt(tree *pmdoc.Node) bool {
-	holds := false
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		holds = ownTextHoldsAt(node)
-		return !holds
-	})
-	return holds
 }
 
 // changesTextHoldingAt reports whether after, the tree a write over before leaves, holds a

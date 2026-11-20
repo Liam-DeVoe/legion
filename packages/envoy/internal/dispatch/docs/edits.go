@@ -1599,7 +1599,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		}
 		// What is stored is the document's rendering, so an insert that leaves it reading back
 		// otherwise than it did would store another document than the one it wrote, unless the
-		// base's email links make it read back (pmdoc.FallBackMisreadWrite).
+		// write path's fallback finds a tree it stores (pmdoc.FallBackMisreadWrite).
 		out, err = pmdoc.FallBackMisreadWrite(tree.node, out)
 		if err != nil {
 			return nil, invalidSchemaOp("markdown", err)
@@ -2559,8 +2559,8 @@ func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) (*pmdoc.Node, error
 		return nil, &ErrInvalidOp{Field: "with", Reason: err.Error()}
 	}
 	// What is stored is the document's rendering, so a write that leaves it reading back
-	// otherwise would store another document than the one it wrote, unless the base's email links
-	// make it read back (pmdoc.FallBackMisreadWrite).
+	// otherwise would store another document than the one it wrote, unless the write path's
+	// fallback finds a tree it stores (pmdoc.FallBackMisreadWrite).
 	stored, err := pmdoc.FallBackMisreadWrite(before, next)
 	if err != nil {
 		return nil, invalidSchemaOp("with", err)
