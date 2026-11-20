@@ -159,10 +159,10 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 // took: `testdb: drop database <name> took <ms> ms`, through a RAISE LOG, which any role may run
 // and which the server logs at its default log_min_messages. go test shows nothing a passing
 // package prints, and a CI job prints its Postgres service's log when it ends, so the server's log
-// is where a CI run's drop times can be read: internal/testwait's Cleanup, the reserve a failing
-// test keeps for its cleanup, is measured from them. The line is a measurement and nothing waits on
-// it, so Drop drops the error it answers. The envoy module's testdb writes the same line.
-// TestLogDropWritesALineTheServerAccepts runs the statement.
+// is where a CI run's drop times can be read: testdeadline.Cleanup, the reserve a failing test
+// keeps for its cleanup, is measured from them. The line is a measurement and nothing waits on it,
+// so Drop drops the error it answers. The envoy module's testdb writes the same line.
+// TestLogDropLogsTheDropsNameAndTimeAtLOG reads the line back from the server, at its level.
 func logDrop(ctx context.Context, admin Execer, name string, took time.Duration) error {
 	text := fmt.Sprintf("testdb: drop database %s took %.3f ms", name, float64(took)/float64(time.Millisecond))
 	text = strings.NewReplacer("'", "''", "%", "%%").Replace(text)
