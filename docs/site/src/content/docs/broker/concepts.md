@@ -1318,11 +1318,12 @@ broker with no judge settings, a Dispatch that did not answer in time, an issue 
 to, a machine whose fleet names nobody — it waits in every person's Inbox, so no request waits
 where nobody sees it. Where that person may not see the request, because it belongs to a private
 project they are not on, from when it was made or since, it waits in the Inbox of everyone who may
+see it, for as long as Dispatch answers within the list's two seconds for such requests
 ([A private project's secrets](#a-private-projects-secrets)). A Dispatch read that failed or ran
 out of its three seconds is logged at WARN, naming the issue
 ([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
 is seen to list those requests for everyone. Who is asked changes nobody's right
-to decide: anyone signed in still decides it from its page. That is also why the broker takes the
+to decide: anyone signed in who may see it still decides it from its page. That is also why the broker takes the
 claim and the assignee as they come: a claim is the launcher's word, so a launcher that states a
 Legion claim naming some issue, and anyone who reassigns that issue in Dispatch, chooses whose
 Inbox lists the request, and neither gains a right to decide it. A withheld secret is its owner's to approve for that

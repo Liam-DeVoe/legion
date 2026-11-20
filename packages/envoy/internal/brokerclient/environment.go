@@ -89,9 +89,10 @@ func TradeSession(getenv func(string) string, own string) string {
 }
 
 // TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, read by
-// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through;
-// no Go trade of this release calls it. The TypeScript client reads the same variable the same
-// way (packages/broker-client/src/environment.ts, tradeProjects).
+// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through:
+// `agent-secrets register` and `enroll` with no --projects, and natsprobe. The TypeScript client
+// reads the same variable the same way (packages/broker-client/src/environment.ts,
+// tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
 	return ParseProjectsSetting(ProjectsVar, getenv(ProjectsVar))
 }
@@ -102,18 +103,28 @@ func TradeProjects(getenv func(string) string) ([]string, error) {
 func ParseProjectsSetting(setting, raw string) ([]string, error) {
 	projects, err := oauthwire.ParseProjects(raw)
 	if err != nil {
-		return nil, ProjectsRefusal(setting)
+		return nil, ProjectsRefusal(setting, ProjectsSpaced)
 	}
 	return projects, nil
 }
 
-// ProjectsRefusal is the error for a projects setting that is no list: it names the setting and
-// the rule, never the value, and is never a list quietly cut short. A value the setting cannot
-// hold is where a credential pasted into the wrong place shows up, and oauthwire's own errors
-// quote the key they refuse. The helper's check of a register's projects says the same words.
-func ProjectsRefusal(setting string) error {
-	return fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
-		setting, oauthwire.MaxProjects, contracts.ProjectKeyRule)
+// ProjectsSpaced and ProjectsListed say how a projects setting holds its keys, which
+// ProjectsRefusal names: a variable or a flag separates them by white space
+// (ParseProjectsSetting), and a register's JSON list holds one key in each element, never split
+// (the helper's sessionProjects).
+const (
+	ProjectsSpaced = "separated by white space"
+	ProjectsListed = "one in each element of the list"
+)
+
+// ProjectsRefusal is the error for a projects setting that is no list: it names the setting, how
+// it holds its keys (held, ProjectsSpaced or ProjectsListed) and the rule, never the value, and is
+// never a list quietly cut short. A value the setting cannot hold is where a credential pasted into
+// the wrong place shows up, and oauthwire's own errors quote the key they refuse. The helper's
+// check of a register's projects says the same words, with its own way of holding them.
+func ProjectsRefusal(setting, held string) error {
+	return fmt.Errorf("%s is not a list of project keys: at most %d keys, %s, each named once and each %s",
+		setting, oauthwire.MaxProjects, held, contracts.ProjectKeyRule)
 }
 
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a

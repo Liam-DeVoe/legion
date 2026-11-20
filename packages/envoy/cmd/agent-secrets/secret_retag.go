@@ -285,6 +285,13 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		if rewrite != "" {
 			if err := writeGuardRewrite(s, slug, after, rewrite); err != nil {
 				reportRewriteFailure(s, stderr, form, name, rewrite, held, err)
+				if writeUnknown(err) {
+					// The removal landed, and whether the rewrite did is open, so the reread
+					// claims nothing of a write: rereadRetag would say "the write … stands", and a
+					// person who reads that may leave the secret without its guard.
+					rereadOpen(s, stdout, stderr, form, name)
+					return 1
+				}
 				// The removal landed, so the broker is asked to reread whatever the rewrite did.
 				rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
 				return 1

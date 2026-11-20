@@ -617,15 +617,15 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projec
 // sorted (oauthwire.ValidProjects), nil for none. An element is never split, so "PRIV CORE" is
 // refused as no project key rather than read as two projects. A refusal, which the helper sends
 // back to its caller, says what every other reader of a projects setting says
-// (brokerclient.ProjectsRefusal), naming the rule and never the value, since ValidProjects quotes
-// the key it refuses.
+// (brokerclient.ProjectsRefusal), with the list's own form (brokerclient.ProjectsListed), naming
+// the rule and never the value, since ValidProjects quotes the key it refuses.
 func sessionProjects(projects []string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
 	sorted := slices.Sorted(slices.Values(projects))
 	if err := oauthwire.ValidProjects(sorted); err != nil {
-		return nil, brokerclient.ProjectsRefusal("projects")
+		return nil, brokerclient.ProjectsRefusal("projects", brokerclient.ProjectsListed)
 	}
 	return sorted, nil
 }
