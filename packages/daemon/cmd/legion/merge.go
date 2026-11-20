@@ -50,8 +50,9 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // workspace that the directory repository is in, running each git and jj through runner. It
 // answers 0 for a merge git made cleanly and 1 for a merge that holds git's conflicts, each with
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
-// made. A commit of an earlier run that the merge keeps, because another commit stands on it, is
-// named on stderr too, and the merge goes on.
+// made. A commit of an earlier run that the merge keeps, because another commit stands on it, and
+// a bookmark of a carrier's name that it leaves on a commit no legion merge wrote, are named on
+// stderr too, and the merge goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {
 	root, err := mergeWorkspace(repository)
 	if err == nil {

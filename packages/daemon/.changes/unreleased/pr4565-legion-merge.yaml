@@ -10,4 +10,6 @@ body: |-
   the working copy where it was. Its last description line is `Legion-Merge: <git's tree id>`.
   One run at a time goes on in a workspace (a second run exits 3), and a run removes the commits a
   run stopped before its end left, except a commit another commit stands on, which it names.
+  A run leaves a bookmark of a carrier's name on a commit that a legion merge did not write, and
+  names it.
   It needs git 2.38 or later.

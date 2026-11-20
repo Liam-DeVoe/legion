@@ -29,7 +29,11 @@ func TestWithTrailerPutsTheLineLast(t *testing.T) {
 
 // The run's line leaves the description as jj would have written it with no such line: the
 // trailers jj added beside it stay in their paragraph, and a paragraph that held the line alone,
-// as jj writes it with no trailer configured, goes with it. Any other paragraph stays as it is.
+// as jj writes it with no trailer configured, goes with it. Where the message ends in a block of
+// trailers, jj puts the configured trailers in that block when it is given the message alone, so
+// the trailers that were beside the line join that block. They join neither a body nor the
+// subject, though a conventional subject reads as `Key: value`. Any other paragraph stays as it
+// is.
 func TestWithoutLineTakesTheRunsLineOut(t *testing.T) {
 	const line = "Legion-Merge-Run: legion-merge-default-0123456789abcdef-"
 	for _, tc := range []struct{ description, want string }{
@@ -37,6 +41,10 @@ func TestWithoutLineTakesTheRunsLineOut(t *testing.T) {
 		{"Merge main\n\n" + line + "\n", "Merge main\n"},
 		{"Merge main\n\nThe body says why.\n\n" + line + "\n", "Merge main\n\nThe body says why.\n"},
 		{"Merge main\n\nLegion-Role: implementer\n", "Merge main\n\nLegion-Role: implementer\n"},
+		{"Merge main\n\nThe body says why.\n\nSigned-off-by: a <a@b>\n\n" + line + "\nLegion-Role: implementer\n", "Merge main\n\nThe body says why.\n\nSigned-off-by: a <a@b>\nLegion-Role: implementer\n"},
+		{"Merge main\n\nSigned-off-by: a <a@b>\n\n" + line + "\n", "Merge main\n\nSigned-off-by: a <a@b>\n"},
+		{"Merge main\n\nThe body says why.\n\n" + line + "\nLegion-Role: implementer\n", "Merge main\n\nThe body says why.\n\nLegion-Role: implementer\n"},
+		{"fix: x\n\n" + line + "\nLegion-Role: implementer\n", "fix: x\n\nLegion-Role: implementer\n"},
 	} {
 		if got := withoutLine(tc.description, line); got != tc.want {
 			t.Errorf("withoutLine(%q) = %q, want %q", tc.description, got, tc.want)

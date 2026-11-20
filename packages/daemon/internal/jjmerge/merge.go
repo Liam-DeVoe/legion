@@ -522,18 +522,21 @@ func (m *merger) own(run string) bool {
 	return run == m.runPrefix
 }
 
-// remove abandons the commits of the runs ours matches: the commit that each carrier bookmark of
-// such a run names, each mutable commit that carries the line of such a run, and merge when it
+// remove abandons the commits of the runs ours matches: each carrier that a carrier bookmark of
+// such a run names, each mutable merge that carries the line of such a run, and merge when it
 // names one. It abandons those commits alone, never what stands on them. A member that a commit
 // outside them stands on (a role's commit on a carrier or on a merge a killed run left), or that
 // is any workspace's working-copy commit, is kept with its bookmark, and the run names it on
-// stderr (keep): an abandon would move that commit onto other parents. One abandon takes the
-// commits and their bookmarks together, so a run killed after it still finds each carrier by its
-// bookmark. Then remove deletes each bookmark of such a run that jj still holds with no commit,
-// and each git ref of such a run under refs/heads but a kept commit's. ours is asked only of the
-// run prefixes of names under bookmarkPrefix and of the lines the commits carry. The bookmarks go
-// through jj, which exports their removal in a colocated workspace; deleting a git ref under jj is
-// only for a ref jj never imported or does not export.
+// stderr (keep): an abandon would move that commit onto other parents. A bookmark of a carrier's
+// name on a commit that is no carrier (notCarriers), a commit of the repository, makes that
+// commit no member: the commit, the bookmark and its git ref stay where they are, and the run
+// names the bookmark on stderr. One abandon takes the commits and their bookmarks together, so a
+// run killed after it still finds each carrier by its bookmark. Then remove deletes each bookmark
+// of such a run that jj still holds with no commit, and each git ref of such a run under
+// refs/heads but a kept bookmark's. ours is asked only of the run prefixes of names under
+// bookmarkPrefix and of the lines the commits carry. The bookmarks go through jj, which exports
+// their removal in a colocated workspace; deleting a git ref under jj is only for a ref jj never
+// imported or does not export.
 func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge string) error {
 	out, err := m.jj(ctx, "bookmark", "list", "-T", `if(!remote, name ++ "\0" ++ if(normal_target, normal_target.commit_id()) ++ "\0")`, "glob:"+bookmarkPrefix+"*")
 	if err != nil {
@@ -543,9 +546,9 @@ func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge s
 	if len(listed)%2 != 0 {
 		return fmt.Errorf("jj bookmark list printed %d fields, not name and target pairs: %q", len(listed), listed)
 	}
-	// members are the commits to abandon, each once: commit ids, and merge's change id. named
-	// holds each member's bookmarks, which stay where the member stays.
-	var members, untargeted []string
+	// targets are the commits the bookmarks of such runs name, each once. named holds each
+	// target's bookmarks, which stay where the target stays.
+	var targets, untargeted []string
 	named := map[string][]string{}
 	for i := 0; i < len(listed); i += 2 {
 		name, target := listed[i], listed[i+1]
@@ -556,11 +559,17 @@ func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge s
 			untargeted = append(untargeted, name)
 			continue
 		}
-		if !slices.Contains(members, target) {
-			members = append(members, target)
+		if _, ok := named[target]; !ok {
+			targets = append(targets, target)
 		}
 		named[target] = append(named[target], name)
 	}
+	others, err := m.notCarriers(ctx, targets)
+	if err != nil {
+		return err
+	}
+	// members are the commits to abandon, each once: commit ids, and merge's change id.
+	members := slices.DeleteFunc(slices.Clone(targets), func(id string) bool { return slices.Contains(others, id) })
 	marked, err := m.marked(ctx, ours)
 	if err != nil {
 		return err
@@ -573,7 +582,19 @@ func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge s
 	if merge != "" {
 		members = append(members, merge)
 	}
+	// keptNames are the bookmarks that stay, so their git refs stay too: those of a commit that is
+	// no carrier, unless it carries a run's line and goes with the members, and those of a kept
+	// member.
 	var keptNames []string
+	for _, id := range others {
+		if slices.Contains(members, id) {
+			continue
+		}
+		for _, name := range named[id] {
+			fmt.Fprintf(m.stderr, "legion merge: left the bookmark %s where it is, on commit %s, which is not a commit a legion merge wrote.\n", name, id)
+		}
+		keptNames = append(keptNames, named[id]...)
+	}
 	if len(members) > 0 {
 		set := "(" + strings.Join(members, " | ") + ")"
 		kept, err := m.keep(ctx, set)
@@ -629,13 +650,31 @@ func bookmarkRun(name string) (string, bool) {
 	return match[1], true
 }
 
-// marked is each mutable commit that carries the line of a run ours matches. The revset finds
-// each commit whose description holds a line of this workspace's runs, and then the line must be
-// one that ours matches: the run prefix of a workspace whose name is this one's, a dash and more
-// also holds this workspace's prefix. An immutable commit is left out, since jj abandons none,
-// and so the search reads only the commits that are not on the base.
+// notCarriers is each commit of targets, the commits that a sweep's carrier bookmarks name, that
+// is not a carrier. git plumbing writes each carrier with no parent in the repository or on
+// another carrier, and the run gives each one its bookmark, so a carrier is a mutable commit
+// whose every ancestor but jj's root() is a target too. A target with an ancestor outside the
+// targets and root() descends from a parent of a target that is outside them, so one jj log reads
+// every such target. A bookmark of a carrier's name is on a commit that is not a carrier only
+// where a person, a role or a tool put it, and an abandon of that commit would lose the
+// repository's own work, or a parent the run is about to merge.
+func (m *merger) notCarriers(ctx context.Context, targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	set := "(" + strings.Join(targets, " | ") + ")"
+	return m.list(ctx, fmt.Sprintf("%[1]s & ((parents(%[1]s) ~ %[1]s ~ root()):: | ~mutable())", set), "commit_id")
+}
+
+// marked is each mutable merge that carries the line of a run ours matches. Each commit a run
+// marks is a merge, X of the carriers k2 and k3 or the merge of the two parents, so a role's
+// commit with one parent is never one, even when it carries a line it copied from a merge's
+// description. The revset finds each merge whose description holds a line of this workspace's
+// runs, and then the line must be one that ours matches: the run prefix of a workspace whose name
+// is this one's, a dash and more also holds this workspace's prefix. An immutable commit is left
+// out, since jj abandons none, and so the search reads only the commits that are not on the base.
 func (m *merger) marked(ctx context.Context, ours func(run string) bool) ([]string, error) {
-	revset := fmt.Sprintf("mutable() & description(substring:%s)", jjString(runTrailer+m.prefix))
+	revset := fmt.Sprintf("mutable() & merges() & description(substring:%s)", jjString(runTrailer+m.prefix))
 	out, err := m.jj(ctx, "log", "--no-graph", "-r", revset, "-T", `commit_id ++ "\0" ++ description ++ "\0"`)
 	if err != nil {
 		return nil, err
@@ -883,12 +922,24 @@ func withTrailer(description, line string) string {
 
 // withoutLine is description without each line that is line, and without a paragraph that held
 // such lines alone, so the run's line leaves no empty paragraph where jj wrote it with no
-// trailer beside it. Every other paragraph stays as it is.
+// trailer beside it. jj writes the run's line, a second message, as a paragraph of its own and
+// puts the configured trailers in that paragraph after it. When that paragraph holds other lines
+// once the line is out, and the paragraph before it is a block of trailers and not the subject,
+// the two become one paragraph, where jj puts the configured trailers when it is given the
+// message alone: git reads only the last paragraph as trailers. Every other paragraph stays as it
+// is.
 func withoutLine(description, line string) string {
 	var paragraphs []string
 	for _, paragraph := range strings.Split(strings.TrimRight(description, "\n"), "\n\n") {
-		rest := slices.DeleteFunc(strings.Split(paragraph, "\n"), func(l string) bool { return l == line })
-		if len(rest) > 0 {
+		lines := strings.Split(paragraph, "\n")
+		count := len(lines)
+		rest := slices.DeleteFunc(lines, func(l string) bool { return l == line })
+		switch {
+		case len(rest) == 0:
+			// The paragraph held the run's line alone.
+		case len(rest) < count && len(paragraphs) > 1 && trailerBlock(paragraphs[len(paragraphs)-1]):
+			paragraphs[len(paragraphs)-1] += "\n" + strings.Join(rest, "\n")
+		default:
 			paragraphs = append(paragraphs, strings.Join(rest, "\n"))
 		}
 	}

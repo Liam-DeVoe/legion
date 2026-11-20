@@ -870,32 +870,34 @@ func TestLegionMergeRunsInAWorkspaceOfASharedClone(t *testing.T) {
 	}
 }
 
-// B16: what a killed run in this workspace left, and a carrier of another workspace's. This
-// workspace's are a carrier with its bookmark, and jj's merge of the carriers on it, which
-// carries the killed run's Legion-Merge-Run line from the moment jj made it. A run of B1 removes
-// this workspace's and leaves the other's.
+// B16: what a killed run in this workspace left where git conflicts, and a carrier of another
+// workspace's. This workspace's are the carriers k2 and k3 with their bookmarks, and X, jj's merge
+// of the two, which carries the killed run's Legion-Merge-Run line from the moment jj made it. A
+// run of B1 removes this workspace's and leaves the other's.
 func TestLegionMergeRemovesOnlyThisWorkspacesLeftovers(t *testing.T) {
 	r := newMergeRepo(t)
 	r.minimalCase(2)
 	r.jj("workspace", "add", filepath.Join(r.dir, "other"), "--name", "other")
-	tree := r.git("rev-parse", r.id("b1")+"^{tree}")
-	carrier := func(workspace string) (id, bookmark string) {
-		id = r.git("commit-tree", tree, "-m", "a carrier a killed run in "+workspace+" left")
-		bookmark = "legion-merge-" + workspace + "-0123456789abcdef-g"
+	// A carrier holds the tree of the commit that of names. k2 and k3 hold two trees, so git
+	// writes two commits for them, not one.
+	carrier := func(workspace, role, of string) (id, bookmark string) {
+		id = r.git("commit-tree", r.git("rev-parse", r.id(of)+"^{tree}"), "-m", "a carrier a killed run in "+workspace+" left")
+		bookmark = "legion-merge-" + workspace + "-0123456789abcdef-" + role
 		r.git("update-ref", "refs/heads/"+bookmark, id)
 		return id, bookmark
 	}
-	mine, myBookmark := carrier("default")
-	theirs, theirBookmark := carrier("other")
+	k2, k2Bookmark := carrier("default", "k2", "b1")
+	k3, k3Bookmark := carrier("default", "k3", "b2")
+	theirs, theirBookmark := carrier("other", "g", "b1")
 	r.jj("git", "import")
-	r.jj("new", "--no-edit", mine, "-m", "jj's merge of git's versions a killed run left", "-m", "Legion-Merge-Run: legion-merge-default-0123456789abcdef-")
-	onMine := r.id(fmt.Sprintf("children(%s)", mine))
+	r.jj("new", "--no-edit", k2, k3, "-m", "jj's merge of git's versions a killed run left", "-m", "Legion-Merge-Run: legion-merge-default-0123456789abcdef-")
+	x := r.id(fmt.Sprintf("children(%s) & children(%s)", k2, k3))
 	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
 	if code != 0 {
 		t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
 	r.wantMergeHolds(mergeFirst, "main", "f", "b\n")
-	for _, id := range []string{mine, onMine} {
+	for _, id := range []string{k2, k3, x} {
 		if got := r.template(id, "hidden"); got != "true" {
 			t.Errorf("this workspace's leftover %s is still visible", id)
 		}
@@ -904,33 +906,45 @@ func TestLegionMergeRemovesOnlyThisWorkspacesLeftovers(t *testing.T) {
 		t.Errorf("the other workspace's carrier %s reads %q, want visible with its bookmark %s", theirs, got, theirBookmark)
 	}
 	bookmarks := r.read("bookmark", "list", "--all", "-T", `name ++ "\n"`)
-	if strings.Contains(bookmarks, myBookmark) {
-		t.Errorf("this workspace's leftover bookmark %s is still there:\n%s", myBookmark, bookmarks)
+	refs := r.git("for-each-ref", "--format=%(refname)")
+	for _, mine := range []string{k2Bookmark, k3Bookmark} {
+		if strings.Contains(bookmarks, mine) {
+			t.Errorf("this workspace's leftover bookmark %s is still there:\n%s", mine, bookmarks)
+		}
+		if strings.Contains(refs, mine) {
+			t.Errorf("git's refs are\n%s\nwant %s gone", refs, mine)
+		}
 	}
-	if refs := r.git("for-each-ref", "--format=%(refname)"); strings.Contains(refs, myBookmark) || !strings.Contains(refs, theirBookmark) {
-		t.Errorf("git's refs are\n%s\nwant %s gone and %s kept", refs, myBookmark, theirBookmark)
+	if !strings.Contains(refs, theirBookmark) {
+		t.Errorf("git's refs are\n%s\nwant %s kept", refs, theirBookmark)
 	}
 }
 
 // B17: under the pane's overlay, the merge's description is the -m text, then the role's trailer,
 // then `Legion-Merge: <tree>` as its last line, where the tree is the first line git merge-tree
-// prints for the two parents with the merge's option list.
+// prints for the two parents with the merge's option list. Where the -m text ends in a block of
+// trailers, the role's trailer and Legion-Merge join that block, as jj writes the role's trailer
+// given that text alone: git reads only the last paragraph as trailers.
 func TestLegionMergeWritesItsTrailerLast(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		history func(r *mergeRepo)
 		code    int
+		message string
+		// want is the description up to git's tree id, which the row reads once its history is made.
+		want string
 	}{
-		{"B1", func(r *mergeRepo) { r.minimalCase(2) }, 0},
-		{"B3", (*mergeRepo).contentConflict, 1},
+		{"B1", func(r *mergeRepo) { r.minimalCase(2) }, 0, mergeMessage, mergeMessage + "\n\nLegion-Role: implementer\nLegion-Merge: "},
+		{"B3", (*mergeRepo).contentConflict, 1, mergeMessage, mergeMessage + "\n\nLegion-Role: implementer\nLegion-Merge: "},
+		{"B1 with a trailer in the message", func(r *mergeRepo) { r.minimalCase(2) }, 0, mergeMessage + "\n\nSigned-off-by: a <a@b>", mergeMessage + "\n\nSigned-off-by: a <a@b>\nLegion-Role: implementer\nLegion-Merge: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newMergeRepo(t)
 			tc.history(r)
-			if code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond); code != tc.code {
+			if code, stdout, stderr := r.merge("-R", r.ws, "-m", tc.message, mergeFirst, mergeSecond); code != tc.code {
 				t.Fatalf("legion merge = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, tc.code, stdout, stderr)
 			}
-			want := mergeMessage + "\n\nLegion-Role: implementer\nLegion-Merge: " + r.gitTree(mergeFirst, "main") + "\n"
+			want := tc.want + r.gitTree(mergeFirst, "main") + "\n"
 			if got := r.template("@-", "description"); got != want {
 				t.Errorf("the merge's description is\n%q\nwant\n%q", got, want)
 			}
