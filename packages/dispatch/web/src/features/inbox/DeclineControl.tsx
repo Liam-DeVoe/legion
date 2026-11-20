@@ -157,9 +157,10 @@ interface DeclinePress extends AskPress {
  * The write takes the row out of the Inbox the moment it goes, as the answer write does, so the
  * ask is held while the server decides it (`useOutstandingAnswerWrite`): the reading column keeps
  * the question where the reader pressed, and the refusal is shown by the card that wrote it.
- * The hold is that shared store rather than a report up to the Inbox, as `SnoozeControl` makes
- * one, for the reason the store exists: this card is drawn on surfaces that take no prop of the
- * Inbox's, a document's own decision block among them.
+ * The hold is that shared store rather than a report up to the Inbox, as `AssignToMe` makes one,
+ * or a write the Inbox holds itself, as each row's snooze is (`useAskSnoozeWrites`), for the
+ * reason the store exists: this card is drawn on surfaces that take no prop of the Inbox's, and
+ * on surfaces outside any Inbox, a document's own decision block among them.
  */
 export function DeclineControl({
   ask,

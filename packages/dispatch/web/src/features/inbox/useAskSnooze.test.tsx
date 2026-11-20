@@ -18,21 +18,35 @@ import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
-import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
+import {
+  AskSnoozeContext,
+  type AskSnoozeFailure,
+  useAskSnooze,
+  useAskSnoozeMany,
+  useAskSnoozeWrites,
+} from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
 
+/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
+ *  draws: `useAskSnooze` reads one ask's write from them. */
+function SnoozeWrites({ children }: { children: ReactNode }): ReactNode {
+  return <AskSnoozeContext value={useAskSnoozeWrites()}>{children}</AskSnoozeContext>;
+}
+
 /**
- * `use` beside the Inbox's read, under Dispatch's own client signed in as alice, with
- * `GET /api/v1/inbox` answering what `served.rows` holds when it is asked: what Dispatch holds,
- * which the test moves as Dispatch takes each write.
+ * `use` beside the Inbox's read and under the Inbox's snooze writes, under Dispatch's own client
+ * signed in as alice, with `GET /api/v1/inbox` answering what `served.rows` holds when it is
+ * asked: what Dispatch holds, which the test moves as Dispatch takes each write.
  */
 function renderBesideInbox<T>(served: { rows: InboxRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served.rows);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      <SnoozeWrites>{children}</SnoozeWrites>
+    </QueryClientProvider>
   );
   const hook = renderHook(() => ({ inbox: useQuery(inboxQuery()).data, write: use() }), {
     wrapper,

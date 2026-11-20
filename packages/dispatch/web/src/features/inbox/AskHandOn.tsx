@@ -52,8 +52,8 @@ import { useAskHandOn } from "./useAskHandOn";
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
- * the list drawing it to hold the ask while that write is live (pending or failed), because
+ * reader pressed it, as `AssignToMe` does - and, as that control does, it asks the list drawing
+ * it to hold the ask while that write is live (pending or failed), because
  * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
  * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
  * before the server answered, and a refusal would put the row back with a fresh card that

@@ -4,7 +4,6 @@ import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
-import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
 
@@ -30,17 +29,22 @@ export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SN
  * nothing else does, which is the point: an agent answering a deferred ask leaves it deferred.
  *
  * A snooze moves its row into Later, which starts folded, and an un-snooze moves it out, either
- * of which would unmount this control and take its `Snoozing…` and its refusal with it - so,
- * exactly as `AssignToMe` does for the optimistic assignment that can drop a row out of the
- * assignee filter, it tells the Inbox while its write is live, and the Inbox keeps the row in the
- * band the reader saw it in until the write settles (`heldRow`). Under the Blocked on you
- * narrowing, which lists no snoozed ask, the row leaves the list at the pick instead, kept only
- * while the reader's hand is on it. The move is the feedback for a snooze that lands, made in the
- * commit in which the Inbox lets go of the row; a snooze the server refuses, or one the reader
- * stops, rolls the row back where it was with the reason still attached to it. The Snooze select
- * and Un-snooze are held from the press until the commit after their write's answer
- * (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row: the select by
- * `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`.
+ * of which would unmount this control. So the write is not this control's: the Inbox holds it,
+ * by ask (`useAskSnoozeWrites`), and keeps the row in the band the reader saw it in while the
+ * write is out (`heldRow`). Every control drawn for the ask shows that one write - its
+ * `Snoozing…`, its refusal and its Retry - whichever of them the reader pressed: the row's own,
+ * the reading column's head, and the short row beside the column while the column shows another
+ * question. The column's head goes whenever the reader moves the selection, and the write, the
+ * held row and a refusal stay. Under the Blocked on you narrowing, which lists no snoozed ask,
+ * the row leaves the list at the pick instead, kept only while the reader's hand is on it. The
+ * move is the feedback for a snooze that lands, made in the commit in which the Inbox lets go of
+ * the row. A snooze the server refuses, or one the reader stops, rolls the row's moment back and
+ * holds the row no longer, so the next read of the Inbox places it; the reason stays with the
+ * ask, shown wherever the row is drawn. The Snooze select and Un-snooze are held from the press
+ * until the commit after their write's answer (`useHeldThroughAnswer`): the select by
+ * `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`. The Inbox lets
+ * go of the row in the answer's own commit, so a row that moves takes its control away while that
+ * control is still held.
  * The optimistic moment puts the row inside its window at once, where Un-snooze would be drawn in
  * the select's place; the select stays drawn instead, held, with the return time being saved
  * before it, while its pick's write is out and through the commit after its answer. An
@@ -48,10 +52,12 @@ export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SN
  * in Un-snooze's place, so Un-snooze stays drawn, held, while its write is out and through the
  * commit after its answer. The press is the reader's, and the row's going after the answer is
  * that press's doing (`causedByReader`) only while the control it landed on is still in the page
- * and held: the row and its held control go together in that one commit, so the page's rescue
- * hands the focus on as it does for Dismiss and Assign to me, to the same control in the row that
- * moves up into the row's place. A control taken away at the press would leave the row's going
- * to drop the focus onto the page.
+ * and held: the row goes with its held control, so the page's rescue hands the focus on as it
+ * does for Dismiss and Assign to me, to the same control in the row that moves up into the row's
+ * place. That is a row's own Snooze. In the reading column's head (`ReadingPaneHead`) the control
+ * goes with the question the column shows, and the Inbox's own hand-off sends the focus to the
+ * column's focus stop instead (`Inbox.tsx`). A control taken away at the press would leave the
+ * row's going to drop the focus onto the page.
  *
  * The selection bar's Snooze over the rows the reader marked holds the control the same way while
  * that write is out over this ask (`BulkSnoozingContext`): the optimistic moment would draw
@@ -71,22 +77,15 @@ export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SN
 export function SnoozeControl({
   askId,
   label,
-  onLive,
   snoozedUntil,
 }: {
   askId: string;
   label: string;
-  /** Registers the row of the ask its write is of while that write is in flight or failed;
-   *  unregistered once it settles cleanly or the control unmounts. */
-  onLive: (askId: string, live: boolean) => void;
   /** The row's own snooze while its moment is still ahead; null on an ordinary row. */
   snoozedUntil: string | null;
 }): ReactNode {
   const write = useAskSnooze(askId);
   const bulkSnoozing = useContext(BulkSnoozingContext).has(askId);
-  // The row held is the one the live snooze is of, which is this row's unless a host has drawn
-  // the control for another ask since that press (`useAskSnooze`).
-  useLiveRegistration(write.liveAskId, onLive);
   // A snooze out over this row: its own pick's write, whose variable is a moment where an
   // un-snooze's is null, or the bar's.
   const snoozing = typeof write.pendingUntil === "string" || bulkSnoozing;

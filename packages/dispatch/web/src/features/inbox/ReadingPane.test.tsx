@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
+import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -35,6 +36,7 @@ import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
+import { AskSnoozeContext, useAskSnoozeWrites } from "./useAskSnooze";
 
 installInboxApiMocks();
 
@@ -228,6 +230,22 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
   };
 }
 
+/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
+ *  draws, with each set of asks whose write is out handed to `onOut` as it changes. */
+function SnoozeWrites({
+  children,
+  onOut,
+}: {
+  children: ReactNode;
+  onOut: (out: ReadonlySet<string>) => void;
+}): ReactNode {
+  const writes = useAskSnoozeWrites();
+  useEffect(() => {
+    onOut(writes.out);
+  }, [onOut, writes.out]);
+  return <AskSnoozeContext value={writes}>{children}</AskSnoozeContext>;
+}
+
 function renderPane({
   ask,
   createEditor,
@@ -258,8 +276,12 @@ function renderPane({
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);
   const answered: string[] = [];
-  /** Every registration the head's Snooze made, in order: `[askId, live]`. */
-  const snoozeLiveness: (readonly [string, boolean])[] = [];
+  /** Each set of asks whose snooze write was out, in order, as the list holding the writes saw
+   *  it. */
+  const snoozesOut: string[][] = [];
+  const recordOut = (out: ReadonlySet<string>) => {
+    snoozesOut.push([...out]);
+  };
   /** Every registration a card's hand-on made, in order: `[askId, live]`. */
   const handOnLiveness: (readonly [string, boolean])[] = [];
   const tree = (row: InboxRow) => (
@@ -268,12 +290,13 @@ function renderPane({
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
             <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
-              <ReadingPane
-                onAnswered={(id) => answered.push(id)}
-                onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
-                row={{ ask: row, kind: "ask" }}
-                viewer="alice"
-              />
+              <SnoozeWrites onOut={recordOut}>
+                <ReadingPane
+                  onAnswered={(id) => answered.push(id)}
+                  row={{ ask: row, kind: "ask" }}
+                  viewer="alice"
+                />
+              </SnoozeWrites>
             </AskHandOnLiveContext>
           </MarginProvider>
         </DocumentRuntime.Provider>
@@ -288,7 +311,7 @@ function renderPane({
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
-    snoozeLiveness,
+    snoozesOut,
     view,
   };
 }
@@ -1005,20 +1028,21 @@ test("a question in no document is today's card", async () => {
   }
 });
 
-test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
+test("the head's Snooze writes through the list's snooze writes, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
-  const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
+  const { snoozesOut, view } = renderPane({ ask: issueAsk() });
 
   try {
     await user.selectOptions(
       await screen.findByLabelText("Snooze CORE-1: Which approach?"),
       "tomorrow"
     );
-    // The optimistic snooze folds the row into Later and the column follows the list, so a
-    // head that kept its write to itself would be unmounted with the row it wrote about.
-    await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
+    // The optimistic snooze folds the row into Later and the column follows the list, so the
+    // head goes with the row it wrote about. The list holds the write, and keeps the row while
+    // the write is out.
+    await waitFor(() => expect(snoozesOut.at(-1)).toEqual(["ask-a"]));
   } finally {
     held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
@@ -1222,7 +1246,6 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
-              onSnoozeLive={() => {}}
               row={{ kind: "thread", thread: row }}
               viewer="alice"
             />

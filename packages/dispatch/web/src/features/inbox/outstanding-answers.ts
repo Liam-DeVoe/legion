@@ -20,15 +20,16 @@ import {
  * reads it from outside every card (`pane-selection.ts`, `paneAsk`). The column's card can be the
  * document's own - a question written as a decision block, drawn by `ProofDocument` - which takes
  * no prop of the Inbox's, so the form registers itself here rather than reporting upward as
- * `SnoozeControl` and `AssignToMe` do.
+ * `AssignToMe` does.
  *
  * What it is for: `useOutstandingAnswerWrite` below drops the answered row from the `["inbox"]`
  * read the moment the answer goes out, so without this hold the column would hand the selection
  * on at once and unmount the card that wrote - and that card is the only surface a refused
  * answer is shown on, since `useKeyedWrite({inline: true})` lets a refused write go from the
- * store. The hold is the rule a deferred row already follows (`snoozing` in `Inbox.tsx`): the
- * write's own liveness keeps the question where the reader pressed it, released once the server
- * decides it.
+ * store. The hold is the write's own liveness - in flight, or refused with the card holding the
+ * refusal - and it keeps the question where the reader pressed it. A deferred row is held only
+ * while its snooze is out (`snoozing` in `Inbox.tsx`): the reason of a refused snooze stays with
+ * the ask in the Inbox, and a refused answer has only the card that wrote to be shown on.
  *
  * No listeners: the column reads this at the commit the row leaves, which is a commit the
  * optimistic removal itself causes, and the write's own state re-renders every surface showing it.
@@ -95,13 +96,12 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
  *
  * The write is inline (`useKeyedWrite`): the surface that wrote shows the refusal itself, over
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
- * hold lasts the same `pending || failed` liveness the snooze reports its own write by
- * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
- * the card goes. A write that takes the row out holds the Inbox's reads until Dispatch has taken
- * it (`holds`: its answer, or the ask's `ask.answered` or `ask.resolved` event, and at most
- * `SEND_DEADLINE_MS`): one asked before could be answered with the row still in it. The Inbox
- * lists the asks other people open, so the hold ends on the event rather than wait out an answer
- * that is late.
+ * hold lasts while the write is in flight or refused (`livePress`), let go when the server
+ * decides the answer, when the form is reset, and when the card goes. A write that takes the row
+ * out holds the Inbox's reads until Dispatch has taken it (`holds`: its answer, or the ask's
+ * `ask.answered` or `ask.resolved` event, and at most `SEND_DEADLINE_MS`): one asked before could
+ * be answered with the row still in it. The Inbox lists the asks other people open, so the hold
+ * ends on the event rather than wait out an answer that is late.
  */
 export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
   label,

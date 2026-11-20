@@ -24,11 +24,11 @@ const NO_LIST: AskHandOnLive = () => {};
  * through them would leave the next host free to omit it exactly as that path did. `AskHandOn`
  * reads the registration from here instead, so every card under an Inbox has it and no host can
  * be written without it. The same reasoning put the reader's outstanding answer in
- * `outstanding-answers.ts`. `SnoozeControl` and `AssignToMe` still report upward through a
- * prop, because both of their hosts are the Inbox's own: the row it renders, and the reading
- * column's head (`ReadingPaneHead`), which the Inbox reaches through `ReadingPane`'s
- * `onSnoozeLive` - the head's own `AssignToMe` reports no further than the head, which draws it
- * while that write is live.
+ * `outstanding-answers.ts`. `AssignToMe` still reports upward through a prop, because its hosts
+ * are the Inbox's own: the row it renders, and the reading column's head (`ReadingPaneHead`),
+ * whose `AssignToMe` reports no further than the head, which draws it while that write is live.
+ * `SnoozeControl` reports nothing: the Inbox holds every snooze write itself, by ask
+ * (`useAskSnoozeWrites`), and each control reads its ask's write through a context.
  *
  * Reaching every card is also why the Inbox holds only what it listed. Many cards under it
  * speak for an ask it draws no row for: the card of a Reply row's thread, whose ask can be one

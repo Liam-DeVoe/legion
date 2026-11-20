@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import { type ReactNode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
@@ -51,6 +52,7 @@ import {
 } from "./inbox-fixture";
 import type { InboxRoute } from "./inbox-route";
 import { SnoozeControl } from "./SnoozeControl";
+import { AskSnoozeContext, useAskSnoozeWrites } from "./useAskSnooze";
 
 const mocks = installInboxApiMocks();
 
@@ -3120,11 +3122,28 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
   }
 });
 
+/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
+ *  draws, with each set of asks whose write is out handed to `onOut` as it changes. */
+function SnoozeWrites({
+  children,
+  onOut,
+}: {
+  children: ReactNode;
+  onOut?: (out: ReadonlySet<string>) => void;
+}): ReactNode {
+  const writes = useAskSnoozeWrites();
+  useEffect(() => {
+    onOut?.(writes.out);
+  }, [onOut, writes.out]);
+  return <AskSnoozeContext value={writes}>{children}</AskSnoozeContext>;
+}
+
 // A press carries every value its Retry sends, the ask it is of among them: a Retry of a snooze
-// the reader stopped is of that press's ask under that press's key, whichever ask the control is
-// drawn for by then. The case draws one control for one ask and then for another, which is where
-// the two differ.
-test("a snooze's Retry is of the ask its press was of, whichever ask the control draws by then", async () => {
+// the reader stopped is of that press's ask under that press's key. The list holds each write by
+// its ask, so the control drawn for another ask shows none of it, and the control drawn for the
+// ask again shows the stopped write and its Retry. The case draws one control for one ask, then
+// for another, then for the first again.
+test("a snooze's Retry is of the ask its press was of, under its key, from the control drawn for that ask again", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const snoozeAsk = answerAskSnoozes().mockRejectedValue(
@@ -3133,10 +3152,11 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const onLive = () => {};
   const drawn = (askId: string) => (
     <QueryClientProvider client={queryClient}>
-      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+      <SnoozeWrites>
+        <SnoozeControl askId={askId} label={askId} snoozedUntil={null} />
+      </SnoozeWrites>
     </QueryClientProvider>
   );
   const view = render(drawn("ask-a"));
@@ -3147,6 +3167,9 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
     const stopped = snoozeAsk.mock.calls.length;
 
     view.rerender(drawn("ask-b"));
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+    view.rerender(drawn("ask-a"));
     snoozeAsk.mockImplementation(async (_id, { snoozed_until }) => ({ snoozed_until }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(1_000);
@@ -3162,9 +3185,9 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
   }
 });
 
-// The row a live snooze asks the Inbox to hold is its press's ask too: drawn for another ask
-// while the snooze of the first is out, the control keeps the first ask's row held, holds no row
-// for the ask it shows, and lets the first go once Dispatch answers.
+// The row a snooze out asks the Inbox to hold is its press's ask too: with the control drawn for
+// another ask while the snooze of the first is out, the list keeps the first ask's row held,
+// holds no row for the ask the control shows, and lets the first go once Dispatch answers.
 test("a snooze out when the control is drawn for another ask holds the row of the ask it was pressed on", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<{ snoozed_until: string }>();
@@ -3172,30 +3195,30 @@ test("a snooze out when the control is drawn for another ask holds the row of th
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const liveness: [string, boolean][] = [];
-  const onLive = (askId: string, live: boolean) => {
-    liveness.push([askId, live]);
+  /** Each set of asks the list held for a snooze out, in order. */
+  const held: string[][] = [];
+  const onOut = (out: ReadonlySet<string>) => {
+    held.push([...out]);
   };
   const drawn = (askId: string) => (
     <QueryClientProvider client={queryClient}>
-      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+      <SnoozeWrites onOut={onOut}>
+        <SnoozeControl askId={askId} label={askId} snoozedUntil={null} />
+      </SnoozeWrites>
     </QueryClientProvider>
   );
   const view = render(drawn("ask-a"));
   try {
     await user.selectOptions(screen.getByLabelText("Snooze ask-a"), "tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
-    expect(liveness).toEqual([["ask-a", true]]);
+    expect(held).toEqual([[], ["ask-a"]]);
 
     view.rerender(drawn("ask-b"));
-    expect(liveness).toEqual([["ask-a", true]]);
+    expect(held).toEqual([[], ["ask-a"]]);
 
     landing.resolve({ snoozed_until: "2026-11-17T09:00:00Z" });
-    await waitFor(() => expect(liveness.length).toBe(2));
-    expect(liveness).toEqual([
-      ["ask-a", true],
-      ["ask-a", false],
-    ]);
+    await waitFor(() => expect(held.length).toBe(3));
+    expect(held).toEqual([[], ["ask-a"], []]);
   } finally {
     view.unmount();
     snoozeAsk.mockRestore();
@@ -3844,6 +3867,93 @@ test("a refused snooze keeps its row where it was while it is out, and leaves it
   }
 });
 
+// A refused snooze holds nothing: the next read of the Inbox places its row where Dispatch says.
+// Here another device has snoozed the row meanwhile, so the read puts it in Later, which starts
+// folded. The reader's hand leaves the row first, since a row under the hand is held for that
+// reason alone.
+test("a refused snooze holds nothing, so a read in which another device snoozed the row puts it in Later", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [askA, askB];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which format?");
+    await user.selectOptions(
+      within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(rowOf("ask-b")).getByRole("alert")).toHaveTextContent(
+        "snoozed_until must be in the future"
+      )
+    );
+    await user.click(screen.getByRole("searchbox", { name: "Search asks" }));
+
+    served = [askA, { ...askB, snoozed_until: soon() }];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+
+    await waitFor(() => expect(headings()).toEqual(["Waiting on you (1)", "Later (1)"]));
+    expect(rowIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same with a read that hands the refused row's turn to an agent: the row is drawn in the
+// read's own band, and the refusal is still on it.
+test("a refused snooze holds nothing, so a read that turns the row to an agent draws it under Waiting on agents", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [askA, askB];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which format?");
+    await user.selectOptions(
+      within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(rowOf("ask-b")).getByRole("alert")).toHaveTextContent(
+        "snoozed_until must be in the future"
+      )
+    );
+    await user.click(screen.getByRole("searchbox", { name: "Search asks" }));
+
+    served = [askA, { ...askB, waiting_on: "agent" }];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+
+    await waitFor(() => expect(rowOf("ask-b")).toHaveAttribute("data-inbox-group", "agent"));
+    expect(headings()).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
+    expect(within(rowOf("ask-b")).getByRole("alert")).toHaveTextContent(
+      "snoozed_until must be in the future"
+    );
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // The badge's `Snoozing…` is drawn for the eye alone, so the control says what its write is doing
 // to a screen reader in a polite status of its own: a snooze or an un-snooze while that write is
 // out, and nothing once Dispatch has answered it.
@@ -3858,7 +3968,9 @@ test("a snooze or an un-snooze out says so in the control's status, which says n
   });
   const drawn = (snoozedUntil: string | null) => (
     <QueryClientProvider client={queryClient}>
-      <SnoozeControl askId="ask-a" label="CORE-1" onLive={() => {}} snoozedUntil={snoozedUntil} />
+      <SnoozeWrites>
+        <SnoozeControl askId="ask-a" label="CORE-1" snoozedUntil={snoozedUntil} />
+      </SnoozeWrites>
     </QueryClientProvider>
   );
   const view = render(drawn(null));
@@ -6600,8 +6712,8 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
   }
 });
 
-// The column's head is its question's own: the head's Snooze holds the write it made, so the
-// question the reader moves to is drawn under a head of its own, never under one still saying
+// The column's head is its question's own: the head's Snooze shows its own question's write, so
+// the question the reader moves to is drawn under a head of its own, never under one still saying
 // `Snoozing…` of the question before.
 test("the question the reader moves to shows no snooze still saving on the one before", async () => {
   const user = userEvent.setup();
@@ -6677,6 +6789,116 @@ test("the question the reader moves to shows no refusal of a snooze on the one b
     expect(head.getByLabelText("Snooze CORE-2: Which format?")).toBeTruthy();
     expect(head.queryByRole("alert")).toBeNull();
     expect(head.queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A snooze the column's head writes is the list's write, not the head's: moving the selection
+// takes the head away, and the row stays in the band the reader saw it in while the write is out,
+// saying so on the row itself. A refusal leaves the row there, with its reason on the row, though
+// the column now shows another question.
+test("a snooze from the column's head keeps its row in its band after the selection moves, and a refusal shows its reason on that row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const refusal = Promise.withResolvers<never>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => refusal.promise);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row is where the reader saw it, though the head that wrote has gone.
+    expect(headings()).toEqual(["Waiting on you (2)"]);
+    expect(shortRow("ask-a")).toHaveAttribute("data-inbox-section", "human");
+    expect(within(shortRow("ask-a")).getByText("Snoozing…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(
+        new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent(
+        "snoozed_until must be in the future"
+      )
+    );
+    expect(headings()).toEqual(["Waiting on you (2)"]);
+    expect(shortRow("ask-a")).toHaveAttribute("data-inbox-section", "human");
+    expect(selectedIds()).toEqual(["ask-b"]);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same snooze landing after the selection moved: the row stays in its band while the write
+// is out, and moves into Later, which starts folded, once the write lands.
+test("a snooze from the column's head moves its row into Later once it lands after the selection moved, not before", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(headings()).toEqual(["Waiting on you (2)"]);
+    expect(shortRow("ask-a")).toHaveAttribute("data-inbox-section", "human");
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+
+    await waitFor(() => expect(headings()).toEqual(["Waiting on you (1)", "Later (1)"]));
+    expect(rowIds()).toEqual(["ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
   } finally {
     unmount();
     narrow();
