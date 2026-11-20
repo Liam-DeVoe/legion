@@ -281,7 +281,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | conditional | Required when GitHub webhooks are enabled. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | no | Defaults to `@legion`. |
 | `ENVOY_REVIEWER_APP_ID` | conditional | Required when GitHub webhooks are enabled; the App id whose check verdicts the listener records. |
-| `ENVOY_GITHUB_REPOSITORY_RENAMES` | no | Comma-separated `<former owner>/<name>=<current owner>/<name>` pairs, read when GitHub webhooks are enabled: each GitHub envelope of a pair's current repository is published a second time under its former name, the copy differing only in its topic, so a session that subscribed before the rename keeps hearing about the repository. One-way. Spell the former name as GitHub spelled it, capitals included: a NATS subject is compared with case, so another spelling addresses every copy to a subject nothing subscribes to, and the start-up line names each pair's copy subject prefix. A value it cannot read refuses startup naming the variable (`packages/envoy/AGENTS.md`). |
+| `ENVOY_GITHUB_REPOSITORY_RENAMES` | no | Comma-separated `<former owner>/<name>=<current owner>/<name>` pairs, read when GitHub webhooks are enabled: each GitHub envelope of a pair's current repository is published a second time under its former name, the copy differing only in its topic, so a session that subscribed before the rename keeps hearing about the repository. One-way. Spell the former name as GitHub spelled it, capitals included: a NATS subject is compared with case, so another spelling addresses every copy to a subject nothing subscribes to, and the start-up line names each pair's copy subject prefix. A value it cannot read refuses startup naming the variable (`internal/ghrename`). Keep it in step with the daemon's `repository_renames` in `legion.yaml` and Dispatch's `repo_projects.renamed_to` (`cmd/dispatch/README.md`, migration `20261105075455_repo_projects_renamed_to`). |
 | `ENVOY_SLACK_SIGNING_SECRET` | conditional | Required when Slack webhooks are enabled. |
 | `ENVOY_GHOSTWISPR_SIGNING_SECRET` | conditional | Required when Ghost Wispr webhooks are enabled. The listener answers 401 to an event whose signature does not check. |
 
@@ -293,6 +293,22 @@ A harness reads its port there, with `jq -r 'select(.msg == "envoy-listener list
 A process is given a NATS nkey seed only after its NATS server has nkey users (the server's stage 1,
 which keeps a `no_auth_user` fallback): a server with no users sends no nonce, and the Go client
 refuses the nkey (`nats: nkeys not supported by the server`) instead of connecting without it.
+
+## Recreating a listener's durable
+
+The listener refuses to bind its durable consumer `listener-<machine id>` when the durable carries
+an idle heartbeat or an ack policy other than explicit, which the listener's consumer policy forbids
+and NATS cannot change in place. Deleting the durable lets the listener recreate it from the start
+of the stream, which replays all 72 hours the stream retains. To keep its cursor, recreate it at one
+past its ack floor while no listener runs for that machine:
+
+```bash
+d=listener-<machine id>
+nats consumer info ENVOY_NOTIFICATIONS "$d" --json > "$d.json"
+jq '(.ack_floor.stream_seq + 1) as $next | .config | del(.idle_heartbeat, .flow_control) | .ack_policy = "explicit" | .deliver_policy = "by_start_sequence" | .opt_start_seq = $next' "$d.json" > "$d.recreate.json"
+nats consumer rm ENVOY_NOTIFICATIONS "$d" -f
+nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
+```
 
 ## Dispatch configuration
 
