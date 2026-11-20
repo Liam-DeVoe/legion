@@ -364,7 +364,7 @@ type KnownIdentities interface {
 
 // KnownIdentity is the bot identity of the App role's App that a lease of that App already
 // fetched (identity, which caches it by App id for the Manager's life), and false when none has:
-// before the App's first mint, or for an App role the Manager has no App for. It reads that
+// before the App's first mint, or for an App role that no App is configured for. It reads that
 // cache alone, under mu, and asks GitHub nothing, so a caller that needs the identity and no
 // token — a launch's table of every role's identity, for the other App's roles — costs no mint.
 func (m *Manager) KnownIdentity(role AppRole) (GitIdentity, bool) {
