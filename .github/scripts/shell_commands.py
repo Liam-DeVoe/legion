@@ -3,7 +3,7 @@ pipeline each command stands in.
 
 check-release-credentials.sh imports it from the repository it checks, running
 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root, and
-classifies each command commands_of returns. check-ci-filters.sh's rule 21
+classifies each command commands_of returns. check-ci-filters.sh's rule 22
 (ci_workflow_rules.check_network_installs) reads each pipeline pipelines_of returns, looked
 through WRAPPERS, and the shell scripts of this repository a step runs, the same way.
 

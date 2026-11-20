@@ -23,11 +23,8 @@ on:
 jobs:
   envoy-client:
     runs-on: ubuntu-24.04-arm
-    # The slowest green run of this job in the 20 merge-group runs network-install.sh's bounds were
-    # measured on took 156 s (job 136006456461). Its two installs through that script, the frozen
-    # install and the NATS pull, can take 425 s each before the script fails them by name, so the
-    # limit is 156 s + 850 s, rounded up: 17 minutes. Ten minutes would end a stalled pull in
-    # GitHub's cancellation, which names nothing (check-ci-filters.sh rule 21 refuses that).
+    # why: .github/ci-notes/ci-job-envoy-client.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
+    # 156 s + 2 x 425 s = 1,006 s -> 17 min.
     timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

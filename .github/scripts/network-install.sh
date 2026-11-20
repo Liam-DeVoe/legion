@@ -4,9 +4,9 @@
 #
 # Runs one install that waits on the network, bounded, retried and failed by name. A required job
 # of .github/workflows/ci.yaml runs every such install through this script, and
-# .github/scripts/check-ci-filters.sh (rule 21, in .github/scripts/ci_workflow_rules.py) refuses
+# .github/scripts/check-ci-filters.sh (rule 22, in .github/scripts/ci_workflow_rules.py) refuses
 # one that does not. `--bounds` prints the table below, one line per kind (`<kind> <bound s>
-# <attempts> <s before SIGKILL> <pause s>`), which rule 21 reads to hold each job's limit to the
+# <attempts> <s before SIGKILL> <pause s>`), which rule 22 reads to hold each job's limit to the
 # worst case of the installs it runs.
 #
 # WHY. On 20 November 2026 the daemon-go job of run 44665181416 waited in its "Install tmux" step,
@@ -70,7 +70,7 @@
 #   has no kind yet: no required job named one in those 20 runs, so no run measures its bound. The
 #   change that adds the first such step adds its line here, measured from that step's own runs;
 #   pull request #4434's fetch step is the one in sight. mise needs no kind: its own 30 s bound on
-#   each request covers the body too, so a stalled `mise install` ends by itself (rule 21's
+#   each request covers the body too, so a stalled `mise install` ends by itself (rule 22's
 #   docstring gives the measurement).
 #
 # TEST SEAM. NETWORK_INSTALL_BOUND_SECONDS, NETWORK_INSTALL_KILL_AFTER_SECONDS and
