@@ -19,8 +19,9 @@
 #   2. it clones <commit> once for each label into a second new directory, under a name of 16
 #      random hexadecimal digits that names no label, and applies the label's patch there; and once
 #      for each hidden label, with its source's patch (none for head);
-#   3. it runs `bun install --frozen-lockfile` in each of those checkouts, which the rig's profile
-#      build needs;
+#   3. it runs `bun install --force` in each of those checkouts, which the rig's profile build
+#      needs (a frozen install of a fresh clone left the workspace packages' links unresolved), and
+#      prints its output only when it fails;
 #   4. it runs `rule-search.ts <checkout> cut <label> <head>` over each label's checkout and over
 #      the checkout of the label's hidden copy, which fails where a text that the label's role reads
 #      still states its rule, or where a sentence that the head's search cuts is still there, and
@@ -90,7 +91,7 @@ tsv=$head/labels.tsv
 declare -A checkout_of=([head]=$head/head)
 made=()
 new_checkout() {
-  local label=$1 source=$2 name checkout
+  local label=$1 source=$2 name checkout log
   name=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
   checkout=$labels/$name
   git clone --quiet --no-checkout "$repository" "$checkout"
@@ -99,7 +100,7 @@ new_checkout() {
     git -C "$checkout" apply "${patch_of[$source]}"
     [ -n "$(git -C "$checkout" status --porcelain)" ] || refuse "the patch of $source changes nothing at $commit"
   fi
-  (cd "$checkout" && bun install --force >/dev/null)
+  log=$(cd "$checkout" && bun install --force 2>&1) || refuse "bun install --force failed in $label's checkout: $log"
   printf '%s\t%s\n' "$label" "$checkout" >>"$tsv"
   checkout_of[$label]=$checkout
   made+=("$label")

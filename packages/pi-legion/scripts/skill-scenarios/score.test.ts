@@ -3140,6 +3140,17 @@ run(
   headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
   [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
 );
+// The same run as -92, whose world had no route for its read of the base branch (gh-standin.ts
+// recorded the call `no_route`): what the agent did next measures the rig, so it is a rig error,
+// not the fail it would score.
+run(
+  "reviewer-pass-and-fail-gap-1",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(5), as: "gh", argv: ["api", "repos/example/widgets/branches/main"], route: null, no_route: true, exit: 97 })}\n${requestedChangesAt(20)}`,
+    "world.json": reviewWorld,
+  }),
+  [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
+);
 // The rules that decide a heads run, each staged once as it passes and once as it fails: the
 // approval of #702 must name #702's head (headsReview's `approves`), a refusal must name k1
 // (`namesCheck`), and the architect must sign nothing off (`signOffs`) and send the issue back with
@@ -3315,6 +3326,15 @@ test("a heads run's WAITING line fails it only where it comes before the run's d
   expect(rowOf("reviewer-pass-and-fail-head-92")).toMatch(
     /^reviewer-pass-and-fail-head-92\tpass=false\t/
   );
+});
+
+// Catches: a run whose world had no route for one of its calls scored as a pass or a fail.
+test("a heads run whose gh stand-in had no route for a call is a rig error naming the call", () => {
+  expect(out).toContain(
+    "reviewer-pass-and-fail-gap-1\trig error: the gh stand-in had no route for 1 call(s), first `gh api repos/example/widgets/branches/main`: the agent read the rig's gap, not GitHub's answer"
+  );
+  expect(out).not.toContain("reviewer-pass-and-fail-gap-1\tpass=");
+  expect(out).toContain("reviewer-pass-and-fail\tgap\t0/0\t0/0\t1\t0\n");
 });
 
 // Catches: a reviewer's approval scored at any commit (the deep audit's P1), when only an approval

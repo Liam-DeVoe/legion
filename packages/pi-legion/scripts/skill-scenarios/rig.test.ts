@@ -21,7 +21,7 @@ import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { fileRowLimit, RIG_STEP, VCS_COMMAND } from "./test-limit";
+import { fileRowLimit, RIG_STEP, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
@@ -2315,5 +2315,159 @@ describe("heads_fixture", () => {
     expect(routes("architect").answer("^gh api .*pulls/702/reviews")).toMatchObject([
       { state: "APPROVED", commit_id: head },
     ]);
+  });
+
+  // Each GitHub read the heads scenarios' agents made in the fifth round of runs, one call of each
+  // endpoint in the form an agent wrote it, and the reads the role prompts and skills name. Both
+  // repository names an agent used: the world's, and the one its addressing names.
+  const ROUND_CALLS = [
+    "gh --version",
+    "gh auth status",
+    "gh repo view skills-rig/project --json defaultBranchRef --jq .defaultBranchRef.name",
+    "gh api repos/skills-rig/project --jq {full_name,default_branch}",
+    "gh api repos/example/widgets/branches --jq .[].name",
+    "gh api -i repos/skills-rig/project/branches/main",
+    "gh api repos/example/widgets/branches/main/protection/required_status_checks",
+    "gh api repos/skills-rig/project/rulesets",
+    'gh api --paginate repos/example/widgets/rules/branches/main --jq .[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+    "gh api --paginate repos/skills-rig/project/issues/702/comments --jq .[] | [.user.login,.body] | @tsv",
+    "gh api repos/skills-rig/project/pulls/702/comments",
+    "gh api --paginate repos/example/widgets/pulls/703/reviews --jq .[] | [.id,.state,.user.login] | @tsv",
+    "gh api repos/example/widgets/pulls/702 --jq {head:.head.sha,base:.base.ref,mergeable_state}",
+    "gh api repos/example/widgets/actions/runs?head_sha={702}&per_page=100 --jq .workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv",
+    "gh api repos/example/widgets/actions/runs/1/jobs --jq .jobs[] | [.id, .name, .status, .conclusion] | @tsv",
+    "gh api repos/example/widgets/commits/{703}/check-runs --paginate --jq .check_runs[] | [.name, .status, .conclusion, .started_at] | @tsv",
+    "gh api --paginate repos/example/widgets/commits/{702}/status?per_page=100 --jq .statuses[] | [.context, .state] | @tsv",
+    "gh api repos/example/widgets/git/ref/heads/legion/LWEVAL-9-702 --jq .object.sha",
+    "gh api repos/example/widgets/compare/main...legion/LWEVAL-9-703 --jq .ahead_by",
+    'gh api graphql -f query=query{repository(owner:"example",name:"widgets"){pullRequest(number:703){mergeStateStatus mergeable baseRef{branchProtectionRule{requiredStatusCheckContexts}}}}}',
+    "gh api graphql --paginate -f query=query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}} -F o=example -F r=widgets -F n=702",
+    "gh pr view 703 --repo example/widgets --json number,headRefOid,mergeStateStatus,statusCheckRollup,isCrossRepository",
+    "gh pr diff 702 --repo example/widgets",
+    "gh pr checks 702 -R example/widgets --required",
+    "gh pr list --repo example/widgets --state open --json number,headRefName,headRefOid",
+  ];
+  // Catches: a world with no route for a GitHub read an agent makes, which the stand-in used to
+  // answer `gh: Not Found (HTTP 404)`, as if GitHub held no such thing: the fifth round's reviewers
+  // read the base's branch so, took it for a refusal and waited, and that measured the rig. And a
+  // stand-in that answers a read no route names in any way an agent can take for GitHub's.
+  test("heads_routes answer each GitHub read of the round as GitHub does, and a read they lack fails the run loudly", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+        "heads_routes reviewer-own-head sibling-fails",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const gh = (line: string) => {
+      const argv =
+        line
+          .replace(/\{(70[23])\}/g, (_, pr: string) => heads[pr])
+          .match(/'[^']*'|\S+/g)
+          ?.slice(1)
+          .map((arg) => arg.replace(/^'|'$/g, "")) ?? [];
+      // A jq program of several words is one argument, as the agent's shell quoted it.
+      const jq = argv.findIndex((arg) => arg === "--jq" || arg === "-q");
+      const args = jq < 0 ? argv : [...argv.slice(0, jq + 1), argv.slice(jq + 1).join(" ")];
+      const result = spawnWithin(
+        { ...SCRIPT_RUN, part: "gh-standin.ts" },
+        ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+        { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+      );
+      return {
+        code: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      };
+    };
+    for (const call of ROUND_CALLS) {
+      const { code, stderr } = gh(call);
+      expect({ call, noRoute: code === 97 || stderr.includes("STAND-IN HAS NO ROUTE") }).toEqual({
+        call,
+        noRoute: false,
+      });
+    }
+    expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
+    expect(gh("gh api repos/skills-rig/project/branches/main --jq .protected")).toEqual({
+      code: 0,
+      stdout: "false\n",
+      stderr: "",
+    });
+    expect(
+      gh(
+        "gh api repos/example/widgets/branches/main --jq .protection.required_status_checks.checks[].context"
+      )
+    ).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(gh("gh api repos/example/widgets/branches/main/protection")).toEqual({
+      code: 1,
+      stdout:
+        '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"403"}',
+      stderr: "gh: Resource not accessible by integration (HTTP 403)\n",
+    });
+    expect(gh("gh api repos/example/widgets/branches/no-such-branch --jq .name")).toMatchObject({
+      code: 1,
+      stderr: "gh: Branch not found (HTTP 404)\n",
+    });
+    expect(gh("gh api -i repos/example/widgets/branches/main").stdout).toStartWith(
+      "HTTP/2.0 200 OK\r\n"
+    );
+    expect(gh("gh pr checks 702 -R example/widgets --required")).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "no required checks reported on the 'legion/LWEVAL-9-702' branch\n",
+    });
+    // A review the run posts is GitHub's answer, then in the list and readable by its id.
+    writeFileSync(
+      path.join(run, "review.json"),
+      JSON.stringify({ event: "APPROVE", body: "ok", commit_id: heads["702"] })
+    );
+    const posted = gh(
+      `gh api --method POST repos/example/widgets/pulls/702/reviews --input ${path.join(run, "review.json")} --jq .id`
+    );
+    expect(posted).toEqual({ code: 0, stdout: "7002\n", stderr: "" });
+    expect(
+      gh("gh api repos/example/widgets/pulls/702/reviews --jq .[] | [.id,.state,.commit_id] | @tsv")
+        .stdout
+    ).toBe(`7002\tAPPROVED\t${heads["702"]}\n`);
+    expect(gh("gh api repos/example/widgets/pulls/702/reviews/7002 --jq .state").stdout).toBe(
+      "APPROVED\n"
+    );
+    expect(gh("gh api repos/example/widgets/pulls/702/reviews/99 --jq .state")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    expect(gh("gh pr view 702 --json reviews --jq .reviews[].state").stdout).toBe("APPROVED\n");
+    // A read no route names: the stand-in's own failure, named in the run's log, never an answer.
+    expect(gh("gh api repos/example/widgets/planted-unknown-endpoint --jq .")).toEqual({
+      code: 97,
+      stdout: "",
+      stderr:
+        "STAND-IN HAS NO ROUTE: gh api repos/example/widgets/planted-unknown-endpoint --jq .\n",
+    });
+    expect(readFileSync(path.join(run, "no-route.log"), "utf8")).toBe(
+      "STAND-IN HAS NO ROUTE: gh api repos/example/widgets/planted-unknown-endpoint --jq .\n"
+    );
+    const calls = readFileSync(path.join(run, "calls.jsonl"), "utf8").trim().split("\n");
+    expect(JSON.parse(calls.at(-1) ?? "{}")).toMatchObject({
+      route: null,
+      no_route: true,
+      exit: 97,
+    });
   });
 });

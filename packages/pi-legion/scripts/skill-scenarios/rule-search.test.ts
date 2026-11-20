@@ -44,19 +44,18 @@ function copy(): string {
 
 // A prompt part of another role: prompts.Compose gives it to neither role, and no link names it.
 const UNREAD = "packages/daemon/internal/prompts/roles/implementer.md";
-// The text that the most links reach, for each role: the session's list of skills names
-// legion-retro, whose SKILL.md links references/learnings.md, which names the tester's prompt.
-const DEEPEST = "packages/daemon/internal/prompts/roles/tester.md";
 
-// For each label: a sentence of its rule, and the text it is planted in at each depth.
-const PLANTS: Record<string, { sentence: string; at: Record<1 | 2 | 3, string> }> = {
+// For each label: a sentence of its rule, and the text it is planted in at each depth. Main's
+// skills link no text deeper than two links for any of the three roles (main's
+// legion-retro/references/learnings.md no longer names the tester's prompt), so the two-link plant
+// is the deepest, and the row below holds it there.
+const PLANTS: Record<string, { sentence: string; at: Record<1 | 2, string> }> = {
   "ablate-two-roles": {
     sentence:
       "A check has a pass at a head only when the implementer and the tester each recorded one there.",
     at: {
       1: "skills/legion-worker/references/tools.md",
       2: "skills/legion-controller/references/triage.md",
-      3: DEEPEST,
     },
   },
   "ablate-later-fail": {
@@ -65,7 +64,6 @@ const PLANTS: Record<string, { sentence: string; at: Record<1 | 2 | 3, string> }
     at: {
       1: "skills/legion-architect/SKILL.md",
       2: "skills/legion-architect/references/wake-routing.md",
-      3: DEEPEST,
     },
   },
   "ablate-architect-later-fail": {
@@ -74,7 +72,6 @@ const PLANTS: Record<string, { sentence: string; at: Record<1 | 2 | 3, string> }
     at: {
       1: "skills/legion-retro/SKILL.md",
       2: "skills/legion-worker/references/pr-body.md",
-      3: DEEPEST,
     },
   },
 };

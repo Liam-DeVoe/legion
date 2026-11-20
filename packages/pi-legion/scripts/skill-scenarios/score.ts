@@ -80,8 +80,9 @@ const IssueEvents = z.array(
 );
 /** `GET /api/v1/issues/{key}/messages/{id}`: the message and its replies. */
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
-/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, and (a
- * gh call that edited the pull request's body) the body the stand-in kept and serves from then on. */
+/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, (a gh
+ * call that edited the pull request's body) the body the stand-in kept and serves from then on, and
+ * (a call no route of the world matched) `no_route`. */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
@@ -90,6 +91,7 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  no_route: z.boolean().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -3319,6 +3321,9 @@ function median(values: number[]): number {
  *     its Dispatch never learned #702's head, so rig.sh's fixture_heads started no agent, and an
  *     agent's reading of the head's line would measure nothing;
  *   - it never finished: out.txt has no `exit=` line;
+ *   - its world answered a GitHub call with no route: gh-standin.ts recorded a call `no_route`, so
+ *     the agent read the rig's gap, not an answer GitHub gives, and whatever it did next measures
+ *     the rig (a world answers each refusal GitHub gives with a route of its own);
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
@@ -3361,6 +3366,11 @@ function unscored(
   }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  const gaps = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
+    (call) => call.no_route === true
+  );
+  if (gaps.length > 0)
+    return `the gh stand-in had no route for ${gaps.length} call(s), first \`gh ${gaps[0]?.argv.join(" ")}\`: the agent read the rig's gap, not GitHub's answer`;
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";

@@ -1966,16 +1966,30 @@ SQL
 }
 
 # heads_routes SCENARIO [CASE] writes the gh stand-in's routes of a heads scenario to
-# $R/fixtures.json, in the form of worker_fixture's, once fixture_heads has passed. They serve
-# `gh pr view`, `gh pr diff`, `gh pr checks` and the pull request read of #702 and #703 (#702 alone
-# in architect-pass-and-fail and ci-pass-and-fail), `gh pr list`, the check runs and the status of
-# each head (in ci-only, #702's head also has a success of k1's named job, docs; in
-# ci-pass-and-fail, its named job go-checks is still in progress there), an empty list of review
-# threads for `gh api graphql`, no rules on main, and the reviews of each pull request: a review
-# submitted through `gh api` answers its id, and a read lists none but, in architect-pass-and-fail
-# and ci-pass-and-fail's architect case, #702's one APPROVED review, whose Legion footer names
-# #702's head. A `gh pr` read of a number the world holds no pull request of is refused, as GitHub
-# refuses it. The stand-in records each call and its body in calls.jsonl.
+# $R/fixtures.json, in the form of worker_fixture's, once fixture_heads has passed. They answer as
+# GitHub answers an App installation's token in a repository whose base, main, has no branch
+# protection and no ruleset (GitHub's own answers, read on 20 November, are in the lane's evidence),
+# each GitHub read and write the role prompts, the skills and this round's agents' transcripts name:
+# `gh pr view`, `gh pr diff`, `gh pr checks` (exit 8 while a check runs; `--required` is GitHub's
+# "no required checks"), `gh pr list`, `gh pr edit`, `gh pr ready`, `gh pr merge`, `gh repo view`,
+# `gh auth status` and `gh --version`; the REST read and PATCH of each pull request; GraphQL (review
+# threads, the base's branch protection rule, which is none, and the head's check rollup); the check
+# runs and the combined status of each head (state `pending`, as GitHub answers a commit with no
+# status); the workflow runs of each head and their jobs; the repository; its branches (each
+# `protected: false`), each branch's protection read (403, "Resource not accessible by
+# integration", as GitHub answers an App's token), an unknown branch (404 "Branch not found"); the
+# git refs of each branch; the comparison of main with each head; the rules and rulesets of main
+# (none); `/user` (403, as for an App's token); and the reviews and issue comments of each pull
+# request: a review or comment the run writes is answered as GitHub answers it and then listed, and
+# a read of one review by its id answers it or GitHub's 404. In ci-only, #702's head also has a
+# success of k1's named job, docs; in ci-pass-and-fail, its named job go-checks is still in progress
+# there, as a workflow run of its own. A read lists no review but, in architect-pass-and-fail and
+# ci-pass-and-fail's architect case, #702's one APPROVED review, whose Legion footer names #702's
+# head. A `gh pr` read of a number the world holds no pull request of is refused, as GitHub refuses
+# it. `gh run` has no route: its watch of a run in progress cannot end here as it does on GitHub.
+# A call no route names is the stand-in's loud failure (gh-standin.ts), which score.ts counts as a
+# rig error, so a read this list lacks can never pass as GitHub's answer. The stand-in records each
+# call and its body in calls.jsonl.
 # Each body is `Dispatch: <issue>`, then the template's Verification section
 # (skills/legion-worker/references/pr-body.md), whose one Checks line is that of k1 at that pull
 # request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
@@ -1984,7 +1998,7 @@ SQL
 # that head; with none, `not yet run`. So no body disagrees with the results, and a reviewer's
 # refusal cannot come from a body.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs pending approved title pulls='[]' prs=(702 703)
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs pending approved title branches main pulls='[]' prs=(702 703)
   case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
@@ -2020,51 +2034,172 @@ ${line:-- Check k1 (before_merge): not yet run}
     [ "$scenario" != ci-pass-and-fail ] || pending='["go-checks"]'
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
       --argjson pending "$pending" --arg diff "$(git -C "$R/remote.git" diff main "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
-      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, pending:$pending, diff:$diff, url:$url}]' <<<"$pulls")
+      --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" \
+      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, pending:$pending, diff:$diff, url:$url, subject:$subject}]' <<<"$pulls")
   done
+  branches=$(git -C "$R/remote.git" for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads |
+    jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {name:.[0], sha:.[1]})')
+  main=$(git -C "$R/remote.git" rev-parse main)
   approved=false
   [ "$scenario" != architect-pass-and-fail ] && [ "$scenario:$scenario_case" != ci-pass-and-fail:architect ] || approved=true
   jq -n --argjson pulls "$pulls" --arg key "$worker_key" --arg title "$title" --arg repo "$worker_repo" \
-    --argjson approved "$approved" \
+    --argjson approved "$approved" --argjson branches "$branches" --arg main "$main" \
     --arg at "$(date -u +%FT%TZ)" '
     def ref: "legion/\($key)-\(.number)";
+    def api: "https://api.github.com/repos/\($repo)";
+    # A branch name as a path may spell it: its slashes as they are or escaped.
+    def branchpat: gsub("/"; "(/|%2F)");
+    # GitHub refusing a call: its body, and gh printing the message and exiting 1.
+    def refused($status; $message; $doc): {stdout:{message:$message, documentation_url:$doc, status:($status | tostring)},
+      stderr:"gh: \($message) (HTTP \($status))\n", exit:1, status:$status};
     def approval: {id:7001, node_id:"PRR_rig7001", user:{login:"rig-review[bot]", type:"Bot"},
       state:"APPROVED", commit_id:.head, submitted_at:$at, html_url:"\(.url)#pullrequestreview-7001",
       body:"No findings at this head.\n\nSecurity: none.\nFast-follow: none.\n\n<!-- legion: {\"session\":\"rig-reviewer\",\"phase\":\"review\",\"head\":\"\(.head)\"} -->"};
     def reviews: if $approved and .number == 702 then [approval] else [] end;
-    def pr: {number, url, html_url:.url, title:"\($title) (\($key))", state:"OPEN", isDraft:false,
-      headRefName:ref, headRefOid:.head, baseRefName:"main", body, mergeable:"MERGEABLE",
+    # GitHub: CLEAN is mergeable with every check passed; UNSTABLE, mergeable with one not passed.
+    def mss: if (.pending | length) > 0 then "UNSTABLE" else "CLEAN" end;
+    def adds: [.files[].additions] | add // 0;
+    def dels: [.files[].deletions] | add // 0;
+    # The workflow run of the head'"'"'s finished jobs, and of its running one.
+    def run: 1 + 100 * .index;
+    def pendingRun: 41 + 100 * .index;
+    def pr: {number, id:"PR_rig\(.number)", url, html_url:.url, title:"\($title) (\($key))", state:"OPEN", isDraft:false,
+      closed:false, author:{login:"rig-implementer[bot]", is_bot:true}, isCrossRepository:false, createdAt:$at, updatedAt:$at,
+      headRefName:ref, headRefOid:.head, baseRefName:"main", body, mergeable:"MERGEABLE", mergeStateStatus:mss,
       reviewDecision:(if reviews == [] then "" else "APPROVED" end),
-      head:{sha:.head, ref:ref}, base:{ref:"main"}, files,
+      head:{sha:.head, ref:ref}, base:{ref:"main"}, files, additions:adds, deletions:dels, changedFiles:(.files | length),
+      commits:[{oid:.head, messageHeadline:.subject, messageBody:"", authoredDate:$at, committedDate:$at,
+        authors:[{name:"Fixture", email:"fixture@example.invalid", login:""}]}],
+      comments:[],
       statusCheckRollup:([.jobs[] | {name:., status:"COMPLETED", conclusion:"SUCCESS"}] +
         [.pending[] | {name:., status:"IN_PROGRESS", conclusion:""}]),
       reviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}],
       latestReviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}]};
-    def checks: [(.jobs[] | "\(.)\tpass\t10s\thttps://github.com/\($repo)/actions/runs/1"),
-      (.pending[] | "\(.)\tpending\t0\thttps://github.com/\($repo)/actions/runs/41")] | join("\n");
-    def runs: {total_count:((.jobs + .pending) | length), check_runs:([.jobs | to_entries[] |
-      {id:(8000 + .key), name:.value, status:"completed", conclusion:"success"}] + [.pending | to_entries[] |
-      {id:(9100 + .key), name:.value, status:"in_progress", conclusion:null}])};
-    ($pulls[0]) as $first | [$pulls[] | select(.number != 702)] as $others |
-    {routes:(
+    def rest: {url:"\(api)/pulls/\(.number)", html_url:.url, id:(9000000 + .number), node_id:"PR_rig\(.number)", number,
+      state:"open", locked:false, title:"\($title) (\($key))", user:{login:"rig-implementer[bot]", type:"Bot"}, body,
+      draft:false, merged:false, mergeable:true, mergeable_state:(mss | ascii_downcase),
+      head:{label:"\($repo | split("/")[0]):\(ref)", ref:ref, sha:.head, repo:{full_name:$repo}},
+      base:{label:"\($repo | split("/")[0]):main", ref:"main", sha:$main, repo:{full_name:$repo}},
+      commits:1, additions:adds, deletions:dels, changed_files:(.files | length), created_at:$at, updated_at:$at};
+    def checks: . as $p | [($p.jobs[] | "\(.)\tpass\t10s\thttps://github.com/\($repo)/actions/runs/\($p | run)"),
+      ($p.pending[] | "\(.)\tpending\t0\thttps://github.com/\($repo)/actions/runs/\($p | pendingRun)")] | join("\n");
+    def checkrun($p; $id; $run): {id:$id, name:., head_sha:$p.head, run_id:$run, check_suite:{id:$run},
+      html_url:"https://github.com/\($repo)/actions/runs/\($run)/job/\($id)",
+      details_url:"https://github.com/\($repo)/actions/runs/\($run)/job/\($id)",
+      app:{slug:"github-actions", name:"GitHub Actions"}, started_at:$at};
+    def checkruns: . as $p |
+      [($p.jobs | to_entries[] | (8000 + .key + 100 * $p.index) as $id |
+         .value | checkrun($p; $id; $p | run) + {status:"completed", conclusion:"success", completed_at:$at}),
+       ($p.pending | to_entries[] | (9100 + .key + 100 * $p.index) as $id |
+         .value | checkrun($p; $id; $p | pendingRun) + {status:"in_progress", conclusion:null, completed_at:null})];
+    def runs: {total_count:(checkruns | length), check_runs:checkruns};
+    def wfrun($id; $name; $status; $conclusion): {id:$id, name:$name, display_title:"\($title) (\($key))",
+      event:"pull_request", status:$status, conclusion:$conclusion, head_sha:.head, head_branch:ref, run_number:$id,
+      run_attempt:1, html_url:"https://github.com/\($repo)/actions/runs/\($id)", jobs_url:"\(api)/actions/runs/\($id)/jobs",
+      created_at:$at, updated_at:$at, pull_requests:[{number}]};
+    def wfruns: (if (.jobs | length) > 0 then [wfrun(run; "ci"; "completed"; "success")] else [] end) +
+      (if (.pending | length) > 0 then [wfrun(pendingRun; .pending[0]; "in_progress"; null)] else [] end);
+    def graphql: {data:{repository:{nameWithOwner:$repo, defaultBranchRef:{name:"main"},
+      ref:{name:"main", branchProtectionRule:null}, branchProtectionRules:{totalCount:0, nodes:[]},
+      pullRequest:{number, id:"PR_rig\(.number)", state:"OPEN", mergeable:"MERGEABLE", mergeStateStatus:mss,
+        reviewDecision:(if reviews == [] then null else "APPROVED" end), headRefName:ref, headRefOid:.head,
+        baseRefName:"main", baseRef:{name:"main", branchProtectionRule:null},
+        reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]},
+        commits:{nodes:[{commit:{oid:.head, statusCheckRollup:{state:(if (.pending | length) > 0 then "PENDING" else "SUCCESS" end),
+          contexts:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[checkruns[] | {__typename:"CheckRun", name,
+            status:(.status | ascii_upcase), conclusion:(if .conclusion == null then null else (.conclusion | ascii_upcase) end),
+            isRequired:false, detailsUrl:.details_url}]}}}}]}}}}};
+    def repo: {id:1, node_id:"R_rig1", name:($repo | split("/")[1]), full_name:$repo,
+      owner:{login:($repo | split("/")[0]), type:"Organization"}, private:false, visibility:"public", default_branch:"main",
+      html_url:"https://github.com/\($repo)", url:api, archived:false,
+      permissions:{admin:false, maintain:false, push:true, triage:true, pull:true}};
+    def repoview: {name:($repo | split("/")[1]), nameWithOwner:$repo, owner:{login:($repo | split("/")[0])},
+      defaultBranchRef:{name:"main"}, url:"https://github.com/\($repo)", isPrivate:false, visibility:"PUBLIC",
+      isArchived:false, viewerPermission:"WRITE"};
+    def branch: {name, commit:{sha, url:"\(api)/commits/\(.sha)"},
+      _links:{self:"\(api)/branches/\(.name)", html:"https://github.com/\($repo)/tree/\(.name)"},
+      protected:false, protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
+      protection_url:"\(api)/branches/\(.name)/protection"};
+    def gitref: {ref:"refs/heads/\(.name)", node_id:"REF_rig", url:"\(api)/git/refs/heads/\(.name)",
+      object:{sha, type:"commit", url:"\(api)/git/commits/\(.sha)"}};
+    def compare: {url:"\(api)/compare/main...\(ref)", status:"ahead", ahead_by:1, behind_by:0, total_commits:1,
+      base_commit:{sha:$main}, merge_base_commit:{sha:$main},
+      commits:[{sha:.head, commit:{message:.subject, author:{name:"Fixture", email:"fixture@example.invalid"}}}],
+      files:[.files[] | {filename:.path, additions, deletions, changes:(.additions + .deletions)}]};
+    # Each number the world holds a pull request of, for the refusals of any other.
+    ([$pulls[].number | tostring] | join("|")) as $numbers |
+    ($pulls | to_entries | map(.value + {index:.key})) as $pulls |
+    ($pulls[0]) as $first | [$pulls[] | select(.number != $first.number)] as $others |
+    {current:$first.number, login:"rig[bot]", repo:$repo, routes:(
+      # The writes the run keeps, each answered as GitHub answers it and listed by the reads after it.
       [{match:"^gh api (?=.*pulls/[0-9]+/reviews)(?!.* (-X|--method)[ =]?GET( |$))(?=.* ((-X|--method)[ =]?POST|--input|-f|-F|--field|--raw-field)( |$))",
-        stdout:{id:7002, node_id:"PRR_rig7002", html_url:"\($first.url)#pullrequestreview-7002", submitted_at:$at}}] +
-      [$others[] | {match:"^gh pr view .*\\b\(.number)\\b", stdout:pr}, {match:"^gh pr diff .*\\b\(.number)\\b", stdout:.diff},
-        {match:"^gh pr checks .*\\b\(.number)\\b", stdout:checks}] +
-      [{match:"^gh pr (view|diff|checks)( .*)?[ /#](?!(\([$pulls[].number | tostring] | join("|")))\\b)[0-9]{3,}\\b",
+        keep:"review"},
+       {match:"^gh api (?=.*issues/[0-9]+/comments)(?!.* (-X|--method)[ =]?GET( |$))(?=.* ((-X|--method)[ =]?POST|--input|-f|-F|--field|--raw-field)( |$))",
+        keep:"comment"},
+       {match:"^gh pr review", keep:"review"}, {match:"^gh pr comment", keep:"comment"}] +
+      [$pulls[] | {match:"^gh api (?=.*(-X|--method)[ =]?PATCH( |$))(?=.*pulls/\(.number)([ ?]|$))", stdout:rest}] +
+      # gh pr: a number the world holds no pull request of is refused, and the base requires no check.
+      [$pulls[] | {match:"^gh pr checks (?=.*\\b\(.number)\\b)(?=.* --required( |$))",
+        stderr:"no required checks reported on the \u0027\(ref)\u0027 branch\n", exit:1}] +
+      [{match:"^gh pr (view|diff|checks)( .*)?[ /#](?!(\($numbers))\\b)[0-9]{3,}\\b",
         stderr:"GraphQL: Could not resolve to a PullRequest with that number. (repository.pullRequest)\n", exit:1},
-       {match:"^gh pr view", stdout:($first | pr)}, {match:"^gh pr diff", stdout:$first.diff},
-       {match:"^gh pr checks", stdout:($first | checks)}, {match:"^gh pr list", stdout:[$pulls[] | pr]},
-       {match:"^gh pr (edit|comment|review|ready)", stdout:"\($first.url)#issuecomment-1"},
-       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-       {match:"^gh api .*(-X|--method)[ =]?(POST|PATCH|PUT)", stdout:{id:6001, html_url:"\($first.url)#issuecomment-6001"}}] +
-      [$pulls[] | {match:"^gh api .*pulls/\(.number)/reviews", stdout:reviews},
+       {match:"^gh pr checks(?=.* --required( |$))", stderr:"no required checks reported on the \u0027\($first | ref)\u0027 branch\n", exit:1}] +
+      [$others[] | {match:"^gh pr view .*\\b\(.number)\\b", stdout:pr}, {match:"^gh pr diff .*\\b\(.number)\\b", stdout:.diff},
+        {match:"^gh pr checks .*\\b\(.number)\\b", stdout:checks, exit:(if (.pending | length) > 0 then 8 else 0 end)},
+        {match:"^gh pr edit .*\\b\(.number)\\b", stdout:.url}] +
+      [{match:"^gh pr view", stdout:($first | pr)}, {match:"^gh pr diff", stdout:$first.diff},
+       {match:"^gh pr checks", stdout:($first | checks), exit:(if ($first.pending | length) > 0 then 8 else 0 end)},
+       {match:"^gh pr list", stdout:[$pulls[] | pr]}, {match:"^gh pr edit", stdout:$first.url}] +
+      # GraphQL: the pull request a query names, by its number or its variable n, else the first.
+      [$others[] | {match:"^gh api .*graphql(?=.*(number: ?\(.number)\\b|\\bn=\(.number)\\b))", stdout:graphql}] +
+      [{match:"^gh api .*graphql", stdout:($first | graphql)}] +
+      # Each pull request'"'"'s reviews and comments, and its head'"'"'s check runs and combined status.
+      [$pulls[] | {match:"^gh api .*pulls/\(.number)/reviews/[0-9]+([ ?]|$)", lookup:"review", pull:.number},
+        {match:"^gh api .*pulls/\(.number)/reviews", stdout:reviews, list:"reviews", pull:.number},
+        {match:"^gh api .*issues/\(.number)/comments([ ?]|$)", stdout:[], list:"comments", pull:.number},
+        {match:"^gh api .*pulls/\(.number)/comments([ ?]|$)", stdout:[]},
         {match:"^gh api .*commits/\(.head)/check-runs", stdout:runs},
-        {match:"^gh api .*commits/\(.head)/status", stdout:{state:"success", sha:.head, total_count:0, statuses:[]}}] +
-      [{match:"^gh api .*pulls/[0-9]+/(reviews|comments)", stdout:[]},
-       {match:"^gh api .*rules/branches", stdout:[]}] +
-      [$pulls[] | {match:"^gh api .*pulls/\(.number)([^/0-9]|$)", stdout:pr}] +
-      [{match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}]
+        {match:"^gh api .*commits/\(.head)/status", stdout:{state:"pending", sha:.head, total_count:0, statuses:[],
+          commit_url:"\(api)/commits/\(.head)", url:"\(api)/commits/\(.head)/status"}}] +
+      # The base: no ruleset, no rule, and no branch protection.
+      [{match:"^gh api .*rules/branches", stdout:[]}, {match:"^gh api .*rulesets([ ?]|$)", stdout:[]}] +
+      [{match:"^gh api .*branches/[^ ?]+/protection"} +
+        refused(403; "Resource not accessible by integration"; "https://docs.github.com/rest/branches/branch-protection#get-branch-protection")] +
+      [$branches[] | {match:"^gh api .*branches/\(.name | branchpat)([ ?]|$)", stdout:branch}] +
+      [{match:"^gh api .*branches/[^ ?]+([ ?]|$)"} +
+        refused(404; "Branch not found"; "https://docs.github.com/rest/branches/branches#get-a-branch")] +
+      [{match:"^gh api .*branches([ ?]|$)", stdout:[$branches[] | {name, commit:{sha, url:"\(api)/commits/\(.sha)"}, protected:false}]}] +
+      [$branches[] | {match:"^gh api .*git/refs?/heads/\(.name | branchpat)([ ?]|$)", stdout:gitref}] +
+      [{match:"^gh api .*git/refs?/heads/[^ ?]+([ ?]|$)"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/git/refs#get-a-reference")] +
+      [$pulls[] | {match:"^gh api .*compare/(main|\($main))(\\.\\.\\.|%2E%2E%2E)(\(ref | branchpat)|\(.head))([ ?]|$)", stdout:compare}] +
+      # Each head'"'"'s workflow runs and their jobs.
+      [$pulls[] | {match:"^gh api .*actions/runs\\?\\S*head_sha=\(.head)", stdout:{total_count:(wfruns | length), workflow_runs:wfruns}}] +
+      [{match:"^gh api .*actions/runs\\?\\S*head_sha=", stdout:{total_count:0, workflow_runs:[]}}] +
+      [$pulls[] | . as $p | ($p | wfruns[]) as $w | [$p | checkruns[] | select(.run_id == $w.id)
+        | {id, run_id, name, head_sha, status, conclusion, started_at, completed_at, html_url, steps:[]}] as $jobs |
+        {match:"^gh api .*actions/runs/\($w.id)/jobs([ ?]|$)", stdout:{total_count:($jobs | length), jobs:$jobs}},
+        {match:"^gh api .*actions/runs/\($w.id)([ ?]|$)", stdout:$w}] +
+      [{match:"^gh api .*actions/runs/[0-9]+"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/actions/workflow-runs#get-a-workflow-run"),
+       {match:"^gh api .*actions/runs([ ?]|$)", stdout:{total_count:([$pulls[] | wfruns[]] | length), workflow_runs:[$pulls[] | wfruns[]]}}] +
+      # The pull requests over REST, the repository, and the token'"'"'s account (an App'"'"'s, which /user refuses).
+      [$pulls[] | {match:"^gh api .*pulls/\(.number)([^/0-9]|$)", stdout:rest}] +
+      [{match:"^gh api .*pulls/(?!(\($numbers))\\b)[0-9]+"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/pulls/pulls#get-a-pull-request"),
+       {match:"^gh api .*pulls([ ?]|$)", stdout:[$pulls[] | rest]},
+       {match:"^gh api (.* )?/?repos/[^/ ]+/[^/ ?]+([ ?]|$)", stdout:repo},
+       {match:"^gh repo view .*--json", stdout:repoview},
+       {match:"^gh api (.* )?/?user([ ?]|$)"} +
+        refused(403; "Resource not accessible by integration"; "https://docs.github.com/rest/users/users#get-the-authenticated-user"),
+       {match:"^gh --version", stdout:"gh version 2.98.0 (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n"},
+       {match:"^gh auth status", stdout:"github.com\n  ✓ Logged in to github.com account rig[bot] (GH_TOKEN)\n  - Active account: true\n  - Git operations protocol: https\n  - Token: ghs_************************************\n"},
+       # A merge of an open pull request into a base that requires nothing, as gh words it: the
+       # scorer reads the call, so a role that merges where it must not is a fail, not a rig error.
+       {match:"^gh pr ready", stderr:"! Pull request \($repo)#\($first.number) is already \"ready for review\"\n"},
+       {match:"^gh pr merge (?=.*(--squash|-s)( |$))", stderr:"✓ Squashed and merged pull request \($repo)#\($first.number) (\($title) (\($key)))\n"},
+       {match:"^gh pr merge (?=.*(--rebase|-r)( |$))", stderr:"✓ Rebased and merged pull request \($repo)#\($first.number) (\($title) (\($key)))\n"},
+       {match:"^gh pr merge", stderr:"✓ Merged pull request \($repo)#\($first.number) (\($title) (\($key)))\n"}]
     )}' >"$R/fixtures.json"
 }
 
@@ -2275,6 +2410,8 @@ cmd_run() {
   *) fail "unknown scenario $scenario" ;;
   esac
   if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
+  # Each call the world had no route for (gh-standin.ts), which score.ts counts as a rig error.
+  [ ! -s "$R/no-route.log" ] || sed "s|^|$name (${R##*/}): |" "$R/no-route.log"
 }
 
 # A batch's exit: its runs (each run's shell, daemon stand-in and fixture commands), the agents they
