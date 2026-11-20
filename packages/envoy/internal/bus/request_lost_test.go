@@ -184,6 +184,76 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	}
 }
 
+// A read through BoundedOn waits for no other client's connection. The listener's /healthz asks
+// whether its role lane's subscription stands (Client.CoreSubOK), which reads that client's
+// connection under the client's own lock and through nats.go's connection lock, as the recovery's
+// check of the subscriptions does (subscriptionsHealthy), and nats.go holds that lock through a
+// reconnect's dial and handshake. Finding the client that owns a read's connection (clientOwning)
+// takes each live client's lock in turn, so a read that took its connection watch before its call
+// started waited out the role lane's held handshake, up to its connect timeout (5 s), past its own
+// bound: the role lane reads a claim within 2 s (cmd/listener's roleHolderReadTimeout). Here
+// another client's reconnect handshake is held (testnats.HandshakeHold) and its CoreSubOK holds
+// that client's lock meanwhile, and the read must answer within that handshake attempt. It reads
+// through a handle on a connection no client owns, for which that search passes every live
+// client: a handle whose own client the search found first would end it before the held one on
+// some reads and not on others.
+func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) {
+	const (
+		bucket = "envoy_read_beside_held_handshake"
+		key    = "ses_read_beside"
+	)
+	conn := testnats.Connect(t, testnats.URL(t))
+	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("open the bucket: %v", err)
+	}
+	if _, err := kv.Put(key, []byte("row")); err != nil {
+		t.Fatalf("write the key the row reads: %v", err)
+	}
+
+	_, url := testnats.Start(t)
+	hold := testnats.StartHandshakeHold(t, url)
+	lane, err := Connect([]string{hold.URL()})
+	if err != nil {
+		t.Fatalf("connect the other client through the handshake hold: %v", err)
+	}
+	t.Cleanup(lane.Close)
+	t.Cleanup(hold.Release)
+	laneConn := lane.Connection()
+	hold.HoldReconnect(t, laneConn)
+	go lane.CoreSubOK()
+	// The other client's lock is held by its CoreSubOK once it stays taken across two looks 50 ms
+	// apart: every other hold of it lasts microseconds.
+	deadline := time.Now().Add(lostRequestWait)
+	for taken := 0; taken < 2; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the other client's CoreSubOK did not hold its lock within %s of its held handshake", lostRequestWait)
+		}
+		if !lane.mu.TryLock() {
+			taken++
+			continue
+		}
+		lane.mu.Unlock()
+		taken = 0
+	}
+
+	answers := hold.AnswersWithinAttempt(t, laneConn, "a read through BoundedOn beside another client's held handshake", func() error {
+		entry, answered, err := BoundedOn(t.Context(), kv, func() (nats.KeyValueEntry, error) { return kv.Get(key) })
+		if err == nil && (!answered || string(entry.Value()) != "row") {
+			return errors.New("the read answered no row")
+		}
+		return err
+	})
+	if answers[0] != nil {
+		t.Fatalf("a read through BoundedOn beside another client's held handshake: %v", answers[0])
+	}
+}
+
 // roleReadBound is the bound the role read below is held to: well above the reconnect the row cuts
 // its connection into (nats.go dials the same server again after its ReconnectWait, 1 s), which
 // the row requires to take at most a quarter of it, so a read that fails before half of it failed

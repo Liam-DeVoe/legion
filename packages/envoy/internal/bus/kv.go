@@ -460,16 +460,29 @@ func (kv KeyValue) newestMarker(key string) (uint64, error) {
 // The watch is the one of the client that owns the connection kv was opened on (watchConnection);
 // a handle whose connection no client serves with - one a test opened on its own, or one its
 // client has since replaced, which is closed, so nats.go fails a call on it at once - is waited
-// for as Bounded waits.
+// for as Bounded waits. The watch is taken as BoundedOnConnection takes its own (boundedBeside),
+// on a goroutine of its own beside call, which starts at once, so the wait ends at ctx's end
+// whatever taking the watch costs. Finding that client (clientOwning) takes each live client's
+// lock in turn, and a client holds its lock while it reads its connection's state through
+// nats.go's connection lock (Client.CoreSubOK, which the listener's /healthz asks of its role
+// lane, and the recovery's subscriptionsHealthy), which nats.go holds through a reconnect's dial
+// and handshake. Taken on the caller's goroutine, the watch kept call from starting until another
+// client's held handshake ended, up to its connect timeout (connectTimeout, 5 s), past the
+// caller's bound: the listener's role lane reads a claim within 2 s
+// (TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake). The cost is
+// BoundedOnConnection's: a reconnect after call sent its request and before the watch read the
+// connection's reconnect count is not seen, and call is then waited for until ctx ends, or, under
+// a ctx that can never end, until its own MaxWait.
 func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) (T, bool, error) {
 	if kv.streams == nil {
 		return Bounded(ctx, call)
 	}
-	watch, ok := watchOwnedConnection(kv.streams.Conn())
-	if !ok {
-		return Bounded(ctx, call)
-	}
-	return boundedWatching(ctx, watch, call)
+	conn := kv.streams.Conn()
+	return boundedBeside(ctx, func() connWatch {
+		// A connection no client serves with gets the zero watch, which follows none.
+		watch, _ := watchOwnedConnection(conn)
+		return watch
+	}, call)
 }
 
 // BoundedOnConnection is BoundedOn for a call on client's connection, the one client serves with
@@ -478,7 +491,7 @@ func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) 
 // its handle inside the read it bounds), or any other JetStream call. A client with no connection
 // is waited for as Bounded waits.
 //
-// Unlike BoundedOn, it reads no state of nats.go's on the caller's goroutine, and call starts at
+// As BoundedOn does, it reads no state of nats.go's on the caller's goroutine, and call starts at
 // once: the watch's reconnect count (watchConnection) and each later read of whether the
 // connection is lost (connWatch.lostRequest) wait for nats.go's connection lock, which nats.go
 // holds through a reconnect's dial and handshake. So the watch is taken on a goroutine of its own
@@ -495,6 +508,16 @@ func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) 
 // claim and one of the holder's session). So a loss missed that way costs one read at most 2 s,
 // where a loss seen costs it the reconnect.
 func BoundedOnConnection[T any](ctx context.Context, client *Client, call func() (T, error)) (T, bool, error) {
+	return boundedBeside(ctx, client.watchConnection, call)
+}
+
+// boundedBeside is the wait of BoundedOn and BoundedOnConnection: call starts at once on a
+// goroutine of its own, watch, which reads nats.go's state, runs on another, and the wait ends at
+// the first of call's answer, ctx's end and the loss of the connection the watch follows, which
+// connWatch.bound reads on a third. ctx wins over a loss seen at the same moment, and the
+// abandoned call runs on to its own end, as Bounded's does. A watch on no connection follows
+// none, and call is then waited for as Bounded waits.
+func boundedBeside[T any](ctx context.Context, watch func() connWatch, call func() (T, error)) (T, bool, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, false, err
@@ -505,7 +528,7 @@ func BoundedOnConnection[T any](ctx context.Context, client *Client, call func()
 	}
 	answers := make(chan answer, 1)
 	watches := make(chan connWatch, 1)
-	go func() { watches <- client.watchConnection() }()
+	go func() { watches <- watch() }()
 	go func() {
 		value, err := call()
 		answers <- answer{value: value, err: err}
@@ -520,12 +543,12 @@ func BoundedOnConnection[T any](ctx context.Context, client *Client, call func()
 			return got.value, true, got.err
 		case <-ctx.Done():
 			return zero, false, ctx.Err()
-		case watch := <-watches:
-			if watch.conn == nil {
+		case taken := <-watches:
+			if taken.conn == nil {
 				continue
 			}
 			var bounded context.Context
-			bounded, stop = watch.bound(ctx)
+			bounded, stop = taken.bound(ctx)
 			lost = bounded.Done()
 		case <-lost:
 			// bounded ends with ctx too, and ctx wins over a loss seen at the same moment.
@@ -533,41 +556,6 @@ func BoundedOnConnection[T any](ctx context.Context, client *Client, call func()
 				return zero, false, err
 			}
 			return zero, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
-		}
-	}
-}
-
-// boundedWatching is the wait of BoundedOn once it watches the connection call goes out on: call
-// runs in a goroutine of its own, and the wait ends at the first of its answer, ctx's end and the
-// loss of that connection (connWatch.lost). ctx wins over a loss seen at the same event, and the
-// abandoned call runs on to its own end, as Bounded's does.
-func boundedWatching[T any](ctx context.Context, watch connWatch, call func() (T, error)) (T, bool, error) {
-	var zero T
-	if err := ctx.Err(); err != nil {
-		return zero, false, err
-	}
-	type answer struct {
-		value T
-		err   error
-	}
-	answers := make(chan answer, 1)
-	go func() {
-		value, err := call()
-		answers <- answer{value: value, err: err}
-	}()
-	for {
-		select {
-		case got := <-answers:
-			return got.value, true, got.err
-		case <-ctx.Done():
-			return zero, false, ctx.Err()
-		case <-watch.changed:
-			if err := ctx.Err(); err != nil {
-				return zero, false, err
-			}
-			if watch.lost() {
-				return zero, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
-			}
 		}
 	}
 }

@@ -1248,10 +1248,22 @@ func mpReceiving(t *testing.T, pod *mpPod, within time.Duration) time.Time {
 	return receiving
 }
 
-// mpDecisionGrace is how long after a pod's join decision a message may still have been taken by
-// its relays: the relay loop stops them on its own goroutine a moment after the decision
-// (sessionRelays.setOwned), so a message published in that moment can be one of theirs.
-const mpDecisionGrace = 250 * time.Millisecond
+// mpDecisionGrace is how long after a pod's join decision - its leaseJoinedStandbyLine - a message
+// published may still be one its relays took. Nothing in the code waits there: joinTerm clears the
+// relays' term (sessionRelays.setOwned) in its next step after that line, on the receive loop's
+// goroutine, and from then on no relay's pull hands out a message (sessionRelays.pullBound,
+// bus.PullBound). The durable's subscription, which goes relayFormerSettle (1 s) later, takes no
+// part: the durable path skips what a session's consumer holds, and from the decision on its
+// handler forwards and acks nothing (durableReceiver.holding). So the grace covers the clear's lag
+// behind the line, and a publisher's stamp, taken once the stream has acked the message, coming
+// after a relay already took that message. Measured at ef976a9b across 10 runs of the row below:
+// the relays stopped 20 µs to 1.03 ms after the line, and the last message pod-a forwarded was
+// published 6 to 65 ms before it. 100 ms is that 1.03 ms and a margin of about 99 ms for a
+// publisher's stamp taken late under load. A message published inside the grace can come twice:
+// pod-a took and forwarded it before its relays stopped, and the holder's restart of the session's
+// consumer at the floor the held frame keeps sends it again, the in-doubt repeat
+// (sessionRelays.settleStoppedFrames).
+const mpDecisionGrace = 100 * time.Millisecond
 
 // The rule a pod that delivered without a lease stops forwarding by once its join reads another
 // pod's record (durableReceiver.joinTerm): from that decision on, nothing it takes is forwarded or
@@ -1262,8 +1274,11 @@ const mpDecisionGrace = 250 * time.Millisecond
 // frame above it. A frame the session answered above a held one before the decision may so come
 // twice: the repeat the README's "When a session can see a message twice" states
 // (sessionRelays.settleStoppedFrames). One the first pod forwarded after its decision would come
-// twice as well, so every message published from mpDecisionGrace after the decision on reaches its
-// session exactly once, and none more than twice.
+// twice as well. So every message published from mpDecisionGrace (100 ms) after the decision on
+// reaches its session exactly once, and none more than twice: the grace is the relays' stop
+// behind the decision's line, 1.03 ms at most across 10 runs, and a margin for the publisher's
+// stamp (mpDecisionGrace). A message published inside it may be one the first pod took before its
+// relays stopped, which comes twice as the repeat above does.
 func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *testing.T) {
 	row := mpStartLateGrantRow(t, "late_fence", mpStartPod)
 	b := mpStartLateGrantHolder(t, row)
@@ -1295,8 +1310,26 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *
 		}
 	}
 	after := row.publisher.since(joined.Add(mpDecisionGrace))
+	// The figures mpDecisionGrace rests on, in this run: when pod-a's relays stopped, and when the
+	// last message pod-a forwarded - the last one that came twice - was published, each from its
+	// decision.
+	stopped := time.Duration(-1)
+	for _, record := range mpRecords(row.a.Output.String(), "session relays follow the receive term") {
+		if at := mpRecordTime(t, record); record["relaying"] == false && !at.Before(joined) {
+			stopped = at.Sub(joined)
+			break
+		}
+	}
+	var forwarded time.Time
+	for _, m := range messages {
+		if counts[m.event] == 2 && m.published.After(forwarded) {
+			forwarded = m.published
+		}
+	}
+	t.Logf("pod-a's relays stopped %s after its decision, and the last message it forwarded, one that came twice, was published %s from it",
+		stopped, forwarded.Sub(joined).Round(time.Millisecond))
 	row.serving.requireOnce(t, after)
-	t.Logf("%d messages published past pod-a's decision, each taken once", len(after))
+	t.Logf("%d messages published from mpDecisionGrace past pod-a's decision on, each taken once", len(after))
 }
 
 // mpRoleLaneConnection is the client name of a pod's role lane connection (bus.ConnectRoleLane),
@@ -1392,7 +1425,8 @@ func TestTwoPodsLeaseHeldByADeadPodOnALateGrantIsTakenWhenItExpires(t *testing.T
 		return false
 	})
 	if took := taken.Sub(joined); took > takeBound {
-		t.Fatalf("pod-a took the expired record %s after its join, past leaseTTL, a standby poll and a second (%s)", took.Round(time.Millisecond), takeBound)
+		t.Fatalf("pod-a took the dead holder's expired record %s after its join (%s after the grant), past leaseTTL, a standby poll and a second (%s): a standby takes a record it has read unchanged for a full leaseTTL, counted from its first read at the join, at its next poll (lease.poll)",
+			took.Round(time.Millisecond), taken.Sub(granted).Round(time.Millisecond), takeBound)
 	}
 	var settled time.Time
 	mpEventually(t, settleCap+5*time.Second, "pod-a's settle hold to end", func() bool {
@@ -1404,10 +1438,11 @@ func TestTwoPodsLeaseHeldByADeadPodOnALateGrantIsTakenWhenItExpires(t *testing.T
 		return true
 	})
 	if held := settled.Sub(taken); held > settleCap+time.Second {
-		t.Fatalf("pod-a's settle hold ended %s after it took the record, past settleCap and a second (%s)", held.Round(time.Millisecond), settleCap+time.Second)
+		t.Fatalf("pod-a's settle hold ended %s after it took the expired record, past settleCap and a second (%s): a term taken over an expired record holds what it receives for settleCap at most, an ack wait and settleMargin",
+			held.Round(time.Millisecond), settleCap+time.Second)
 	}
-	t.Logf("pod-a took the expired record %s after the grant and delivered %s after that",
-		taken.Sub(granted).Round(time.Millisecond), settled.Sub(taken).Round(time.Millisecond))
+	t.Logf("pod-a took the expired record %s after the grant (%s after its join) and its settle hold ended %s after that",
+		taken.Sub(granted).Round(time.Millisecond), taken.Sub(joined).Round(time.Millisecond), settled.Sub(taken).Round(time.Millisecond))
 	mpWaitActive(t, row.a, 10*time.Second)
 	time.Sleep(5 * time.Second) // publish on past the take
 	row.stop()

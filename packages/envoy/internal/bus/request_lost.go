@@ -105,7 +105,8 @@ func (w *connWatch) lostRequest() bool {
 // that, which the caller defers. A wait that takes no channel but a context - a sync
 // subscription's NextMsgWithContext, a JetStream request handed a context (RequestOnConnection) -
 // waits on it to end at the connection event rather than at ctx's deadline, and so does a wait that
-// must read no state of nats.go's itself (BoundedOnConnection), since the loss is read here.
+// must read no state of nats.go's itself (boundedBeside, the wait of BoundedOn and
+// BoundedOnConnection), since the loss is read here.
 func (w connWatch) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithCancelCause(ctx)
 	go func() {
