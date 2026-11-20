@@ -63,7 +63,8 @@ let outputs = 0;
 
 /** One `dd` of `written` bytes into a file of its own, ending on `conv`, with the variables
  *  `env` sets and no other: `dd` is named by its path and needs none, so what each row sets is
- *  all its runs differ by. */
+ *  all its runs differ by. `pid` answers the `dd`'s pid once it has started, which is the child
+ *  `runBounded` spawns itself. */
 function runDd(conv: "fsync" | "fdatasync", env: Record<string, string | undefined>) {
   outputs += 1;
   const output = join(dir, `out-${outputs}`);
@@ -71,8 +72,10 @@ function runDd(conv: "fsync" | "fdatasync", env: Record<string, string | undefin
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined) environment[name] = value;
   }
+  let pid: number | undefined;
   return {
     output,
+    pid: () => pid,
     run: runBounded({
       argv: [
         dd,
@@ -86,25 +89,23 @@ function runDd(conv: "fsync" | "fdatasync", env: Record<string, string | undefin
       bound: "short",
       env: environment,
       from: import.meta.url,
+      spawned: (started) => {
+        pid = started;
+      },
     }),
   };
 }
 
-/** Whether the `dd` writing `output` sleeps in the kernel's `hrtimer_nanosleep` now, as
- *  `/proc/<pid>/wchan` names the call a sleeping process is in. The process is found by its
- *  command line, which holds `of=<output>`, a path no other process names. */
-function sleepsInNanosleep(output: string): boolean {
-  for (const entry of readdirSync("/proc")) {
-    if (!/^\d+$/.test(entry)) continue;
-    try {
-      const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
-      if (argv[0] !== dd || !argv.includes(`of=${output}`)) continue;
-      return readFileSync(`/proc/${entry}/wchan`, "utf8").includes("nanosleep");
-    } catch {
-      // The process ended between the listing and the read.
-    }
+/** Whether the `dd` `pid` sleeps in the kernel's `hrtimer_nanosleep` now, as its own
+ *  `/proc/<pid>/wchan` names the call a sleeping process is in. Its own file alone is read, so no
+ *  other process of the machine can hold the read. */
+function sleepsInNanosleep(pid: number): boolean {
+  try {
+    return readFileSync(`/proc/${pid}/wchan`, "utf8").includes("nanosleep");
+  } catch {
+    // The dd has ended.
+    return false;
   }
-  return false;
 }
 
 for (const conv of ["fsync", "fdatasync"] as const) {
@@ -113,15 +114,19 @@ for (const conv of ["fsync", "fdatasync"] as const) {
     async () => {
       stallDisk(dir);
       try {
-        const { output, run } = runDd(conv, stallEnvironment(dir));
+        const { output, pid, run } = runDd(conv, stallEnvironment(dir));
         const ended = watch(run);
         // dd has written its bytes, reached the call it ends on, and sleeps in the library's
         // wait, which polls the file between short sleeps: dd itself never sleeps, so a dd seen
         // in a kernel sleep with its bytes written and its run not ended is one the library
         // holds. A dd the library let through ends with no such sleep (the control below).
         await eventually(`dd conv=${conv} to sleep in the library's wait`, () => {
+          const started = pid();
           return (
-            existsSync(output) && statSync(output).size === written && sleepsInNanosleep(output)
+            started !== undefined &&
+            existsSync(output) &&
+            statSync(output).size === written &&
+            sleepsInNanosleep(started)
           );
         });
         expect(ended(), `dd conv=${conv} ended while the stall file existed`).toBe(false);

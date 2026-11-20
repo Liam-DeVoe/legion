@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { closeSync, constants, openSync, readdirSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
   startFakeDispatch,
 } from "@legion/envoy-client/test/fake-dispatch";
+import { processEnded } from "@legion/test-fixtures/process-state";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { ServerWebSocket } from "bun";
 
@@ -54,55 +55,6 @@ function processAlive(pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-/** A process's state letter and process group, as its /proc stat reads them. */
-interface ProcStat {
-  readonly state: string;
-  readonly group: string;
-}
-
-/** `pid`'s stat, read past the last `)` of /proc/<pid>/stat, or undefined where /proc lists no
- *  such process. */
-function statOf(pid: number | string): ProcStat | undefined {
-  let stat: string;
-  try {
-    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return undefined;
-  }
-  const [state = "", , group = ""] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  return { state, group };
-}
-
-/** Whether `pid` has ended: /proc lists it dead (Z, a zombie nothing has reaped yet, or X), or
- *  lists it not at all and signal 0 no longer reaches it, which also answers on a machine with no
- *  /proc. A grandchild left an orphan is reaped by whatever the kernel hands it to, which is this
- *  test process where it runs as PID 1 of its PID namespace, and the runtime reaps only the
- *  children it started, so that zombie stays, and signal 0 still reaches it. */
-function ended(pid: number): boolean {
-  const stat = statOf(pid);
-  if (stat === undefined) return !processAlive(pid);
-  return stat.state === "Z" || stat.state === "X";
-}
-
-/** Whether every process of group `pgid` has ended (`ended`). Signal 0 to the group reaches a
- *  zombie member too, so while it does, the group's members are read from /proc one by one; a
- *  machine with no /proc to read them from answers that the group runs. */
-function groupEnded(pgid: number): boolean {
-  if (!groupAlive(pgid)) return true;
-  let entries: string[];
-  try {
-    entries = readdirSync("/proc").filter((entry) => /^[0-9]+$/u.test(entry));
-  } catch {
-    return false;
-  }
-  return entries.every((entry) => {
-    const stat = statOf(entry);
-    return (
-      stat === undefined || stat.group !== String(pgid) || stat.state === "Z" || stat.state === "X"
-    );
-  });
 }
 
 /** The pid of a process the supervisor started. `node:child_process` types it as optional, since
@@ -355,11 +307,17 @@ describe("Supervisor.stop", () => {
           // The grandchild is no child of the supervisor: once its parent is gone, its zombie
           // answers `kill(pid, 0)` until whatever it was handed to reaps it, which raises no
           // event here, can come after the return, and never comes where that is this test
-          // process (`ended`). So the leader's group, the grandchild in it, is read until every
-          // process of it has ended.
+          // process, as where it runs as PID 1 of its PID namespace. Signal 0 to the group
+          // reaches a zombie member too, so while it answers, each member is judged by its own
+          // state (`processEnded`). The group holds the leader and the grandchild alone: the
+          // leader leads a session of its own (`Supervisor.start` spawns it detached), so only
+          // the processes below it can be in its group, and of those its shell starts, only the
+          // `sleep` is left once both pid files are read (the held leader's `mkfifo` exits before
+          // the held leader writes its pid). Each member's own `/proc/<pid>/stat` is read, and no
+          // other process's.
           await eventually(
             `the group of the leader ${leader}, its grandchild ${alone} included, to end`,
-            () => groupEnded(leader) && ended(alone)
+            () => !groupAlive(leader) || (processEnded(leader) && processEnded(alone))
           );
         } finally {
           killLeft(-leader);

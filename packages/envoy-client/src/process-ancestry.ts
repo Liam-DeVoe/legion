@@ -30,7 +30,8 @@ function procParentPid(pid: number): number | undefined {
 /** Every running process's parent, from one `ps`. Off Linux this is what a whole walk is read
  *  from: a `ps` per step would cost up to `MAX_ANCESTORS` of them inside the one bound the
  *  caller is held to. A `ps` that fails or does not answer in time leaves the table empty, and
- *  the walk then stops where it started, as a failed parent lookup did. */
+ *  the walk then stops where it started, as a failed parent lookup did. It never runs on Linux,
+ *  which reads each parent from the one process's own `/proc/<pid>/stat` (`procParentPid`). */
 function processTable(): ReadonlyMap<number, number> {
   const table = new Map<number, number>();
   try {
@@ -49,22 +50,37 @@ function processTable(): ReadonlyMap<number, number> {
   return table;
 }
 
-/** Whether process `candidate` is `pid` or one of its ancestors, walking up from `pid` and
- *  stopping at the first match, at init, or after `MAX_ANCESTORS` steps. */
-export function isAncestor(candidate: string, pid: number = process.pid): boolean {
-  // Linux reads each parent from `/proc`, which costs no process at all. Everywhere else the
-  // whole walk is read from one snapshot, taken when the walk first asks for a parent: a match
-  // on the process itself still runs nothing.
+/** How this machine names a process's parent: from `/proc` on Linux, which costs no process at
+ *  all, and everywhere else from one snapshot of the whole table, taken when the walk first asks
+ *  for a parent, so a match on the process itself still runs nothing. */
+function systemParent(): (pid: number) => number | undefined {
+  if (process.platform === "linux") return procParentPid;
   let table: ReadonlyMap<number, number> | undefined;
-  const parentPid = (child: number): number | undefined => {
-    if (process.platform === "linux") return procParentPid(child);
+  return (child) => {
     table ??= processTable();
     return table.get(child);
   };
+}
+
+/** Whether process `candidate` is `pid` or one of its ancestors, walking up from `pid` and
+ *  stopping at the first match, at init, or after `MAX_ANCESTORS` steps. `parent` names a
+ *  process's parent: this machine's by default, and a scripted chain in the tests, which so hold
+ *  the walk wherever the test runner itself stands.
+ *
+ *  Init, pid 1, is never a match, though every process of its PID namespace descends from it:
+ *  being below it tells no chain from another, and a tmux pane's first process, which the
+ *  callers ask about, is a process the tmux server forked, never pid 1 of the namespace it shares
+ *  with this process. Where this process is itself pid 1, as a test runner in a container is, it
+ *  is no ancestor of its own either. */
+export function isAncestor(
+  candidate: string,
+  pid: number = process.pid,
+  parent: (pid: number) => number | undefined = systemParent()
+): boolean {
   let current: number | undefined = pid;
   for (let step = 0; current !== undefined && current > 1 && step < MAX_ANCESTORS; step++) {
     if (String(current) === candidate) return true;
-    current = parentPid(current);
+    current = parent(current);
   }
   return false;
 }

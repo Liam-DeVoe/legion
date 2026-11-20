@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `isAncestor` takes an optional reader of a process's parent, as `nearestAncestorNamed` does, so a
+  caller or a test can name the chain it walks rather than the runner's own. With none it reads
+  `/proc` as before, and init is still never a match: pid 1 is an ancestor of every process of its
+  namespace, so a match there would hold for every process.

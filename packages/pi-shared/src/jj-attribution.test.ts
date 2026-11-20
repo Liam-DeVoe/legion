@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { processEnded } from "@legion/test-fixtures/process-state";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -621,25 +622,14 @@ describe("userConfigChain", () => {
 
   // Real-time polling is required here: the wrapper's pidfile and the kernel ending its child
   // are external OS state, which Bun's fake timers cannot advance.
-  /** The child has stopped once /proc lists it dead (Z, a zombie nothing has reaped yet, or X), or
-   * lists it not at all and signal 0 no longer reaches it, which also answers on a machine with
-   * no /proc. The child is no child of this process: once the wrapper is gone, its zombie waits
-   * for whatever it was reparented to, which signal 0 still reaches, and where that is this test
-   * process, as where `bun test` runs as PID 1 of its PID namespace, nothing ever reaps it. */
+  /** The child has stopped once `processEnded` reads it ended, by its state. The child is no
+   * child of this process: once the wrapper is gone, its zombie waits for whatever it was
+   * reparented to, which signal 0 still reaches, and where that is this test process, as where
+   * `bun test` runs as PID 1 of its PID namespace, nothing ever reaps it. */
   async function stops(pid: number): Promise<boolean> {
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline) {
-      const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
-      if (stat === undefined) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return true;
-        }
-      } else {
-        const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
-        if (state === "Z" || state === "X") return true;
-      }
+      if (processEnded(pid)) return true;
       await Bun.sleep(10);
     }
     return false;

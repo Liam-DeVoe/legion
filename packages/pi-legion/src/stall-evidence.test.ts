@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
@@ -152,6 +152,80 @@ test("a machine whose /proc cannot be read records that, never an empty tree", a
     expect(record.tree).toEqual({ read: false, reason: scan.reason });
   } finally {
     rmSync(path.dirname(absent), { recursive: true, force: true });
+  }
+});
+
+/** A proc root of the case's own under `root`: a `stat` with a boot time, and for each process its
+ * `stat`, naming `ppid` as its parent, and for each of its threads a `task/<tid>/children` list,
+ * or, where `threads` holds `undefined` for a thread, a thread with no such file. */
+function builtProc(
+  root: string,
+  processes: readonly {
+    readonly pid: number;
+    readonly ppid: number;
+    readonly threads: Readonly<Record<number, readonly number[] | undefined>>;
+  }[]
+): void {
+  writeFileSync(path.join(root, "stat"), "cpu 0 0 0 0\nbtime 1700000000\n");
+  for (const { pid, ppid, threads } of processes) {
+    // Fields 3 to 22 of proc(5): the state, the parent, then zeros but for the user and system
+    // times (fields 14 and 15) and the start time (field 22).
+    const fields = ["S", ppid, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 0, 0, 0, 0, 1, 0, 1000];
+    mkdirSync(path.join(root, String(pid)), { recursive: true });
+    writeFileSync(path.join(root, String(pid), "stat"), `${pid} (p${pid}) ${fields.join(" ")}\n`);
+    for (const [tid, children] of Object.entries(threads)) {
+      const task = path.join(root, String(pid), "task", tid);
+      mkdirSync(task, { recursive: true });
+      if (children !== undefined) {
+        writeFileSync(path.join(task, "children"), children.map((child) => `${child} `).join(""));
+      }
+    }
+  }
+}
+
+// The tree is read down from the agent, each process from its own files. Beside it stand a
+// process whose `stat` is a FIFO no writer opens, which any read of it waits on for ever, as a
+// scan of every process's `stat` would, and one whose `stat` names the agent as its parent and
+// which no children file lists: the children files, not every process's parent, make the tree.
+test("the tree is read down from the agent through every thread's children, and no other process is read", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "stall-proc-"));
+  try {
+    builtProc(root, [
+      // The agent's second thread forked 102, so only that thread's file lists it.
+      { pid: 100, ppid: 1, threads: { 100: [101], 103: [102] } },
+      { pid: 101, ppid: 100, threads: { 101: [104] } },
+      { pid: 102, ppid: 100, threads: { 102: [] } },
+      { pid: 104, ppid: 101, threads: { 104: [] } },
+      { pid: 300, ppid: 100, threads: { 300: [] } },
+    ]);
+    mkdirSync(path.join(root, "200"));
+    const fifo = Bun.spawnSync(["mkfifo", path.join(root, "200", "stat")]);
+    expect(fifo.exitCode, "mkfifo could not make the FIFO").toBe(0);
+
+    const scan = await readStallProcesses({ agentPid: 100, procRoot: root });
+    if (!scan.read) throw new Error(`the built tree could not be read: ${scan.reason}`);
+    expect(scan.processes.map(({ pid, ppid, command }) => ({ pid, ppid, command }))).toEqual([
+      { pid: 100, ppid: 1, command: "[p100]" },
+      { pid: 101, ppid: 100, command: "[p101]" },
+      { pid: 102, ppid: 100, command: "[p102]" },
+      { pid: 104, ppid: 101, command: "[p104]" },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("a kernel that lists no children file records that the tree went unread, never an empty one", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "stall-proc-"));
+  try {
+    builtProc(root, [{ pid: 100, ppid: 1, threads: { 100: undefined } }]);
+    const scan = await readStallProcesses({ agentPid: 100, procRoot: root });
+    expect(scan).toEqual({
+      read: false,
+      reason: `no thread of ${path.join(root, "100")} has a task/<tid>/children file, so its children could not be read`,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

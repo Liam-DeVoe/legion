@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   controllerToken,
@@ -105,23 +105,35 @@ export interface StallProcessReaderDeps {
    * test names another. */
   readonly agentPid?: number;
   /** Where the kernel's process table is mounted; `/proc` unless a test points the reader at a
-   * path it cannot read, which is the machine this reader must report rather than answer empty
-   * for. */
+   * root of its own: a path it cannot read, which is the machine this reader must report rather
+   * than answer empty for, or a tree it built, with a file no reader of it may open. */
   readonly procRoot?: string;
 }
 
 /** The agent's process and its descendants, each with its identifier, command, start time, state,
  * processor time and the tool call its environment names. The agent comes first and its
  * descendants follow it parent before child, so two readings of the same tree print in the same
- * order. */
+ * order.
+ *
+ * The tree is read down from the agent, one process at a time, each from its own files: its
+ * `stat`, and the children every one of its threads lists in `task/<tid>/children` (a process's
+ * children are listed by the thread that forked each, so one thread's file is not all of them).
+ * No other process of the machine is read, so none can hold the reader: a read of a `/proc/<pid>`
+ * file waits for as long as that process holds it, and a scan of every process's `stat`, as this
+ * reader made before, waited for ever on the first one that never answered, holding the ladder
+ * step that asked with it. A child that ends while its parent's list is read can leave a sibling
+ * after it unlisted, as `proc(5)` says of the children file, so the tree is a reading of a moment
+ * and not a frozen one. A kernel that lists no children file at all (one built without
+ * `CONFIG_PROC_CHILDREN`) records that the tree could not be read, never that it is empty. */
 export async function readStallProcesses(
   deps: StallProcessReaderDeps = {}
 ): Promise<StallProcessScan> {
   const procRoot = deps.procRoot ?? "/proc";
   const agentPid = deps.agentPid ?? process.pid;
-  let entries: string[];
+  // Whether the root can be read at all, which opens no process's file: a machine whose /proc is
+  // missing records that, not a start time it could not tell.
   try {
-    entries = await readdir(procRoot);
+    await access(procRoot);
   } catch (error) {
     return { read: false, reason: `${procRoot} could not be read: ${messageFor(error)}` };
   }
@@ -135,50 +147,36 @@ export async function readStallProcesses(
     };
   }
 
-  /** Every process on the machine, by pid: the parent of each is what makes the agent's tree. */
-  const all = new Map<number, ProcessStat>();
-  const numbered = entries.filter((entry) => {
-    const pid = Number.parseInt(entry, 10);
-    return Number.isInteger(pid) && String(pid) === entry;
-  });
-  // Every `stat` at once rather than one awaited read per pid: this reader runs twice on the
-  // stall path — the tree and the call's own processes — ahead of the step that frees the worker.
-  const read = await Promise.all(
-    numbered.map((entry) => readTextFile(path.join(procRoot, entry, "stat")))
-  );
-  for (const text of read) {
-    // A pid that ended between the listing and the read is gone, not a tree that cannot be read.
-    if (text === undefined) continue;
-    const stat = parseProcessStat(text);
-    if (stat !== undefined) all.set(stat.pid, stat);
-  }
-  if (!all.has(agentPid)) {
-    return {
-      read: false,
-      reason: `${path.join(procRoot, String(agentPid))}, the agent's own process, could not be read`,
-    };
-  }
-
-  const children = new Map<number, number[]>();
-  for (const stat of all.values()) {
-    if (stat.pid === agentPid) continue;
-    const siblings = children.get(stat.ppid);
-    if (siblings === undefined) children.set(stat.ppid, [stat.pid]);
-    else siblings.push(stat.pid);
-  }
-
   const processes: StallScannedProcess[] = [];
-  // One level of the tree at a time, so a node's two reads are one `Promise.all` and a level's
-  // nodes are read together. The order is the breadth-first one the record documents: the agent,
-  // then its children by pid, then theirs.
+  const seen = new Set<number>([agentPid]);
+  // One level of the tree at a time, so a level's nodes are read together. The order is the
+  // breadth-first one the record documents: the agent, then its children by pid, then theirs.
   let level = [agentPid];
   while (level.length > 0) {
-    const nodes = level.flatMap((pid) => {
-      const stat = all.get(pid);
-      return stat === undefined ? [] : [stat];
-    });
+    const read = await Promise.all(
+      level.map(async (pid) => {
+        const text = await readTextFile(path.join(procRoot, String(pid), "stat"));
+        const stat = text === undefined ? undefined : parseProcessStat(text);
+        return stat === undefined ? undefined : { stat, children: await childrenOf(procRoot, pid) };
+      })
+    );
+    if (processes.length === 0 && read[0] === undefined) {
+      return {
+        read: false,
+        reason: `${path.join(procRoot, String(agentPid))}, the agent's own process, could not be read`,
+      };
+    }
+    const nodes: { readonly stat: ProcessStat; readonly children: readonly number[] }[] = [];
+    for (const node of read) {
+      // A pid that ended between its parent's list and its own read is gone, not a tree that
+      // cannot be read.
+      if (node === undefined) continue;
+      if (typeof node.children === "string") return { read: false, reason: node.children };
+      nodes.push({ stat: node.stat, children: node.children });
+    }
+
     const scanned = await Promise.all(
-      nodes.map(async (stat): Promise<StallScannedProcess> => {
+      nodes.map(async ({ stat }): Promise<StallScannedProcess> => {
         const directory = path.join(procRoot, String(stat.pid));
         const reads: [Promise<Record<string, string>>, Promise<string>] = [
           // Measurement 1: the agent's own environment is the one `/proc` will not hand it, and
@@ -203,9 +201,47 @@ export async function readStallProcesses(
       })
     );
     for (const node of scanned) processes.push(node);
-    level = nodes.flatMap((stat) => (children.get(stat.pid) ?? []).sort((a, b) => a - b));
+    const next: number[] = [];
+    for (const { children } of nodes) {
+      for (const pid of children) {
+        // A pid read twice is one a process took over from another that ended during the read.
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        next.push(pid);
+      }
+    }
+    level = next;
   }
   return { read: true, processes };
+}
+
+/** The children of process `pid`, by pid, from every thread's `task/<tid>/children` under
+ * `procRoot`: a process's children are listed by the thread that forked each. Empty for a process
+ * that ended before its threads were listed. A text, saying why, where the process's threads were
+ * listed and none of them has a children file, as on a kernel built without
+ * `CONFIG_PROC_CHILDREN`: that is a tree that could not be read, never a process with no child. */
+async function childrenOf(procRoot: string, pid: number): Promise<number[] | string> {
+  const task = path.join(procRoot, String(pid), "task");
+  let threads: string[];
+  try {
+    threads = await readdir(task);
+  } catch {
+    return [];
+  }
+  const lists = await Promise.all(
+    threads.map((thread) => readTextFile(path.join(task, thread, "children")))
+  );
+  if (threads.length > 0 && lists.every((list) => list === undefined)) {
+    return `no thread of ${path.join(procRoot, String(pid))} has a task/<tid>/children file, so its children could not be read`;
+  }
+  const children = new Set<number>();
+  for (const list of lists) {
+    for (const word of (list ?? "").split(/\s+/)) {
+      const child = Number.parseInt(word, 10);
+      if (Number.isInteger(child) && String(child) === word) children.add(child);
+    }
+  }
+  return [...children].sort((a, b) => a - b);
 }
 
 /** The scan as the evidence carries it: the environments and the parents are dropped, because a

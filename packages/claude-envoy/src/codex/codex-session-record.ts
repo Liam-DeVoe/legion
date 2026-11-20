@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
+import { existsSync, readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
 import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -152,18 +152,21 @@ const MAX_ANCESTORS = 16
 /**
  * The `codex` process this process belongs to: the nearest ancestor Linux names `codex`, else the
  * parent. Codex runs a hook's command through a shell, which runs a single command in its own
- * place, so the parent is normally `codex` itself; the walk covers a shell that does not.
+ * place, so the parent is normally `codex` itself; the walk covers a shell that does not. The walk
+ * starts at `parent`, this process's parent: the tests hand a chain of their own, which no place of
+ * the test runner's own changes (run as PID 1 of its PID namespace, its parent reads as 0).
  */
 export function codexProcessId(
   readComm: (pid: number) => string | undefined = procComm,
   readParent: (pid: number) => number | undefined = procParent,
+  parent: number = process.ppid,
 ): number {
-  let pid: number | undefined = process.ppid
+  let pid: number | undefined = parent
   for (let step = 0; pid !== undefined && pid > 1 && step < MAX_ANCESTORS; step++) {
     if (readComm(pid) === "codex") return pid
     pid = readParent(pid)
   }
-  return process.ppid
+  return parent
 }
 
 function procComm(pid: number): string | undefined {
@@ -184,8 +187,14 @@ function procParent(pid: number): number | undefined {
   }
 }
 
-/** How the hook and the server run `ps`: in one fixed environment, so the start time each prints
- *  is the same text (macOS's `ps` formats it by the locale and the time zone), and briefly. */
+/** Whether this machine lists its processes under `/proc`, as Linux does. Where it does, one
+ *  process's own files answer for it, and `ps` never runs: Linux's `ps -p PID` selects its one
+ *  process by opening the stat of every process of the machine. */
+const HAS_PROC = existsSync("/proc/self/stat")
+
+/** How the hook and the server run `ps`, where there is no /proc: in one fixed environment, so the
+ *  start time each prints is the same text (macOS's `ps` formats it by the locale and the time
+ *  zone), and briefly. */
 const PS_OPTIONS = {
   encoding: "utf8",
   env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
@@ -194,19 +203,24 @@ const PS_OPTIONS = {
 
 /** When process `pid` started: the 22nd field of `/proc/<pid>/stat` (clock ticks since boot), or
  *  where there is no /proc, `ps`'s start time to the second, prefixed `ps:`; undefined where
- *  neither can be read. Two processes that had one id never share it. */
+ *  neither can be read, as where /proc lists no such process. Two processes that had one id never
+ *  share it. */
 export function processStarted(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
-  } catch {
-    // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
-    // within a second of the process it replaced exiting, and the hook and the server read it
-    // the same way.
-    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
-    const started = ps.status === 0 ? ps.stdout.trim() : ""
-    return started === "" ? undefined : `ps:${started}`
+  if (HAS_PROC) {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
+    } catch {
+      // Gone, or never there.
+      return undefined
+    }
   }
+  // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
+  // within a second of the process it replaced exiting, and the hook and the server read it the
+  // same way.
+  const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
+  const started = ps.status === 0 ? ps.stdout.trim() : ""
+  return started === "" ? undefined : `ps:${started}`
 }
 
 /** Whether `record` belongs to the `codex` process `pid` now runs, rather than to an earlier
@@ -228,9 +242,14 @@ export function recordOfProcess(record: CodexSessionRecord, pid: number): boolea
  */
 export function sharedAppServer(pid: number): boolean {
   let argv: string[]
-  try {
-    argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
-  } catch {
+  if (HAS_PROC) {
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
+    } catch {
+      // Gone, or never there.
+      return false
+    }
+  } else {
     const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], PS_OPTIONS)
     if (ps.status !== 0) return false
     argv = ps.stdout.trim().split(/\s+/)

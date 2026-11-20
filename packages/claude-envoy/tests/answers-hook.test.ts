@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -12,6 +12,7 @@ import {
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { processEnded } from "@legion/test-fixtures/process-state"
 import { buildBundles } from "../scripts/build"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
@@ -169,11 +170,16 @@ async function refresherFinished(state: string, since: number): Promise<void> {
   throw new Error("the refresher did not finish within 15 s")
 }
 
-/** Waits, 15 s at most, until `check` holds: for a process that tells nobody what it did. */
-async function eventually(check: () => boolean, what: string): Promise<void> {
-  const until = Date.now() + 15_000
-  while (!check()) {
-    if (Date.now() >= until) throw new Error(`${what} did not happen within 15 s`)
+/** How long `eventually` waits for a state another process reaches, in ms. */
+const EVENTUALLY_MS = 15_000
+
+/** Waits, `EVENTUALLY_MS` at most, until `check` holds: for a process that tells nobody what it
+ *  did. `check` is handed the wait's end (epoch ms), the bound a check that reads the process
+ *  table is held to (`processesWith`). */
+async function eventually(check: (until: number) => boolean, what: string): Promise<void> {
+  const until = Date.now() + EVENTUALLY_MS
+  while (!check(until)) {
+    if (Date.now() >= until) throw new Error(`${what} did not happen within ${EVENTUALLY_MS} ms`)
     // Another process's state (a file, a process table entry) is the only signal: polled on the
     // real clock, as `refresherFinished` polls.
     await Bun.sleep(20)
@@ -641,7 +647,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
     join(config, "envoy.json"),
     JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: `!printf ${COMMAND_TOKEN}` } }),
   )
-  cleanup.push(() => eventually(() => noRefresher(home, state), "the refreshers' end"))
+  cleanup.push(() => eventually((until) => noRefresher(home, state, until), "the refreshers' end"))
 
   // As in the failing-command case: the waiting hook holds its code until the refresher the
   // starting hook starts has finished, so it carries that refresher's outcome.
@@ -655,7 +661,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(carried).toMatchObject({ exitCode: 0, stdout: "", stderr: noRouteLine(dispatch.base) })
   expect(starting.exitCode).toBe(0)
   expect(starting.stdout).not.toContain("answers route")
-  await eventually(() => noRefresher(home, state), "the refreshers' end")
+  await eventually((until) => noRefresher(home, state, until), "the refreshers' end")
   expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
 }, 20_000)
 
@@ -733,20 +739,74 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   expect(await readdir(tmp)).toEqual([])
 }, 20_000)
 
-/** Processes whose command line holds `marker`, as `pgrep -f` finds them. */
-function processesWith(marker: string): string {
-  return Bun.spawnSync(["pgrep", "-f", marker]).stdout.toString().trim()
+/** Processes whose command line holds `marker`, as `pgrep -f` finds them, one pid a line, or ""
+ *  where none does. `pgrep` reads the command line of every process of the machine, and one such
+ *  read can wait for as long as its process holds it, so it runs held to `until`, the end of the
+ *  `eventually` wait that asks: a `pgrep` still running then is killed, and the row fails naming
+ *  that wait, `EVENTUALLY_MS`, as it fails for a `pgrep` that failed, rather than reading either
+ *  as no process. Where the row's own limit or its hook's comes first, Bun ends the processes the
+ *  test started there, by SIGTERM ("killed 1 dangling process"), and this fails naming that. */
+function processesWith(marker: string, until: number): string {
+  const left = until - Date.now()
+  if (left < 1) {
+    throw new Error(`no time was left of eventually's ${EVENTUALLY_MS} ms for pgrep -f ${marker}`)
+  }
+  const pgrep = Bun.spawnSync(["pgrep", "-f", marker], {
+    killSignal: "SIGKILL",
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: left,
+  })
+  if (pgrep.exitedDueToTimeout) {
+    throw new Error(
+      `pgrep -f ${marker} was still reading the process table at the end of eventually's ${EVENTUALLY_MS} ms, and was killed`,
+    )
+  }
+  // pgrep exits 1 where no process matched, and 2 or 3 where it could not look.
+  if (pgrep.exitCode === 1) return ""
+  if (pgrep.exitCode !== 0) {
+    const how =
+      pgrep.signalCode === "SIGTERM"
+        ? "was ended by SIGTERM before it answered, as Bun ends a test's processes at the time limit of its row or its hook"
+        : `ended with ${pgrep.signalCode ?? `exit ${pgrep.exitCode}`}`
+    throw new Error(`pgrep -f ${marker} ${how}: ${pgrep.stderr.toString().trim()}`)
+  }
+  return pgrep.stdout.toString().trim()
 }
 
 /** Whether no refresher of the session runs for the project directory `home` (its command line
- *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. The lock is
- *  a file test and the processes are a `pgrep` fork, so the lock decides first: both reads are
- *  free of side effects, and a poll every 20 ms pays for the fork each time it runs. */
-function noRefresher(home: string, state: string): boolean {
+ *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock, read by the
+ *  `eventually` wait that ends at `until`. The lock is a file test and the processes are a
+ *  `pgrep` fork, so the lock decides first: both reads are free of side effects, and a poll every
+ *  20 ms pays for the fork each time it runs. The refreshers are found by their command line, as
+ *  no file names their pids: the lock names only the one that holds it. */
+function noRefresher(home: string, state: string, until: number): boolean {
   return (
     !existsSync(join(state, "sessions", SESSION, "answers-refresh.lock")) &&
-    processesWith(`answers-refresh ${SESSION} ${home}`) === ""
+    processesWith(`answers-refresh ${SESSION} ${home}`, until) === ""
   )
+}
+
+/** The pid of the shell a token command runs in, which the command writes to `file` as its
+ *  first act (`echo $$`), once it has; undefined before. The row reads that one process's state
+ *  by it (`processEnded`), and no other process's. */
+function commandShell(file: string): number | undefined {
+  const text = existsSync(file) ? readFileSync(file, "utf8") : ""
+  return /^\d+\n$/.test(text) ? Number(text) : undefined
+}
+
+/** Whether the shell whose pid the token command wrote to `file` has started and still runs. */
+function commandRuns(file: string): boolean {
+  const shell = commandShell(file)
+  return shell !== undefined && !processEnded(shell)
+}
+
+/** Whether the shell whose pid the token command wrote to `file` has ended. A command that wrote
+ *  no pid never ran, which fails the row: the ended command it waits for would be no command. */
+function commandEnded(file: string): boolean {
+  const shell = commandShell(file)
+  if (shell === undefined) throw new Error(`the token command wrote no pid to ${file}`)
+  return processEnded(shell)
 }
 
 test("a token command slower than the hook's deadline finishes and cleans up after the hook, and the next hook carries the list it read", async () => {
@@ -755,15 +815,16 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   dispatch.route = { kind: "list", items }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-  // The command waits until the test opens the gate, a path no other process names: `pgrep -f`
-  // finds the command's shell by it.
+  // The command waits until the test opens the gate, a path no other process names, and writes
+  // the pid of its shell first, so the row reads that shell by it.
   const gate = join(home, "gate")
+  const shellPid = join(home, "command.pid")
   await writeFile(
     join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+        token: `!echo $$ > '${shellPid}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -771,22 +832,23 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   const firstSince = Date.now()
   cleanup.push(async () => {
     await writeFile(gate, "")
-    await eventually(() => noRefresher(home, state), "the refreshers' end")
+    await eventually((until) => noRefresher(home, state, until), "the refreshers' end")
   })
   const first = await runHook(env, sessionStart("startup", home))
   expect(contextOf(first, "SessionStart")).toBe(sessionAnswersFailureLine(notFinishedReason(first)))
   expectWithinDeadline(first)
   // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
   // end after the hook did).
-  await eventually(() => processesWith(gate) !== "", "the command's start")
+  await eventually(() => commandRuns(shellPid), "the command's start")
 
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  expect(processesWith(gate)).toBe("")
+  expect(commandEnded(shellPid)).toBe(true)
   expect(dispatch.requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`])
 
   await rm(gate)
+  await rm(shellPid)
   const secondSince = Date.now()
   const second = await runHook(env, sessionStart("resume", home))
   const context = contextOf(second, "SessionStart")
@@ -796,7 +858,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(second)
   await writeFile(gate, "")
   await refresherFinished(state, secondSince)
-  expect(processesWith(gate)).toBe("")
+  expect(commandEnded(shellPid)).toBe(true)
 }, 20_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
@@ -859,6 +921,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
   const gate = join(home, "gate")
+  const shellPid = join(home, "command.pid")
   const user = "user-7f2a"
   const secret = "pw-4c7e19"
   const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
@@ -869,20 +932,20 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+        token: `!echo $$ > '${shellPid}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
       },
     }),
   )
   cleanup.push(async () => {
     await writeFile(gate, "")
-    await eventually(() => noRefresher(home, state), "the refreshers' end")
+    await eventually((until) => noRefresher(home, state, until), "the refreshers' end")
   })
   const first = await runHook(env, sessionStart("startup", home))
   expect(contextOf(first, "SessionStart")).toBe(sessionAnswersFailureLine(notFinishedReason(first)))
 
   // The refresher resolves envoy.json before its command runs: once the command runs, it reads
   // `before` whatever envoy.json names next.
-  await eventually(() => processesWith(gate) !== "", "the command's start")
+  await eventually(() => commandRuns(shellPid), "the command's start")
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`
@@ -910,7 +973,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   expect(context).not.toContain(user)
   expect(context).not.toContain(secret)
   // The refresher this hook started reads the Dispatch named now.
-  await eventually(() => noRefresher(home, state), "the next refresher's end")
+  await eventually((until) => noRefresher(home, state, until), "the next refresher's end")
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
 }, 20_000)
 
@@ -927,7 +990,7 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   const failed = sessionAnswersFailureLine(
     `${envoyJson}: dispatch.token's command exited with status 3`,
   )
-  cleanup.push(() => eventually(() => noRefresher(home, state), "the refreshers' end"))
+  cleanup.push(() => eventually((until) => noRefresher(home, state, until), "the refreshers' end"))
 
   // The waiting hook starts first and holds its code until a refresher started after its process
   // has finished, so it finds that refresher's outcome at its first look; the starting hook,
@@ -949,7 +1012,7 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   expect([failed, sessionAnswersFailureLine(notFinishedReason(starting))]).toContain(
     contextOf(starting, "SessionStart"),
   )
-  await eventually(() => noRefresher(home, state), "the refreshers' end")
+  await eventually((until) => noRefresher(home, state, until), "the refreshers' end")
   expect(dispatch.requests).toEqual([])
   expect(await readdir(tmp)).toEqual([])
 }, 20_000)
@@ -1042,7 +1105,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
   // ahead, so that wait would hold at once on a refresher that had not even started.
   cleanup.push(async () => {
     await writeFile(gate, "")
-    await eventually(() => noRefresher(home, state), "the refreshers' end")
+    await eventually((until) => noRefresher(home, state, until), "the refreshers' end")
   })
   const run = await runHook(env, sessionStart("resume", home))
   const context = contextOf(run, "SessionStart")

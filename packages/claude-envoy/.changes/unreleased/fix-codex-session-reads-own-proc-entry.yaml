@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The Codex session record reads a process's start time and command line from that process's own
+  `/proc` entry on Linux, and asks `ps` only on a machine with no `/proc`. Before, a pid that had
+  already gone made it run `ps -o … -p PID`, which reads the stat of every process on the machine
+  (about 0.8 s at 19,000 processes) and had no bound but its own one-second timeout.

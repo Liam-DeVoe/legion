@@ -310,7 +310,9 @@ test(
 // SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness keeps a
 // SIGINT listener of its own; this row holds the script's trap, not the harness's.) The run goes
 // in a session of its own (`setsid`), so the signal reaches the run's group, read from the
-// container's pid, and not this test's; it waits for the container to start. The group is
+// container's pid, and not this test's; it waits for the container to start. The group is field
+// 5 of the container's own `/proc/<pid>/stat`, read after the last `) `, which ends the command
+// name, so no other process is read for it, as `ps -p` would read every one. The group is
 // signalled with `/usr/bin/kill -s INT -- -PGID`.
 test(
   "a Ctrl-C to a running run stops its stack and exits 130",
@@ -321,7 +323,9 @@ test(
         "sh",
         "-c",
         '(until [ -s "$STUB_DOCKER_STARTED" ]; do sleep 0.05; done; ' +
-          '/usr/bin/kill -s INT -- "-$(ps -o pgid= -p "$(cat "$STUB_DOCKER_STARTED")" | tr -d " ")") & ' +
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: sh's cut of the stat past its last `) `.
+          'stat=$(cat "/proc/$(cat "$STUB_DOCKER_STARTED")/stat"); set -- ${stat##*) }; ' +
+          '/usr/bin/kill -s INT -- "-$3") & ' +
           `setsid --wait sh e2e/visual-run.sh "$@"; status=$?; ${stackAfter}; exit "$status"`,
         "visual-run",
       ],

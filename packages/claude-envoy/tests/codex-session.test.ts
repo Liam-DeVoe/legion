@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
@@ -134,17 +134,31 @@ describe("the Codex session record", () => {
   })
 
   test("the codex process is the nearest ancestor named codex, else the parent", () => {
+    // A chain of its own, 600 (bash) <- 500 (codex) <- 400, handed in whole: the runner's own
+    // parent is 0 where the runner is PID 1 of its PID namespace, and the walk stops there.
     const parents = new Map([
-      [process.ppid, 500],
+      [600, 500],
       [500, 400],
     ])
-    const names = new Map([[500, "codex"]])
+    const names = new Map([
+      [600, "bash"],
+      [500, "codex"],
+    ])
     expect(
       codexProcessId(
         (pid) => names.get(pid),
         (pid) => parents.get(pid),
+        600,
       ),
     ).toBe(500)
+    expect(
+      codexProcessId(
+        () => "bash",
+        (pid) => parents.get(pid),
+        600,
+      ),
+    ).toBe(600)
+    // Handed no parent, the walk starts at this process's own, wherever the runner stands.
     expect(
       codexProcessId(
         () => "bash",
@@ -152,6 +166,34 @@ describe("the Codex session record", () => {
       ),
     ).toBe(process.ppid)
   })
+
+  // Where /proc lists no such process, that is the answer: `ps -p` on Linux would open the stat of
+  // every process of the machine to find the one. A `ps` first on the PATH records that it ran;
+  // the module reads its PATH as it loads, so a process of its own loads it with that PATH.
+  test.skipIf(process.platform !== "linux")(
+    "a process /proc does not list has no start and is no shared server, and no ps runs for it",
+    () => {
+      const stubs = join(directory, "ps-stub")
+      const ran = join(stubs, "ran")
+      mkdirSync(stubs, { recursive: true })
+      writeFileSync(join(stubs, "ps"), `#!/bin/sh\ntouch '${ran}'\n`)
+      chmodSync(join(stubs, "ps"), 0o755)
+      const module = join(import.meta.dir, "../src/codex/codex-session-record.ts")
+      const read = Bun.spawnSync(
+        [
+          process.execPath,
+          "-e",
+          `import { processStarted, sharedAppServer } from ${JSON.stringify(module)}\n` +
+            `const gone = Bun.spawnSync(["true"]).pid\n` +
+            "process.stdout.write(JSON.stringify([processStarted(gone) ?? null, sharedAppServer(gone)]))",
+        ],
+        { env: { ...process.env, PATH: `${stubs}:${process.env["PATH"] ?? ""}` } },
+      )
+      expect(read.stderr.toString()).toBe("")
+      expect(read.stdout.toString()).toBe("[null,false]")
+      expect(existsSync(ran), "ps ran for a process /proc does not list").toBe(false)
+    },
+  )
 })
 
 /** A connection that records what is published, the subjects subscribed and given up, and hands

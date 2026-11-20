@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { StallCall, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
+import { processEnded } from "@legion/test-fixtures/process-state";
 import {
   readStallProcesses,
   type StallProcessScan,
@@ -39,17 +40,11 @@ afterAll(() => {
 
 const log: StallWatchdogLog = { debug: () => {}, warn: () => {} };
 
-/** Whether this pid is a process that is still running: a pid whose parent has not reaped it is
- * a `Z` in `/proc`, which is ended as far as this step is concerned. */
-async function alive(pid: number): Promise<boolean> {
-  const stat = await Bun.file(`/proc/${pid}/stat`)
-    .text()
-    .catch(() => "");
-  const state = stat
-    .slice(stat.lastIndexOf(")") + 1)
-    .trim()
-    .split(/\s+/)[0];
-  return state !== undefined && state !== "" && state !== "Z";
+/** Whether this pid is a process that is still running, by its own state (`processEnded`): a pid
+ * whose parent has not reaped it is a `Z` in `/proc`, and one that is dying an `X`, each ended as
+ * far as this step is concerned. */
+function alive(pid: number): boolean {
+  return !processEnded(pid);
 }
 
 /** Waits for one reading of the machine to come true. A real tree has no clock to fake, so what
@@ -384,6 +379,6 @@ test("a tree that could not be read ends nothing", async () => {
   expect(await processes.endCall(callOf({ startedAt: 1_793_000_000_000 }))).toBe(0);
   expect(await processes.tree()).toEqual({
     read: false,
-    reason: `${absent} could not be read: ENOENT: no such file or directory, scandir '${absent}'`,
+    reason: `${absent} could not be read: ENOENT: no such file or directory, access '${absent}'`,
   });
 });

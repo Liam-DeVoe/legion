@@ -191,6 +191,26 @@ When a test waits for a process that the code under test starts, the code tells 
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
 
+A test judges that such a process has ended by the process's own state, never by whether
+anything has reaped it: `processEnded` of `@legion/test-fixtures/process-state` reads a
+`/proc/<pid>/stat` whose state is `Z` or `X`, or no entry at all, as ended, and asks signal 0 only
+on a host with no `/proc`. Where the test runner is PID 1 of its PID namespace, as `bun test` is
+in a container with no init, nothing reaps a process whose parent has exited: its zombie stays,
+and signal 0 still reaches it.
+
+A daemon Go test reads the same through `internal/testproc`: `Children` (the children of every
+thread, `task/<tid>/children`), `Descendants` and `Ended` (no entry, or state `Z` or `X`). Where no
+known process leads to the one it asks about, `testproc.Matching` walks every process's command
+line on a goroutine of its own and answers when the caller's context ends, with an error that
+names the bound by the context's cause. The e2e shell helpers take the same rule from
+`scripts/e2e/lib/process-tree.sh`'s `proc_children` and `proc_walk_until` (`scripts/e2e/README.md`).
+
+Where a test or its helper must still find processes it cannot name by pid, as the kill of
+`packages/dispatch/e2e/__tests__/bounded-subprocess.ts` finds what a child left by the token in
+its environment, the walk of every process runs in a process of its own, held to the time left
+of the caller's own bound. A walk still running there is killed, and the caller fails naming that
+bound; it never reads the unread table as no process.
+
 ## The act rule of a Dispatch unit test
 
 The preload of Dispatch's unit suite (`web/src/__tests__/setup.ts`) fails a row in which React

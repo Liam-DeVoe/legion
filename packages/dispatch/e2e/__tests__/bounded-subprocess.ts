@@ -11,9 +11,17 @@
  *
  * When a child ends, or its bound passes, `stopTree` kills every process the child started, and
  * a kill whose token match is inverted takes every other process of the pod, so a plant in
- * `treeOf`, `stopTree` or the table it reads (`processTable`, `procText`, `listedOf`,
- * `statFields`) runs against the scripted rows of `bounded-subprocess.test.ts` alone, through a
- * `-t` filter.
+ * `treeOf`, `stopTree` or the table it reads (`processTable`, `procListing`, `procText`,
+ * `listedOf`, `statFields`) runs against the scripted rows of `bounded-subprocess.test.ts` alone,
+ * through a `-t` filter.
+ *
+ * The kill reads the process table in a process of its own, held to the kill's deadline
+ * (`processTable`). A read of one process's `/proc/<pid>` file waits for as long as that process
+ * holds it, and a FIFO standing in for such a file never answers; a read waiting inside this
+ * process would stop every timer of it, the bounds' and the row's, with the kill. A kill ends by
+ * its deadline: the end of the child's bound, or `killGrace` after the bound where the bound fired
+ * first. Where a read of the table had not ended by then, the kill says so, and `runBounded`
+ * fails naming that bound rather than reading the unread table as no process.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the seven driven rows of
@@ -22,18 +30,18 @@
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the fake Dispatch
  * host `outside-path-reach-fixtures.ts` starts for the rows of the four `outside-path-reach*`
  * test files, and the processes `local-instance-support.test.ts` starts through its
- * `Supervisor`. Two subprocesses a row can wait for run outside it, as stated edges. One is the
- * psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases
- * of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * `Supervisor`. One subprocess a row can wait for runs outside it, as a stated edge: the psql of
+ * `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases of
+ * `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
  * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
- * other is the `ps` that reads the process table on a machine with no `/proc`, here
- * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
- * processes under `/proc` and never runs that `ps`.
+ * reads of the process table a kill makes are no bounded children either: each is held to the
+ * deadline of the kill that makes it.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
- * module under `__tests__/` runs nowhere by itself, and `e2e/tools/row-map.ts` can import it, as
- * it already imports `e2e/__tests__/playwright-listing.ts`.
+ * module under `__tests__/` is no test file, and `e2e/tools/row-map.ts` can import it, as it
+ * already imports `e2e/__tests__/playwright-listing.ts`. This one runs as a program only as the
+ * read of the process table a kill starts (the end of this module).
  *
  * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. The
  * end-line and late-open rows of `delivery-live-probe.test.ts` read the probe's own `open` and
@@ -75,7 +83,9 @@
  * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
  * 6.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
  * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
- * fires before the row's limit and the failure names the child. The lane runs in the
+ * fires before the row's limit and the failure names the child. Of those 30 s, the kill of what
+ * the stuck child started gets `killGrace`, 20 s, and its pipes `pipeGrace`, 2 s, so even a kill
+ * that ends at its deadline fails 8 s inside the row's limit. The lane runs in the
  * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
  * in 158 s (job 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of
  * those the lane started about 2 minutes in. A stuck listing therefore fails about 8 minutes into
@@ -95,7 +105,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Subprocess } from "bun";
+import type { Subprocess, SyncSubprocess } from "bun";
 
 /** The bound each kind of child is stopped at, in milliseconds. The header holds the reading
  *  behind each one. */
@@ -224,8 +234,8 @@ const marker = "bounded child:";
 const tokensVariable = "DISPATCH_E2E_BOUNDED_TOKENS";
 
 /** Whether this machine lists its processes under `/proc`, as Linux does. Where it does not, `ps`
- *  lists them, runs with no bound of its own, gives no process's environment, and the kill finds
- *  only the tree below a child that is still running. */
+ *  lists them, gives no process's environment, and the kill finds only the tree below a child
+ *  that is still running. */
 const procfs = existsSync("/proc/self/stat");
 
 /** One process of the machine: its pid, its parent's pid, the bounded tokens of its environment,
@@ -266,7 +276,7 @@ function procText(pid: number | string, file: "environ" | "stat"): string | unde
 
 /** What the table lists of the process `pid`, from `stat` and `environ`, the texts of its
  *  `/proc/<pid>/stat` and `/proc/<pid>/environ`, each undefined where its read failed; or
- *  undefined where `stat` is, since the process is gone. `processTable` reads the two files and
+ *  undefined where `stat` is, since the process is gone. `procListing` reads the two files and
  *  hands them here. Exported for the rows of `bounded-subprocess.test.ts` that hand it built
  *  texts, and hold each condition of it with no process and no clock.
  *
@@ -304,31 +314,64 @@ export function listedOf(
   };
 }
 
-/** Every process the machine lists, or undefined where neither `/proc` nor `ps` answers.
- *
- *  Under `/proc`, each process is what `listedOf` makes of its `/proc/<pid>/stat` and its
+/** Every process `/proc` lists, each what `listedOf` makes of its `/proc/<pid>/stat` and its
  *  `/proc/<pid>/environ`, read in that order. A process whose stat cannot be read ended between
  *  the directory read and that read, and is left out; its environ is not read.
  *
- *  Without `/proc`, one `ps` lists them, run by `Bun.spawnSync` with no bound: a `ps` that never
- *  ends is never stopped, and the kill that read it waits with it. That is a stated edge, not a
- *  bounded child; Linux lists its processes under `/proc` and never runs it. */
-function processTable(): Listed[] | undefined {
-  if (procfs) {
-    const table: Listed[] = [];
-    for (const entry of readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      const stat = procText(entry, "stat");
-      const environ = stat === undefined ? undefined : procText(entry, "environ");
-      const listed = listedOf(Number(entry), stat, environ);
-      if (listed !== undefined) table.push(listed);
-    }
-    return table;
+ *  It opens two files of every process of the machine, and one of them can wait for as long as
+ *  its process holds it, so it runs only in the process of its own that `processTable` starts and
+ *  holds to the kill's deadline (the end of this module), never in a process that runs rows. */
+function procListing(): Listed[] {
+  const table: Listed[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const stat = procText(entry, "stat");
+    const environ = stat === undefined ? undefined : procText(entry, "environ");
+    const listed = listedOf(Number(entry), stat, environ);
+    if (listed !== undefined) table.push(listed);
   }
-  const ps = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid="], { stderr: "ignore" });
-  if (!ps.success) return undefined;
-  return ps.stdout
-    .toString()
+  return table;
+}
+
+/** Every process the machine lists, read in a process of its own that is killed at `deadline`,
+ *  a `performance.now()` reading: under `/proc`, this module run as a program, which prints what
+ *  `procListing` lists; without `/proc`, one `ps`, which lists each pid and its parent and no
+ *  environment. Where that process did not end by `deadline`, or ended in a failure, the answer
+ *  is a text saying which, and never an empty table, so the kill that reads it says the table
+ *  went unread rather than that the child left nothing. The read runs from `/`, so no
+ *  configuration of the working directory reaches it, and a working directory removed under a
+ *  running row does not stop it starting. */
+function processTable(deadline: number): readonly Listed[] | string {
+  const reader = procfs ? "the walk of /proc" : "`ps -A`";
+  const left = Math.floor(deadline - performance.now());
+  if (left < 1) return `the kill's deadline passed before ${reader} started`;
+  let read: SyncSubprocess<"pipe", "pipe">;
+  try {
+    read = Bun.spawnSync(
+      procfs
+        ? [process.execPath, fileURLToPath(import.meta.url)]
+        : ["ps", "-A", "-o", "pid=,ppid="],
+      { cwd: "/", killSignal: "SIGKILL", stderr: "pipe", stdout: "pipe", timeout: left }
+    );
+  } catch (error) {
+    return `${reader} could not start: ${String(error)}`;
+  }
+  if (read.exitedDueToTimeout) {
+    return `${reader} had not ended at the kill's deadline, ${left} ms after it started, and was killed`;
+  }
+  if (!read.success) {
+    const how = read.signalCode === undefined ? `exit ${read.exitCode}` : read.signalCode;
+    return `${reader} ended with ${how}: ${read.stderr.toString().trim()}`;
+  }
+  const text = read.stdout.toString();
+  if (procfs) {
+    try {
+      return JSON.parse(text) as Listed[];
+    } catch (error) {
+      return `${reader} printed no table: ${String(error)}`;
+    }
+  }
+  return text
     .split("\n")
     .map((line) => line.trim().split(/\s+/).map(Number))
     .filter(([pid, ppid]) => Number.isInteger(pid) && Number.isInteger(ppid))
@@ -379,6 +422,14 @@ export const maxReads = 100;
  *  `Bun.sleepSync` for. */
 export const execPause = 5;
 
+/** How long the kill of a child gets once the child's bound has passed, in milliseconds, and how
+ *  long the kills made as this process exits get together (`stopAll`). It is 20 000 of the
+ *  30 000 of `rowHeadroom`, which a row's limit holds above the bounds of its children: with
+ *  `pipeGrace` after it, a stuck child's run fails at most 22 s after its bound, which leaves 8 s
+ *  of the row's limit for the row's own work. It is no reading of how long a kill takes: a kill
+ *  still reading the table at its end is cut there and says so, whatever the machine's load. */
+const killGrace = 20_000;
+
 /** One bounded child being waited for, the token its environment carries, and when it started:
  *  field 22 of its `/proc/<pid>/stat`, in clock ticks since boot, read once as it spawns. Every
  *  process the child starts starts after it. It is 0 where `/proc` is missing, or where the child
@@ -399,8 +450,9 @@ interface Collaborators {
   /** Whether `read` lists processes from `/proc`, with their tokens and `unknown` reads: this
    *  machine's `procfs`. The rows pass it, so they run either path on any machine. */
   readonly procfs?: boolean;
-  /** Reads the process table: `processTable`. */
-  readonly read?: () => readonly Listed[] | undefined;
+  /** Reads the process table by the kill's deadline, which it is handed: `processTable`. A text
+   *  in place of a table says why the table went unread. */
+  readonly read?: (deadline: number) => readonly Listed[] | string;
   /** Sends SIGKILL to one pid, and may throw where it is gone: `process.kill`. */
   readonly signal?: (pid: number) => void;
   /** Waits after a read that finds nothing new but lists an `unknown` process that started at or
@@ -433,8 +485,16 @@ interface Collaborators {
  *  child cannot carry its token, and one this kill signalled is exiting, not exec'ing, so
  *  neither keeps the reads going.
  *
+ *  Each read is held to `deadline`, a `performance.now()` reading, by the process of its own it
+ *  runs in (`processTable`). A read that did not list the table by then, or failed, ends the kill
+ *  there, after `child.kill` where the child still runs, and the kill answers why, naming which
+ *  read it was; a kill whose every read listed its table answers undefined. Its caller names the
+ *  bound it took the deadline from: `runBounded` fails naming it, and `stopAll` writes it on
+ *  stderr. The reads ending at `maxReads` are no such end, since each of them listed its table:
+ *  what they leave is the edge stated below.
+ *
  *  The rows of `bounded-subprocess.test.ts` that drive this loop over a scripted table, through
- *  the second argument below, hold each condition of it and of `treeOf` with no clock and no real
+ *  the third argument below, hold each condition of it and of `treeOf` with no clock and no real
  *  process. Of the reads: a process read `unknown` and then with the child's token is read again
  *  after one pause and killed, and the next read, which finds nothing new, ends the reads; an
  *  unknown process that started before the child, or that this kill signalled, ends them at once,
@@ -442,12 +502,14 @@ interface Collaborators {
  *  stays unknown ends them at `maxReads`. Others hold what is taken: a running child through
  *  `child.kill` alone, with SIGKILL, and what it started by parent pid, a process whose tokens
  *  hold the child's first, last or in the middle, an ended child by its token alone, the one read
- *  where `/proc` is missing, this process never, and a walk that ends where the table lists a
- *  loop of parents. One row hands `read` and `procfs` alone, and stands in for `process.kill`
- *  and `Bun.sleepSync` instead, so the default `signal` sends SIGKILL and the default `pause`
- *  waits `execPause`. The row whose child leaves a `setsid sleep` behind does not hold the second
- *  read: a kill without it misses that sleep only where the sleep is caught in its exec, which
- *  was 2 of the 500 runs above.
+ *  where `/proc` is missing, this process never, a walk that ends where the table lists a loop of
+ *  parents, and a read that answers why the table went unread, which ends the kill there, a
+ *  running child killed all the same. One row hands `read` and `procfs` alone, and stands in for
+ *  `process.kill` and `Bun.sleepSync` instead, so the default `signal` sends SIGKILL and the
+ *  default `pause` waits `execPause`; another hands the real `read` a deadline already past,
+ *  which it answers without starting a process. The row whose child leaves a `setsid sleep`
+ *  behind does not hold the second read: a kill without it misses that sleep only where the
+ *  sleep is caught in its exec, which was 2 of the 500 runs above.
  *
  *  Nothing is stopped with SIGSTOP first. A child shares this process's group, and where that
  *  group is orphaned - no member's parent stands in another group of the same session, as under
@@ -463,33 +525,37 @@ interface Collaborators {
  *  exec has loaded its program; a process outside this pid namespace, such as a container a
  *  daemon started on a child's request; and, where `/proc` is missing, anything a child left
  *  once that child has exited, and anything forked during the kill, since `ps` gives no
- *  environment to match and the table is read once there, by one `ps` that runs with no bound
- *  (`processTable`).
+ *  environment to match and the table is read once there (`processTable`).
  *
  *  The child's own pid is signalled only through `child.kill`, and only while the runtime has
  *  not seen the child exit. Once the runtime reaps a child the system may give its pid to another
  *  process, so the child's pid seeds only the first read, taken before the child is killed, and
  *  a child that has exited is found by its token alone.
  *
- *  The second argument is for those rows, which are why this is exported, and no other caller
+ *  The third argument is for those rows, which are why this is exported, and no other caller
  *  passes it: each of its fields defaults to the real one (`Collaborators`). `child.kill` is the
  *  child's own, so the rows hand a stand-in child, whose `kill` only records its signal. */
 export function stopTree(
   { child, start, token }: Running,
+  deadline: number,
   {
     procfs: fromProc = procfs,
     read = processTable,
     signal = (pid) => process.kill(pid, "SIGKILL"),
     pause = () => Bun.sleepSync(execPause),
   }: Collaborators = {}
-): void {
+): string | undefined {
   const alive = child.exitCode === null && child.signalCode === null;
-  if (!alive && !fromProc) return;
+  if (!alive && !fromProc) return undefined;
   // The child's pid counts as killed from the start, so nothing but `child.kill` signals it.
   const killed = new Set<number>(alive ? [child.pid] : []);
   for (let reads = 0; reads < maxReads; reads++) {
     const root = alive && reads === 0 ? child.pid : undefined;
-    const table = read() ?? [];
+    const table = read(deadline);
+    if (typeof table === "string") {
+      if (root !== undefined) child.kill("SIGKILL");
+      return `read ${reads + 1} of the process table went unread: ${table}`;
+    }
     const found = treeOf(table, token, root);
     if (root !== undefined) child.kill("SIGKILL");
     const fresh = [...found].filter((pid) => !killed.has(pid));
@@ -509,6 +575,7 @@ export function stopTree(
     if (!pending) break;
     pause();
   }
+  return undefined;
 }
 
 /** The bounded children of this process that are still being waited for. */
@@ -536,9 +603,22 @@ const running = new Set<Running>();
  *  rows were filtered out with `-t` or skipped loses its bound and these listeners when its file
  *  ends, and only a group signal reaches what it started then. A row that awaits its child is
  *  covered without them: `runBounded`'s `finally` kills what the child left before the row
- *  ends. */
+ *  ends.
+ *
+ *  The kills it makes share one deadline, `killGrace` after it is called: whoever ended this
+ *  process waits for it to end, as a row waits for the kill a fired bound makes. A kill that ends
+ *  at that deadline is written on stderr, behind the marker, since this process has nothing left
+ *  to fail. */
 const stopAll = (): void => {
-  for (const run of running) stopTree(run);
+  const deadline = performance.now() + killGrace;
+  for (const run of running) {
+    const unfinished = stopTree(run, deadline);
+    if (unfinished !== undefined) {
+      process.stderr.write(
+        `${marker} the kill of child ${run.child.pid} as this process ended did not finish inside killGrace of ${killGrace} ms: ${unfinished}\n`
+      );
+    }
+  }
   running.clear();
 };
 process.once("exit", stopAll);
@@ -787,6 +867,10 @@ interface BoundedOptions extends Child {
   /** Writes every cost line this child captured on to this process's stderr. One caller passes
    *  it: the `row-map` generation, whose two listings are bounded children of its own. */
   readonly relaysLines?: boolean;
+  /** Called with the child's pid as it starts, for a row that reads the child's own
+   *  `/proc/<pid>` files while it runs, rather than a file of every process. One caller passes
+   *  it: `fsync-stall.test.ts`, which reads where its `dd` sleeps. */
+  readonly spawned?: (pid: number) => void;
 }
 
 /** How long the pipes get to end after a stuck child's tree is killed, before both readers are
@@ -822,15 +906,19 @@ async function drain(
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *
- *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
- *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since
- *  a child started inside another bounded child has a bound and a kill of its own, and its
- *  failure is named before its ancestor's bound fires. When the bound passes, `stopTree` kills
- *  the child and every process it started, the pipes get `pipeGrace` to end and are then
- *  cancelled, and this throws a message naming the file that started the child, the command with
- *  its arguments, the environment the caller gave it, the bound and the time waited. */
+ *  The bound covers the whole run: the child's exit, the end of both pipes, and the kill of what
+ *  the child left behind, so a process the child left holding a pipe is stuck as the child itself
+ *  would be. It holds at any depth, since a child started inside another bounded child has a
+ *  bound and a kill of its own, and its failure is named before its ancestor's bound fires. When
+ *  the bound passes, `stopTree` kills the child and every process it started, with `killGrace`
+ *  to do so, the pipes get `pipeGrace` to end and are then cancelled, and this throws a message
+ *  naming the file that started the child, the command with its arguments, the environment the
+ *  caller gave it, the bound and the time waited. A child that ends inside its bound leaves the
+ *  rest of the bound to the kill of what it left. A kill that ends at its deadline with the
+ *  process table unread fails the run either way, naming the bound it was held to and why the
+ *  table went unread: a run whose kill could not look is no run that left nothing behind. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
-  const { argv, bound, cwd, env, from, relaysLines = false } = options;
+  const { argv, bound, cwd, env, from, relaysLines = false, spawned } = options;
   const started = performance.now();
   const token = crypto.randomUUID();
   const ancestors = process.env[tokensVariable];
@@ -846,6 +934,7 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     stderr: "pipe",
     stdout: "pipe",
   });
+  spawned?.(child.pid);
   // Read now, while the child is listed: `stopTree` waits only on unknown processes that started
   // at or after it. A child the runtime reaped already reads as gone, and gets 0.
   const stat = procfs ? procText(child.pid, "stat") : undefined;
@@ -861,11 +950,13 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     drain(stdoutReader, stdoutChunks),
     drain(stderrReader, stderrChunks),
   ]);
+  const boundEnds = performance.now() + bounds[bound];
   let stuck = false;
+  let unfinished: string | undefined;
   try {
-    if ((await beforeDeadline(whole, performance.now() + bounds[bound])) === pastDeadline) {
+    if ((await beforeDeadline(whole, boundEnds)) === pastDeadline) {
       stuck = true;
-      stopTree(run);
+      unfinished = stopTree(run, performance.now() + killGrace);
       if ((await beforeDeadline(whole, performance.now() + pipeGrace)) === pastDeadline) {
         // Each pending read ends as the end of its stream would; what each pipe carried so far
         // stays in its chunks.
@@ -876,10 +967,11 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   } finally {
     // Every way out of this wait, a pipe that rejected included: this child leaves the set the
     // exit listener kills; and, unless the bound's kill ran already, whatever the child left
-    // behind is killed, so nothing it started outlives it. A child that exited is found by its
-    // token here and never by its pid, which the runtime has reaped.
+    // behind is killed by the end of the child's bound, so nothing it started outlives it. A
+    // child that exited is found by its token here and never by its pid, which the runtime has
+    // reaped.
     running.delete(run);
-    if (!stuck) stopTree(run);
+    if (!stuck) unfinished = stopTree(run, boundEnds);
   }
   const ms = Math.round(performance.now() - started);
   const name = named({ argv, env, from });
@@ -891,7 +983,8 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     }
   }
   // A stuck child can have exited 0 while a process it left held a pipe, so its own status alone
-  // would read like a clean run; `bound passed` says the bound fired whatever that status is.
+  // would read like a clean run; `bound passed` says the bound fired whatever that status is, and
+  // `kill unfinished` that the kill of what the child left could not read the table.
   const ended =
     (stuck ? " | bound passed" : "") +
     (child.signalCode !== null
@@ -900,13 +993,25 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
         ? " | still running after SIGKILL"
         : child.exitCode === 0
           ? ""
-          : ` | exit ${child.exitCode}`);
+          : ` | exit ${child.exitCode}`) +
+    (unfinished === undefined ? "" : " | kill unfinished");
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
     throw new Error(
       `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
-        `it and every process it started were killed after ${ms} ms`
+        (unfinished === undefined
+          ? `it and every process it started were killed after ${ms} ms`
+          : `it was killed, and the kill of what it started did not finish inside killGrace of ${killGrace} ms after the bound, ${ms} ms after the child started: ${unfinished}`)
+    );
+  }
+  if (unfinished !== undefined) {
+    throw new Error(
+      `the kill of what the bounded child ${name} left behind did not finish inside its ${bound} bound of ${bounds[bound]} ms, ${ms} ms after the child started: ${unfinished}`
     );
   }
   return { code: await child.exited, named: name, stderr, stdout };
 }
+
+// Run as a program, as `processTable` runs it in a process of its own held to a kill's deadline,
+// this module prints the process table as `procListing` reads it, and ends.
+if (import.meta.main) process.stdout.write(JSON.stringify(procListing()));

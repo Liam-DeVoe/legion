@@ -20,6 +20,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { processEnded } from "@legion/test-fixtures/process-state";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
@@ -97,27 +98,14 @@ export function lastMessage(request: Request): string {
 }
 
 /**
- * Whether a process is still running, asked of `/proc` rather than read from a log line. A
- * process the kernel holds as a zombie has ended and is waiting for its parent to reap it, which
- * a signal of 0 still answers for: a cell that was killed while looping never reaps the child the
- * first step ended, so the state letter is what says the child is gone.
+ * Whether a process is still running, asked of `/proc` rather than read from a log line, by its
+ * own state (`processEnded`): a process the kernel holds as a zombie (`Z`), or one that is dying
+ * (`X`), has ended and is waiting for its parent to reap it, which a signal of 0 still answers for:
+ * a cell that was killed while looping never reaps the child the first step ended, so the state
+ * letter is what says the child is gone. A pid that is no positive integer is refused.
  */
-export async function runs(pid: number): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`${pid} is no process to ask about`);
-  let stat: string;
-  try {
-    stat = await readFile(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return false;
-  }
-  // `/proc/<pid>/stat` holds the executable's name in parentheses, which may itself hold spaces
-  // and parentheses, and the state letter is the field after the last of them.
-  return (
-    stat
-      .slice(stat.lastIndexOf(")") + 1)
-      .trim()
-      .charAt(0) !== "Z"
-  );
+export function runs(pid: number): boolean {
+  return !processEnded(pid);
 }
 
 /**

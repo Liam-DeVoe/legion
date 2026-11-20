@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The stall watchdog's evidence reads the agent's process tree from each process's own lists of
+  children (`/proc/<pid>/task/<tid>/children`, every thread's), breadth first from the agent,
+  instead of the stat of every process on the machine. One entry of another process that never
+  answered its reader could hold that walk; none outside the agent's tree is read now. A kernel
+  with no children file records the tree as unread, never as an empty tree.
