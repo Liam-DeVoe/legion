@@ -178,7 +178,8 @@ func TestAPendingRequestIsJoinedOnlyForTheSameTarget(t *testing.T) {
 // TestAReleaseMintsTheTargetsScope: a release of a grant whose request names a target asks the
 // minter for the target's account alone, with the target's repositories, or, for an account
 // target, the profile's repositories of that account: a target narrows the profile and never
-// widens it.
+// widens it. A request with no target asks for the profile's own scope, its repositories of
+// both accounts among them, each as account/name, so the minter can send each account its own.
 func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs", "acme/site"], "permissions": {"contents": "read"}}}`,
@@ -195,9 +196,10 @@ func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 		locations []string
 		want      secrets.GitHubScope
 	}{
-		{"an account", []string{"https://github.com/ada"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"lean", "proofs"}}},
-		{"the other account", []string{"https://github.com/acme"}, secrets.GitHubScope{Accounts: []string{"acme"}, Repositories: []string{"site"}}},
-		{"a repository", []string{"https://github.com/ada/proofs"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"proofs"}}},
+		{"no target", nil, secrets.GitHubScope{Accounts: []string{"acme", "ada"}, Repositories: []string{"acme/site", "ada/lean", "ada/proofs"}}},
+		{"an account", []string{"https://github.com/ada"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/lean", "ada/proofs"}}},
+		{"the other account", []string{"https://github.com/acme"}, secrets.GitHubScope{Accounts: []string{"acme"}, Repositories: []string{"acme/site"}}},
+		{"a repository", []string{"https://github.com/ada/proofs"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs"}}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			asked = nil

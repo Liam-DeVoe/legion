@@ -535,13 +535,13 @@ func mintRequest(name, secretType string, served policy.Secret, value string, sc
 }
 
 // gitHubScope is the scope a release of name, served as profile, mints for the target account
-// and repositories ("" and nil for none), and nil for a name that is no GitHub profile.
+// and repositories ("" and nil for none; the repositories by name, of that account), and nil for
+// a name that is no GitHub profile. Its repositories are account/name entries, as the profiles
+// file writes them (secrets.GitHubScope), so the minter sends each account its own.
 //
 // With no target it is the profile's own accounts, repositories, permissions and value form. A
-// profile that names repositories mints for the accounts they belong to, with their names alone,
-// so an account the profile lists but names no repository of reaches none and is not minted for;
-// a scope of repositories of more than one account is refused by the minter (secrets.GitHubScope),
-// since one list of names cannot say which account holds each.
+// profile that names repositories mints for the accounts they belong to, so an account the
+// profile lists but names no repository of reaches none and is not minted for.
 //
 // A target narrows the profile and never widens it: its one account, which the profile must
 // name, with the target's repositories, each one the profile names where it names any, or, for an
@@ -564,34 +564,39 @@ func gitHubScope(name string, profile *policy.Profile, account string, repositor
 		}
 		scope.Accounts = nil
 		for _, repository := range block.Repositories {
-			owner, repositoryName, _ := strings.Cut(repository, "/")
+			owner, _, _ := strings.Cut(repository, "/")
 			if !slices.Contains(scope.Accounts, owner) {
 				scope.Accounts = append(scope.Accounts, owner)
 			}
-			scope.Repositories = append(scope.Repositories, repositoryName)
 		}
 		slices.Sort(scope.Accounts)
-		slices.Sort(scope.Repositories)
+		scope.Repositories = block.Repositories
 		return scope, nil
 	}
-	// The profile's repositories of the target's account, by name, or nil for a profile that
-	// names none and so reaches every repository its installations do.
+	// The profile's repositories of the target's account, or nil for a profile that names none
+	// and so reaches every repository its installations do.
 	var reached []string
 	for _, repository := range block.Repositories {
-		if owner, repositoryName, _ := strings.Cut(repository, "/"); owner == account {
-			reached = append(reached, repositoryName)
+		if owner, _, _ := strings.Cut(repository, "/"); owner == account {
+			reached = append(reached, repository)
 		}
+	}
+	// The target's repositories as account/name entries: record.AuthorizationDetail.Target has
+	// sorted the names and they share one account, so the entries are sorted too.
+	targeted := make([]string, len(repositories))
+	for i, repository := range repositories {
+		targeted[i] = account + "/" + repository
 	}
 	outside := !slices.Contains(block.Accounts, account) ||
 		block.Repositories != nil && len(reached) == 0 ||
-		block.Repositories != nil && slices.ContainsFunc(repositories, func(r string) bool { return !slices.Contains(reached, r) })
+		block.Repositories != nil && slices.ContainsFunc(targeted, func(r string) bool { return !slices.Contains(reached, r) })
 	if outside {
 		return nil, fmt.Errorf("%w: %s: the target %s is outside the profile, which names %s", ErrTargetRefused, name, targetWords(account, repositories), profileWords(block))
 	}
 	scope.Accounts = []string{account}
-	scope.Repositories = repositories
-	if len(repositories) == 0 {
-		scope.Repositories = reached
+	scope.Repositories = reached
+	if len(repositories) > 0 {
+		scope.Repositories = targeted
 	}
 	return scope, nil
 }
@@ -696,17 +701,18 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // approval keeps its grant while the secret stays the approver's, or becomes shared, whose
 // approver is anyone, or once the policy gives this requester the secret without asking; and a
 // secret handed to a person stops every grant of it that person must approve and did not. A name
-// withheld from the session that its request got automatically is judged as an approval by
-// decidedBy too: the withhold ended every grant that got the name without asking (withhold), so a
-// live one was approved after it, by someone the withheld name let approve it
-// (currentPolicyAdmits), and an automatic grant, which no one decided, never passes. A grant whose
-// frozen source is not the one the policy now serves the name from (the broker moved between
-// stores, or, on AWS, the secret was replaced by another of the same name, which gets a new ARN;
-// a Secret Manager source is the resource name, which a recreated secret keeps) is not live
-// either: the frozen source no longer names the secret the policy decides about, so the session
-// asks again. A name whose requesters tag no longer lists this requester is not live either, and
-// ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
-// all, so a grant made before it dropped them must not go on releasing while they are off it.
+// withheld from the session that its request got automatically, a profile of a withheld source
+// among them (policy.Set.Withholds), is judged as an approval by decidedBy too: the withhold ended
+// every grant that got the name without asking (withhold), so a live one was approved after it,
+// by someone the withheld name let approve it (currentPolicyAdmits), and an automatic grant,
+// which no one decided, never passes. A grant whose frozen source is not the one the policy now
+// serves the name from (the broker moved between stores, or, on AWS, the secret was replaced by
+// another of the same name, which gets a new ARN; a Secret Manager source is the resource name,
+// which a recreated secret keeps) is not live either: the frozen source no longer names the
+// secret the policy decides about, so the session asks again. A name whose requesters tag no
+// longer lists this requester is not live either, and ends the grant for good
+// (errRequesterNotListed): that list is who may ask for the secret at all, so a grant made before
+// it dropped them must not go on releasing while they are off it.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
 // held to the rules instead of to that login, and to the admin tag over both: the secret must not
 // be an administrator's now, and the rules in force must still give the name a judge of at least
@@ -731,7 +737,7 @@ func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, froz
 		return fmt.Errorf("%w: the current policy no longer allows %s", ErrGrantNotLive, name)
 	case d.Outcome != policy.Approval:
 		return nil
-	case frozenDecision == policy.Automatic && !slices.Contains(requester.Withheld, name):
+	case frozenDecision == policy.Automatic && !set.Withholds(requester, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
 		return judgeStillDecides(set, rules, name, lifetime)
@@ -802,10 +808,11 @@ var errRequesterNotListed = errors.New("requester not listed")
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
-// whether that name is withheld from its session, and whether the secret is an administrator's:
-// the one question the broker's model judge asks the machine before it decides a pending request
-// (judge.Requests, whose other two methods are the writes a verdict makes — ApplyJudgeDecision
-// and LogJudged, in machine_state.go).
+// whether that name is withheld from its session, by its own name or its source's
+// (policy.Set.Withholds), and whether the secret is an administrator's: the one question the
+// broker's model judge asks the machine before it decides a pending request (judge.Requests,
+// whose other two methods are the writes a verdict makes — ApplyJudgeDecision and LogJudged, in
+// machine_state.go).
 //
 // It re-reads everything now rather than taking what the request froze. The policy comes from
 // m.Policy.Get(), the snapshot a request made minutes ago may no longer have been decided under,
@@ -847,7 +854,7 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	return decision, slices.Contains(requester.Withheld, name), set.Secrets[name].Admin, nil
+	return decision, set.Withholds(requester, name), set.Secrets[name].Admin, nil
 }
 
 // JudgeRequestState answers the state a decision on recordID would meet now: the second
@@ -1227,7 +1234,8 @@ func writtenBeforeMigration13(alias string) string {
 // again when the entry comes back. The exception is a grant whose secret's requesters tag names
 // the person: the secret no longer lists the requester, so the grant is ended for good, as the
 // paragraph above says (errRequesterNotListed).
-// No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
+// No live grant holds a withheld name, or a profile of a withheld source, nobody approved: the
+// withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds

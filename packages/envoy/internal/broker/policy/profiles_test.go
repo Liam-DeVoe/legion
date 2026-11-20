@@ -128,7 +128,9 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 // depth of the file, is refused rather than ignored, so a file written for a later broker is not
 // served with that field's rule missing; so is anything after the file's one object, which its
 // author would believe in force. A file that is not JSON, or holds a field of the wrong type, is
-// refused naming where.
+// refused naming where. A file that is not the one object {"profiles": [...]} (a null, a list, a
+// string, an object with no profiles list or a null one) is refused naming what it is, never read
+// as a file of no profiles: a file of no profiles says so, {"profiles": []}.
 func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 	for name, c := range map[string]struct {
 		file string
@@ -147,6 +149,11 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 		"an empty file":                {"", []string{"empty"}},
 		"profiles that is no list":     {`{"profiles": {"name": "GITHUB_READ"}}`, []string{"profiles", "byte offset"}},
 		"a judge that is not a number": {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": "300"}`)), []string{"profiles.0.proxy.judge"}},
+		"a file that is null":          {"null\n", []string{"the file is null", "no JSON object"}},
+		"a file that is a list":        {`[{"name": "GITHUB_READ"}]`, []string{"the file is a JSON array", "not one JSON object", "line 1, column 1"}},
+		"a file that is a string":      {`"profiles"`, []string{"the file is a JSON string", "not one JSON object"}},
+		"profiles that is null":        {`{"profiles": null}`, []string{`"profiles" is missing or null`, `{"profiles": []}`}},
+		"a file with no profiles list": {`{}`, []string{`"profiles" is missing or null`, `{"profiles": []}`}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := policy.ParseProfiles([]byte(c.file))
@@ -161,7 +168,7 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 		})
 	}
 	t.Run("the control: white space after the object, and a file of no profiles", func(t *testing.T) {
-		for _, file := range []string{profilesFile(githubRead) + "\n\n", `{"profiles": []}`, `{}`} {
+		for _, file := range []string{profilesFile(githubRead) + "\n\n", `{"profiles": []}`, " \n{\"profiles\": []}"} {
 			if _, err := policy.ParseProfiles([]byte(file)); err != nil {
 				t.Errorf("ParseProfiles(%q): %v", file, err)
 			}
@@ -348,8 +355,9 @@ func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
 // TestDecodeProfilesReadsAFileTheRulesRefuse: the profiles in force are read for the report of
 // what a change does to them, and may be a file a stricter rule of this broker refuses; that file
 // is read as it is, with its values in the form ParseProfiles answers. A file that is not JSON,
-// holds a field the broker does not know, or holds a maxGrant that is no duration has no profiles
-// to compare, and is refused.
+// holds a field the broker does not know, holds a maxGrant that is no duration, or is not the one
+// object {"profiles": [...]} has no profiles to compare, and is refused: a null file read as no
+// profiles would report every profile of the change as added.
 func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
 	refused := profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": 1800}`),
 		githubWrite(`{"accounts": ["Example-Org"], "permissions": {"workflows": "read"}}`))
@@ -370,6 +378,9 @@ func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
 		"not JSON":                "{\"profiles\": [",
 		"an unknown field":        profilesFile(`{"name": "A", "lifetime": 5}`),
 		"a maxGrant of no length": profilesFile(`{"name": "A", "maxGrant": "a day"}`),
+		"a file that is null":     "null",
+		"profiles that is null":   `{"profiles": null}`,
+		"a file that is a list":   `[]`,
 	} {
 		if _, err := policy.DecodeProfiles([]byte(file)); err == nil {
 			t.Errorf("DecodeProfiles read a file with %s", name)

@@ -2353,7 +2353,7 @@ const PolicyDeniedActor = "broker:policy"
 func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, who decider, recordApprover string, lifetime *int) error {
 	if who.isJudge() {
 		for _, g := range requested {
-			if slices.Contains(requester.Withheld, g.name) {
+			if set.Withholds(requester, g.name) {
 				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
 			}
 			if set.Secrets[g.name].Admin {
@@ -2376,7 +2376,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 	for _, g := range requested {
 		d, err := set.Evaluate(g.name, requester)
 		if errors.Is(err, policy.ErrUnknownSecret) {
-			if slices.Contains(requester.Withheld, g.name) {
+			if set.Withholds(requester, g.name) {
 				return fmt.Errorf("%w: %s is withheld from this session and the current policy does not serve it, so no one may approve it now", record.ErrNotApprover, g.name)
 			}
 			continue
@@ -2384,7 +2384,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if err != nil {
 			return err
 		}
-		if d.Outcome == policy.Deny && slices.Contains(requester.Withheld, g.name) {
+		if d.Outcome == policy.Deny && set.Withholds(requester, g.name) {
 			return fmt.Errorf("%w: %s is withheld from this session and the current policy denies it, so no one may approve it now", record.ErrNotApprover, g.name)
 		}
 		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover) {
@@ -2492,18 +2492,18 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // which the caller proved: "human:<login>" for a revoke Dispatch relays from its signed-in person,
 // "launcher:<credential id>" for one the operator's own machine login makes. When the operator
 // revokes, every name the grant's request got automatically is withheld from the grant's session
-// from then on, and every other live grant of the session that got one of those names
-// automatically ends with it (withhold), so the session asks before it gets the name again
-// (Create). The withhold belongs to the session rather than the grant, so the operator's revoke of
-// a grant already revoked (by its session, or by an earlier withhold, after the operator's Live
-// grants list was loaded) withholds the same names, recorded as a grant.withheld audit row rather
-// than a second grant.revoked. Another person's revoke (an approver's of the grant) ends the grant
-// alone and withholds nothing: the session is not theirs. It locks the session's row in the
-// statement that reads the grant, before it writes the grant: the order every writer that locks
-// both takes them in, and the one lock Create and ApplyDecision read the withheld names under, so a
-// request deciding on the session as this runs either is written first, and then ended here if it
-// got a withheld name, or decides with the name withheld. A revoke that ends nothing and withholds
-// nothing new succeeds and changes nothing.
+// from then on, and every other live grant of the session that got one of those names, or a
+// profile whose source is one of them, automatically ends with it (withhold), so the session asks
+// before it gets the name again (Create). The withhold belongs to the session rather than the
+// grant, so the operator's revoke of a grant already revoked (by its session, or by an earlier
+// withhold, after the operator's Live grants list was loaded) withholds the same names, recorded
+// as a grant.withheld audit row rather than a second grant.revoked. Another person's revoke (an
+// approver's of the grant) ends the grant alone and withholds nothing: the session is not theirs.
+// It locks the session's row in the statement that reads the grant, before it writes the grant:
+// the order every writer that locks both takes them in, and the one lock Create and ApplyDecision
+// read the withheld names under, so a request deciding on the session as this runs either is
+// written first, and then ended here if it got a withheld name, or decides with the name
+// withheld. A revoke that ends nothing and withholds nothing new succeeds and changes nothing.
 // The enrollment it reads the operator off, and the one withhold writes against, is the enrollment
 // the grants row names now, so an approver's revoke reaches a grant that moved and an operator's
 // withholds from the box the session runs on.
@@ -2531,7 +2531,7 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 	detail := auditDetail{}
 	var endedByWithhold []endedGrant
 	if asOperator {
-		withheld, alsoEnded, err := withhold(ctx, tx, session, requestID, actor)
+		withheld, alsoEnded, err := withhold(ctx, tx, m.Policy.Get(), session, requestID, actor)
 		if err != nil {
 			return err
 		}
@@ -2570,17 +2570,27 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just
 // revoked, got automatically, and in the same statement ends every other live grant of the session
-// whose request got one of the names it newly withholds automatically, each with a grant.revoked
-// audit row by actor naming those of its names under "withheld". So no grant the session holds
-// goes on releasing a withheld name without someone having approved it there. A name already
-// withheld ends nothing: its first withhold ended every grant that got it without asking, and a
-// grant whose request got it automatically since then was approved by someone the withheld name
-// let approve it (currentPolicyAdmits), which stands. It answers the names it had not withheld
-// before, and the grant.revoked audit row it wrote for each grant it ended, so RevokeByApprover
-// logs one grant-log line per row once the transaction has committed.
+// whose request got automatically one of the names it newly withholds, or a profile whose source
+// is one of them, each with a grant.revoked audit row by actor naming those of its names under
+// "withheld". So no grant the session holds goes on releasing a withheld name, or a profile of a
+// withheld source (policy.Set.Withholds), without someone having approved it there. Which profiles
+// a source has is set's, the live policy's (policy.Set.ProfilesOf), the one mapping every reader
+// of what is withheld decides by. A name already withheld ends nothing: its first withhold ended
+// every grant that got it, or a profile of it, without asking, and a grant whose request got one
+// automatically since then was approved by someone the withheld name let approve it
+// (currentPolicyAdmits), which stands. It answers the names it had not withheld before, and the
+// grant.revoked audit row it wrote for each grant it ended, so RevokeByApprover logs one grant-log
+// line per row once the transaction has committed.
 // Everything it writes and everything it ends is keyed by enrollmentID, the enrollment the grant
 // hangs off now, which after a move is the box the session runs on and not the one that asked.
-func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor string) ([]string, []endedGrant, error) {
+func withhold(ctx context.Context, tx pgx.Tx, set *policy.Set, enrollmentID, requestID, actor string) ([]string, []endedGrant, error) {
+	var profiles, sources []string
+	for source, of := range set.ProfilesOf {
+		for _, profile := range of {
+			profiles = append(profiles, profile)
+			sources = append(sources, source)
+		}
+	}
 	var names []string
 	var ended []endedGrant
 	err := tx.QueryRow(ctx, `with names as (
@@ -2589,21 +2599,24 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 			insert into withheld_secrets (enrollment_id, name) select $1, name from names
 			on conflict do nothing
 			returning name
+		), covered as (
+			select name from withheld
+			union select p.profile from unnest($5::text[], $6::text[]) as p(profile, source) where p.source in (select name from withheld)
 		), ended as (
 			update grants g set revoked_at=now(), revoked_by=$3
 			where g.enrollment_id=$1 and g.revoked_at is null and `+grantUnexpired("g")+`
-			and exists (select 1 from request_secrets a where a.request_id=g.request_id and a.decision=$4 and a.name in (select name from withheld))
+			and exists (select 1 from request_secrets a where a.request_id=g.request_id and a.decision=$4 and a.name in (select name from covered))
 			returning g.id, g.request_id
 		), audited as (
 			insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail)
 			select 'grant.revoked', $1, e.request_id, e.id, $3, jsonb_build_object('withheld', (select jsonb_agg(a.name order by a.name)
-				from request_secrets a where a.request_id=e.request_id and a.decision=$4 and a.name in (select name from withheld)))
+				from request_secrets a where a.request_id=e.request_id and a.decision=$4 and a.name in (select name from covered)))
 			from ended e
 			returning grant_id, request_id, detail
 		)
 		select coalesce((select jsonb_agg(name order by name) from withheld), '[]'::jsonb),
 			coalesce((select jsonb_agg(jsonb_build_object('grant', grant_id, 'request', request_id, 'detail', detail) order by grant_id) from audited), '[]'::jsonb)`,
-		enrollmentID, requestID, actor, policy.Automatic).Scan(&names, &ended)
+		enrollmentID, requestID, actor, policy.Automatic, profiles, sources).Scan(&names, &ended)
 	return names, ended, err
 }
 

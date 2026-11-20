@@ -158,10 +158,11 @@ func TestParseValueLeavesTheOtherChecksInTheirPlace(t *testing.T) {
 	if got := secrets.MintErrorClass(err); got != "refused" {
 		t.Fatalf("Azure mint of another secret with a bad value = %v (class %s); want refused", err, got)
 	}
-	// refused names repositories of two accounts, which the GitHub minter refuses before it asks
-	// GitHub anything, since a scope's repositories are names of one account's.
+	// refused names repositories of acme alone while outsider is in effect too, which the GitHub
+	// minter refuses before it asks GitHub anything, since outsider's token would name none of
+	// them and so reach every repository its installation does.
 	refused := readScope("acme", "outsider")
-	refused.Repositories = []string{"widgets"}
+	refused.Repositories = []string{"acme/widgets"}
 	scoped := secrets.MintRequest{Value: `{"app_id":"123456"}`, GitHub: refused}
 	_, err = (secrets.GitHubApp{}).Mint(t.Context(), scoped)
 	if got := secrets.MintErrorClass(err); got != "stored-value" {

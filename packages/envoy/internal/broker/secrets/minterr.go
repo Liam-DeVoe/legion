@@ -52,8 +52,10 @@ type GitHubScope struct {
 	// Accounts are the lowercase logins of the accounts whose installations the release mints
 	// for, each once.
 	Accounts []string
-	// Repositories are names without the owner, sorted; nil is every repository the installation
-	// reaches. A scope that names repositories names one account, whose repositories they are.
+	// Repositories are "account/name" entries, the account lowercased, sorted; nil is every
+	// repository the installation reaches. Each account's token names that account's
+	// repositories alone, by name (GitHubApp.Mint), so a scope that names repositories names some
+	// of each account in effect.
 	Repositories []string
 	// Permissions are the profile's, before the cut: each GitHub App permission and its level.
 	Permissions map[string]string
@@ -98,12 +100,13 @@ var (
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the profile's scope in effect for the release cannot be served: its
 	// permissions, cut to what an installation holds, leave none (ErrMintEmptyCut); it names
-	// repositories of more than one account, or a bare token of more than one account; or GitHub
-	// answered its token request 422, which it does for a repository the installation does not
-	// reach (a misspelled name among them) or a permission it does not hold. The caller names
-	// another profile or a target, or the profiles file changes; neither the App nor the secret is
-	// at fault. Its name and its words are the ones it had for the narrowing a caller once asked
-	// for, which a released client still matches (packages/daemon's appauth).
+	// repositories, and an account in effect holds none of them; it is a bare token of more than one
+	// account; or GitHub answered its token request 422, which it does for a repository the
+	// installation does not reach (a misspelled name among them) or a permission it does not
+	// hold. The caller names another profile or a target, or the profiles file changes; neither
+	// the App nor the secret is at fault. Its name and its words are the ones it had for the
+	// narrowing a caller once asked for, which a released client still matches
+	// (packages/daemon's appauth).
 	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
 	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
 	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes

@@ -2,15 +2,19 @@ package requests
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
@@ -785,5 +789,106 @@ func TestRevokeByApproverWaitsForARequestDecidingOnItsSession(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("RevokeByApprover = %v", err)
+	}
+}
+
+// sourceProfiles is a profiles file of two profiles of the github-app source APP_KEY: APP_KEY,
+// which holds the source's own name, and APP_KEY_ADA, a profile of another name. Withholding
+// APP_KEY, which revoking an automatic grant of that profile does, withholds the source.
+var sourceProfiles = policytest.ProfilesFile(
+	policytest.AppProfile("APP_KEY"),
+	`{"name": "APP_KEY_ADA", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}}`,
+)
+
+// sourceFixture is targetFixture serving sourceProfiles over an agent-tier APP_KEY, whose every
+// release mints "minted-token".
+func sourceFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
+	t.Helper()
+	m, enr, key := targetFixture(t, policy.TierAgent, sourceProfiles)
+	m.Minters = map[string]Minter{policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		return secrets.Minted{Value: "minted-token"}, nil
+	}}
+	return m, enr, key
+}
+
+// TestWithholdingASourceWithholdsEachProfileOfIt pins R2's rule that a session's operator who
+// withholds a source withholds each profile of it, on every path that reads what is withheld: the
+// session got grants of APP_KEY and APP_KEY_ADA without asking, and its operator revokes the
+// APP_KEY grant, which withholds the source's own name. The APP_KEY_ADA grant ends with it, with a
+// grant.revoked row by the operator naming APP_KEY_ADA, and releases nothing; the same request
+// again is not handed that grant back but asks the owner; and the judge reads APP_KEY_ADA as
+// withheld. A request that got APP_KEY_ADA without asking while it waited on the operator for
+// DEEL_API_KEY, and that the operator approves after the withhold, is an approval like any other:
+// it outlives an unrelated tag change.
+func TestWithholdingASourceWithholdsEachProfileOfIt(t *testing.T) {
+	m, enr, key := sourceFixture(t)
+	ctx := t.Context()
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "APP_KEY_ADA", "DEEL_API_KEY"), "")
+	if err != nil || mixed.State != "pending" {
+		t.Fatalf("Create(APP_KEY_ADA, DEEL_API_KEY) = %+v, %v; want pending on the operator", mixed, err)
+	}
+	source, err := m.Create(ctx, enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")
+	if err != nil || source.State != "granted" || source.GrantID == nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want an automatic grant", source, err)
+	}
+	ada, err := m.Create(ctx, enr, signRequest(t, m, key, "another profile of it", "APP_KEY_ADA"), "")
+	if err != nil || ada.State != "granted" || ada.GrantID == nil {
+		t.Fatalf("Create(APP_KEY_ADA) = %+v, %v; want an automatic grant", ada, err)
+	}
+
+	if err := m.RevokeByApprover(ctx, *source.GrantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"APP_KEY"}) {
+		t.Fatalf("withheld = %v; want [APP_KEY], the source's own name", got)
+	}
+	if release, err := m.Values(ctx, *ada.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values(APP_KEY_ADA's grant) once its source is withheld = %v, %v; want ErrGrantNotLive", release.Values, err)
+	}
+	if actor, withheld := revokedAudit(t, m, *ada.GrantID); actor != record.HumanActor(fixtureOperator) || !slices.Equal(withheld, []string{"APP_KEY_ADA"}) {
+		t.Fatalf("APP_KEY_ADA's grant.revoked audit = %s withheld %v; want human:%s withheld [APP_KEY_ADA]", actor, withheld, fixtureOperator)
+	}
+	// The request that waited on the operator is decided first, since a second request naming
+	// APP_KEY_ADA while it waits is refused as overlapping it (lockPendingNames).
+	dec, err := m.ApplyDecision(ctx, *mixed.RecordID, true, fixtureOperator)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", fixtureOperator, dec, err)
+	}
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "another profile of it, again", "APP_KEY_ADA"), "")
+	if err != nil || again.State != "pending" || again.GrantID != nil {
+		t.Fatalf("Create(APP_KEY_ADA) once its source is withheld = %+v, %v; want an approval request, not the old grant", again, err)
+	}
+	if decision, withheld, _, err := m.JudgePolicy(ctx, enr, "APP_KEY_ADA"); err != nil || !withheld || decision.Outcome != policy.Approval {
+		t.Fatalf("JudgePolicy(APP_KEY_ADA) once its source is withheld = %+v, withheld %v, %v; want withheld, and an approval", decision, withheld, err)
+	}
+
+	retagUnrelated(t, m)
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["APP_KEY_ADA"] == "" {
+		t.Fatalf("Values of the owner's approval once another secret's tags changed = %v, %v; want APP_KEY_ADA released", release.Values, err)
+	}
+}
+
+// TestTheJudgeSettlesNoProfileOfAWithheldSource pins the judge's own guard on the same rule: the
+// decision transaction refuses the judge's approval of a profile whose source the session's
+// operator withheld, as it refuses a name withheld directly (TestTheJudgeSettlesNoWithheldName).
+func TestTheJudgeSettlesNoProfileOfAWithheldSource(t *testing.T) {
+	m, enr, key := sourceFixture(t)
+	m.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{{Name: "APP_KEY_ADA", Hosts: []string{"api.github.example"}, Judge: new(uint32(900))}}}
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	m.Judge = func(PendingRequest) {}
+	source, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")
+	if err != nil || source.GrantID == nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want an automatic grant", source, err)
+	}
+	if err := m.RevokeByApprover(t.Context(), *source.GrantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants it", 600, "APP_KEY_ADA")
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a profile of a withheld source = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	if got := readDecided(t, m, *req.RecordID); got.events != 0 || got.state != "pending" {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
 	}
 }

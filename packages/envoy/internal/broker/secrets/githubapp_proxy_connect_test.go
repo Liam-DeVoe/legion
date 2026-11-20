@@ -93,7 +93,7 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 			app := secrets.GitHubApp{Base: github.URL, HTTP: &http.Client{Transport: transport}, Retry: retry}
 
 			scope := readScope("ada")
-			scope.Repositories = []string{"lean"}
+			scope.Repositories = []string{"ada/lean"}
 			result, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: scope, Check: check})
 			if refused.Load() != 1 {
 				t.Fatalf("the proxy refused %d tunnels, want the token request's one: the row reads nothing", refused.Load())

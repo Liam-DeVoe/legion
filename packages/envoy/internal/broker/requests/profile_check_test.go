@@ -308,22 +308,25 @@ func everyMintGivenBack(t *testing.T, stand *gitHubStand) {
 	}
 }
 
-// TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked: a human-tier profile naming a
-// repository the installation does not reach is refused by Create itself — before any request
-// row is written, before any credential-request record opens, and so before anybody is asked to
-// decide it — as the scope GitHub refused (secrets.ErrMintNarrowingRefused, which the API answers
-// 422 PROFILE_MINT_REFUSED), naming that repository. The check mints the profile's token for the
-// scope in effect, and then each repository alone to find which one GitHub refused; each token
-// GitHub minted for it is revoked at once.
+// TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked: a human-tier profile whose signed
+// target names a repository the profile allows and the installation does not reach is refused by
+// Create itself — before any request row is written, before any credential-request record opens,
+// and so before anybody is asked to decide it — as the scope GitHub refused
+// (secrets.ErrMintNarrowingRefused, which the API answers 422 PROFILE_MINT_REFUSED), naming that
+// repository. The check mints the profile's token for the scope in effect, the target's
+// repositories, and then each repository alone to find which one GitHub refused; each token
+// GitHub minted for it is revoked at once. The profile itself names no repository, so every
+// repository of its account is one it allows, and a check that minted the profile's own scope
+// instead of the target's would be served and send the request to its approver.
 func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/lean", "ada/missing"], "permissions": {"contents": "read"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "permissions": {"contents": "read"}}`,
 	})
 	f.stand.Answers(airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefusedRepository, Repository: "missing"})
 
-	request, err := f.create(t, "APP_KEY")
+	request, err := f.createTargeted(t, "APP_KEY", "https://github.com/ada/lean", "https://github.com/ada/missing")
 	if !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" || request.RecordID != nil {
-		t.Fatalf("Create(APP_KEY) = %+v, %v; want ErrMintNarrowingRefused and no request", request, err)
+		t.Fatalf("Create(APP_KEY) targeting ada/lean and ada/missing = %+v, %v; want ErrMintNarrowingRefused and no request", request, err)
 	}
 	for _, word := range []string{"APP_KEY", "missing", "does not reach"} {
 		if !strings.Contains(err.Error(), word) {
@@ -332,6 +335,10 @@ func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 	}
 	if rows, grants, records := heldRows(t, f.Machine); rows != 0 || grants != 0 || records != 0 {
 		t.Fatalf("the refused request left %d request rows, %d grants and %d records; want none of any", rows, grants, records)
+	}
+	asked := f.stand.tokenRequests()
+	if len(asked) == 0 || !strings.Contains(asked[0].Body, `"repositories":["lean","missing"]`) {
+		t.Fatalf("the check's token requests were %+v; want the first to ask for the target's repositories, lean and missing", asked)
 	}
 	everyMintGivenBack(t, f.stand)
 }
@@ -468,6 +475,52 @@ func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
 	}
 	if again := f.stand.tokenRequests(); len(again) != len(asked) {
 		t.Fatalf("a request naming no GitHub profile asked GitHub for %d tokens; want none", len(again)-len(asked))
+	}
+}
+
+// TestAProfileOfRepositoriesOfTwoAccountsIsCheckedAndReleasedWithNoTarget: a profile naming
+// repositories of two accounts, asked for with no target, is minted for each account with that
+// account's repositories alone, by name: by the check mint before the approver is asked, and by
+// the release after the approval, which holds both accounts' tokens. Neither refuses it for want
+// of a target, which only a value-token profile of more than one account needs.
+func TestAProfileOfRepositoriesOfTwoAccountsIsCheckedAndReleasedWithNoTarget(t *testing.T) {
+	installations := map[string]int64{standInOwner: 7, otherOwner: 8}
+	f := newProfileFixture(t, installations, map[string]string{
+		"APP_KEY": `{"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/proofs"], "permissions": {"contents": "read"}}`,
+	})
+
+	pending, err := f.create(t, "APP_KEY")
+	if err != nil || pending.State != "pending" || pending.RecordID == nil {
+		t.Fatalf("Create(APP_KEY) of repositories of two accounts = %+v, %v; want it pending on its approver", pending, err)
+	}
+	decision, err := f.ApplyDecision(t.Context(), *pending.RecordID, true, checkOperator)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("the approver's decision = %+v, %v; want the grant their approval makes", decision, err)
+	}
+	release, err := f.Values(t.Context(), decision.GrantID, f.enrollmentID, requests.ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values of repositories of two accounts: %v", err)
+	}
+	var held struct {
+		Installations map[string]struct {
+			Token string `json:"token"`
+		} `json:"installations"`
+	}
+	if err := json.Unmarshal([]byte(release.Values["APP_KEY"]), &held); err != nil || held.Installations[standInOwner].Token == "" || held.Installations[otherOwner].Token == "" || len(held.Installations) != 2 {
+		t.Fatalf("the release holds %q (%v); want a token of each account", release.Values["APP_KEY"], err)
+	}
+	want := map[string]string{
+		fmt.Sprintf("/app/installations/%d/access_tokens", installations[standInOwner]): `"repositories":["proofs"]`,
+		fmt.Sprintf("/app/installations/%d/access_tokens", installations[otherOwner]):   `"repositories":["site"]`,
+	}
+	asked := f.stand.tokenRequests()
+	if len(asked) != 4 {
+		t.Fatalf("GitHub was asked for %d tokens; want one of each account for the check and one of each for the release", len(asked))
+	}
+	for _, seen := range asked {
+		if repositories, ok := want[seen.Path]; !ok || !strings.Contains(seen.Body, repositories) {
+			t.Errorf("the token request at %s sent %s; want it to name that account's repositories alone, %s", seen.Path, seen.Body, repositories)
+		}
 	}
 }
 

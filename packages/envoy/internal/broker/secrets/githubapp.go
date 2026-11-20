@@ -118,12 +118,37 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 }
 
 // accessTokensBody is GitHub's access_tokens body asking for permissions on repositories, the
-// scope's (nil for every repository the installation reaches). Mint never sends it with no
-// permissions (ErrMintEmptyCut). Marshalling a struct of a string slice and a string map cannot
-// fail, so its error is dropped.
+// names of the scope's repositories of the one account the token is for (nil for every
+// repository the installation reaches). Mint never sends it with no permissions
+// (ErrMintEmptyCut). Marshalling a struct of a string slice and a string map cannot fail, so its
+// error is dropped.
 func accessTokensBody(repositories []string, permissions map[string]string) []byte {
 	encoded, _ := json.Marshal(githubAccessTokensBody{Repositories: repositories, Permissions: permissions})
 	return encoded
+}
+
+// repositoriesOf is the names of the scope's repositories of account, a lowercase login, as
+// GitHub's access_tokens body takes them, without the owner: the body is sent to that account's
+// installation, which knows its repositories by name alone. It is nil for a scope of every
+// repository, and empty for an account the scope names no repository of (refusal refuses that).
+func (s *GitHubScope) repositoriesOf(account string) []string {
+	if s.Repositories == nil {
+		return nil
+	}
+	names := make([]string, 0, len(s.Repositories))
+	for _, entry := range s.Repositories {
+		if name, ok := repositoryOf(entry, account); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// repositoryOf reads one entry of GitHubScope.Repositories, "account/name", as the name of a
+// repository of account, and false for an entry of any other account.
+func repositoryOf(entry, account string) (string, bool) {
+	owner, name, ok := strings.Cut(entry, "/")
+	return name, ok && owner == account
 }
 
 // permissionWords is permissions as one phrase of a refusal, "contents: read, issues: write", in
@@ -137,16 +162,25 @@ func permissionWords(permissions map[string]string) string {
 }
 
 // refusal is the scope's own refusal, before anything is asked of GitHub: a bare token is one
-// account's, so a value-token scope of more than one account is refused, and a scope's
-// repositories are names without their account, so a scope naming repositories of more than one
-// account is refused rather than asking each account's installation for names another account
-// holds. Either is the caller's to fix, by naming one account with --target.
+// account's, so a value-token scope of more than one account is refused, which the caller fixes
+// by naming one account with --target; and a scope that names repositories, of which an account
+// in effect holds none, is refused naming that account, since that account's token would name no
+// repository and so reach every one its installation does.
 func (s *GitHubScope) refusal(appID string) error {
 	if len(s.Accounts) > 1 && s.Value == valueToken {
 		return fmt.Errorf("%w: github app %s: the profile releases one account's bare token, and %s are in effect: name one with --target", ErrMintNarrowingRefused, appID, strings.Join(s.Accounts, ", "))
 	}
-	if len(s.Accounts) > 1 && len(s.Repositories) > 0 {
-		return fmt.Errorf("%w: github app %s: the profile names repositories of more than one account (%s): name one with --target", ErrMintNarrowingRefused, appID, strings.Join(s.Accounts, ", "))
+	if s.Repositories == nil {
+		return nil
+	}
+	for _, account := range s.Accounts {
+		holds := func(entry string) bool {
+			_, ok := repositoryOf(entry, account)
+			return ok
+		}
+		if !slices.ContainsFunc(s.Repositories, holds) {
+			return fmt.Errorf("%w: github app %s: the scope names repositories (%s), and none of %s, which is in effect", ErrMintNarrowingRefused, appID, strings.Join(s.Repositories, ", "), account)
+		}
 	}
 	return nil
 }
@@ -185,13 +219,13 @@ func refusal(err error, appID, owner string, repositories []string, asked map[st
 // heldBy checks that token, as GitHub describes it, holds no more than its request asked: named
 // permissions, each one the request named (asked) at no level above the one it named; and, for a
 // request naming repositories, a selection of named repositories, each one it named (GitHub names
-// them in its own case). metadata at read is the one permission it accepts unasked: GitHub grants
-// it with any repository permission, and it reads no more than a repository's name and settings.
-// GitHub applies the access_tokens body and refuses what it cannot grant, so a token past it means
-// something between the broker and GitHub dropped or widened the body; refusing it keeps the
-// scope the profile states true by construction. Its errors name the rule the answer failed and
-// never a value the answer holds, which an upstream that is not GitHub can fill with what the
-// request carried.
+// them in its own case). It accepts no permission unasked, metadata at read among them: GitHub
+// grants that with every installation token, so a GitHub profile names it, and a token holding it
+// for a profile that does not is past the request like any other. GitHub applies the
+// access_tokens body and refuses what it cannot grant, so a token past it means something between
+// the broker and GitHub dropped or widened the body; refusing it keeps the scope the profile
+// states true by construction. Its errors name the rule the answer failed and never a value the
+// answer holds, which an upstream that is not GitHub can fill with what the request carried.
 func heldBy(token githubInstallationToken, repositories []string, asked map[string]string) error {
 	if len(token.Permissions) == 0 {
 		return errors.New("GitHub's token names no permissions, so it may hold more than its request asked")
@@ -200,9 +234,6 @@ func heldBy(token githubInstallationToken, repositories []string, asked map[stri
 		level := token.Permissions[permission]
 		want, named := asked[permission]
 		if !named {
-			if permission == "metadata" && level == "read" {
-				continue
-			}
 			return errors.New("GitHub's token holds a permission the request did not name")
 		}
 		if levelRank[level] == 0 || levelRank[level] > levelRank[want] {
@@ -430,11 +461,12 @@ func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
 }
 
 // installationMint is one installation a release mints for: the installation, its account as
-// GitHub names it and as the scope names it (lowercased), and what the cut asks of it and leaves
-// out.
+// GitHub names it and as the scope names it (lowercased), the names of the scope's repositories
+// of that account (nil for every repository), and what the cut asks of it and leaves out.
 type installationMint struct {
 	installation   githubInstallation
 	owner, account string
+	repositories   []string
 	asked          map[string]string
 	leftOut        []string
 }
@@ -448,9 +480,10 @@ type installationMint struct {
 // leaves out a record with no positive installation id, which names no installation a token can be
 // asked for.
 //
-// Each token request names the scope's repositories and the profile's permissions cut to what
-// that installation holds (cut), so GitHub never grants a permission the request did not name;
-// the release names each entry the cut left out (Minted.LeftOut). A cut that leaves no permission
+// Each token request names the profile's permissions cut to what that installation holds (cut),
+// so GitHub never grants a permission the request did not name, and the scope's repositories of
+// that installation's account alone, by name, as GitHub's body takes them (repositoriesOf); the
+// release names each entry the cut left out (Minted.LeftOut). A cut that leaves no permission
 // refuses the release (ErrMintEmptyCut) before any token request, for every account, since GitHub
 // answers a request naming none with every permission the installation holds. Mint releases a
 // token only when GitHub's answer holds no more than the request asked (heldBy), for every
@@ -533,7 +566,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		if len(asked) == 0 {
 			return Minted{}, fmt.Errorf("%w: github app %s: its installation on %s holds none of %s", ErrMintEmptyCut, secret.AppID, owner, permissionWords(scope.Permissions))
 		}
-		each = append(each, installationMint{installation: installation, owner: owner, account: account, asked: asked, leftOut: leftOut})
+		each = append(each, installationMint{installation: installation, owner: owner, account: account, repositories: scope.repositoriesOf(account), asked: asked, leftOut: leftOut})
 	}
 	if len(each) == 0 {
 		// ErrMintNoInstallation, not the ErrMintRefused it wraps: this is one of the two refusals
@@ -553,11 +586,11 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 	// expires is the earliest expiry of the installations minted so far, zero until the first.
 	var expires time.Time
 	for _, one := range each {
-		token, err := m.installationToken(ctx, mint, jwt, secret.AppID, one.installation.ID, accessTokensBody(scope.Repositories, one.asked), req.Check)
+		token, err := m.installationToken(ctx, mint, jwt, secret.AppID, one.installation.ID, accessTokensBody(one.repositories, one.asked), req.Check)
 		if err != nil {
 			// installationToken has given back to GitHub any token it minted in an answer this
 			// mint cannot use (giveBackUnusable).
-			return Minted{}, refusal(err, secret.AppID, one.owner, scope.Repositories, one.asked)
+			return Minted{}, refusal(err, secret.AppID, one.owner, one.repositories, one.asked)
 		}
 		if req.Check {
 			// A check releases nothing, so the token goes back to GitHub the moment GitHub
@@ -571,7 +604,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			}
 			token.Token = ""
 		}
-		if err := heldBy(token, scope.Repositories, one.asked); err != nil {
+		if err := heldBy(token, one.repositories, one.asked); err != nil {
 			if !req.Check {
 				// A check revoked this token already, and holds none to revoke here.
 				if revokeErr := m.revokeInstallationToken(ctx, mint, token.Token); revokeErr != nil {

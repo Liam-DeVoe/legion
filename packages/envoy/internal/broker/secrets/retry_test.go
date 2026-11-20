@@ -497,7 +497,7 @@ func TestMintCallSendsItsBodyAgain(t *testing.T) {
 	scoped := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read"},"repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), scoped)
 	scope := readScope("acme")
-	scope.Repositories = []string{"proofs"}
+	scope.Repositories = []string{"acme/proofs"}
 	if _, err := mintGitHub(t.Context(), t, up, retry, scope); err != nil {
 		t.Fatalf("Mint of a token naming a repository after a 503: %v", err)
 	}

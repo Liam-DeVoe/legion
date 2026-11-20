@@ -912,8 +912,8 @@ type Requester struct {
 	// account listed for another service, or for none, proves nothing here.
 	Service string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
-	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
-	// a human-tier secret.
+	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each,
+	// and each profile whose source is one of them (Set.Withholds), as a human-tier secret.
 	Withheld []string
 }
 
@@ -936,6 +936,19 @@ type Decision struct {
 // re-checks a grant of such a name on every use rather than only once Version moves.
 func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
+}
+
+// Withholds reports whether r's withheld names withhold name: the name itself, or the source of
+// the profile s serves by that name, since a session's operator who withholds a source withholds
+// each profile of it. A source is withheld by its own name, which a profile that holds that name
+// is granted under. It is the one reading of Requester.Withheld: Evaluate decides by it, and so
+// does every check of the request machine that asks whether a name is withheld from a session.
+func (s *Set) Withholds(r Requester, name string) bool {
+	if slices.Contains(r.Withheld, name) {
+		return true
+	}
+	profile := s.Secrets[name].Profile
+	return profile != nil && slices.Contains(r.Withheld, profile.Source)
 }
 
 // ReasonRequesterNotListed is the Reason of a Deny the requesters tag decided: neither the
@@ -974,7 +987,7 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	if secret.Requesters != "" && !secret.lists(r) {
 		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
 	}
-	withheld := slices.Contains(r.Withheld, name) || (secret.Profile != nil && slices.Contains(r.Withheld, secret.Profile.Source))
+	withheld := s.Withholds(r, name)
 	d := Decision{Source: secret.Source}
 	switch {
 	case secret.ownership == ownerService:

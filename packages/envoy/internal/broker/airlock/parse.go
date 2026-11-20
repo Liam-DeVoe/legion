@@ -18,13 +18,20 @@ import (
 // refuses a file that uses it instead of serving the file with that field's rule missing.
 // Anything after the file's one JSON object but white space is refused for the same reason: a
 // second value no reader applies would be a rule its author believes is in force, and an object
-// that ends at a stray bracket is one its author meant to go on. Decode does not validate what it
-// read; the caller does (Validate, for Rules).
+// that ends at a stray bracket is one its author meant to go on. A file that is null, or any JSON
+// value but an object, is refused too: encoding/json reads a null into v as nothing at all, which
+// would serve the file as one of no entries. Decode does not validate what it read; the caller
+// does (Validate, for Rules).
 func Decode(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return parseError(data, err)
+	}
+	// The value decoded, so it is valid JSON, and v is a struct, into which every value but an
+	// object and null is a type error above: a value that starts with "n" here is the literal null.
+	if value := bytes.TrimLeft(data, " \t\r\n"); value[0] == 'n' {
+		return errors.New("the file is null: it holds no JSON object")
 	}
 	// More steps over the white space after the object, so the offset is where whatever follows
 	// it starts. Token then reads that, and answers io.EOF only when nothing does: a second value
@@ -51,7 +58,7 @@ func parseError(data []byte, err error) error {
 	case errors.As(err, &wrongType):
 		field := wrongType.Field
 		if field == "" {
-			field = "the file"
+			return fmt.Errorf("the file is a JSON %s, not one JSON object, at %s", wrongType.Value, position(data, wrongType.Offset))
 		}
 		return fmt.Errorf("%s is not a %s, at %s", field, wrongType.Type, position(data, wrongType.Offset))
 	case strings.HasPrefix(err.Error(), "json: unknown field "):

@@ -251,13 +251,17 @@ func gitHubAppValue(t *testing.T) string {
 }
 
 // acmeScope is the profile's scope each GitHub row below mints for unless it says otherwise:
-// contents at read on acme-org, on repositories, or on every repository the installation reaches
-// where it names none, released as the JSON of installations.
-func acmeScope(repositories ...string) *secrets.GitHubScope {
-	return &secrets.GitHubScope{
-		Accounts: []string{"acme-org"}, Repositories: repositories,
+// contents at read on acme-org, on the repositories of acme-org these names name, or on every
+// repository the installation reaches where it names none, released as the JSON of installations.
+func acmeScope(names ...string) *secrets.GitHubScope {
+	scope := &secrets.GitHubScope{
+		Accounts:    []string{"acme-org"},
 		Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
 	}
+	for _, name := range names {
+		scope.Repositories = append(scope.Repositories, "acme-org/"+name)
+	}
+	return scope
 }
 
 // mintedGitHubToken is the installation token a github-app release holds for owner.

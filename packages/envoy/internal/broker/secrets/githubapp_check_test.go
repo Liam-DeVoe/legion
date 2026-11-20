@@ -86,11 +86,11 @@ func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 	app := secrets.GitHubApp{Base: service.URL(), HTTP: http.DefaultClient}
 	value := githubAppValue(t, "123456", key)
 	lean := readScope("ada")
-	lean.Repositories = []string{"lean"}
+	lean.Repositories = []string{"ada/lean"}
 	// leanWithIssues asks for issues too, which the stand-in's installation does not hold, so the
 	// cut leaves it out and the release names it.
 	leanWithIssues := readScope("ada")
-	leanWithIssues.Repositories = []string{"lean"}
+	leanWithIssues.Repositories = []string{"ada/lean"}
 	leanWithIssues.Permissions = map[string]string{"contents": "read", "issues": "write"}
 	// administration is a permission the stand-in's installation does not hold at all.
 	noneHeld := readScope("ada")

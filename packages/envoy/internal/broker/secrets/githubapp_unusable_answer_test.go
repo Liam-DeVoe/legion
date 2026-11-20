@@ -502,13 +502,13 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 	}
 	value := githubAppValue(t, "123456", key)
 	lean := readScope("ada")
-	lean.Repositories = []string{"lean"}
+	lean.Repositories = []string{"ada/lean"}
 	// wide names 100 repositories of 93 characters each, so its token request's body is far larger
 	// than the transport's write buffer and goes to the connection in writes of its own, the last of
 	// which is the one answerWriteFails reports an error for.
 	wide := readScope("ada")
 	for i := range 100 {
-		wide.Repositories = append(wide.Repositories, fmt.Sprintf("%02d-%s", i, strings.Repeat("r", 90)))
+		wide.Repositories = append(wide.Repositories, fmt.Sprintf("ada/%02d-%s", i, strings.Repeat("r", 90)))
 	}
 
 	for _, tc := range []struct {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -172,15 +173,20 @@ func DecodeProfiles(data []byte) (Profiles, error) {
 	return readProfiles(entries)
 }
 
-// decodeProfiles is the strict decode both readers share.
+// decodeProfiles is the strict decode both readers share. The file is one JSON object,
+// {"profiles": [...]}, and a file with no profiles list, or a null one, is refused rather than
+// read as a file of no profiles: a file of no profiles says so, {"profiles": []}.
 func decodeProfiles(data []byte) ([]profileEntry, error) {
 	var file struct {
-		Profiles []profileEntry `json:"profiles"`
+		Profiles *[]profileEntry `json:"profiles"`
 	}
 	if err := airlock.Decode(data, &file); err != nil {
 		return nil, err
 	}
-	return file.Profiles, nil
+	if file.Profiles == nil {
+		return nil, errors.New(`"profiles" is missing or null: the file is one JSON object {"profiles": [...]}, and a file of no profiles is {"profiles": []}`)
+	}
+	return *file.Profiles, nil
 }
 
 // readProfiles answers each entry in the one form the broker serves it in. The entries have been
