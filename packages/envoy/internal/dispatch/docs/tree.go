@@ -3,6 +3,7 @@ package docs
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,41 @@ func producedSchemaError(err error) error {
 		return fmt.Errorf("%w: the write left it outside: %v", ErrDocSchema, outside.Cause)
 	}
 	return err
+}
+
+// refusalClasses are this package's refusals that LoggedError and RefusalClass count among
+// refusals of a document beside pmdoc's own, the most particular first. Three are types, whose
+// messages quote the ask or the block they refuse, and an ask's question or a block's attribute
+// can hold a person's address: ErrInvalidAskBlock's message is its reason's (pmdoc.AskContentError
+// quotes the question), ErrAskBlockUnrepresentable's reason quotes the question, the options and
+// the markdown a block holds, and ErrInvalidCICheck's names the block's ci_check. Each is named by
+// words of this package's own, and they come before the wrappers, since an ask's refusal can
+// wrap a schema refusal and is the more particular (joinedSchemaError). The rest are this
+// package's own wrappers of a schema refusal: ErrDocSchema and ErrInvalidMarkdown carry the
+// refusal's message in theirs, and ErrDocNewerContent its cause's.
+var refusalClasses = []pmdoc.Refusal{
+	pmdoc.TypeRefusal[*ErrInvalidAskBlock]("the write would leave an ask block unreadable"),
+	pmdoc.TypeRefusal[*ErrAskBlockUnrepresentable]("the ask block cannot carry the text unchanged"),
+	pmdoc.TypeRefusal[*ErrInvalidCICheck]("the write leaves a check block whose ci_check breaks a rule"),
+	pmdoc.SentinelRefusal(ErrDocSchema),
+	pmdoc.SentinelRefusal(ErrInvalidMarkdown),
+	pmdoc.SentinelRefusal(ErrDocNewerContent),
+}
+
+// LoggedError is err as a log line carries it (pmdoc.LoggedError), counting this package's own
+// refusals among refusals of a document (refusalClasses). A refusal is logged by its class alone,
+// since its message quotes the document or the ask, which can hold a person's address; any other
+// error is logged as it is. The error a caller is answered with keeps the whole message.
+func LoggedError(err error) slog.Value {
+	return pmdoc.LoggedError(err, refusalClasses...)
+}
+
+// RefusalClass is the class LoggedError logs err by when err refuses a document
+// (pmdoc.RefusalClass), and "" when it refuses none. A line that only ever logs a refusal logs it
+// by this rather than by LoggedError, so that line carries a class's own words and never the
+// error: nothing the refusal quotes, nor anything a request wrapped it in, can reach it.
+func RefusalClass(err error) string {
+	return pmdoc.RefusalClass(err, refusalClasses...)
 }
 
 // ErrDocumentTooLarge is the refusal of a write that would leave a document larger than the server
