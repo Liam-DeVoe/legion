@@ -1517,6 +1517,182 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right a
   }
 });
 
+// INFRA-2947 R7 (spec v82) and check 138e9e4d (Verification v59), read at 1280 by 800 on data
+// shaped as production's: an owner of 43 characters, drawn whole; a description of one long
+// paragraph, which a closed row draws in at most two lines ending in '…' and an open row draws
+// whole; on every table of these pages the header line and each row's line reaching the right
+// border of the table's box; on each toolbar of these pages every control at one height; and no
+// margin entry for the visibility a priority is written with, which no control on the page sets.
+// SLOW(>=2s): the seed, one more priority, and the three tabs and one priority's page read.
+test("at 1280 by 800 the priorities pages draw production's owners and descriptions, reach their boxes' right borders, keep each toolbar at one height, and list no visibility in the margin", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const owner = "The INFRA controller, for its human sponsor";
+  expect(owner).toHaveLength(43);
+  const description =
+    "Every reader of this deployment reaches the same corpus in one command, on any developer " +
+    "machine, and the pages both review layers read are the ones a person opens. The work under " +
+    "it is the seeding, the sign-in, the pages and the checks that read them, and it is finished " +
+    "when a reader who has never run the stack can start it, sign in and read the same " +
+    "priorities page the visual review reads, from one command, with nothing to install by hand " +
+    "and nothing to ask anybody for.";
+  const long = await createPriority({ description, owner, title: "Local testing is one command" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    const soft = expect.configure({ soft: true });
+
+    // What of an element's text its boxes cut, from the element up to its table cell: each box
+    // that holds more than it shows, which is what an ellipsis, a clamp or a clip needs.
+    const cutBoxes = (locator: Locator) =>
+      locator.evaluate((element) => {
+        const cut: string[] = [];
+        const cell = element.closest("td");
+        for (let node: Element | null = element; node !== null; node = node.parentElement) {
+          if (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight)
+            cut.push(`${node.tagName.toLowerCase()} ${node.clientWidth}x${node.clientHeight}`);
+          if (node === cell) break;
+        }
+        return cut;
+      });
+    // How far short of its box's right border each table's lines stop: the header row's, and the
+    // widest a body row reaches.
+    const linesShort = () =>
+      page.locator("table").evaluateAll((tables) =>
+        Object.fromEntries(
+          tables.map((table) => {
+            const box = table.closest('[data-testid$="-table-scroll"]');
+            if (box === null) throw new Error("a table on the page stands in no scroll box");
+            const inner = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth;
+            const right = (cells: Element[]) =>
+              Math.max(...cells.map((cell) => cell.getBoundingClientRect().right));
+            const header = right([...table.querySelectorAll("thead th")]);
+            const rows = [...table.querySelectorAll("tbody tr")]
+              .map((row) => [...row.querySelectorAll("td")])
+              .filter((cells) => cells.length > 0)
+              .map(right);
+            return [
+              table.getAttribute("aria-label") ?? "",
+              {
+                header: Math.max(0, Math.round(inner - header)),
+                rows: rows.length === 0 ? 0 : Math.max(0, Math.round(inner - Math.min(...rows))),
+              },
+            ];
+          })
+        )
+      );
+    // Each toolbar's controls by their heights: the row the table's search box stands in, and
+    // every input, select and button drawn in it.
+    const toolbarHeights = () =>
+      page.locator('input[type="search"]').evaluateAll((boxes) =>
+        boxes
+          .filter((box) => box.getBoundingClientRect().height > 0)
+          .map((box) =>
+            [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+              .filter((control) => control.getBoundingClientRect().height > 0)
+              .map((control) => ({
+                height: control.getBoundingClientRect().height,
+                // A select by the words of the label it stands in (`Group by`), not its options.
+                name: (
+                  control.getAttribute("aria-label") ??
+                  (control.tagName === "SELECT"
+                    ? control.closest("label")?.firstChild?.textContent
+                    : control.textContent) ??
+                  ""
+                )
+                  .trim()
+                  .slice(0, 20),
+              }))
+          )
+      );
+    // One height, to within a pixel of rounding.
+    const oneHeight = (controls: readonly { height: number }[]) =>
+      Math.max(...controls.map((c) => c.height)) - Math.min(...controls.map((c) => c.height)) <= 1;
+    const expectTablesAndToolbars = async (where: string) => {
+      const short = await linesShort();
+      for (const [table, gap] of Object.entries(short)) {
+        soft(
+          gap.header <= 1 && gap.rows <= 1,
+          `${where}: the ${table}'s header line and row lines reach its box's right border (short by ${JSON.stringify(gap)} px)`
+        ).toBe(true);
+      }
+      for (const controls of await toolbarHeights()) {
+        const heights = controls.map((c) => `${c.name} ${Math.round(c.height)}`).join(", ");
+        soft(
+          oneHeight(controls),
+          `${where}: every control of the toolbar at one height: ${heights}`
+        ).toBe(true);
+      }
+    };
+
+    // The Priorities tab.
+    await page.goto(PRIORITIES_PATH);
+    const table = page.getByRole("table", { exact: true, name: "Priorities table" });
+    const row = table.getByRole("row", { exact: true, name: `#4 ${long.title}` });
+    await expect(row).toBeVisible();
+    await expect.poll(() => tablesOverflow(page)).toEqual({ "Priorities table": 0 });
+    // The owner, whole.
+    const ownerText = (await cellUnder(table, row, "Owner")).getByText(owner, { exact: true });
+    await expect(ownerText).toBeVisible();
+    soft(await cutBoxes(ownerText), "the 43-character owner is drawn whole").toEqual([]);
+    // The description, closed: at most two lines, ending in '…' where it runs on - a clamp of two
+    // lines whose text holds more than it shows, or a text cut and ended in '…'.
+    const summary = (await cellUnder(table, row, "Priority")).locator("p").first();
+    await expect(summary).toBeVisible();
+    const closed = await summary.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const lines = Math.round(
+        element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
+      );
+      const clamped = style.webkitLineClamp === "2" && element.scrollHeight > element.clientHeight;
+      const ended = (element.textContent ?? "").trimEnd().endsWith("…");
+      return { atMostTwoLines: lines <= 2, endsInEllipsis: clamped || ended };
+    });
+    soft(closed, "a closed row draws the description in at most two lines ending in '…'").toEqual({
+      atMostTwoLines: true,
+      endsInEllipsis: true,
+    });
+    // Open, the row draws the whole of it.
+    await row.getByRole("button", { name: new RegExp(`^Open #4 ${long.title}$`) }).click();
+    await soft(page.getByRole("textbox", { exact: true, name: "Description of #4" })).toContainText(
+      description
+    );
+    await expectTablesAndToolbars("the Priorities tab");
+
+    // The two fault tabs.
+    for (const tab of ["none", "parked"] as const) {
+      await chooseTab(page, tab);
+      await expect(page.getByRole("table")).toHaveCount(1);
+      await expect(page.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+      await expectTablesAndToolbars(`the ${tab} tab`);
+    }
+
+    // A priority's own page: its work table and toolbar, and its margin, which lists every act
+    // the page makes and none for the visibility the priority was written with. The server's
+    // history holds that act; the margin's words for it are `actWords`' ("who can see").
+    await page.goto(`/priorities/${seed.ids[0]}`);
+    const work = section(page, "Work advancing this priority");
+    await expectRowNames(work, [
+      `${seed.rollout} Daemon rollout to the fleet`,
+      `${seed.smoke} Daemon smoke suite`,
+    ]);
+    await expectTablesAndToolbars("a priority's page");
+    expect((await getPriorityHistory(seed.ids[0])).some((act) => act.field === "visibility")).toBe(
+      true
+    );
+    const entries = page.getByRole("complementary", { name: "Margin" }).getByRole("listitem");
+    await expect(entries.first()).toBeVisible();
+    soft(
+      await entries.filter({ hasText: /who can see/ }).count(),
+      "the margin lists no entry for the priority's visibility"
+    ).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed, two reloads, and two writes read back from the server.
 test("what a reader types into a priority survives a reload made before the typing rests", async ({
   browser,
