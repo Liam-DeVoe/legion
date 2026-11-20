@@ -548,7 +548,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/tester.md", "Every check you record must be able to fail"},
 		// R3: after a fix or a forward merge, search the new head for each earlier finding's class.
 		{"core/implementer.md", "search the head you are about to push for the class of every finding of every earlier review round"},
-		{"core/tester.md", "An equal fingerprint still gets the class search"},
+		{"core/tester.md", "A forward merge still gets the class search"},
 		{"implementer.md", "`classSearch`, one entry per finding of every earlier review round"},
 		{"tester.md", "`classSearch`, one entry per finding of every earlier review round"},
 		// R4: the planner completes no phase with an open decision.
@@ -583,6 +583,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A CI result whose head has not been read or whose attribution is not known is still
+		// in flight. The tester and reviewer wait for it rather than treating a transient state
+		// as a failed run.
+		{"core/tester.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"tester.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"core/reviewer.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"reviewer.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)

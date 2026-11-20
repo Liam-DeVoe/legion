@@ -16,6 +16,7 @@ import type {
   AskRead,
   AskWithTrees,
   AttributionCounts,
+  CheckResultDryRun,
   CheckResultRecorded,
   CheckResultRetraction,
   CheckResultRetractionInput,
