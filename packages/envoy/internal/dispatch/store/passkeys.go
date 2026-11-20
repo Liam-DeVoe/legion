@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -48,14 +47,13 @@ var (
 // it was made (R5).
 const InvitationLifetime = 24 * time.Hour
 
-// Invitation is one link an owner made (outside_invitations), as its token's hash reads it.
+// Invitation is one link an owner made (outside_invitations), as its token's hash reads it: the
+// email and project it is for, whether it was used, and whether the database's clock is at or past
+// when it lapses.
 type Invitation struct {
-	Email     string
-	Project   string
-	MadeAt    time.Time
-	ExpiresAt time.Time
-	Used      bool
-	// Expired is whether the database's clock is at or past ExpiresAt.
+	Email   string
+	Project string
+	Used    bool
 	Expired bool
 }
 
@@ -142,7 +140,6 @@ func (p *PgPasskeys) TakeCeremony(ctx context.Context, challenge string) (bool, 
 
 // PasskeyReader is a pool or a transaction, which the passkey reads take.
 type PasskeyReader interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -245,9 +242,9 @@ func (p *PgPasskeys) Invitation(ctx context.Context, tokenHash [32]byte) (Invita
 // readInvitation reads the link tokenHash names through q, with lock appended to its select.
 func readInvitation(ctx context.Context, q PasskeyReader, tokenHash [32]byte, lock string) (Invitation, error) {
 	var invitation Invitation
-	err := q.QueryRow(ctx, `select email, project_key, made_at, expires_at, used_at is not null, expires_at <= now()
+	err := q.QueryRow(ctx, `select email, project_key, used_at is not null, expires_at <= now()
 		from outside_invitations where token_sha256 = $1 `+lock, tokenHash[:]).
-		Scan(&invitation.Email, &invitation.Project, &invitation.MadeAt, &invitation.ExpiresAt, &invitation.Used, &invitation.Expired)
+		Scan(&invitation.Email, &invitation.Project, &invitation.Used, &invitation.Expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invitation{}, ErrInvitationUnknown
 	}
