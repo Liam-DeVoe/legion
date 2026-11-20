@@ -61,7 +61,7 @@ func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
 	held := false
-	r.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
+	r.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 		if issue == slow && !held {
 			held = true
 			r.clock.advance(hold)

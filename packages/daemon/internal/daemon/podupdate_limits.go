@@ -190,7 +190,7 @@ func (sweep podUpdateSweep) held() []string {
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
 // than paced inside it. The gap after the last opening is weighed at each opening rather than
 // here (holds), so this hands the walk the last opening rather than reading the clock.
-func (s *supervision) beginPodUpdateSweep(byIssue map[string][]supervise.Claim) podUpdateSweep {
+func (s *supervision) beginPodUpdateSweep(_ time.Time, byIssue map[string][]supervise.Claim) podUpdateSweep {
 	opened, inFlight := s.podUpdateOpenings(byIssue)
 	sweep := podUpdateSweep{inFlight: inFlight, lastOpened: opened}
 	if rounds := s.cfg.PodUpdateMaxOpenRounds; rounds != nil {
@@ -256,8 +256,8 @@ func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (t
 // what they wait out is no part of it. Where one sweep opens several rounds the last of them is
 // the date kept, which is the daemon's last opening the next sweep measures its gap from
 // (podUpdateSweep.holds); the per-minute limit stays a budget for the sweep, spent at it.
-func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string) {
-	opened := s.plan.clock.Now()
+func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string, now time.Time) {
+	opened := now
 	sweep.charge(issue)
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()

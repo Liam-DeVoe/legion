@@ -78,6 +78,12 @@ func (r *fleetRig) sweepEnds(what string) {
 	})
 }
 
+// outboxProject makes this rig's outbox own its fixture keys under the same rule production uses.
+func (r *fleetRig) outboxProject(project string) {
+	r.t.Helper()
+	r.s.enqueue = (&workflowRuntime{pool: r.pool, records: r.records, dispatchProject: project, log: quietLogger()}).enqueueOutbox
+}
+
 // The sweep never waits on a claim's machine to mark a late round told. A relaunch into a pod
 // being built holds the claim's machine for minutes, and a sweep that waited on it would hold
 // every other issue's round, and the orphan reaping behind them, for as long. The mark of a claim
@@ -86,6 +92,7 @@ func (r *fleetRig) sweepEnds(what string) {
 func TestPodUpdateTheSweepMarksALateRoundToldWithoutWaitingOnARelaunch(t *testing.T) {
 	relaunching, other := "ACME-1", "ACME-2"
 	rig := newLimitRig(t, relaunching, other)
+	rig.outboxProject("ACME")
 
 	// The other issue drifts only after the first sweep, so its round is one the held sweep opens.
 	rig.drifts(other)
@@ -164,6 +171,7 @@ func refusedMarkRig(t *testing.T, issue string) (rig *fleetRig, refusing *atomic
 	rig = newWiredFleetRig(t, func(sup *supervisor) {
 		sup.deps.Store = &toldMarkRefusal{Store: sup.deps.Store, token: token, refusing: refusing, refused: refused}
 	}, limitIssue(1, issue))
+	rig.outboxProject("ACME")
 	rig.drifts(issue, limitDrift)
 	rig.tick()
 	rig.awaitRounds("the first sweep", issue)
