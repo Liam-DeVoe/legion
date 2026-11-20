@@ -55,10 +55,11 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 
 // blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
 // hold no indexed version (document_block_versions.version null) or hold this build's own mark
-// (store_owed_at, which the backfill and every debt this build owes beside the null version set),
-// and when the oldest of those debts was incurred. The server's own tick reads the same two figures
-// and logs them (docs.ReconcileBlockIndex); this is the read for somebody holding the database and
-// not the log.
+// (store_owed_at, which the backfill and every debt this build owes beside the null version set)
+// of a kind a build of this binary's marking rule lists (refs.OwedMarkListed), and when the
+// oldest of those debts was incurred. The server's own tick reads the same two figures and logs
+// them (docs.ReconcileBlockIndex); this is the read for somebody holding the database and not the
+// log. It binds the marking rule as $1 (readBlockIndexBacklog).
 //
 // Nothing dates a debt, so the rows are dated by the write that owed them, which is what
 // refs.OwedBlockIndexDebts derives; the tick's own read of the same backlog derives it from
@@ -68,17 +69,19 @@ var blockIndexBacklogQuery = `
 	) owed`
 
 // blockIndexBacklogBeforeTheMarkQuery is the same backlog on a database migration
-// 20261116221539 has not reached, where a null version is the only debt
-// (refs.OwedBlockIndexDebtsBeforeTheMark). The sizing takes its readings on such a database too.
+// 20261120122600 has not reached, where the mark's rule (store_owed_rule) the full text reads
+// does not exist and a null version is the only debt read (refs.OwedBlockIndexDebtsBeforeTheMark).
+// The sizing takes its readings on such a database too.
 var blockIndexBacklogBeforeTheMarkQuery = `
 	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebtsBeforeTheMark + `
 	) owed`
 
-// backfillMarkHeldQuery says whether document_block_versions holds the backfill's mark column,
-// which migration 20261116221539 adds.
+// backfillMarkHeldQuery says whether document_block_versions holds the column of the backfill's
+// mark that the full backlog reads last: store_owed_rule, which migration 20261120122600 adds
+// beside the store_owed_at that migration 20261116221539 added.
 const backfillMarkHeldQuery = `select exists (
 	select 1 from pg_attribute
-	where attrelid = to_regclass('document_block_versions') and attname = 'store_owed_at' and not attisdropped)`
+	where attrelid = to_regclass('document_block_versions') and attname = 'store_owed_rule' and not attisdropped)`
 
 // backlogClockQuery is the newest write the database recorded: the created_at of its highest
 // event id, read through events_pkey. It is the clock the oldest debt's age is measured
@@ -113,11 +116,12 @@ func (b BlockIndexBacklog) Age() time.Duration {
 // branchTables are the tables the migrations of this branch touch, each with whether the
 // migration alters a relation that already held rows. graph_nodes, graph_tuples and
 // graph_erasures are created by 20261109013400 and written by 20261109051232, and
-// block_index_event_cursors and graph_backfill_horizon are created by 20261118115645, so no
-// existing row is rewritten for them; document_blocks, block_refs and comments are altered by
+// block_index_event_cursors and graph_backfill_horizon are created by 20261118115645 and altered
+// by 20261120122600 in the same release, before any build writes a row of them, so no existing
+// row is rewritten for them; document_blocks, block_refs and comments are altered by
 // 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
-// 20261116221539, and a table that large is a migration that needs another shape, which is what
-// the limit refuses.
+// 20261116221539 and 20261120122600, and a table that large is a migration that needs another
+// shape, which is what the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -1044,11 +1048,11 @@ func readBlockIndexBacklog(ctx context.Context, tx pgx.Tx) (BlockIndexBacklog, e
 	if err := tx.QueryRow(ctx, backfillMarkHeldQuery).Scan(&markHeld); err != nil {
 		return BlockIndexBacklog{}, fmt.Errorf("read whether the backfill's mark exists: %w", err)
 	}
-	query := blockIndexBacklogQuery
+	query, args := blockIndexBacklogQuery, []any{refs.BlockIndexMarkingRule}
 	if !markHeld {
-		query = blockIndexBacklogBeforeTheMarkQuery
+		query, args = blockIndexBacklogBeforeTheMarkQuery, nil
 	}
-	if err := tx.QueryRow(ctx, query).Scan(&backlog.Documents, &oldest); err != nil {
+	if err := tx.QueryRow(ctx, query, args...).Scan(&backlog.Documents, &oldest); err != nil {
 		return BlockIndexBacklog{}, fmt.Errorf("read the documents owed a block index: %w", err)
 	}
 	if oldest != nil {

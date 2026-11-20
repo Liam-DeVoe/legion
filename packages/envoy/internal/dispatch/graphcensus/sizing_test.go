@@ -581,7 +581,9 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// graphstore.AuthorFacts), so its kinds are the comment path's; the role sizer and its
 		// page; and the sessions the census holds to a node.
 		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockBatch", "graphstore/write.go#Write"},
-		Database: database, Drive: backfill(backfillBlocks),
+		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
+		}),
 		Counts: map[StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},

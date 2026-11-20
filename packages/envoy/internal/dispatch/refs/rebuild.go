@@ -57,7 +57,7 @@ type Rebuild struct {
 // which the release before this one neither reads nor clears. A pod of that release may drain the
 // null version first and write each document's new rows with no node, and the second mark brings
 // this build's pass to the document after it (IndexBlocks). A mark a document already holds keeps
-// its time.
+// its time. The mark is of this build's marking rule (RebuildMarkStatement).
 //
 // It marks every comment and message, direct messages included, and every ask owed a block index
 // of its own blocks too (owed_at, a missing state row inserted owed), and owed its embedding
@@ -124,11 +124,7 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 		return report, fmt.Errorf("delete orphan references: %w", err)
 	}
 	report.Orphans = int(orphans.RowsAffected())
-	owed, err := pool.Exec(ctx, `
-		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where kind = 'doc'
-		on conflict (artifact_id) do update set version = null,
-			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
-	`)
+	owed, err := pool.Exec(ctx, RebuildMarkStatement, BlockIndexMarkingRule)
 	if err != nil {
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)
 	}
@@ -158,6 +154,23 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	}
 	return report, nil
 }
+
+// RebuildMarkStatement is RebuildAll's mark of every document owed a block index, at the marking
+// rule $1 (BlockIndexMarkingRule): both marks of a debt, a null version and this build's own mark
+// (store_owed_at), as docs' oweDocumentIndexStatement sets them on one document. A mark the
+// document already holds keeps its time and keeps the higher of its rule and $1, so a mark of a
+// higher rule stays that rule's to drain; where no mark stands the row takes $1, whatever rule a
+// mark cleared before left on it, since the rule is read only where a mark stands. It is a named
+// statement so the test that holds the marking rule to its statements reads it
+// (TestTheMarkingRuleNamesTheStatementsItMarksWith).
+const RebuildMarkStatement = `
+	insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule)
+	select id, now(), $1::integer from artifacts where kind = 'doc'
+	on conflict (artifact_id) do update set version = null,
+		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
+		store_owed_rule = case when document_block_versions.store_owed_at is null then excluded.store_owed_rule
+			else greatest(document_block_versions.store_owed_rule, excluded.store_owed_rule) end
+`
 
 func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, error) {
 	rows, err := pool.Query(ctx, query)

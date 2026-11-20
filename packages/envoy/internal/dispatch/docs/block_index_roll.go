@@ -82,10 +82,11 @@ var readEventPage = `
 	       coalesce((select array_agg(comment_id::text order by comment_id) from commented), '{}'),
 	       coalesce((select array_agg(cause order by comment_id) from commented), '{}')`
 
-// markVersionedDocuments marks owed a block index, with this build's own mark, every document of
-// $1, the documents the events after the cursor name (readEventPage), that holds no such mark yet
-// and whose blocks this build's store last stated at a version other than the one the document
-// stands at, and answers how many it marked.
+// markVersionedDocuments marks owed a block index, with this build's own mark of its marking rule
+// $2 (refs.BlockIndexMarkingRule, the rule the Service carries), every document of $1, the
+// documents the events after the cursor name (readEventPage), that holds no such mark of $2 or a
+// higher rule yet and whose blocks this build's store last stated at a version other than the one
+// the document stands at, and answers how many it marked.
 //
 // A document is marked where store_version, the version whose blocks this build's index pass last
 // stated in the store (refs' BlockIndexing.queueStand, its one writer), is not the document's
@@ -97,25 +98,31 @@ var readEventPage = `
 // store_version that pass wrote, and is not marked again.
 //
 // The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
-// store_owed_at, which the release before this one neither reads nor clears. The statement takes
-// no owner lock and writes nothing but document_block_versions rows, and it takes those `for no key
-// update` in ascending artifact_id order before its update re-locks them, which is the order
-// graphcensus's lockBlockDocuments takes several of them in: a writer holding several such rows
-// and this statement can never each hold one the other waits for. It decides on the rows as it
-// locks them, in the write phase, so a row a version's index stated meanwhile is not marked.
+// store_owed_at, which the release before this one neither reads nor clears, with the rule that
+// set it in store_owed_rule. A mark of a lower rule is read as no mark, in the selection and in
+// the update alike, so the statement raises it to $2 and keeps its time: the pass of rule $2 owes
+// the document what its rule owes, and a pass of the lower rule would clear a mark of its own
+// rule (queueStand). A mark of $2 or a higher rule is left as it is, and so is its rule. A row
+// that holds no mark takes $2 whatever rule it holds, since the rule is read only where a mark
+// stands. The statement takes no owner lock and writes nothing but document_block_versions rows,
+// and it takes those `for no key update` in ascending artifact_id order before its update
+// re-locks them, which is the order graphcensus's lockBlockDocuments takes several of them in: a
+// writer holding several such rows and this statement can never each hold one the other waits
+// for. It decides on the rows as it locks them, in the write phase, so a row a version's index
+// stated meanwhile is not marked.
 const markVersionedDocuments = `
 	with held as (
 		select b.artifact_id from document_block_versions b
 		where b.artifact_id = any($1::uuid[])
-		  and b.store_owed_at is null
+		  and (b.store_owed_at is null or b.store_owed_rule < $2::integer)
 		  and not coalesce(b.store_version = b.version, false)
 		order by b.artifact_id
 		for no key update of b
 	),
 	marked as (
-		update document_block_versions b set store_owed_at = now()
+		update document_block_versions b set store_owed_at = coalesce(b.store_owed_at, now()), store_owed_rule = $2::integer
 		from held
-		where b.artifact_id = held.artifact_id and b.store_owed_at is null
+		where b.artifact_id = held.artifact_id and (b.store_owed_at is null or b.store_owed_rule < $2::integer)
 		returning b.artifact_id
 	)
 	select count(*) from marked`
@@ -140,21 +147,29 @@ const markVersionedDocuments = `
 // build serves (processes.Live: a process whose Commit is not this build's own); the tick reports
 // it, and the `dispatch: block index` line prints it, and it decides nothing.
 //
-// The cursor is this build's row of block_index_event_cursors (migration 20261118115645). The
-// build's first tick that reads a proven horizon inserts the row, at the earlier of the newest
-// event_id another build's row holds and the horizon the newest backfill recorded when it began
-// (graph_backfill_horizon, graphcensus's recordBackfillHorizon) where both exist, at whichever one
-// exists where only one does, and at that tick's horizon where neither does, so the cursor never
-// starts at the beginning of the log. Another build's cursor is where it stopped reading, and every
-// event above the backfill's horizon is one the backfill cannot have seen, so whatever the release
-// before wrote since either, this build reads. A build that holds a row starts at its own row,
-// however old, and reads every event since, one page a tick. The cursor moves with each tick, so
-// each tick reads only the events since the last one and nothing scans a whole table. A tick reads
-// (cursor, safe], safe being the event log's safe horizon (events.Horizon.Safe): event ids are not
-// commit order, so an uncapped `id > cursor` read could pass an event still committing, and the
-// cursor never moves past safe. A Horizon proves an observation only by a later one, so an event
-// is read by the second tick after it commits, or later while a transaction on the instance stays
-// open across those ticks.
+// The cursor is this build's row of block_index_event_cursors (migration 20261118115645), which
+// records the marking rule the build applies (marking_rule, migration 20261120122600;
+// refs.BlockIndexMarkingRule). The build's first tick that reads a proven horizon inserts the row:
+// at the newest event_id a row of another build of its own marking rule holds; where no such row
+// exists, at the horizon the newest backfill of its own rule recorded when it began
+// (graph_backfill_horizon, one row for each rule, graphcensus's recordBackfillHorizon); and where
+// neither exists, at that tick's horizon, so the cursor never starts at the beginning of the log.
+// A build of the same rule marks what this build marks, so every event below its cursor is one it
+// read and marked with the mark this build drains, and a deploy that keeps the rule does not read
+// the log again from the backfill's horizon; every event above the horizon of a backfill of this
+// rule is one that backfill cannot have seen, so whatever the release before wrote since either,
+// this build reads. A cursor or a horizon of another rule is never read: that build or that
+// backfill marked what its own rule owes, which is not what this build owes, as a log consumer
+// takes a peer's committed offset only when it does the same work (Kafka's consumer groups). A
+// build that finds neither a cursor nor a horizon of its own rule leaves every event below its
+// first horizon to the backfill of its own rule, which reads every row whatever its age when it
+// runs. A build that holds a row starts at its own row, however old, and reads every event since,
+// one page a tick. The cursor moves with each tick, so each tick reads only the events since the
+// last one and nothing scans a whole table. A tick reads (cursor, safe], safe being the event
+// log's safe horizon (events.Horizon.Safe): event ids are not commit order, so an uncapped
+// `id > cursor` read could pass an event still committing, and the cursor never moves past safe.
+// A Horizon proves an observation only by a later one, so an event is read by the second tick
+// after it commits, or later while a transaction on the instance stays open across those ticks.
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
 // (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
@@ -196,21 +211,20 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	}
 	defer tx.Rollback(ctx)
 	queued, ledger := queueWrites(ctx, tx)
-	// A build's cursor is its own row, else where its first tick starts it: at the earlier of the
-	// newest event_id another build's row holds and the horizon the newest backfill recorded,
-	// either where only one exists, and the horizon where neither does. A safe of 0 is a horizon
-	// that has proven nothing yet, as a process's first observation never does on its own, or an
-	// empty log: until a tick reads one, nothing is read, and a build's cursor never starts at the
-	// beginning of the log. least() passes over a null, so the row starts at whichever of the two
-	// starts exists where only one does.
+	// A build's cursor is its own row, else where its first tick starts it: at the newest event_id
+	// a row of its own marking rule holds, else at the horizon the newest backfill of its own rule
+	// recorded, else at the tick's horizon. A safe of 0 is a horizon that has proven nothing yet,
+	// as a process's first observation never does on its own, or an empty log: until a tick reads
+	// one, nothing is read, and a build's cursor never starts at the beginning of the log.
 	var cursor *int64
 	if err := tx.QueryRow(queued, `
 		select coalesce(
 			(select event_id from block_index_event_cursors where build_commit = $1),
-			case when $2::bigint > 0 then coalesce(least(
-				(select max(event_id) from block_index_event_cursors),
-				(select event_id from graph_backfill_horizon where id = 1)), $2::bigint) end)
-	`, s.buildCommit, safe).Scan(&cursor); err != nil {
+			case when $2::bigint > 0 then coalesce(
+				(select max(event_id) from block_index_event_cursors where marking_rule = $3::integer),
+				(select event_id from graph_backfill_horizon where marking_rule = $3::integer),
+				$2::bigint) end)
+	`, s.buildCommit, safe, s.markingRule).Scan(&cursor); err != nil {
 		return false, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
 	if cursor == nil {
@@ -245,16 +259,17 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 		}
 	}
 	// The write phase, in the store's lock order: the cursor, the documents' marks, the comments.
+	// The cursor row records the build's marking rule beside where it has read to.
 	if err := write(queued, tx, execStep("move this build's block-index event cursor", `
-		insert into block_index_event_cursors (build_commit, event_id) values ($1, $2)
+		insert into block_index_event_cursors (build_commit, event_id, marking_rule) values ($1, $2, $3)
 		on conflict (build_commit) do update
-		set event_id = greatest(block_index_event_cursors.event_id, excluded.event_id)
-	`, s.buildCommit, next)); err != nil {
+		set event_id = greatest(block_index_event_cursors.event_id, excluded.event_id), marking_rule = excluded.marking_rule
+	`, s.buildCommit, next, s.markingRule)); err != nil {
 		return false, err
 	}
 	if len(named) > 0 {
 		if err := write(queued, tx, func(b *store.WriteBatch) error {
-			b.Queue("mark the documents the events after the cursor name", markVersionedDocuments, named).QueryRow(func(row pgx.Row) error {
+			b.Queue("mark the documents the events after the cursor name", markVersionedDocuments, named, s.markingRule).QueryRow(func(row pgx.Row) error {
 				return row.Scan(&marked)
 			})
 			return nil

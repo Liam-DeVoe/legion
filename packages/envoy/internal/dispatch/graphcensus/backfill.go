@@ -83,7 +83,9 @@ type BackfillReport struct {
 // its own, write the rows and state no part_of, and the document would be owed nothing again. The
 // mark is written by the batch that names the document's block nodes, in its transaction, so a
 // run stopped anywhere leaves every document whose batch committed marked, and a second run,
-// which reads no row a batch marked, need not find them again.
+// which reads no row a batch marked, need not find them again. Every mark the run writes is of
+// this build's marking rule (refs.BlockIndexMarkingRule), which store_owed_rule records beside it
+// (writeBlockBatch, markStaleBatch).
 //
 // A row the release before this one deleted - the row of a block its version dropped, or of a
 // link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
@@ -113,9 +115,10 @@ type BackfillReport struct {
 //
 // Before it reads any row it records where it began reading the event log (recordBackfillHorizon):
 // an id at or below which every event was final by then, so every event the run cannot have seen
-// is above it. A process of the release before this one goes on writing rows that name no node,
-// and versions of documents this build's store has stated, after the run, and a build of this code
-// with no event cursor of its own starts reading the log no later than that id (docs'
+// is above it, recorded as the horizon of this build's marking rule. A process of the release
+// before this one goes on writing rows that name no node, and versions of documents this build's
+// store has stated, after the run, and a build of this code of the same marking rule with no
+// event cursor of its rule to start from starts reading the log at that id (docs'
 // readEventsAfterCursor), so nothing that release writes between the run and that build's first
 // block-index tick is passed over.
 //
@@ -124,6 +127,12 @@ type BackfillReport struct {
 // kind whose rows disagree with the store is for the census to report, not for this to paper
 // over.
 func Backfill(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
+	return backfillAt(ctx, database, out, refs.BlockIndexMarkingRule)
+}
+
+// backfillAt is Backfill as a build of the marking rule rule runs it: its marks and its horizon
+// are that rule's. A test runs a backfill of another rule through it.
+func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
 	report := BackfillReport{}
 	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
 	// reads as "no event recorded this write" and is exactly true of a row written before the
@@ -137,13 +146,16 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
 	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
-	horizon, err := recordBackfillHorizon(ctx, database)
+	horizon, err := recordBackfillHorizon(ctx, database, rule)
 	if err != nil {
 		return report, err
 	}
 	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+		return backfillBlocks(ctx, database, rule)
+	}
 	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
-		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
+		blocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
 	} {
 		done, err := write(ctx, database)
 		if err != nil {
@@ -167,22 +179,28 @@ const (
 	backfillHorizonWaitMax = 250 * time.Millisecond
 )
 
-// recordBackfillHorizon records in graph_backfill_horizon (migration 20261118115645), before the
-// run reads any row, an id of the event log at or below which every event is final, and answers
-// it. It takes a mark of the log (events.Horizon.Mark) and waits until no transaction that can
-// still write an event took its transaction id before the mark (events.Horizon.WriterFloor): from
-// then every event at or below the newest one the mark saw has committed or rolled back for good,
-// and an event that commits after the run's first read is above it. That is a proven safe horizon
-// of the log. The Horizon's own proof (Safe, Await) is not taken: a fresh Horizon proves nothing
-// from its first observation, and Await waits on every transaction id on the Postgres instance,
-// an operator's open session and any transaction holding a row lock included, where WriterFloor
-// waits only on the writers of the event log, which hold their transactions for one request.
+// recordBackfillHorizon records in graph_backfill_horizon (migrations 20261118115645 and
+// 20261120122600), before the run reads any row, an id of the event log at or below which every
+// event is final, as the horizon of the marking rule rule, and answers it. It takes a mark of the
+// log (events.Horizon.Mark) and waits until no transaction that can still write an event took its
+// transaction id before the mark (events.Horizon.WriterFloor): from then every event at or below
+// the newest one the mark saw has committed or rolled back for good, and an event that commits
+// after the run's first read is above it. That is a proven safe horizon of the log. The Horizon's
+// own proof (Safe, Await) is not taken: a fresh Horizon proves nothing from its first
+// observation, and Await waits on every transaction id on the Postgres instance, an operator's
+// open session and any transaction holding a row lock included, where WriterFloor waits only on
+// the writers of the event log, which hold their transactions for one request.
 //
-// Each run replaces the row. Whatever the release before this one wrote before the newest run
-// began, that run reads as it reads every other row: a row that names no node, and a document
-// indexed past the version the store last stated it at (markStaleDocuments). So a build need start
-// reading the log no earlier than the newest run's horizon.
-func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, error) {
+// The table holds one row for each marking rule (refs.BlockIndexMarkingRule), and each run
+// replaces the row of its own rule and leaves the row of every other rule as it was. Whatever the
+// release before this one wrote before the newest run of a rule began, that run reads as it reads
+// every other row: a row that names no node, and a document indexed past the version the store
+// last stated it at (markStaleDocuments), and it marks what that rule owes. So a build of that
+// rule need start reading the log no earlier than that run's horizon, and a build of another rule
+// reads nothing from it: were one row shared, a backfill of an older rule run after a newer one
+// would move the row, and the newer rule's first tick would pass over every event between the
+// two horizons, which the older backfill did not mark for it.
+func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int) (int64, error) {
 	horizon := events.NewHorizon(database.Pool)
 	mark, err := horizon.Mark(ctx)
 	if err != nil {
@@ -195,9 +213,9 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, e
 		}
 		if final {
 			if _, err := database.Pool.Exec(ctx, `
-				insert into graph_backfill_horizon (id, event_id) values (1, $1)
-				on conflict (id) do update set event_id = excluded.event_id, recorded_at = now()
-			`, floor); err != nil {
+				insert into graph_backfill_horizon (marking_rule, event_id) values ($1, $2)
+				on conflict (marking_rule) do update set event_id = excluded.event_id, recorded_at = now()
+			`, rule, floor); err != nil {
 				return 0, fmt.Errorf("record the event log's horizon the backfill began at: %w", err)
 			}
 			return floor, nil
@@ -221,14 +239,14 @@ type blockRow struct {
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
-// and marks each document it touched owed this release's index pass (writeBlockBatch). It then
-// marks each document another release indexed after the store last stated it
-// (markStaleDocuments), whose rows no longer name every block and link the store holds. A block
-// whose address is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither
-// written nor counted as skipped: the writers leave it unprojected too. A row a version write
-// deleted after its batch was read is not written either (writeBlockBatch), and is counted
-// nowhere: it is no row of the database any more.
-func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
+// and marks each document it touched owed this release's index pass with a mark of the marking
+// rule rule (writeBlockBatch). It then marks each document another release indexed after the
+// store last stated it (markStaleDocuments), whose rows no longer name every block and link the
+// store holds. A block whose address is past refs.MaxBlockNodeBytes is no node of the store by
+// design, so it is neither written nor counted as skipped: the writers leave it unprojected too.
+// A row a version write deleted after its batch was read is not written either
+// (writeBlockBatch), and is counted nowhere: it is no row of the database any more.
+func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
 	documents := map[string]struct{}{}
@@ -242,7 +260,7 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, tuples, err := writeBlockBatch(ctx, database, rows)
+		written, tuples, err := writeBlockBatch(ctx, database, rows, rule)
 		if err != nil {
 			return done, err
 		}
@@ -256,7 +274,7 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 	}
-	stale, err := markStaleDocuments(ctx, database)
+	stale, err := markStaleDocuments(ctx, database, rule)
 	if err != nil {
 		return done, err
 	}
@@ -273,22 +291,46 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 	return done, nil
 }
 
-// readBlockRows reads one batch of the blocks naming no node, by their node address so the
-// walk is a keyset over a column every row of the batch carries. Each row's event is the one
-// that recorded the version it was last written at (docs' versionEventID), and the store's
-// sentinel where that is not found.
+// readBlockRows reads one batch of the blocks naming no node (BlockRowsStatement), by their node
+// address so the walk is a keyset over a column every row of the batch carries. Each row's event
+// is the one that recorded the version it was last written at (docs' versionEventID), and the
+// store's sentinel where that is not found.
+func readBlockRows(ctx context.Context, database *store.Store, after string) ([]blockRow, error) {
+	rows, err := database.Pool.Query(ctx, BlockRowsStatement, after, backfillBatch, graphstore.NoEvent)
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks naming no node: %w", err)
+	}
+	defer rows.Close()
+	var batch []blockRow
+	for rows.Next() {
+		var row blockRow
+		if err := rows.Scan(&row.artifactID, &row.blockID, &row.address, &row.refKey,
+			&row.createdAt, &row.event); err != nil {
+			return nil, fmt.Errorf("read a block naming no node: %w", err)
+		}
+		batch = append(batch, row)
+	}
+	return batch, rows.Err()
+}
+
+// BlockRowsStatement is readBlockRows' selection: at most $2 of the block rows naming no node
+// whose address fits the store's bound, past the address $1, in address order, each with its
+// document's ref_key, when it was written, and the event that recorded the version it was last
+// written at, or $3, the store's sentinel, where none is found. The documents of the rows it
+// selects are the ones the block batch marks (writeBlockBatch), so it is one of the statements
+// that decide what this build marks, and it is named so the test that holds the marking rule to
+// them reads it (refs.BlockIndexMarkingRule).
 //
 // The event is resolved once per (document, changed version) of the batch and joined back to
 // the rows, not once per row: every block of one version of one document shares that pair and
 // would otherwise run the same unindexed lookup over events up to backfillBatch times.
-func readBlockRows(ctx context.Context, database *store.Store, after string) ([]blockRow, error) {
-	rows, err := database.Pool.Query(ctx, `
+var BlockRowsStatement = `
 		with batch as (
 			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,
 			       a.ref_key, a.issue_key, a.project_key
 			from document_blocks d
 			join artifacts a on a.id = d.artifact_id
-			where d.node_kind is null and octet_length(d.node_id) <= `+addressBound+`
+			where d.node_kind is null and octet_length(d.node_id) <= ` + addressBound + `
 			  and d.node_id > $1
 			order by d.node_id
 			limit $2
@@ -315,22 +357,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 		left join caused on caused.artifact_id = batch.artifact_id
 			and caused.changed_version is not distinct from batch.changed_version
 		order by batch.node_id
-	`, after, backfillBatch, graphstore.NoEvent)
-	if err != nil {
-		return nil, fmt.Errorf("read the blocks naming no node: %w", err)
-	}
-	defer rows.Close()
-	var batch []blockRow
-	for rows.Next() {
-		var row blockRow
-		if err := rows.Scan(&row.artifactID, &row.blockID, &row.address, &row.refKey,
-			&row.createdAt, &row.event); err != nil {
-			return nil, fmt.Errorf("read a block naming no node: %w", err)
-		}
-		batch = append(batch, row)
-	}
-	return batch, rows.Err()
-}
+	`
 
 // writeBlockBatch writes the nodes and in_document tuples of the rows of one batch that are
 // still there and still name no node, and names those nodes on the rows, in one transaction. It
@@ -350,20 +377,21 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // The same transaction marks each document it wrote a block of, which is how the block's parent
 // is reached (Backfill): store_owed_at, the column migration 20261116221539 adds, which only this
 // release reads and which its index pass clears once it has stated every block of the document
-// (refs' queueStand). The null version the release before this one reads too is left alone,
-// since that release would drain it, write the rows and state nothing. The mark is an update of a
-// row the document already holds: every pass that writes a document's block rows writes that row
-// first, in either release, and it goes only with the artifact, whose delete takes the block rows
-// with it. The mark commits with the rows that name their nodes: marked after the whole pass
-// instead, a run stopped by an error in a later batch, or killed, would leave the documents of its
-// committed batches unmarked, and a second run reads no row a committed batch named, so nothing
-// would mark them again. Their document_block_versions rows are the ones lockBlockDocuments
-// already holds, so the mark takes no lock out of the store's order.
+// (refs' queueStand), with the marking rule rule in store_owed_rule (BlockBatchMarkStatement). The
+// null version the release before this one reads too is left alone, since that release would
+// drain it, write the rows and state nothing. The mark is an update of a row the document already
+// holds: every pass that writes a document's block rows writes that row first, in either release,
+// and it goes only with the artifact, whose delete takes the block rows with it. The mark commits
+// with the rows that name their nodes: marked after the whole pass instead, a run stopped by an
+// error in a later batch, or killed, would leave the documents of its committed batches unmarked,
+// and a second run reads no row a committed batch named, so nothing would mark them again. Their
+// document_block_versions rows are the ones lockBlockDocuments already holds, so the mark takes no
+// lock out of the store's order.
 //
 // The count is this batch's own tuples and the two base attributes graphstore.Write states
 // for each node its insert makes, which this batch does not state itself: every node here is
 // new, since a row that already names one is never written.
-func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow) ([]blockRow, int64, error) {
+func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow, rule int) ([]blockRow, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("begin the block batch: %w", err)
@@ -418,10 +446,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	// In id order and each once, the order lockBlockDocuments took these rows in.
 	owed := slices.Clone(artifacts)
 	slices.Sort(owed)
-	if _, err := tx.Exec(ctx, `
-		update document_block_versions set store_owed_at = now()
-		where artifact_id = any($1::uuid[])
-	`, slices.Compact(owed)); err != nil {
+	if _, err := tx.Exec(ctx, BlockBatchMarkStatement, slices.Compact(owed), rule); err != nil {
 		return nil, 0, fmt.Errorf("mark the documents of a block batch owed this release's block index: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -430,11 +455,24 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
+// BlockBatchMarkStatement is writeBlockBatch's mark of the documents $1, the documents of a block
+// batch whose rows it named the nodes of, owed this release's block index at the marking rule $2
+// (refs.BlockIndexMarkingRule). Every such document is marked, whatever mark it holds: a mark
+// standing there is dated again, and keeps the higher of its rule and $2, so a mark of a higher
+// rule stays that rule's to drain. Where no mark stands the row takes $2, whatever rule a mark
+// cleared before left on it, since the rule is read only where a mark stands.
+const BlockBatchMarkStatement = `
+	update document_block_versions set store_owed_at = now(),
+		store_owed_rule = case when store_owed_at is null then $2::integer else greatest(store_owed_rule, $2::integer) end
+	where artifact_id = any($1::uuid[])
+`
+
 // markStaleDocuments marks, a batch at a time, every document another release indexed after this
-// release's store last stated its blocks and that holds no mark yet, and answers the documents it
-// marked. The release before this one, indexing a version of a document the store has stated,
-// deletes the rows of the blocks and the links that version drops and states no node gone and
-// retracts no tuple; it leaves store_version, which only this release's index pass writes, below
+// release's store last stated its blocks and that holds no mark of the marking rule rule or a
+// higher one yet, and answers the documents it marked (StaleDocumentsStatement, markStaleBatch).
+// The release before this one, indexing a version of a document the store has stated, deletes
+// the rows of the blocks and the links that version drops and states no node gone and retracts
+// no tuple; it leaves store_version, which only this release's index pass writes, below
 // the version it wrote (migration 20261116221539). That is the whole of what this reads: the two
 // versions the document's row records, and no row of either side of a projection, so no document
 // is chosen by reading its blocks against its tuples. The reconciliation's index pass over the
@@ -447,16 +485,11 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 // indexes it finds the store stale by the same two versions. A second run finds nothing a first
 // one marked, and nothing once the reconciliation has indexed the documents it marked, since that
 // pass sets store_version to the version it indexed.
-func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, error) {
+func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([]string, error) {
 	var marked []string
 	after := "00000000-0000-0000-0000-000000000000"
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select artifact_id::text from document_block_versions
-			where store_version < version and store_owed_at is null and artifact_id > $1::uuid
-			order by artifact_id
-			limit $2
-		`, after, backfillBatch)
+		rows, err := database.Pool.Query(ctx, StaleDocumentsStatement, after, backfillBatch, rule)
 		if err != nil {
 			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
 		}
@@ -468,7 +501,7 @@ func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, e
 			return marked, nil
 		}
 		after = batch[len(batch)-1]
-		written, err := markStaleBatch(ctx, database, batch)
+		written, err := markStaleBatch(ctx, database, batch, rule)
 		if err != nil {
 			return marked, err
 		}
@@ -479,12 +512,24 @@ func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, e
 	}
 }
 
+// StaleDocumentsStatement is markStaleDocuments' selection: at most $2 documents past $1, in id
+// order, that another release indexed after this release's store last stated them and that hold
+// no mark of the marking rule $3 or a higher one. A mark of a lower rule is read as no mark, so
+// markStaleBatch raises it to $3.
+const StaleDocumentsStatement = `
+	select artifact_id::text from document_block_versions
+	where store_version < version and (store_owed_at is null or store_owed_rule < $3::integer)
+	  and artifact_id > $1::uuid
+	order by artifact_id
+	limit $2
+`
+
 // markStaleBatch marks the documents of one batch in one transaction, under the locks a version
 // write holds while it writes a document's blocks (lockBlockDocuments), and only those whose two
-// versions still say so under them: an index pass of this release that reached a document in
-// between has stated its blocks at the version it indexed, and owes it nothing. It answers the
-// documents it marked.
-func markStaleBatch(ctx context.Context, database *store.Store, batch []string) ([]string, error) {
+// versions still say so under them (StaleBatchMarkStatement): an index pass of this release that
+// reached a document in between has stated its blocks at the version it indexed, and owes it
+// nothing. It answers the documents it marked.
+func markStaleBatch(ctx context.Context, database *store.Store, batch []string, rule int) ([]string, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin the batch of documents another release indexed: %w", err)
@@ -493,11 +538,7 @@ func markStaleBatch(ctx context.Context, database *store.Store, batch []string) 
 	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `
-		update document_block_versions set store_owed_at = now()
-		where artifact_id = any($1::uuid[]) and store_version < version and store_owed_at is null
-		returning artifact_id::text
-	`, batch)
+	rows, err := tx.Query(ctx, StaleBatchMarkStatement, batch, rule)
 	if err != nil {
 		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
 	}
@@ -510,6 +551,17 @@ func markStaleBatch(ctx context.Context, database *store.Store, batch []string) 
 	}
 	return marked, nil
 }
+
+// StaleBatchMarkStatement is markStaleBatch's mark, at the marking rule $2, of each document of
+// $1 whose store still stands below its version and that holds no mark of $2 or a higher rule:
+// a mark of a lower rule is read as no mark and raised to $2, keeping its time, and a document
+// that holds no mark takes $2 and now. It answers the documents it marked.
+const StaleBatchMarkStatement = `
+	update document_block_versions set store_owed_at = coalesce(store_owed_at, now()), store_owed_rule = $2::integer
+	where artifact_id = any($1::uuid[]) and store_version < version
+	  and (store_owed_at is null or store_owed_rule < $2::integer)
+	returning artifact_id::text
+`
 
 // lockBlockDocuments takes the locks the fence's writers hold while they write a document's blocks
 // or its block references, in the order R23 gives and docs' indexOwedDocument takes them for one
@@ -565,9 +617,9 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 
 // heldBlockRows reads again, under the locks lockBlockDocuments took, which rows of the batch
 // are still there and still name no node, locks each of them `for update` in key order, and
-// answers them in the batch's own order. The rest of a row is what the batch read: a row that
-// still names no node has been written by no version since, because a version names the node
-// of every block it indexes (refs.IndexBlocks).
+// answers them in the batch's own order (HeldBlockRowsStatement). The rest of a row is what the
+// batch read: a row that still names no node has been written by no version since, because a
+// version names the node of every block it indexes (refs.IndexBlocks).
 func heldBlockRows(ctx context.Context, tx pgx.Tx, batch []blockRow) ([]blockRow, error) {
 	artifacts := make([]string, 0, len(batch))
 	blockIDs := make([]string, 0, len(batch))
@@ -575,15 +627,7 @@ func heldBlockRows(ctx context.Context, tx pgx.Tx, batch []blockRow) ([]blockRow
 		artifacts = append(artifacts, row.artifactID)
 		blockIDs = append(blockIDs, row.blockID)
 	}
-	rows, err := tx.Query(ctx, `
-		select d.artifact_id::text, d.block_id
-		from document_blocks d
-		join unnest($1::text[], $2::text[]) as b (artifact_id, block_id)
-			on d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
-		where d.node_kind is null
-		order by d.artifact_id, d.block_id
-		for update of d
-	`, artifacts, blockIDs)
+	rows, err := tx.Query(ctx, HeldBlockRowsStatement, artifacts, blockIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks of a batch again under their documents' locks: %w", err)
 	}
@@ -607,6 +651,21 @@ func heldBlockRows(ctx context.Context, tx pgx.Tx, batch []blockRow) ([]blockRow
 	}
 	return held, nil
 }
+
+// HeldBlockRowsStatement is heldBlockRows' read of the rows of a batch, the document of $1 and the
+// block of $2 beside it, that still name no node, each locked `for update`, in key order. The
+// documents of the rows it answers are the ones the block batch marks (BlockBatchMarkStatement),
+// so it is one of the statements that decide what this build marks, and it is named so the test
+// that holds the marking rule to them reads it (refs.BlockIndexMarkingRule).
+const HeldBlockRowsStatement = `
+		select d.artifact_id::text, d.block_id
+		from document_blocks d
+		join unnest($1::text[], $2::text[]) as b (artifact_id, block_id)
+			on d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
+		where d.node_kind is null
+		order by d.artifact_id, d.block_id
+		for update of d
+	`
 
 // blockRefRow is one block_refs row the backfill reads: the pair it holds, the block node it
 // is a link out of, the row's own dates and sequence, and whether the store holds that block's

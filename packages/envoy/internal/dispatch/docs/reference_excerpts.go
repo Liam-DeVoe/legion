@@ -112,7 +112,7 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // projects (refs.PlanBlocks).
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
-		if err := queueDocumentIndexOwed(ctx, tx, artifactID); err != nil {
+		if err := queueDocumentIndexOwed(ctx, tx, artifactID, s.markingRule); err != nil {
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
@@ -151,7 +151,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, s.markingRule, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -230,15 +230,16 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 }
 
 // planBlockIndex plans version's block index of artifactID, its block pointers included
-// (refs.PlanBlocks), and returns the targets it moves, the cited blocks it changes included
-// (refs.BlockIndexing.Cited), the step that writes it, and what it states in the node and tuple
-// store, held for the event the caller appends for the version (refs.BlockIndexing.Stated). It
-// plans against what the index holds: as the transaction's own queued indexing of the document
-// leaves it, when there is one, else as read in tx; and it records what this one leaves for a
-// later indexing of the same document.
+// (refs.PlanBlocks), at the marking rule rule of the build planning it, and returns the targets
+// it moves, the cited blocks it changes included (refs.BlockIndexing.Cited), the step that writes
+// it, and what it states in the node and tuple store, held for the event the caller appends for
+// the version (refs.BlockIndexing.Stated). It plans against what the index holds: as the
+// transaction's own queued indexing of the document leaves it, when there is one, else as read in
+// tx; and it records what this one leaves for a later indexing of the same document.
 func planBlockIndex(
 	ctx context.Context,
 	tx pgx.Tx,
+	rule int,
 	artifactID string,
 	version int,
 	versionAt time.Time,
@@ -266,7 +267,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}

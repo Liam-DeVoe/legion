@@ -63,25 +63,47 @@ type BlockIndex struct {
 	placed map[string]blockFarEnd
 }
 
+// BlockIndexMarkingRule is the version of the marking rule this build applies: what a block-index
+// pass and the tick owe, which is which documents a build marks owed a block index
+// (store_owed_at) and which comments its tick writes. A change of what a pass owes raises it, and
+// TestTheMarkingRuleNamesTheStatementsItMarksWith holds it to the statements that decide it. A
+// mark records the rule of the build that set it (store_owed_rule), and so do the block-index
+// tick's cursor rows and the backfill's horizons (marking_rule, migration 20261120122600): a build
+// starts reading the event log where a build or a backfill of its own rule left off and never
+// where one of another rule did, since that build marked what its own rule owes and not what this
+// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the first rule this
+// code ships, so a build of rule 1 already honours the marks of every later rule. It is declared
+// here, where docs and graphcensus both read it: docs' own tests import graphcensus, so graphcensus
+// cannot import docs.
+const BlockIndexMarkingRule = 1
+
 // blockStand is the row of document_block_versions that says what a document's blocks stand at,
 // with the latest version any release indexed (document_indexed_versions): held says the row is
 // there, version is its version (nil while the document is owed an index), storeVersion the
 // version whose blocks the store states (migration 20261116221539, which no other release names),
-// owed this build's own mark that the document is owed such a pass (store_owed_at), and latest the
-// newest version of document_indexed_versions, nil for a document no release indexed.
+// owed this build's own mark that the document is owed such a pass (store_owed_at), owedRule the
+// marking rule that set that mark (store_owed_rule, BlockIndexMarkingRule), read only where owed,
+// and latest the newest version of document_indexed_versions, nil for a document no release
+// indexed.
 type blockStand struct {
 	held          bool
 	version       *int
 	storeVersion  *int
 	owed          bool
+	owedRule      int
 	latestIndexed *int
 }
 
-// admits is the revision fence (queueStand's `where`) over the row as it stands: the row is not
-// there, it stands at no version or an older one, or it stands at this one and holds this build's
-// mark, which makes this pass the one that states that version's blocks in the store.
-func (s blockStand) admits(version int) bool {
-	return !s.held || s.version == nil || *s.version < version || *s.version == version && s.owed
+// admits is the revision fence (queueStand's `where`) over the row as it stands, for a pass of
+// marking rule rule: the row is not there, it stands at no version or an older one, or it stands
+// at this one under a mark, which makes this pass the one that states that version's blocks in
+// the store. At this version a mark of rule or a lower rule admits the pass, since it is the
+// pass's own to drain, and a mark of a higher rule admits it only where the store last stated the
+// document below this version, which is work of the pass's own there. A row at this version that
+// holds no mark admits no pass, whatever rule the row holds.
+func (s blockStand) admits(version, rule int) bool {
+	return !s.held || s.version == nil || *s.version < version ||
+		*s.version == version && s.owed && (s.owedRule <= rule || s.storeVersion == nil || *s.storeVersion < version)
 }
 
 // stale says the store's statement of the document's blocks is another release's to correct: the
@@ -95,14 +117,20 @@ func (s blockStand) stale() bool {
 	return *s.storeVersion != *s.latestIndexed
 }
 
-// indexedAt is the row once a pass at version has won the fence: standing at that version on both
-// columns, its mark cleared, and version among those indexed.
-func (s blockStand) indexedAt(version int) blockStand {
+// indexedAt is the row once a pass of marking rule rule at version has won the fence: standing at
+// that version on both columns, version among those indexed, and its mark cleared where the mark
+// was of rule or a lower rule. A mark of a higher rule stays, with its rule, for that rule's pass,
+// as the fence's own statement leaves it (queueStand).
+func (s blockStand) indexedAt(version, rule int) blockStand {
 	latest := version
 	if s.latestIndexed != nil && *s.latestIndexed > latest {
 		latest = *s.latestIndexed
 	}
-	return blockStand{held: true, version: &version, storeVersion: &version, latestIndexed: &latest}
+	stand := blockStand{held: true, version: &version, storeVersion: &version, latestIndexed: &latest}
+	if s.owed && s.owedRule > rule {
+		stand.owed, stand.owedRule = true, s.owedRule
+	}
+	return stand
 }
 
 // indexedLink is one block_refs row the index holds: its pair, when the row was written, the
@@ -154,15 +182,23 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 // readBlockStand reads the row the revision fence is decided on, and the latest version any
 // release indexed (blockStand). The read is the write's own, in its read phase, under the
 // document's owner lock, which every writer of a document's blocks takes before it reads them, so
-// nothing moves the row between this read and the fence's statement in the write phase.
+// no other pass writes a revision of the row between this read and the fence's statement in the
+// write phase. Four writers of the row take no owner lock and may write it in between: the tick's
+// marking of the documents its events name (docs' markVersionedDocuments), docs' oweDocumentIndex,
+// the re-index of a scope that calls it, and RebuildAll. None of them writes a revision: each sets
+// only a null version, store_owed_at and store_owed_rule. So the plan may decide the fence on
+// this read (PlanBlocks), and the fence's statement decides its own outcome and whether it clears
+// the mark against the row as it then stands (queueStand), which is how a mark of a higher rule
+// written in between stays.
 func readBlockStand(ctx context.Context, q Queryer, artifactID string) (blockStand, error) {
 	var stand blockStand
 	if err := q.QueryRow(ctx, `
 		select v.artifact_id is not null, v.version, v.store_version, v.store_owed_at is not null,
+		       coalesce(v.store_owed_rule, 1),
 		       (select max(i.version) from document_indexed_versions i where i.artifact_id = d.id)
 		from (select $1::uuid as id) d
 		left join document_block_versions v on v.artifact_id = d.id
-	`, artifactID).Scan(&stand.held, &stand.version, &stand.storeVersion, &stand.owed, &stand.latestIndexed); err != nil {
+	`, artifactID).Scan(&stand.held, &stand.version, &stand.storeVersion, &stand.owed, &stand.owedRule, &stand.latestIndexed); err != nil {
 		return blockStand{}, fmt.Errorf("read the version the blocks of %s stand at: %w", artifactID, err)
 	}
 	return stand, nil
@@ -193,6 +229,10 @@ type BlockIndexing struct {
 	versionAt     time.Time
 	firstIndexing bool
 	won           bool
+	// rule is the marking rule of the build planning the pass (BlockIndexMarkingRule), which the
+	// fence decides the pass's win at the version the row stands at on, and whether its stand
+	// clears the document's mark (queueStand).
+	rule int
 	// namesSurvivingRows says the pass names the node of every surviving block_refs row of the
 	// document that names none, stating the link that row projects (queueBlockRefs), because
 	// such a row may be another release's: on the drain of this build's mark (blockStand.owed)
@@ -217,13 +257,15 @@ type BlockIndexing struct {
 
 // PlanBlocks plans version's block index of artifactID against index, what the document's block
 // index holds: one ReadBlockIndex read, or the Held of the caller's own earlier indexing of the
-// document that is not written yet. It does the indexing's whole work - each block's text sum, its
-// excerpt, the links its mentions and its pointers write, and what the node and tuple store is
-// told of them - and reads, through q, only what the store itself holds of the document where the
-// plan compares the render against it: each block's parent, the document's own references on its
-// first indexing, and the store's statement of the document where that is stale. A version writer
-// plans the indexing in its read phase and queues it in its write phase (docs.indexDocument). now
-// is the transaction's now(), which a row the indexing inserts takes from its column's default.
+// document that is not written yet. rule is the marking rule of the build planning it
+// (BlockIndexMarkingRule, or the rule a docs.Service carries), which the fence reads (queueStand).
+// It does the indexing's whole work - each block's text sum, its excerpt, the links its mentions
+// and its pointers write, and what the node and tuple store is told of them - and reads, through
+// q, only what the store itself holds of the document where the plan compares the render against
+// it: each block's parent, the document's own references on its first indexing, and the store's
+// statement of the document where that is stale. A version writer plans the indexing in its read
+// phase and queues it in its write phase (docs.indexDocument). now is the transaction's now(),
+// which a row the indexing inserts takes from its column's default.
 //
 // The plan makes the version's blocks graph nodes, and each mention written inside a block an edge
 // out of the innermost block holding its start. blocks are the version's rendered blocks in
@@ -303,6 +345,7 @@ func PlanBlocks(
 	ctx context.Context,
 	q Queryer,
 	index BlockIndex,
+	rule int,
 	artifactID string,
 	record IndexedVersion,
 	version int,
@@ -312,9 +355,9 @@ func PlanBlocks(
 	located []text.Located,
 	pointers []Pointer,
 ) (BlockIndexing, error) {
-	indexing := BlockIndexing{artifactID: artifactID, refKey: record.RefKey, version: version, versionAt: versionAt, held: index}
+	indexing := BlockIndexing{artifactID: artifactID, refKey: record.RefKey, version: version, versionAt: versionAt, rule: rule, held: index}
 	// The fence decides first, so a pass that loses it plans nothing and writes nothing.
-	if !index.stand.admits(version) {
+	if !index.stand.admits(version, rule) {
 		return indexing, nil
 	}
 	stale := index.stand.stale()
@@ -497,7 +540,7 @@ func PlanBlocks(
 			indexing.moved = append(indexing.moved, pair.target)
 		}
 	}
-	indexing.held = BlockIndex{blocks: held, links: heldLinks, stand: index.stand.indexedAt(version), placed: placed}
+	indexing.held = BlockIndex{blocks: held, links: heldLinks, stand: index.stand.indexedAt(version, rule), placed: placed}
 	return indexing, nil
 }
 
@@ -709,7 +752,10 @@ func (b BlockIndexing) Held() BlockIndex {
 // deleted block's as no text, after which the edges at it stop resolving until a version holds
 // its id again; the parent of each block it places, with its node columns; the links its blocks
 // hold; and the version recorded as indexed (document_indexed_versions). It queues no window of
-// its own. A pass that lost the fence queues nothing.
+// its own. A pass that lost the fence queues nothing. Whether the stand clears the document's
+// mark is the stand's own statement's to decide (queueStand), and none of the statements after it
+// reads the mark, so a pass whose stand leaves a mark of a higher rule writes what it writes
+// otherwise and no statement of it assumes the mark gone.
 //
 // A pair (block, target) that survives keeps its created version, time and source event. A new
 // pair takes this version and versionAt, and the source event QueueStamp gives it. On the
@@ -775,15 +821,28 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 // The row also carries two columns no other release names (migration 20261116221539), which the
 // winning pass writes beside version: store_version, the version whose blocks the store now
 // states, which it sets to this version; and store_owed_at, this build's own mark that the
-// document is owed such a pass, which it clears, since this pass states every block's node,
+// document is owed such a pass, which it clears where the mark's rule (store_owed_rule, migration
+// 20261120122600) is the pass's own or a lower one, since this pass states every block's node,
 // part_of and parent_block_id (PlanBlocks, planBlockParents). The backfill sets that mark, and so
 // does every place this build leaves a version's blocks to a later pass, beside the null version
 // every release reads (docs' oweDocumentIndex, refs.RebuildAll). A pass at the version the row
 // already stands at wins only where the document holds that mark: the release before this one
 // may have indexed that version since and stated nothing in the store, so this pass is the one
 // that states its blocks there. That is the re-index the reconciliation owes a marked document
-// (docs' owedDocuments), and the first pass of this release at that version clears the mark, so a
-// second one loses as before.
+// (docs' owedDocuments), and the first pass at that version that clears the mark makes a second
+// one lose as before.
+//
+// A mark of a higher marking rule than the pass's (BlockIndexMarkingRule) is that rule's to drain:
+// a build of that rule owes the document more than this pass states. At the version the row
+// stands at, such a mark lets the pass win only where the store last stated the document below
+// that version (store_version null or below it), which is work of the pass's own there, and the
+// pass that wins under it states the version, leaves the mark with its rule, and so stops listing
+// the document (docs' owedDocuments), while the higher rule's pass still lists it by its mark and
+// wins at that version. A row at the version that holds no mark lets no pass win, whatever rule
+// it holds: store_owed_rule keeps the rule of the last mark, or its default of 1, after the mark
+// is cleared. The clear is decided here, against the row as it stands when this statement runs,
+// and not by the read phase: four writers of the row take no owner lock (readBlockStand), and a
+// mark of a higher rule one of them writes between the pass's read and this statement stays.
 //
 // indexOwedDocument's own early return is a short cut, not this fence: it spares the work of a
 // pass whose version is already settled, and it reads before the write rather than deciding it.
@@ -815,20 +874,24 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", b.artifactID, b.version), `
 		insert into document_block_versions (artifact_id, version, store_version, windows_owed_at) values ($1, $2, $2, now())
 		on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
-			store_owed_at = null,
+			store_owed_at = case when document_block_versions.store_owed_rule <= $3 then null
+				else document_block_versions.store_owed_at end,
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 		where document_block_versions.version is null or document_block_versions.version < excluded.version
 		   or document_block_versions.version = excluded.version and document_block_versions.store_owed_at is not null
-	`, b.artifactID, b.version)
+		      and (document_block_versions.store_owed_rule <= $3 or document_block_versions.store_version is null
+		           or document_block_versions.store_version < excluded.version)
+	`, b.artifactID, b.version, b.rule)
 }
 
 // IndexBlocks indexes version's blocks of artifactID in tx at once: the document's index read
 // (ReadBlockIndex) with what the version's own row says of it (ReadIndexedVersion), the plan
 // (PlanBlocks) and the blocks it cites (Cited), and its statements run as a batch of their own
 // (Queue, store.RunWrite). It is the whole index for a writer with no write phase to queue it on:
-// the seed, and a test that indexes a version itself. It answers the targets the indexing moves,
-// the cited blocks among them, whether it won the revision fence, and what it states in the node
-// and tuple store, for the caller to append under its cause (graphstore.Caused).
+// the seed, and a test that indexes a version itself, each at this build's marking rule
+// (BlockIndexMarkingRule). It answers the targets the indexing moves, the cited blocks among them,
+// whether it won the revision fence, and what it states in the node and tuple store, for the
+// caller to append under its cause (graphstore.Caused).
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -852,7 +915,7 @@ func IndexBlocks(
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
 		return nil, false, graphstore.Uncaused{}, fmt.Errorf("read the transaction's time: %w", err)
 	}
-	indexing, err := PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
+	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
@@ -866,25 +929,44 @@ func IndexBlocks(
 	return slices.Concat(indexing.Moved(), cited), indexing.Won(), indexing.Stated(), nil
 }
 
-// OwedBlockIndexDebts is one row per document owed a block index - its version null, or this
-// build's own mark on it (store_owed_at, blockStand.owed) - each dated by the write that owed it:
-// the created_at of the latest markdown version the document holds, which is the version a tick
-// would index, or the document's own created_at where it holds no markdown version at all.
+// OwedMarkListed is the condition under which a pass of the marking rule rule, a SQL expression,
+// lists as owed the document whose document_block_versions row row holds a mark of this build's
+// (store_owed_at): a mark of rule or a lower rule (store_owed_rule), which is the pass's own to
+// drain, and a mark of a higher rule only where the store last stated the document below its
+// version (store_version null or below version), which is work of the pass's own there. A mark of
+// a higher rule on a document whose stand is at its version is that rule's alone: a pass of a
+// lower rule that listed it would index it, lose the fence's equal-version arm (queueStand) and
+// list it again on every pass, and would count it in a backlog that only grows. The owed listing
+// (docs' owedDocuments), its re-read under the owner's lock (docs' indexOwedDocument) and both
+// readers of the backlog (OwedBlockIndexDebts, the count docs' ReconcileBlockIndex logs) read
+// this one condition, so a build counts as its backlog exactly the documents it lists.
+func OwedMarkListed(row, rule string) string {
+	return row + `.store_owed_at is not null and (` + row + `.store_owed_rule <= ` + rule +
+		` or ` + row + `.store_version is null or ` + row + `.store_version < ` + row + `.version)`
+}
+
+// OwedBlockIndexDebts is one row per document a build of the marking rule $1 owes a block index -
+// its version null, or this build's own mark on it that such a build lists (store_owed_at,
+// blockStand.owed, OwedMarkListed) - each dated by the write that owed it: the created_at of the
+// latest markdown version the document holds, which is the version a tick would index, or the
+// document's own created_at where it holds no markdown version at all.
 //
 // Nothing dates a null version - document_block_versions records no time it was set back to null
 // (migration 0121) - so the date is derived, and this build's mark is dated the same way, which
 // reads older than the mark, the safe direction for a backlog. The two readers of the backlog
 // derive it from this one text: the tick's own logged figure (docs.ReconcileBlockIndex) and the
 // one `envoy-dispatch census --store --sizing` prints for somebody holding the database and not
-// the log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate.
-const OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
-		where b.version is null or b.store_owed_at is not null`
+// the log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate and binds
+// its build's marking rule as $1.
+var OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
+		where b.version is null or ` + OwedMarkListed("b", "$1::integer")
 
 // OwedBlockIndexDebtsBeforeTheMark is OwedBlockIndexDebts over a database migration
-// 20261116221539 has not reached yet, which holds no store_owed_at column and so no mark of the
-// backfill's: only a null version is owed there. `census --store --sizing` takes its readings on
-// such a database, before this branch's migrations run (R4), and reads this one there; the tick
-// only ever runs on a migrated database and reads the full text.
+// 20261120122600 has not reached yet, which holds no store_owed_rule column: only a null version
+// is read as owed there. `census --store --sizing` takes its readings on such a database, before
+// this branch's migrations run (R4), where migration 20261116221539 has not added store_owed_at
+// either and the backfill has marked nothing, and reads this one there; the tick only ever runs
+// on a migrated database and reads the full text. It binds nothing.
 const OwedBlockIndexDebtsBeforeTheMark = owedBlockIndexDebtsFrom + `
 		where b.version is null`
 

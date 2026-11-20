@@ -211,7 +211,7 @@ const (
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	docsTupleStatement = "with written as ("
 	// docsCursorStatement is the block-index tick's move of its build's event cursor row.
-	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id)"
+	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, marking_rule)"
 	// docsMarkingStatement is the block-index tick's marking (markVersionedDocuments), which takes
 	// the document_block_versions row of each document it marks `for no key update`.
 	docsMarkingStatement = "with held as ( select b.artifact_id from document_block_versions b"
