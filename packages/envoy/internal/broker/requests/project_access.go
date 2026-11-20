@@ -428,9 +428,9 @@ func (m *Machine) logFallbackCut(reader string, rows int, err error) {
 
 // ReasonUnreadMessage is the log line for a stored row whose reason names the issue keys of more
 // projects than a new request may (record.MaxReasonProjects): the row can only be one stored before
-// Create refused such a reason, so maySee reads none of its keys and counts them as naming no
-// project, which is how every reader saw the row when it was written. Its other projects are
-// still asked.
+// Create refused such a reason, so neither rule reads any of its keys (reasonProjects), and they
+// count as naming no project, which is how every reader saw the row when it was written. Its other
+// projects are still asked.
 const ReasonUnreadMessage = "a stored request's reason names the issue keys of more projects than a new request may; its keys are not read, and count as naming no project"
 
 // logReasonUnread writes ReasonUnreadMessage for the one row row names ("record <id>" or
@@ -440,6 +440,21 @@ func (m *Machine) logReasonUnread(row string, projects int) {
 	if m.reasonsUnreadLogged.due(row) {
 		slog.Info(ReasonUnreadMessage, "row", row, "projects", projects, "bound", record.MaxReasonProjects)
 	}
+}
+
+// reasonProjects is the project of each issue key reason names (record.ReasonProjects), the
+// projects the person rule (maySee) and the session rule (hideFromSession) join to a row's own,
+// read for the row row names. A reason naming the keys of more than record.MaxReasonProjects
+// projects is one stored before Create refused such a reason (record.CheckReasonProjects): it
+// answers none, so its keys count as naming no project, which is how every reader saw the row when
+// it was written, and a line naming the row says so (logReasonUnread).
+func (m *Machine) reasonProjects(row, reason string) []string {
+	projects := record.ReasonProjects(reason)
+	if len(projects) > record.MaxReasonProjects {
+		m.logReasonUnread(row, len(projects))
+		return nil
+	}
+	return projects
 }
 
 // projectNotNamed is the refusal of a granted name the session may no longer have for its
@@ -620,22 +635,15 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // each caller holds its age to atDecision's bound with the facts it read before it.
 //
 // A reason naming the issue keys of more than record.MaxReasonProjects projects is one stored
-// before Create refused such a reason (record.CheckReasonProjects). Its keys are not read: they
-// count as naming no project, which is how every reader saw the record when it was written, and a
-// line naming the row says so (logReasonUnread; row is "record <id>", "grant <id>" or, for the
-// judge's own check, "enrollment <id>"). The record's other projects are still asked, since its
-// secrets' tags come of the live policy, and a secret it names may have been tagged with a
-// private project since it was stored.
+// before Create refused such a reason (record.CheckReasonProjects). Its keys are not read
+// (reasonProjects; row is "record <id>", "grant <id>" or, for the judge's own check, "enrollment
+// <id>"). The record's other projects are still asked, since its secrets' tags come of the live
+// policy, and a secret it names may have been tagged with a private project since it was stored.
 func (m *Machine) maySee(ctx context.Context, row, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
 	}
-	reasonProjects := record.ReasonProjects(reason)
-	if len(reasonProjects) > record.MaxReasonProjects {
-		m.logReasonUnread(row, len(reasonProjects))
-		reasonProjects = nil
-	}
-	asking := slices.Concat(projects, reasonProjects)
+	asking := slices.Concat(projects, m.reasonProjects(row, reason))
 	slices.Sort(asking)
 	var asked time.Time
 	for _, project := range slices.Compact(asking) {
@@ -687,7 +695,7 @@ func (m *Machine) namedProjects(e enrollmentRow) []string {
 // credentialsProjects is the projects the credentials a request has had name: asked, the
 // enrollment that asked, which the append-only record names, and current, the one the request
 // hangs off now, which an adoption rewrites. Every reader of whose request this is reads both —
-// the pending list, the record's page, the grant list and the decision (readDecision's asked) — so
+// the pending list, the record's page, the grant list and the decision (decisionFacts) — so
 // a person either would hide the request from neither sees nor decides it. Each project appears
 // once, in the order asked then current name them.
 func (m *Machine) credentialsProjects(asked, current enrollmentRow) []string {
@@ -734,7 +742,7 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // record has gives anyone: so the page that decides tells them "no such record"
 // (approval.Page.decide) whatever order its checks are in, and adds no refusal code to the address
 // it sends them to, which would say the record exists.
-func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
+func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre rowFacts, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
 		defer cancel()
@@ -745,11 +753,11 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 		may   bool
 	}
 	got, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (decided, time.Time, error) {
-		facts, err := m.collectProjectFacts(ctx, pre.enr, pre.names, set)
+		facts, err := m.collectProjectFacts(ctx, pre.holder, pre.names, set)
 		if err != nil {
 			return decided{}, time.Time{}, err
 		}
-		named := slices.Concat(m.namedProjects(pre.enr), pre.asked)
+		named := pre.sessionProjects
 		var may bool
 		var asked time.Time
 		if who.isJudge() {
@@ -786,33 +794,4 @@ func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, se
 		may, seen, err := m.maySee(ctx, row, login, append(privateProjects(secrets), sessionProjects...), reason)
 		return may, projectaccess.Oldest(asked, seen), err
 	})
-}
-
-// decisionRead is what the approve path reads of a record on the pool before its transaction: the
-// enrollment the request hangs off now, the projects the credential that asked names (the
-// enrollment the record froze, read through credentialColumns as the pending lists read it), the
-// names the request asks for, and its signed reason, from which projectFacts and mayDecide resolve
-// what Dispatch holds before any lock is taken.
-type decisionRead struct {
-	enr    enrollmentRow
-	asked  []string
-	names  []string
-	reason string
-}
-
-// readDecision is the record's decisionRead, or pgx.ErrNoRows for a record no request names.
-func (m *Machine) readDecision(ctx context.Context, recordID string) (decisionRead, error) {
-	var d decisionRead
-	var asked enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, e.subject, c.service, e.projects, r.reason,
-			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-			`+credentialColumns+`
-		from requests r join enrollments e on e.id = r.enrollment_id
-		left join launcher_credentials c on c.id = e.launcher_credential_id
-		left join credential_requests cr on cr.id = r.record_id
-		left join enrollments enr on enr.id = cr.enrollment_id where r.record_id=$1`, recordID).
-		Scan(&d.enr.ID, &d.enr.Kind, &d.enr.Operator, &d.enr.Subject, &d.enr.Service, &d.enr.Projects, &d.reason, &d.names,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects)
-	d.asked = m.namedProjects(asked)
-	return d, err
 }

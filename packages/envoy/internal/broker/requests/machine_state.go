@@ -2164,7 +2164,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// nothing, its reason reaches only the agent that asked, and the transaction reads the facts
 	// only to grant (requester), so the judge refuses for good whatever project the request
 	// belongs to, and a Dispatch outage cannot turn a final refusal into a hand-over.
-	pre, err := m.readDecision(ctx, recordID)
+	pre, err := m.readRowFacts(ctx, decisionKey, recordID)
 	if err != nil {
 		return Decision{}, false, err
 	}
@@ -2225,7 +2225,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		Scan(&requestID, &holder, &state, &expired, &held); err != nil {
 		return Decision{}, false, err
 	}
-	if holder != enr.ID || enr.ID != pre.enr.ID {
+	if holder != enr.ID || enr.ID != pre.holder.ID {
 		return Decision{}, true, nil
 	}
 	parsed, err := verifyRecordBody(recordID, body)
@@ -2768,19 +2768,6 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 	}
 	logGrantRow(kind, actor, enr, requestID, grantID, rawJSON(detail))
 	return nil
-}
-
-// hideUnseenGrant is the person rule over grant grantID for login, read on the pool before
-// RevokeByApprover's transaction, since it may ask Dispatch: pgx.ErrNoRows for an id no grant has
-// and for a grant login may not see, ErrProjectAccessUnavailable when Dispatch could not say, and
-// nil for a grant login may see (hideUnseenRow). It reads the grant as GrantsForApprover lists it
-// (readGrantFacts), so a person revokes exactly the grants their own list may show them.
-func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
-	facts, err := m.readGrantFacts(ctx, grantID)
-	if err != nil {
-		return err
-	}
-	return m.hideUnseenRow(ctx, "grant "+grantID, login, facts.names, facts.sessionProjects, facts.reason)
 }
 
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just
