@@ -1452,8 +1452,8 @@ type Dismissal struct {
 // request one person dismisses leaves everybody's list.
 //
 // Its refusals are pgx.ErrNoRows for an id that names no record, and for a secret request login
-// may not see (MaySee: one of a private project they are not on), which is the answer every other
-// read of the record gives them, so a person outside a private project learns nothing of its
+// may not see (HideUnseen: one of a private project they are not on), which is the answer every
+// other read of the record gives them, so a person outside a private project learns nothing of its
 // records from a dismissal that names one; ErrProjectAccessUnavailable where Dispatch could not
 // say whether login may see it; record.ErrNotApprover when the record's approver is neither
 // record.CanonicalLogin(login) nor record.AnyoneApprover, which is the list's own rule for whose
@@ -1463,8 +1463,10 @@ type Dismissal struct {
 // cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
 // dismissed like any other.
 //
-// The person rule is read on the pool before the transaction (refuseUnseen), since it may ask
-// Dispatch, and no call to Dispatch runs in a transaction that holds locks.
+// The person rule is read on the pool before the transaction (HideUnseen), since it may ask
+// Dispatch, and no call to Dispatch runs in a transaction that holds locks. It reads the record's
+// rows rather than its signed request, so a record signed for another broker address is refused
+// an outsider as an unknown id too, not with the error of a request this broker cannot verify.
 //
 // It is one transaction, and it reads the record's state under a share lock taken before the read:
 // on the requests row for a secret request, which waits for ApplyDecision's `for update` of that
@@ -1482,7 +1484,7 @@ type Dismissal struct {
 // the first's insert returns the row it wrote, and the second inserts nothing and reads the first
 // one's row back.
 func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {
-	if err := m.refuseUnseen(ctx, recordID, login); err != nil {
+	if err := m.HideUnseen(ctx, recordID, login); err != nil {
 		return Dismissal{}, err
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
@@ -1533,26 +1535,6 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	}
 	slog.Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
 	return d, nil
-}
-
-// refuseUnseen answers pgx.ErrNoRows for a secret request login may not see (MaySee), as for an id
-// no record has, and nil for one they may see and for a machine login, which belongs to no
-// project. A record Dispatch could not answer for is ErrProjectAccessUnavailable, and an id that
-// names no record pgx.ErrNoRows. It reads the record and asks Dispatch on the pool, so a write
-// that names a record calls it before its transaction.
-func (m *Machine) refuseUnseen(ctx context.Context, recordID, login string) error {
-	d, err := m.ReadRecord(ctx, recordID)
-	if err != nil || d.Kind != record.KindAgentSecret {
-		return err
-	}
-	may, err := m.MaySee(ctx, record.CanonicalLogin(login), d)
-	switch {
-	case err != nil:
-		return err
-	case !may:
-		return pgx.ErrNoRows
-	}
-	return nil
 }
 
 // ExpirePending expires every pending request past its deadline, writing the state transition,
@@ -2684,8 +2666,12 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 	return nil
 }
 
-// RevokeByApprover ends a grant on a person's login. The login must be the grant's approver or its
-// enrollment's operator (mayRevoke). actor is what every row it writes records as having done it,
+// RevokeByApprover ends a grant on a person's login. The login must be a person the person rule
+// shows the grant to (hideUnseenGrant), and then the grant's approver, its enrollment's operator,
+// or anyone at all for a grant whose approver is record.AnyoneApprover (mayRevoke). A login the
+// rule hides the grant from is refused pgx.ErrNoRows, the refusal of a grant id no grant has, and
+// a grant Dispatch could not answer for ErrProjectAccessUnavailable, each before the transaction
+// and with nothing written. actor is what every row it writes records as having done it,
 // which the caller proved: "human:<login>" for a revoke Dispatch relays from its signed-in person,
 // "launcher:<credential id>" for one the operator's own machine login makes. When the operator
 // revokes, every name the grant's request got automatically is withheld from the grant's session
@@ -2705,6 +2691,9 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // the grants row names now, so an approver's revoke reaches a grant that moved and an operator's
 // withholds from the box the session runs on.
 func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor string) error {
+	if err := m.hideUnseenGrant(ctx, grantID, login); err != nil {
+		return err
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -2765,6 +2754,34 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 	return nil
 }
 
+// hideUnseenGrant is the person rule over grant grantID for login, read on the pool before
+// RevokeByApprover's transaction, since it may ask Dispatch: pgx.ErrNoRows for an id no grant has
+// and for a grant login may not see, ErrProjectAccessUnavailable when Dispatch could not say, and
+// nil for a grant login may see (hideUnseenRow). It reads the grant as GrantsForApprover lists it
+// — the names it releases, its request's reason, and the projects of both credentials its request
+// has had, the one that asked, which its record names, and the one it hangs off now — so a person
+// revokes exactly the grants their own list may show them.
+func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
+	var names []string
+	var reason string
+	var asked, current enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
+			coalesce(r.reason, ''), `+credentialColumns+`, `+currentCredentialColumns+`
+		from grants g
+		join requests r on r.id = g.request_id
+		left join enrollments cur on cur.id = g.enrollment_id
+		left join credential_requests cr on cr.id = r.record_id
+		left join enrollments enr on enr.id = cr.enrollment_id
+		where g.id=$1`, grantID).
+		Scan(&names, &reason, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	if err != nil {
+		return err
+	}
+	return m.hideUnseenRow(ctx, "grant "+grantID, login, names, m.credentialsProjects(asked, current), reason)
+}
+
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just
 // revoked, got automatically, and in the same statement ends every other live grant of the session
 // whose request got one of the names it newly withholds automatically, each with a grant.revoked
@@ -2806,14 +2823,16 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 
 // mayRevoke answers whether login may revoke a grant, and whether as its enrollment's operator,
 // whose revoke withholds (RevokeByApprover), rather than as its approver. The operator is checked
-// first, so an operator who also approved the grant revokes it as the operator.
+// first, so an operator who also approved the grant revokes it as the operator. It is asked only
+// of a login the person rule shows the grant to (hideUnseenGrant): a grant of a private project is
+// nobody's to end outside it, whatever its approver or operator.
 //
 // A grant whose approver is the sentinel record.AnyoneApprover is every signed-in person's to
 // end: the model judge approved it in anyone's stead, so it names no person who could end it,
-// and GrantsForApprover lists it to everyone for that same reason. The revoke is the approver's
-// and not the operator's, since whoever ends it stands in for the record's approver and withholds
-// nothing from a session that is not theirs. The sentinel is no signed-in person itself, and
-// neither is an empty login: neither revokes anything.
+// and GrantsForApprover lists it to everyone the person rule shows it to for that same reason.
+// The revoke is the approver's and not the operator's, since whoever ends it stands in for the
+// record's approver and withholds nothing from a session that is not theirs. The sentinel is no
+// signed-in person itself, and neither is an empty login: neither revokes anything.
 func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
 	login = record.CanonicalLogin(login)
 	switch {

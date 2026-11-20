@@ -1267,6 +1267,65 @@ func (m *Machine) JudgeHolds(ctx context.Context, recordID string) (bool, error)
 	return held, err
 }
 
+// HideUnseen is the person rule's answer to a route that names record recordID, which its caller
+// gave it, for login: pgx.ErrNoRows for an id no record has and for a secret request login may not
+// see (MaySee: one of a private project they are not on), one answer for both, so the route answers
+// login exactly as it answers an id no record has; ErrProjectAccessUnavailable when Dispatch could
+// not say whether login may see it, which the route answers 503 having written nothing; and nil
+// for a secret request login may see and for a machine login, which belongs to no project and
+// asks Dispatch nothing, as the pending list shows it (PendingForApprover). Every route that takes
+// a record id from a caller calls it before it answers anything else of the record, and a write
+// before its transaction, since it may ask Dispatch: the dismissal (Dismiss), the two decide
+// routes for a secret request (api.decideRecord) and the approval page, for the record it prints
+// and for each record an outcome line names (approval.Page). The approval page's decision is
+// ApplyDecision's own, whose person rule (decisionFacts) answers the same pgx.ErrNoRows.
+//
+// It reads what the rule asks of the record from the rows Create wrote beside it — every name the
+// request asked for, its signed reason, and the projects of the credentials it has had
+// (credentialsProjects) — and not from its signed request object, so it answers for a record
+// signed for another broker address too, which ReadRecord cannot verify here and no list of this
+// broker shows. Neither an empty login nor the sentinel record.AnyoneApprover names a person, and
+// either is shown what a reader naming no person is shown: no private project.
+func (m *Machine) HideUnseen(ctx context.Context, recordID, login string) error {
+	var kind, reason string
+	var names []string
+	var asked, current enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select cr.kind, coalesce(req.reason, ''),
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id = req.id), '{}'),
+			`+credentialColumns+`, `+currentCredentialColumns+`
+		from credential_requests cr
+		left join requests req on req.record_id = cr.id
+		left join enrollments enr on enr.id = cr.enrollment_id
+		left join enrollments cur on cur.id = req.enrollment_id
+		where cr.id=$1`, recordID).
+		Scan(&kind, &reason, &names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	if err != nil || kind != record.KindAgentSecret {
+		return err
+	}
+	return m.hideUnseenRow(ctx, "record "+recordID, login, names, m.credentialsProjects(asked, current), reason)
+}
+
+// hideUnseenRow is pgx.ErrNoRows for a row login may not see (maySeeRecord: its names under the
+// live policy, the projects of the credentials it has had and its reason),
+// ErrProjectAccessUnavailable when Dispatch could not say, and nil for a row login may see: the
+// one answer HideUnseen gives for a record and RevokeByApprover for a grant, so both answer a
+// person the rule hides the row from as they answer an id no row has. row names the row for the
+// rule's log line.
+func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, names, sessionProjects []string, reason string) error {
+	if login = record.CanonicalLogin(login); login == record.AnyoneApprover {
+		login = ""
+	}
+	may, err := m.maySeeRecord(ctx, row, login, names, sessionProjects, reason)
+	switch {
+	case err != nil:
+		return err
+	case !may:
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // Session is the two possibly-differing session ids a credential-request record can name, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment stated
 // when it enrolled (enrollments.session_id — agentbox's --session-id, or the Legion daemon's

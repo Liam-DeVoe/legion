@@ -724,9 +724,11 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
 // well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
 // since. The facts and the rule's own reads are one decision, held to atDecision's bound together.
-// A refusal is record.ErrNotApprover; a person's, for a record they may not see, is
-// pgx.ErrNoRows as well, since every read of the record answers them that way and the page that
-// decides tells them "no such record" (approval.Page.decide).
+// A refusal of the judge is record.ErrNotApprover. A person's, for a record they may not see, is
+// pgx.ErrNoRows alone, the answer every read of the record gives them (HideUnseen) and an id no
+// record has gives anyone: so the page that decides tells them "no such record"
+// (approval.Page.decide) whatever order its checks are in, and adds no refusal code to the address
+// it sends them to, which would say the record exists.
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
@@ -764,7 +766,7 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	case who.isJudge():
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
-	return projectFacts{}, fmt.Errorf("%w: no such record: %w", record.ErrNotApprover, pgx.ErrNoRows)
+	return projectFacts{}, pgx.ErrNoRows
 }
 
 // maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the

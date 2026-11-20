@@ -290,9 +290,10 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 }
 
 // TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest: anyone may approve PRIV_HUMAN by owner and
-// tier, but a person outside PRIV is refused record.ErrNotApprover, approving or denying it, with
-// pgx.ErrNoRows beside it, the answer every read of the record gives them, and the request stays
-// pending; a person on PRIV's list approves it.
+// tier, but a person outside PRIV, approving or denying it, is refused pgx.ErrNoRows alone, the
+// answer every read of the record gives them and the one an id no record has, and never
+// record.ErrNotApprover, which a reader of the refusal would tell from a missing id by the order
+// of its checks alone; the request stays pending. A person on PRIV's list approves it.
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
@@ -301,8 +302,8 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
 	for _, approve := range []bool{true, false} {
-		if _, err := m.ApplyDecision(t.Context(), *request.RecordID, approve, outsider); !errors.Is(err, record.ErrNotApprover) || !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("a decision (approve %v) by %s, outside PRIV = %v; want record.ErrNotApprover and pgx.ErrNoRows", approve, outsider, err)
+		if _, err := m.ApplyDecision(t.Context(), *request.RecordID, approve, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {
+			t.Fatalf("a decision (approve %v) by %s, outside PRIV = %v; want pgx.ErrNoRows alone, not record.ErrNotApprover", approve, outsider, err)
 		}
 		if got, err := m.Get(t.Context(), request.ID); err != nil || got.State != "pending" {
 			t.Fatalf("after the outsider's decision (approve %v) the request is %+v, %v; want pending", approve, got, err)
