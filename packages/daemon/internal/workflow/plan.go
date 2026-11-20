@@ -260,7 +260,7 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		return intake.RetryOfHeldParent(issue.Key, beneath), nil
 	}
-	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
+	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
 }
 
 // pastReport is the run that a completion of a phase its issue no longer stands in reports, which

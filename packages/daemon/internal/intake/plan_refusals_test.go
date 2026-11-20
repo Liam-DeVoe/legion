@@ -49,6 +49,12 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 		{"a task of a root that waits on a person before its first step", TaskAwaitsPerson("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_AWAITING_PERSON",
 			Message: "LEGION-208 waits on a person before its first step, and Legion cannot stop task a there. To change the task, give a later version of the plan with register_plan; " +
 				"to stop it, call stop_task again once the person has answered. This stop changed nothing."}},
+		{"a retry of a task its owner stopped", RetryOfStoppedTask("LEGION-208", "a", "task a of LEGION-208 was stopped by its owner"), Refusal{Status: http.StatusConflict, Code: "TASK_STOPPED",
+			Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), " +
+				"and a task that never started waits for its gate and its line first. This retry changed nothing."}},
+		{"a retry of a task a failed step stopped", RetryOfStoppedTask("LEGION-208", "a", "step 2 (tester) failed and no earlier step of the type implementation can take the work"),
+			Refusal{Status: http.StatusConflict, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped: step 2 (tester) failed and no earlier step of the type implementation can take the work; " +
+				"a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}},
 		{"a version that changes a task that is done", PlanOfDoneTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."}},
 		{"a version that changes a task that left the workflow", PlanOfLeftTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",

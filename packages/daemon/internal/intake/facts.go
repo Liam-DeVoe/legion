@@ -1911,12 +1911,25 @@ func RestartOfLeftTask(issue, task string) *Refusal {
 }
 
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
-// architect's retry or escalation, the operator's restart — where the issue is held because its
-// owner stopped task (record.HoldTaskStopped): a later version of the plan starts the task again,
-// and so does a person's todo on a root (workflow's releaseHeldRoot), but no retry of the hold does.
-func RetryOfStoppedTask(issue, task string) *Refusal {
+// architect's retry or escalation, the operator's restart — where the issue is held because task
+// was stopped for reason, the stop reason the task stores (record.PlanTask.StoppedReason): by its
+// owner, or by a failed step with no step before it to take the work back (record.HoldTaskStopped).
+// Its first sentence is that reason (stoppedSentence). A later version of the plan starts the task
+// again, and so does a person's todo on a root (workflow's releaseHeldRoot), but no retry of the
+// hold does.
+func RetryOfStoppedTask(issue, task, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
-		"task %s of %s was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing.", task, issue)}
+		"%s; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing.", stoppedSentence(issue, task, reason))}
+}
+
+// stoppedSentence is the sentence that says why task of issue was stopped, from reason, the stop
+// reason the task stores: the reason itself where it names the task already, as an owner's stop
+// does, and otherwise that the task was stopped for it, as a failed step's stop does.
+func stoppedSentence(issue, task, reason string) string {
+	if strings.HasPrefix(reason, fmt.Sprintf("task %s of %s ", task, issue)) {
+		return reason
+	}
+	return fmt.Sprintf("task %s of %s was stopped: %s", task, issue, reason)
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
@@ -1954,17 +1967,13 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // LateReportOfStoppedTask is the 409 TASK_STOPPED refusal of a report of step, run by role, of task
 // of issue, which was stopped at that step for reason, the stop reason the task stores
 // (record.PlanTask.StoppedReason): the stop ended the step's run, and the report moves nothing
-// (workflow's lateReport). Its first sentence is the stored reason where that names the task
-// already, as an owner's stop does, and otherwise says the task was stopped for it. The task's row
+// (workflow's lateReport). Its first sentence is the stored reason (stoppedSentence). The task's row
 // holds no stop time, so the text names none, and it names no result, because the daemon holds no
 // record of how that run ended: the step record in Dispatch does (dispatch steps). Where the report
 // names a handoff record (named), the workflow keeps it as the role's last one, so the step's next
 // run is refused that record (HANDOFF_NOT_NEW), and the text says so.
 func LateReportOfStoppedTask(issue, task, reason string, step int, role string, named bool) *Refusal {
-	why := reason
-	if !strings.HasPrefix(reason, fmt.Sprintf("task %s of %s ", task, issue)) {
-		why = fmt.Sprintf("task %s of %s was stopped: %s", task, issue, reason)
-	}
+	why := stoppedSentence(issue, task, reason)
 	end := fmt.Sprintf("This report moved nothing. dispatch steps --issue %s shows how that run ended.", issue)
 	if named {
 		end += " Its handoff record counts as used, so the next run of this step writes a handoff of its own."

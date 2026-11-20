@@ -39,6 +39,9 @@ type Walk struct {
 	// plan rows, whose place is the issue's phase alone.
 	State string
 	Place record.TaskPlace
+	// StoppedReason is why a stopped task was stopped (record.PlanTask.StoppedReason), by its owner
+	// or by a failed step; "" for a task that is not stopped.
+	StoppedReason string
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
@@ -82,7 +85,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
-		Version: stored.Version}, nil
+		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs

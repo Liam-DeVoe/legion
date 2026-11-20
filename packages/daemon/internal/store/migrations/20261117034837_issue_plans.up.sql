@@ -19,7 +19,8 @@
 -- read as no step.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
--- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
+-- this header, its last paragraph (migrations.WayBack), run with every project's daemon on that
+-- database stopped, since it drops tables each WriteIssue of this release reads, before the
 -- earlier image is pinned, with <PROJECT> the key of the project whose daemon rolls back.
 -- docs/kubernetes.md carries the same block under "Rolling back the release whose owner's plan
 -- picks the steps": internal/textcheck's TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide
