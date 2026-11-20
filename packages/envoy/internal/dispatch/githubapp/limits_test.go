@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,8 +28,8 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // limitGitHub is a GitHub App API that records every request it is sent ("METHOD path
 // Authorization"): one repository (acme/web) and the installation covering it, token mints, the
 // App's installation list, and any other path answered as a read. A request to limitPath is
-// answered as GitHub answers an exhausted rate limit: 403, X-RateLimit-Remaining: 0 and a
-// Retry-After of a minute.
+// answered as GitHub answers an exhausted rate limit: 403, X-RateLimit-Remaining: 0 and the
+// Retry-After retryAfter holds, a minute (limit) unless a test names another (limitWith).
 type limitGitHub struct {
 	server *httptest.Server
 
@@ -36,6 +37,7 @@ type limitGitHub struct {
 	installationID int64
 	mints          int
 	limitPath      string
+	retryAfter     string
 	requests       []string
 	// mintsAwaited and mintsArrived, set by holdMints, hold each mint's answer until that many
 	// mints have arrived.
@@ -73,6 +75,7 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 	limited := r.URL.Path == f.limitPath
+	retryAfter := f.retryAfter
 	installationID := f.installationID
 	var held chan struct{}
 	if !limited && strings.HasSuffix(r.URL.Path, "/access_tokens") {
@@ -97,7 +100,7 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if limited {
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Retry-After", retryAfter)
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 		return
@@ -124,11 +127,16 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// limit makes every later request to path answer an exhausted rate limit; "" stops it.
-func (f *limitGitHub) limit(path string) {
+// limit makes every later request to path answer an exhausted rate limit with a Retry-After of a
+// minute; "" stops it.
+func (f *limitGitHub) limit(path string) { f.limitWith(path, "60") }
+
+// limitWith is limit with retryAfter as the answer's Retry-After: "0" is GitHub naming no wait.
+func (f *limitGitHub) limitWith(path, retryAfter string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.limitPath = path
+	f.retryAfter = retryAfter
 }
 
 // holdMints holds each later mint's answer until n mints have arrived, so n callers that each
@@ -1023,6 +1031,131 @@ func TestALimitIsRecordedBehindALedgerThatAnswersLate(t *testing.T) {
 				t.Fatalf("A's limited request: err = %v, want GitHub's own answer as a *RateLimitError", err)
 			}
 			requireHeld(t, path.held(ctx, b, tokenB), "B's request once A's limit was recorded behind the stall")
+		})
+	}
+}
+
+// askedLimits is the shared ledger with every write the client asks of it kept, as "Record
+// <scope>" or "Strike <scope>", and then passed on to the real ledger as it was asked.
+type askedLimits struct {
+	Limits
+	mu     sync.Mutex
+	writes []string
+}
+
+func (l *askedLimits) Record(ctx context.Context, scope string, wait time.Duration) error {
+	l.keep("Record " + scope)
+	return l.Limits.Record(ctx, scope, wait)
+}
+
+func (l *askedLimits) Strike(ctx context.Context, scope string, wait time.Duration) (ratelimit.Limit, error) {
+	l.keep("Strike " + scope)
+	return l.Limits.Strike(ctx, scope, wait)
+}
+
+func (l *askedLimits) keep(write string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.writes = append(l.writes, write)
+}
+
+// asked is every write the client has asked of the ledger, in order.
+func (l *askedLimits) asked() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.writes)
+}
+
+// A rate limit GitHub names no wait for -- a Retry-After of 0, or a reset already past -- holds
+// nothing, so the client writes nothing of it to the ledger every process shares (request,
+// recordGraphQLLimit): github_rate_limits has no row under its scope, and the client asks the
+// ledger for no write. The second is what sees the client's choice: a write of no wait would be
+// given no time (limitRecordContext), so the ledger would refuse it and leave no row either. Each
+// path that records the wait GitHub named is here: a REST call's limit (a token mint, under
+// AppScope) and a query's primary limit (under GraphQLScope). A query's secondary limit is struck
+// for at least ratelimit.LeastStrike whatever wait GitHub names, so it is recorded either way.
+// The same answer naming a wait is the test's control: the client asks for the one write under
+// the scope, and the row it lands holds the limit in force.
+func TestALimitGitHubNamesNoWaitForIsNotRecorded(t *testing.T) {
+	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	budgetSpent := func(reset time.Time) func(fake *limitGitHub) {
+		return func(fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10)}, body: primary})
+		}
+	}
+	mint := func(ctx context.Context, client *Client, _ string) error {
+		_, err := client.Token(ctx, 9)
+		return err
+	}
+	query := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.GraphQL(ctx, token, "query { viewer { login } }", nil)
+		return err
+	}
+	for _, shape := range []struct {
+		name    string
+		scope   string
+		arrange func(fake *limitGitHub)
+		meet    func(ctx context.Context, client *Client, token string) error
+		// waits is whether GitHub's answer names a wait, so the limit is recorded.
+		waits bool
+	}{{
+		name:    "a REST call's limit with a Retry-After of 0",
+		scope:   AppScope,
+		arrange: func(fake *limitGitHub) { fake.limitWith("/app/installations/9/access_tokens", "0") },
+		meet:    mint,
+	}, {
+		name:    "a REST call's limit with a Retry-After of a minute",
+		scope:   AppScope,
+		arrange: func(fake *limitGitHub) { fake.limit("/app/installations/9/access_tokens") },
+		meet:    mint,
+		waits:   true,
+	}, {
+		name:    "a query's primary limit whose reset has passed",
+		scope:   GraphQLScope,
+		arrange: budgetSpent(time.Now().Add(-time.Minute)),
+		meet:    query,
+	}, {
+		name:    "a query's primary limit whose reset is ahead",
+		scope:   GraphQLScope,
+		arrange: budgetSpent(time.Now().Add(90 * time.Second)),
+		meet:    query,
+		waits:   true,
+	}} {
+		t.Run(shape.name, func(t *testing.T) {
+			ctx, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
+			fake := startLimitGitHub(t)
+			database := storetest.Open(t)
+			ledger := &askedLimits{Limits: ratelimit.New(database.Pool)}
+			client := fake.newClient(t, WithLimits(ledger))
+			token, err := client.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("the token: %v", err)
+			}
+			shape.arrange(fake)
+			err = shape.meet(ctx, client, token)
+			if limited, ok := AsRateLimit(err); !ok || limited.Held || (limited.Wait > 0) != shape.waits {
+				t.Fatalf("the limited request: err = %v, want GitHub's own answer as a *RateLimitError (a wait named: %v)", err, shape.waits)
+			}
+
+			var want []string
+			if shape.waits {
+				want = []string{"Record " + shape.scope}
+			}
+			if got := ledger.asked(); !slices.Equal(got, want) {
+				t.Errorf("the client asked the ledger for the writes %q, want %q", got, want)
+			}
+			recorded, found, err := ratelimit.New(database.Pool).Get(ctx, shape.scope)
+			if err != nil {
+				t.Fatalf("read github_rate_limits under %s: %v", shape.scope, err)
+			}
+			if shape.waits && (!found || recorded.Wait <= 0) {
+				t.Errorf("github_rate_limits holds no limit in force under %s (row %v, %s left) for a limit GitHub named a wait for", shape.scope, found, recorded.Wait)
+			}
+			if !shape.waits && found {
+				t.Errorf("github_rate_limits holds a row under %s, until %s, for a limit GitHub named no wait for: such a limit holds nothing, and is not written",
+					shape.scope, recorded.Until)
+			}
 		})
 	}
 }
