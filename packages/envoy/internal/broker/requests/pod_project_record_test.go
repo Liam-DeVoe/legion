@@ -20,8 +20,8 @@ import (
 // for a session that named PRIV: "A private project's request is decided, listed and shown on the
 // approval page only to a person who can see the project". Two requests of PRIV's pod: an
 // untagged shared human-tier secret whose reason names no issue key (its reason is PRIV's text),
-// and PRIV_HUMAN. For each, an outsider's pending list leaves it out, MaySee is false for the
-// outsider and true for a person on PRIV's list, the record names PRIV among the projects its
+// and PRIV_HUMAN. For each, an outsider's pending list leaves it out, HideUnseen hides it from the
+// outsider and shows it to a person on PRIV's list, the record names PRIV among the projects its
 // session names (the approval page prints "which the session does not name" from that list), and
 // the outsider's approval is refused pgx.ErrNoRows alone, as an id no record has.
 //
@@ -75,11 +75,11 @@ func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *tes
 		if !slices.Contains(detail.SessionProjects, privProject) {
 			t.Errorf("the record of PRIV's pod's request for %s names the session's projects %v; want PRIV, which its exchange entry names", what, detail.SessionProjects)
 		}
-		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
-			t.Errorf("MaySee(%s, PRIV's pod's request for %s) = %v, %v; want false", outsider, what, may, err)
+		if err := m.HideUnseen(t.Context(), id, outsider); !errors.Is(err, pgx.ErrNoRows) {
+			t.Errorf("HideUnseen(PRIV's pod's request for %s, %s) = %v; want pgx.ErrNoRows", what, outsider, err)
 		}
-		if may, err := m.MaySee(t.Context(), insider, detail); err != nil || !may {
-			t.Errorf("MaySee(%s, PRIV's pod's request for %s) = %v, %v; want true", insider, what, may, err)
+		if err := m.HideUnseen(t.Context(), id, insider); err != nil {
+			t.Errorf("HideUnseen(PRIV's pod's request for %s, %s) = %v; want nil", what, insider, err)
 		}
 	}
 	if decision, err := m.ApplyDecision(t.Context(), *plain.RecordID, true, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {

@@ -264,8 +264,8 @@ func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
 
 // TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay: a request for a shared secret
 // is listed for the person responsible for the agent that made it (responsiblePerson), and a
-// private project's request for nobody outside the project (MaySee). Where the responsible person
-// is outside the project, the request is listed for everyone who may see it instead
+// private project's request for nobody outside the project (maySeeRecord). Where the responsible
+// person is outside the project, the request is listed for everyone who may see it instead
 // (listedInStead), so it waits where somebody sees it:
 //   - an outsider's own session asks with a reason naming a PRIV issue: the two people on PRIV's
 //     list, the insider and the fixture's operator, list it, and the outsider does not;

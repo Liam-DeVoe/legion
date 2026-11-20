@@ -1,10 +1,15 @@
 package requests
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 )
 
 // TestEveryReaderReadsTheProjectsOfBothCredentials is round 6's m-d and m-f on
@@ -41,39 +46,49 @@ func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 		if err != nil || !slices.Contains(detail.SessionProjects, privProject) {
 			t.Fatalf("ReadRecord = %+v, %v; want its session projects to name PRIV", detail.SessionProjects, err)
 		}
-		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
-			t.Errorf("MaySee(%s, the moved request) = %v, %v; want false: the page hides it, so it offers no Approve the decision refuses", outsider, may, err)
+		if err := m.HideUnseen(t.Context(), *req.RecordID, outsider); !errors.Is(err, pgx.ErrNoRows) {
+			t.Errorf("HideUnseen(the moved request, %s) = %v; want pgx.ErrNoRows: the page hides it, so it offers no Approve the decision refuses", outsider, err)
 		}
-		if may, err := m.MaySee(t.Context(), insider, detail); err != nil || !may {
-			t.Errorf("MaySee(%s, the moved request) = %v, %v; want true", insider, may, err)
+		if err := m.HideUnseen(t.Context(), *req.RecordID, insider); err != nil {
+			t.Errorf("HideUnseen(the moved request, %s) = %v; want nil", insider, err)
 		}
 	})
 
 	t.Run("a grant whose asking credential names PRIV", func(t *testing.T) {
-		m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "rotate the shared key", "SHARED_KEY"), "", nil)
-		if err != nil || req.RecordID == nil {
-			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending for anyone to decide", req, err)
+		// The model judge approves SHARED_KEY on a pod of the fixture's service in anyone's stead,
+		// so the grant names no approver and no operator and every signed-in person's list reads
+		// it, and its record names the pod that asked. A grant's own approver and operator list it
+		// whatever project it touches (namedOnGrant), so their lists could not show this.
+		m, _, _ := newJudgeFixture(t)
+		pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-asking-"+t.Name())
+		grantID := judgedGrant(t, m, pod, podKey, 600, "SHARED_KEY")
+		// An adoption moves the grant and its request to a pod of another account, one no
+		// operator's entry maps to a project; the record keeps the pod that asked.
+		second, _ := newServiceEnrollment(t, m.Store, fixtureService, "system:serviceaccount:example:moved", "pod-g-moved-"+t.Name())
+		if _, err := m.Store.Pool.Exec(t.Context(), `with moved as (update grants set enrollment_id=$2 where id=$1 returning request_id)
+			update requests set enrollment_id=$2 where id=(select request_id from moved)`, grantID, second); err != nil {
+			t.Fatalf("move the grant and its request: %v", err)
 		}
-		dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, outsider)
-		if err != nil || dec.State != "granted" {
-			t.Fatalf("%s's approval = %+v, %v; want it granted: nothing names a private project yet", outsider, dec, err)
+		answerFrom(t, m, map[string]projectaccesstest.Row{
+			"INFRA":     {Visibility: "public", Owner: otherPerson},
+			privProject: {Visibility: "private", Owner: otherPerson, Listed: []string{insider}},
+		})
+		if listed := approverGrants(t, m, outsider); !slices.Contains(listed, grantID) {
+			t.Fatalf("GrantsForApprover(%s) after the move = %v; want the judged grant, which names no private project", outsider, listed)
 		}
-		second, _ := newEnrollment(t, m.Store, "session", "box-g-"+t.Name(), new(fixtureOperator), nil)
-		for _, move := range []string{`update requests set enrollment_id=$2 where id=$1`, `update grants set enrollment_id=$2 where request_id=$1`} {
-			if _, err := m.Store.Pool.Exec(t.Context(), move, req.ID, second); err != nil {
-				t.Fatalf("move the request and its grant: %v", err)
-			}
-		}
-		if listed := approverGrants(t, m, outsider); !slices.Contains(listed, dec.GrantID) {
-			t.Fatalf("GrantsForApprover(%s) after the move = %v; want the grant they approved", outsider, listed)
-		}
-		// The asking credential's list is written here directly, standing in for any way the
+		// The asking pod's account is mapped to PRIV here directly, standing in for any way the
 		// projects of the two credentials come to differ.
-		nameProjects(t, m, enr, privProject)
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
+		if err != nil {
+			t.Fatalf("exchange.NewSet: %v", err)
+		}
+		m.Exchange = set
 
-		if listed := approverGrants(t, m, outsider); slices.Contains(listed, dec.GrantID) {
+		if listed := approverGrants(t, m, outsider); slices.Contains(listed, grantID) {
 			t.Errorf("GrantsForApprover(%s) = %v; want the grant hidden: the credential that asked names PRIV", outsider, listed)
+		}
+		if listed := approverGrants(t, m, insider); !slices.Contains(listed, grantID) {
+			t.Errorf("GrantsForApprover(%s) = %v; want the grant: PRIV lists them", insider, listed)
 		}
 	})
 }

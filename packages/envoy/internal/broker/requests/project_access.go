@@ -27,10 +27,11 @@ import (
 // ErrProjectAccessUnavailable is a request, release, decision or airlock connection that holds a
 // secret tagged with a project the broker could not ask Dispatch about: its project-access client
 // failed, or the broker holds none. Nothing is released; the session asks again once Dispatch
-// answers. A request or release of a secret with no tag never meets it. A person's decision meets
-// it too when Dispatch cannot say whether that person may see the record (MaySee, which reads the
-// projects its reason's issue keys name): nothing is decided and the request stays pending. An
-// approver's list never fails with it; it leaves that one row out (logRowUnanswered).
+// answers. A request or release of a secret with no tag never meets it. A person's decision, and a
+// route that names a record or grant for a person, meet it too when Dispatch cannot say whether
+// that person may see the row (maySeeRecord, which reads the projects its reason's issue keys
+// name): nothing is decided or written and the request stays pending. An approver's list never
+// fails with it; it leaves that one row out (logRowUnanswered).
 var ErrProjectAccessUnavailable = errors.New("the broker could not ask Dispatch about the project of a requested secret")
 
 // errProjectNotNamed is stillAllowed's refusal of a granted name whose private project the
@@ -479,8 +480,8 @@ type SecretProject struct {
 // secretProjects answers the project of each of names the live policy tags with one, in names'
 // order, and when the oldest answer of Dispatch's the list rests on was asked; a name of no
 // project is left out, and a set of names none of which is tagged asks Dispatch nothing. It
-// decides nothing itself: a reader that decides on the list (MaySee, maySeeRecord) holds the
-// list's age and its own reads' to atDecision's bound together.
+// decides nothing itself: a reader that decides on the list (maySeeRecord, hideFromSession) holds
+// the list's age and its own reads' to atDecision's bound together.
 func (m *Machine) secretProjects(ctx context.Context, names []string) ([]SecretProject, time.Time, error) {
 	set := m.Policy.Get()
 	tagged := taggedProjects(set, names)
@@ -544,33 +545,6 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 	return !may, nil
 }
 
-// MaySee reports whether login may see rec: every private project among its tagged secrets
-// (rec.SecretProjects), the projects its session names (rec.SessionProjects), and the project of
-// every Dispatch issue key its signed reason names. A person outside one of them may neither read
-// the record nor decide it, since its names and its reason are that project's. A project Dispatch
-// does not hold hides nothing, so a word of a key's form that is no project ("SHA-256") hides
-// nothing and hides no key after it. A record touching no project asks Dispatch nothing, and a
-// broker with no project-access client hides nothing, since it serves no tagged secret and
-// enrolls no session naming a project. An error is ErrProjectAccessUnavailable: whether login may
-// see rec is unknown, and a caller shows rec to nobody until Dispatch answers.
-//
-// rec.SecretProjects were read when rec was (ReadRecord), and age while the person rule's own
-// questions are asked, so the two are held to atDecision's bound together: a list that aged past
-// it is read again, afresh, with the person rule's questions.
-func (m *Machine) MaySee(ctx context.Context, login string, rec RecordDetail) (bool, error) {
-	return atDecision(ctx, m.Projects, func(ctx context.Context, again bool) (bool, time.Time, error) {
-		secrets, asked := rec.SecretProjects, rec.secretProjectsAsked
-		if again && rec.Kind == record.KindAgentSecret {
-			var err error
-			if secrets, asked, err = m.secretProjects(ctx, rec.Identifiers); err != nil {
-				return false, time.Time{}, err
-			}
-		}
-		may, seen, err := m.maySee(ctx, "record "+rec.RecordID, login, append(privateProjects(secrets), rec.SessionProjects...), rec.Reason)
-		return may, projectaccess.Oldest(asked, seen), err
-	})
-}
-
 // privateProjects is the project of each of secrets that belongs to a private project.
 func privateProjects(secrets []SecretProject) []string {
 	var projects []string
@@ -622,12 +596,13 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 	return marked
 }
 
-// maySee is MaySee over the record's parts: candidate projects and the reason, the project of each
-// of whose issue keys (record.ReasonProjects) joins them. It is the one statement of whose request
-// this is, for a person (MaySee, mayDecide, maySeeRecord) and for the model judge, which asks it
-// with no person (judgeMayDecide). A word of a key's form that is no project ("SHA-256") joins them
-// too, and Dispatch answers it as no project, which hides nothing. It sorts a list of its own: the
-// caller's may be an enrollment's or an operator entry's, which nothing here owns.
+// maySee is the person rule over a row's parts: candidate projects and the reason, the project of
+// each of whose issue keys (reasonProjects) joins them. It is the one statement of whose request
+// this is, for a person (mayDecide, maySeeRecord), for a session (hideFromSession) and for the
+// model judge, which asks it with no person (judgeMayDecide). A word of a key's form that is no
+// project ("SHA-256") joins them too, and Dispatch answers it as no project, which hides nothing.
+// It sorts a list of its own: the caller's may be an enrollment's or an operator entry's, which
+// nothing here owns.
 //
 // It answers beside a true when the oldest answer of Dispatch's it rests on was asked: every
 // project shown, and every key Dispatch answered no project for. A false rests on one answer that
@@ -708,9 +683,9 @@ func (m *Machine) credentialsProjects(asked, current enrollmentRow) []string {
 	return projects
 }
 
-// mayDecide is the approve path's MaySee, read before its transaction: the record's tagged
-// secrets under set, the projects the credential that asked names (namedProjects), and its
-// reason. It answers maySee's time beside its answer.
+// mayDecide is the approve path's person rule (maySee), read before its transaction: the record's
+// tagged secrets under set, the projects the credentials it has had name (credentialsProjects),
+// and its reason. It answers maySee's time beside its answer.
 func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
 	var projects []string
 	for project, state := range facts.states {
@@ -782,9 +757,17 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	return projectFacts{}, pgx.ErrNoRows
 }
 
-// maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the
-// enrollment that asked, and the reason. A row touching no project asks Dispatch nothing. The
-// names' projects and the person rule's reads are one decision, held to atDecision's bound.
+// maySeeRecord is the person rule over a record or a grant for login: every private project among
+// the tagged secrets its names carry under the live policy, the projects its credentials name
+// (sessionProjects), and the project of every Dispatch issue key its reason names. A person
+// outside one of them may neither read the row nor decide it, since its names and its reason are
+// that project's. A project Dispatch does not hold hides nothing, so a word of a key's form that is
+// no project ("SHA-256") hides nothing and hides no key after it. A row touching no project asks
+// Dispatch nothing, and a broker with no project-access client hides nothing, since it serves no
+// tagged secret and enrolls no session naming a project. An error is ErrProjectAccessUnavailable:
+// whether login may see the row is unknown, and a caller shows it to nobody until Dispatch answers.
+// HideUnseen, hideUnseenGrant and both approver lists read it. The names' projects and the person
+// rule's reads are one decision, held to atDecision's bound.
 func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, sessionProjects []string, reason string) (bool, error) {
 	return atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
 		secrets, asked, err := m.secretProjects(ctx, names)

@@ -148,7 +148,7 @@ type Requests interface {
 	// (policy.TagProject) names a private project or a key Dispatch holds no project for, or the
 	// credential that asked names a private project (a session's list, or the project a pod's
 	// operator entry maps it to), or any issue key the reason names is a private project's. Those
-	// are the private projects the person rule reads too (requests.Machine.MaySee), so the judge
+	// are the private projects the person rule reads too (requests.Machine.HideUnseen), so the judge
 	// decides no request that rule hides from a full member. The rule is about private projects
 	// alone: a restricted member, who sees only the projects that list them, may still be unable to
 	// see a public project's request the judge decided. A request whose secret carries no tag,

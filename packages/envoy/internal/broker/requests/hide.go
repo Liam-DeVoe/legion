@@ -2,12 +2,12 @@
 // hide.go is the private-project rule (dispatch://INFRA-3862) that every route taking a record,
 // request or grant id from a caller reads before it answers anything else of the row: the person
 // rule, for a person Dispatch's server relays or a person's own machine login (HideUnseen,
-// hideUnseenGrant), and the session rule, for a session's own routes (HideRequestFromSession,
-// hideGrantFromSession). Each answers a row it hides exactly as an id no row has, pgx.ErrNoRows,
-// and a row Dispatch could not answer for ErrProjectAccessUnavailable, which the route answers 503
-// having written nothing. What the rule reads of a row comes of one statement (readRowFacts), keyed
-// by the row it starts from, so a column the rule reads is read for every route that judges a row,
-// and for the approve path's decision (decisionFacts) too.
+// ReadRecordFor, hideUnseenGrant), and the session rule, for a session's own routes
+// (HideRequestFromSession, hideGrantFromSession). Each answers a row it hides exactly as an id no
+// row has, pgx.ErrNoRows, and a row Dispatch could not answer for ErrProjectAccessUnavailable,
+// which the route answers 503 having written nothing. What the rule reads of a row comes of one
+// statement (readRowFacts), keyed by the row it starts from, so a column the rule reads is read
+// for every route that judges a row, and for the approve path's decision (decisionFacts) too.
 package requests
 
 import (
@@ -23,13 +23,15 @@ import (
 
 // rowFacts is what a private-project rule reads of a record, a request or a grant (readRowFacts):
 // the record's kind, empty for a request the policy answered at once and so wrote no record; the
-// enrollment that holds the row now (holder), which an adoption rewrites, with its launcher
-// credential's service, as the approve path's evaluation reads it; the names the row asks for, or,
-// for a grant and a decision, the names it releases; the projects of both credentials its request
-// has had (credentialsProjects), the one that asked, which its record names, and the one it hangs
-// off now; and its request's signed reason.
+// person the row names as its approver, nil for none; the enrollment that holds the row now
+// (holder), which an adoption rewrites, with its operator and its launcher credential's service, as
+// RevokeByApprover and the approve path's evaluation read it; the names the row asks for, or, for a
+// grant and a decision, the names it releases; the projects of both credentials its request has
+// had (credentialsProjects), the one that asked, which its record names, and the one it hangs off
+// now; and its request's signed reason.
 type rowFacts struct {
 	kind            string
+	approver        *string
 	holder          enrollmentRow
 	names           []string
 	sessionProjects []string
@@ -37,29 +39,31 @@ type rowFacts struct {
 }
 
 // rowKey is which row a read of rowFacts starts from, and how it reaches the rest: from joins the
-// request (r) and its record (cr), held is the column naming the enrollment that holds the row now,
-// where names the row by $1, and released leaves out each name the request was denied.
+// request (r) and its record (cr), approver is the column naming the row's approver, held the
+// column naming the enrollment that holds the row now, where names the row by $1, and released
+// leaves out each name the request was denied.
 type rowKey struct {
-	from, held, where string
-	released          bool
+	from, approver, held, where string
+	released                    bool
 }
 
 var (
 	// recordKey is a credential-request record by its id, as HideUnseen reads it. A machine
 	// login's record has no request, and answers its kind and nothing else of one.
-	recordKey = rowKey{from: `credential_requests cr left join requests r on r.record_id = cr.id`, held: `r.enrollment_id`, where: `cr.id = $1`}
+	recordKey = rowKey{from: `credential_requests cr left join requests r on r.record_id = cr.id`, approver: `cr.approver`, held: `r.enrollment_id`, where: `cr.id = $1`}
 	// requestKey is a request by its id, with every name it asked for, as HideRequestFromSession
 	// reads it. A request the policy answered at once has no record, so its only credential is the
-	// one it hangs off.
-	requestKey = rowKey{from: `requests r left join credential_requests cr on cr.id = r.record_id`, held: `r.enrollment_id`, where: `r.id = $1`}
+	// one it hangs off, and it names no approver.
+	requestKey = rowKey{from: `requests r left join credential_requests cr on cr.id = r.record_id`, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.id = $1`}
 	// grantKey is a grant by its id, as GrantsForApprover lists it: its names are the ones it
-	// releases, so a name its request was denied is left out, and the enrollment that holds it is
-	// the one the grants row names.
-	grantKey = rowKey{from: `grants g join requests r on r.id = g.request_id left join credential_requests cr on cr.id = r.record_id`, held: `g.enrollment_id`, where: `g.id = $1`, released: true}
+	// releases, so a name its request was denied is left out; its approver is the grant's own,
+	// record.AnyoneApprover where the model judge approved it in anyone's stead, as mayRevoke reads
+	// it; and the enrollment that holds it is the one the grants row names.
+	grantKey = rowKey{from: `grants g join requests r on r.id = g.request_id left join credential_requests cr on cr.id = r.record_id`, approver: `g.approver`, held: `g.enrollment_id`, where: `g.id = $1`, released: true}
 	// decisionKey is the request a record id names, as the approve path reads it before its
 	// transaction (applyDecisionAttempt): a record with no request is decided elsewhere, and the
 	// names are the ones a grant of the request would release.
-	decisionKey = rowKey{from: requestKey.from, held: `r.enrollment_id`, where: `r.record_id = $1`, released: true}
+	decisionKey = rowKey{from: requestKey.from, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.record_id = $1`, released: true}
 )
 
 // readRowFacts is the rowFacts of the row key names by id, read on the pool in one statement, or
@@ -71,7 +75,7 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 	}
 	var f rowFacts
 	var asked enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select coalesce(cr.kind, ''), coalesce(`+key.held+`::text, ''), coalesce(r.reason, ''),
+	err := m.Store.Pool.QueryRow(ctx, `select coalesce(cr.kind, ''), `+key.approver+`, coalesce(`+key.held+`::text, ''), coalesce(r.reason, ''),
 			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where `+names+`), '{}'),
 			`+credentialColumns+`, `+currentCredentialColumns+`, c.service
 		from `+key.from+`
@@ -79,7 +83,7 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 		left join enrollments cur on cur.id = `+key.held+`
 		left join launcher_credentials c on c.id = cur.launcher_credential_id
 		where `+key.where, id).
-		Scan(&f.kind, &f.holder.ID, &f.reason, &f.names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+		Scan(&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
 			&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Projects, &f.holder.Service)
 	if err != nil {
 		return rowFacts{}, err
@@ -97,9 +101,10 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 // project and asks Dispatch nothing, as the pending list shows it (PendingForApprover). Every route
 // that takes a record id from a caller calls it before it answers anything else of the record, and
 // a write before its transaction, since it may ask Dispatch: the dismissal (Dismiss), the two
-// decide routes for a secret request (api.decideRecord) and the approval page, for the record it
-// prints and for each record an outcome line names (approval.Page). The approval page's decision
-// is ApplyDecision's own, whose person rule (decisionFacts) answers the same pgx.ErrNoRows.
+// decide routes for a secret request (api.decideRecord), and the approval page through
+// ReadRecordFor, for the record it prints and for each record an outcome line names
+// (approval.Page). The approval page's decision is ApplyDecision's own, whose person rule
+// (decisionFacts) answers the same pgx.ErrNoRows.
 //
 // It reads what the rule asks of the record from the rows Create wrote beside it (recordKey) —
 // every name the request asked for, its signed reason, and the projects of the credentials it has
@@ -113,6 +118,21 @@ func (m *Machine) HideUnseen(ctx context.Context, recordID, login string) error 
 		return err
 	}
 	return m.hideUnseenRow(ctx, "record "+recordID, login, facts)
+}
+
+// ReadRecordFor is ReadRecord for login, a person: the record once the person rule shows it to
+// them (HideUnseen), and HideUnseen's own answer otherwise — pgx.ErrNoRows for a record they may
+// not see, as for an id no record has, and ErrProjectAccessUnavailable when Dispatch could not say
+// — with nothing of the record read. It is the one read of a record for a person, so the approval
+// page cannot print a record without the rule having shown it: the record it names and each record
+// an outcome line names. The rule is read from the record's rows before ReadRecord verifies its
+// signed request, so a record signed for another broker address answers a person it hides from
+// pgx.ErrNoRows too, not ReadRecord's error.
+func (m *Machine) ReadRecordFor(ctx context.Context, recordID, login string) (RecordDetail, error) {
+	if err := m.HideUnseen(ctx, recordID, login); err != nil {
+		return RecordDetail{}, err
+	}
+	return m.ReadRecord(ctx, recordID)
 }
 
 // hideUnseenRow is pgx.ErrNoRows for a row login may not see (maySeeRecord: its names under the
@@ -136,14 +156,23 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 }
 
 // hideUnseenGrant is the person rule over grant grantID for login, read on the pool before
-// RevokeByApprover's transaction, since it may ask Dispatch: pgx.ErrNoRows for an id no grant has
-// and for a grant login may not see, ErrProjectAccessUnavailable when Dispatch could not say, and
-// nil for a grant login may see (hideUnseenRow). It reads the grant as GrantsForApprover lists it
-// (grantKey), so a person revokes exactly the grants their own list may show them.
+// RevokeByApprover's transaction, since it may ask Dispatch. A person the grant names — its
+// approver or the operator of the enrollment that holds it, the people mayRevoke allows by name
+// (namedOnGrant) — is answered nil and asks Dispatch nothing, as the session that holds a row is
+// answered nil by the session rule: the grant row names them, so they already know it exists, and
+// a revoke only takes access away, so neither a Dispatch outage nor their leaving the grant's
+// project keeps them from ending it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows
+// for an id no grant has and for a grant they may not see, ErrProjectAccessUnavailable when
+// Dispatch could not say, and nil for a grant they may see, which mayRevoke then lets them end
+// only where its approver is record.AnyoneApprover. It reads the grant as GrantsForApprover lists
+// it (grantKey), so such a person revokes exactly the grants their own list may show them.
 func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
 	facts, err := m.readRowFacts(ctx, grantKey, grantID)
 	if err != nil {
 		return err
+	}
+	if named, _ := namedOnGrant(login, facts.approver, facts.holder.Operator); named {
+		return nil
 	}
 	return m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
 }

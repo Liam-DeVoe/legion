@@ -156,9 +156,9 @@ type pageView struct {
 // and showing nothing else of it (unansweredView), and the outcome lines and the other pending
 // requests print as ever. Its sign-in as someone else names no login_hint, since the approver is
 // part of what it does not show; a record the person may not see answers 404 before it, as an id
-// no record has. Whether the person may see the record is read first, from its rows
-// (requests.Machine.HideUnseen), and the record only after: so a record signed for another broker
-// address, which this broker cannot read, answers a person it hides from 404 too.
+// no record has. The record is read for the person (requests.Machine.ReadRecordFor), which reads
+// whether they may see it from its rows first and the record only after: so a record signed for
+// another broker address, which this broker cannot read, answers a person it hides from 404 too.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
@@ -170,11 +170,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		p.beginSignIn(w, r, id, "", switching)
 		return
 	}
-	err := p.cfg.Machine.HideUnseen(r.Context(), id, sess.Login)
-	var detail requests.RecordDetail
-	if err == nil {
-		detail, err = p.cfg.Machine.ReadRecord(r.Context(), id)
-	}
+	detail, err := p.cfg.Machine.ReadRecordFor(r.Context(), id, sess.Login)
 	unanswered := errors.Is(err, requests.ErrProjectAccessUnavailable)
 	switch {
 	case unanswered:
@@ -341,7 +337,7 @@ func approverText(approver string) string {
 // outcomes is one line for each record id the comma-separated decided names, at most maxRecords
 // of them, each said from the broker's own record now and never from the URL: an id that is not a
 // record id, or names no record, gets none, and nor does a record of a private project login may
-// not see (requests.Machine.HideUnseen), whose line would print its secrets' names. read is the
+// not see (requests.Machine.ReadRecordFor), whose line would print its secrets' names. read is the
 // record the page has just read, which a decision's own page always names, so it is not read
 // again; readUnanswered says Dispatch could not say whether login may see it. A record Dispatch
 // could not answer for gets the line that it is unavailable, naming its id and nothing it holds
@@ -373,10 +369,8 @@ func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now
 		}
 		d := read
 		if id != read.RecordID {
-			err := p.cfg.Machine.HideUnseen(ctx, id, login)
-			if err == nil {
-				d, err = p.cfg.Machine.ReadRecord(ctx, id)
-			}
+			var err error
+			d, err = p.cfg.Machine.ReadRecordFor(ctx, id, login)
 			switch {
 			case errors.Is(err, requests.ErrProjectAccessUnavailable):
 				lines = append(lines, unansweredOutcome(id))
@@ -577,7 +571,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // on picks among these sentences and writes none of its own. A record the decision left pending
 // reads one of them in place of "still pending; it was not decided.". Two refusals need no code: a
 // record a private project refused the person is hidden from them on the page they land on, as an
-// id no record has (requests.Machine.HideUnseen), and one Dispatch could not answer for prints its
+// id no record has (requests.Machine.ReadRecordFor), and one Dispatch could not answer for prints its
 // own line (unansweredOutcome).
 var refusalSentences = map[string]string{
 	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",

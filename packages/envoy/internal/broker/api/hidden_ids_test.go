@@ -4,11 +4,11 @@
 // here, one whose reason names an issue of the private project PRIV) exactly as they answer an
 // id nothing has, the same status, code and body, and write nothing; while Dispatch cannot say
 // whether the person may see it, they answer 503 PROJECT_ACCESS_UNAVAILABLE and write nothing. A
-// person on PRIV's list gets what they got before.
+// person on PRIV's list gets what they got before, and so does a person a grant names as its
+// approver or its session's operator, whatever Dispatch answers.
 package api_test
 
 import (
-	"encoding/json"
 	"maps"
 	"net/http"
 	"slices"
@@ -30,7 +30,7 @@ const (
 	// hiddenInsider is on PRIV's list, and approves and operates nothing here.
 	hiddenInsider = "carol@example.com"
 	// privReason names an issue of PRIV, so a request signed with it is PRIV's to everyone the
-	// person rule is read for (requests.Machine.MaySee).
+	// person rule is read for (requests.Machine.HideUnseen).
 	privReason = "PRIV-12: rotate the deploy key"
 	// elsewhere is a broker address other than the test server's.
 	elsewhere = "https://the-old-public-url.example"
@@ -117,22 +117,6 @@ func (ts *testServer) relayed(t *testing.T, method, path, raw string) *http.Requ
 		map[string]string{"Authorization": "Bearer " + ts.uiToken, "Content-Type": "application/json"})
 }
 
-// answerOf is status and body as readAnswer reads an answer: the body as JSON with its answer_id
-// taken out.
-func answerOf(t *testing.T, status int, body []byte) answerRead {
-	t.Helper()
-	var fields map[string]any
-	if err := json.Unmarshal(body, &fields); err != nil {
-		t.Fatalf("answer %d %s is not JSON: %v", status, body, err)
-	}
-	delete(fields, "answer_id")
-	normal, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return answerRead{status: status, body: string(normal)}
-}
-
 // requireAnswered fails t unless got is status with code, read as what.
 func requireAnswered(t *testing.T, what string, got answerRead, status int, code string) {
 	t.Helper()
@@ -156,7 +140,7 @@ func (ts *testServer) writtenRows(t *testing.T) []string {
 // verify, are hidden from every person outside PRIV. Approve and deny, relayed for such a person
 // — mallory, named by the body's approver, or no person at all: no approver, the anyone
 // sentinel, a body that is no decision and one that is not JSON — answer for each the one answer
-// of an id no record has, 404 NOT_FOUND, byte for byte. Before, both answered 403
+// of an id no record has, 404 NOT_FOUND, in status and body. Before, both answered 403
 // DECIDE_ON_BROKER_PAGE naming their page, so any person Dispatch relays for could tell which ids
 // named a private project's request. testApprover and carol, on PRIV's list, still get 403
 // DECIDE_ON_BROKER_PAGE naming the page, and 403 JUDGE_DECIDES while the model judge holds the
@@ -175,7 +159,6 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 	before := ts.writtenRows(t)
 	bodies := map[string]string{
 		"mallory, outside PRIV":      `{"approver":"` + hiddenOutsider + `"}`,
-		"mallory, with a code":       `{"approver":"` + hiddenOutsider + `","code":"ABCD-EFGH"}`,
 		"no approver":                `{}`,
 		"the anyone sentinel":        `{"approver":"` + record.AnyoneApprover + `"}`,
 		"a body that is no decision": `{"approve":true}`,
@@ -242,16 +225,20 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 	}
 }
 
-// TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas: two grants, each on a
-// session of testApprover's whose request named a PRIV issue. The model judge approved one, of
+// TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas: three grants, each on
+// a session of testApprover's whose request named a PRIV issue. The model judge approved one, of
 // SHARED_KEY, in anyone's stead while PRIV was public, so the grant records anyone as its
-// approver; PRIV then turned private. testApprover approved the other, of DEEL_API_KEY, their own
-// secret. mallory, outside PRIV, through Dispatch's revoke and through her own machine login's
-// operator route, is answered for each the one answer of a grant id no grant has, 404 NOT_FOUND,
-// byte for byte, where the judged grant was ended and the other answered 403 NOT_APPROVER; both
-// stay live. While Dispatch cannot answer, testApprover's revoke of either, as its operator, is
-// 503 PROJECT_ACCESS_UNAVAILABLE and ends nothing. Once it answers, carol, on PRIV's list, ends
-// the judged grant through Dispatch, and testApprover's machine login ends the other.
+// approver; PRIV then turned private. testApprover approved the other two, of DEEL_API_KEY, their
+// own secret. mallory, outside PRIV, through Dispatch's revoke and through her own machine login's
+// operator route, is answered for the judged grant and for the first of testApprover's the one
+// answer of a grant id no grant has, 404 NOT_FOUND, in status and body, where the judged grant was
+// ended and the other answered 403 NOT_APPROVER; both stay live. While Dispatch cannot answer,
+// mallory's revoke of the judged grant, which names her nowhere, is 503
+// PROJECT_ACCESS_UNAVAILABLE by either route and ends nothing; testApprover, whom each of their
+// grants names as its approver and its session's operator, still ends the first through Dispatch
+// and the second through their machine login, since the person rule asks Dispatch nothing for a
+// person the grant names. Once Dispatch answers, carol, on PRIV's list, ends the judged grant
+// through Dispatch.
 func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t *testing.T) {
 	ts, access := hiddenServer(t, sharedKeyJudged)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
@@ -272,13 +259,15 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 	}
 	access.Serve(privDispatch(t))
 	byPerson := ts.approveAs(t, ts.askPrivate(t, "box-person", "DEEL_API_KEY"), testApprover)
+	byMachine := ts.approveAs(t, ts.askPrivate(t, "box-machine", "DEEL_API_KEY"), testApprover)
 	missingGrant := uuid.NewString()
 	grants := map[string]string{"testApprover's grant": byPerson, "the judged grant": byAnyone}
 	liveGrants := func(t *testing.T) []string {
 		t.Helper()
-		return ts.column(t, `select id::text from grants where id in ($1, $2) and revoked_at is null order by id`, byPerson, byAnyone)
+		return ts.column(t, `select id::text from grants where id::text = any($1::text[]) and revoked_at is null order by id`,
+			[]string{byPerson, byMachine, byAnyone})
 	}
-	bothLive := liveGrants(t)
+	allLive := liveGrants(t)
 	before := ts.writtenRows(t)
 
 	t.Run("a person outside PRIV reads the answer of a grant id no grant has", func(t *testing.T) {
@@ -301,46 +290,54 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 				requireAnswered(t, "the operator revoke of a grant id no grant has", answers["a grant id no grant has"], http.StatusNotFound, "NOT_FOUND")
 			})
 		}
-		if got := liveGrants(t); !slices.Equal(got, bothLive) {
-			t.Fatalf("live grants after %s's revokes = %v, want %v", hiddenOutsider, got, bothLive)
+		if got := liveGrants(t); !slices.Equal(got, allLive) {
+			t.Fatalf("live grants after %s's revokes = %v, want %v", hiddenOutsider, got, allLive)
 		}
 	})
 
 	down := downDispatch(t)
 	access.Serve(down)
-	t.Run("while Dispatch cannot answer, a revoke ends nothing", func(t *testing.T) {
-		status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+byPerson+"/revoke-by-approver", map[string]any{"approver": testApprover})
-		requireAnswered(t, "testApprover's revoke-by-approver while Dispatch is down", answerOf(t, status, body), http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE")
-		status, body = ts.launcher(t, machineKey, credID, http.MethodPost, "/v1/operator/grants/"+byAnyone+"/revoke", nil)
-		requireAnswered(t, "testApprover's operator revoke while Dispatch is down", answerOf(t, status, body), http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE")
-		if got := liveGrants(t); !slices.Equal(got, bothLive) {
-			t.Fatalf("live grants after the revokes Dispatch could not answer for = %v, want %v", got, bothLive)
+	t.Run("while Dispatch cannot answer, a person the judged grant does not name ends nothing", func(t *testing.T) {
+		status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+byAnyone+"/revoke-by-approver", map[string]any{"approver": hiddenOutsider})
+		requireAnswered(t, hiddenOutsider+"'s revoke-by-approver of the judged grant while Dispatch is down", answerOf(t, status, body), http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE")
+		status, body = ts.launcher(t, malloryKey, malloryID, http.MethodPost, "/v1/operator/grants/"+byAnyone+"/revoke", nil)
+		requireAnswered(t, hiddenOutsider+"'s operator revoke of the judged grant while Dispatch is down", answerOf(t, status, body), http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE")
+		if got := liveGrants(t); !slices.Equal(got, allLive) {
+			t.Fatalf("live grants after the revokes Dispatch could not answer for = %v, want %v", got, allLive)
+		}
+		if after := ts.writtenRows(t); !slices.Equal(after, before) {
+			t.Errorf("rows written = %v after the refused revokes, want %v as before", after, before)
 		}
 		if down.Calls() == 0 {
 			t.Fatal("the down Dispatch was never asked: the rows above are blind")
 		}
 	})
-	if after := ts.writtenRows(t); !slices.Equal(after, before) {
-		t.Errorf("rows written = %v after the refused revokes, want %v as before", after, before)
-	}
+	t.Run("while Dispatch cannot answer, the grants' own approver and operator still end them", func(t *testing.T) {
+		if status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+byPerson+"/revoke-by-approver", map[string]any{"approver": testApprover}); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
+			t.Fatalf("testApprover's revoke-by-approver while Dispatch is down = %d %s; want 200 revoked", status, body)
+		}
+		if status, body := ts.launcher(t, machineKey, credID, http.MethodPost, "/v1/operator/grants/"+byMachine+"/revoke", nil); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
+			t.Fatalf("testApprover's operator revoke while Dispatch is down = %d %s; want 200 revoked", status, body)
+		}
+		if got := liveGrants(t); slices.Contains(got, byPerson) || slices.Contains(got, byMachine) {
+			t.Fatalf("live grants after testApprover's two revokes = %v; want neither %s nor %s", got, byPerson, byMachine)
+		}
+	})
 
 	access.Serve(privDispatch(t))
-	t.Run("a person on PRIV's list and the session's operator still revoke", func(t *testing.T) {
+	t.Run("a person on PRIV's list still revokes the judged grant", func(t *testing.T) {
 		if status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+byAnyone+"/revoke-by-approver", map[string]any{"approver": hiddenInsider}); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
 			t.Fatalf("%s's revoke of the judged grant = %d %s; want 200 revoked", hiddenInsider, status, body)
 		}
-		if status, body := ts.launcher(t, machineKey, credID, http.MethodPost, "/v1/operator/grants/"+byPerson+"/revoke", nil); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
-			t.Fatalf("testApprover's operator revoke = %d %s; want 200 revoked", status, body)
-		}
-		if got := liveGrants(t); len(got) != 0 {
-			t.Fatalf("live grants after the two revokes = %v, want none", got)
+		if got := liveGrants(t); slices.Contains(got, byAnyone) {
+			t.Fatalf("live grants after %s's revoke = %v; want the judged grant %s ended", hiddenInsider, got, byAnyone)
 		}
 	})
 }
 
 // TestADismissalAnswersAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecordHas: two requests of
 // PRIV past their deadline, one signed for another broker address. mallory's dismissal of either
-// answers the one answer of an id no record has, 404 NOT_FOUND, byte for byte; the one signed
+// answers the one answer of an id no record has, 404 NOT_FOUND, in status and body; the one signed
 // elsewhere answered 500, since whether she may see it was read from its signed request, which
 // this broker does not verify. While Dispatch cannot answer, testApprover's dismissal is 503
 // PROJECT_ACCESS_UNAVAILABLE and writes no dismissal, the dismissal's fail-closed branch; once it
