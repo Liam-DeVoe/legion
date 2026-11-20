@@ -211,7 +211,7 @@ func controlAlias(words string) string {
 				}
 			}
 			c.setMutation("box-string", "return fieldWithout(t.text, t.carried)", "return t.text")
-			c.setMutation("box-send-back", "shown := Field(t.text)", "shown := t.text")
+			c.setMutation("box-send-back", "shown := fieldWithout(t.text, t.carried)", "shown := t.text")
 			c.setMutation("box-reading", "return ruledWithout(t.text, t.carried)", "return t.text")
 			return c.writeInventory()
 		}},

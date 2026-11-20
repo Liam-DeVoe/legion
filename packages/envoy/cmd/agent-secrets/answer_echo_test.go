@@ -1,0 +1,104 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
+)
+
+// TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes: something in the broker's place answers a
+// pod's renewal and echoes the request it was sent: a 502 page that repeats its JSON body (the pod
+// token), an envelope that repeats its Proof header, and a terminal envelope that repeats it too.
+// The renewal's error, the --pod refusal line (podRefusal) and renewLoop's stderr line hold none
+// of it: doStatus reads every word of a refused answer through the record of the request it sent
+// (redact.Carried), whatever the answer's shape (the review of #4368 at 63bd188095, class A).
+// Captures agent-secrets.answer-echo/<case>, /<case>/pod-refusal and /<case>/renew-stderr.
+func TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name   string
+		status int
+		answer func(body []byte, proof string) string
+	}{
+		{"502-page-echoes-body", http.StatusBadGateway, func(body []byte, _ string) string {
+			return "bad gateway; the upstream refused " + string(body)
+		}},
+		{"401-envelope-echoes-proof", http.StatusUnauthorized, func(_ []byte, proof string) string {
+			return `{"code":"PROOF_INVALID","error":"the proof ` + proof + ` is not one this broker reads"}`
+		}},
+		{"403-terminal-envelope-echoes-proof", http.StatusForbidden, func(_ []byte, proof string) string {
+			return `{"code":"ENROLLMENT_NOT_LIVE","error":"not live; the request carried Proof ` + proof + `"}`
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var proofs []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				proof := r.Header.Get("Proof")
+				mu.Lock()
+				proofs = append(proofs, proof)
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				fmt.Fprint(w, c.answer(body, proof))
+			}))
+			defer server.Close()
+			base := brokeraddr.New(server.URL)
+			signer := &fileSigner{key: key, enrollmentID: "enr-echo"}
+			_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-echo", redacttest.Token)
+			if renewErr == nil {
+				t.Fatal("the renewal answered no error")
+			}
+			file := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(file, []byte(redacttest.Token), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var stderr bytes.Buffer
+			renewLoop(ctx, newClient(base), signer, "enr-echo", file, &stderr, func(time.Duration) <-chan time.Time {
+				cancel()
+				return nil
+			})
+			mu.Lock()
+			sent := append([]string(nil), proofs...)
+			mu.Unlock()
+			if len(sent) == 0 || len(sent[0]) < 16 {
+				t.Fatalf("the control: the stand-in saw no Proof header (%q)", sent)
+			}
+			for what, text := range map[string]string{
+				"":              renewErr.Error(),
+				"/pod-refusal":  podRefusal("agent-secrets enroll", "renew", podIdentity{}, base, renewErr),
+				"/renew-stderr": stderr.String(),
+			} {
+				capture := "agent-secrets.answer-echo/" + c.name + what
+				redacttest.RequireNone(t, capture, text)
+				for _, proof := range sent {
+					if strings.Contains(text, proof) {
+						t.Errorf("REDACT-ASSERT %s: the output prints the proof its request carried: %q", capture, text)
+						break
+					}
+				}
+			}
+		})
+	}
+}

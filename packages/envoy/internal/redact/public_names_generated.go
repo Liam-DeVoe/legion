@@ -27,6 +27,13 @@ var publicRequestNames = []publicRequestName{
 	{Place: "field", Name: "session_id", Source: "POST /v1/enrollments: the broker contract's session the enrollment names"},
 	{Place: "field", Name: "operator", Source: "POST /v1/enrollments: the broker contract's operator, the person's sign-in"},
 	{Place: "field", Name: "thumbprint", Source: "POST /v1/enrollments: the RFC 7638 thumbprint of the session's public key"},
+	{Place: "field", Name: "wait", Source: "GET /v1/requests/{id}?wait=: the broker contract's hold on a pending request's read, in seconds"},
+	{Place: "field", Name: "owner", Source: "POST /v1/requests and POST /v1/grants/{id}/values: the broker contract's GitHub App narrowing, the owner a token is narrowed to"},
+	{Place: "field", Name: "repositories", Source: "POST /v1/requests and POST /v1/grants/{id}/values: the broker contract's GitHub App narrowing, the repositories a token is narrowed to"},
+	{Place: "field", Name: "reason", Source: "POST /v1/grants/{id}/values: the broker contract's release reason, which the broker records with the release"},
+	{Place: "field", Name: "command", Source: "POST /v1/grants/{id}/values: the broker contract's release command, which the broker records with the release"},
+	{Place: "field", Name: "include", Source: "GET /v1/sessions, /v1/roles/{role} and /v1/registry/{id}?include= (the Envoy listener): the registry states a read asks for"},
+	{Place: "field", Name: "issue", Source: "GET /v1/legion/agents?issue= (the Envoy listener): the Dispatch issue key the Legion agent registry is read for"},
 	{Place: "field", Name: "delegates", Source: "IAM Service Account Credentials API, generateAccessToken: the service accounts of the chain"},
 	{Place: "field", Name: "lifetime", Source: "IAM Service Account Credentials API, generateAccessToken: the token's lifetime"},
 }

@@ -382,19 +382,25 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 			AnswerID redact.RemoteText `json:"answer_id"`
 		}
 		_ = json.Unmarshal(data, &envelope)
-		if envelope.Error.IsEmpty() {
+		// Whatever answers in the broker's place can echo the request it was sent - its body (a
+		// pod token), its Proof header - in any text of its answer, so every word of the answer is
+		// held with each credential the request carried redacted (redact.Carried,
+		// RemoteText.WithoutTokens), and compares as it came.
+		carried := redact.Carried(resp)
+		code, said, answerID := envelope.Code.WithoutTokens(carried...), envelope.Error.WithoutTokens(carried...), envelope.AnswerID.WithoutTokens(carried...)
+		if said.IsEmpty() {
 			// A body that was not the envelope is the message as it came, a line ending and
 			// all (the mux's "404 page not found\n"): it is cut at its trailing line endings
 			// before it prints, which would otherwise quote it for them, so the id goes after
 			// it on the same line.
-			envelope.Error = redact.NewRemoteText(strings.TrimRight(string(data), "\r\n"))
+			said = redact.NewRemoteText(strings.TrimRight(string(data), "\r\n")).WithoutTokens(carried...)
 		}
-		if envelope.AnswerID.IsEmpty() {
-			envelope.AnswerID = redact.NewRemoteText(resp.Header.Get(answerIDHeader))
+		if answerID.IsEmpty() {
+			answerID = redact.NewRemoteText(resp.Header.Get(answerIDHeader)).WithoutTokens(carried...)
 		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
-		return resp.StatusCode, nil, newAPIError(resp.StatusCode, envelope.Code, envelope.Error, envelope.AnswerID, !c.baseURL.Clean())
+		return resp.StatusCode, nil, newAPIError(resp.StatusCode, code, said, answerID, !c.baseURL.Clean())
 	}
 	return resp.StatusCode, data, nil
 }

@@ -1730,6 +1730,87 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.answer-echo/200-credential-expires-at"
+      },
+      {
+        "row": "agentsecrets-answer-echo-body",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.answer-echo/502-page-echoes-body"
+      },
+      {
+        "row": "agentsecrets-answer-echo-proof",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.answer-echo/401-envelope-echoes-proof"
+      },
+      {
+        "row": "agentsecrets-answer-echo-terminal-proof",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.answer-echo/403-terminal-envelope-echoes-proof/renew-stderr"
+      },
+      {
+        "row": "devrelay-answer-echo-words",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets-devrelay/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets-devrelay.answer-echo/words"
+      },
+      {
+        "row": "devrelay-answer-echo-code",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/cmd/agent-secrets-devrelay/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets-devrelay.answer-echo/code"
+      },
+      {
+        "row": "listener-answer-echo-session",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "envoy.answer-echo/502-gateway/session"
+      },
+      {
+        "row": "listener-answer-echo-send",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "envoy.answer-echo/403-listener/send"
+      },
+      {
+        "row": "listener-answer-echo-sessions",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "envoy.answer-echo/502-gateway/sessions"
+      },
+      {
+        "row": "listener-answer-echo-role",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "envoy.answer-echo/404-lapsed-holder/role"
       }
     ],
     "boundary_fields": {
@@ -2312,7 +2393,7 @@
       "capture": "envoy.role-sent-back",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "shown := Field(*t.text)",
+        "preimage": "shown := fieldWithout(*t.text, t.carried)",
         "replacement": "shown := *t.text"
       }
     },
@@ -3645,6 +3726,69 @@
       "package": "./internal/brokerclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-credential-expires-at",
       "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
+    },
+    {
+      "id": "agentsecrets-answer-echo-body",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/502-page-echoes-body",
+      "production": "agent-secrets client.doStatus: a page that is no envelope, through the record (redact.Carried)"
+    },
+    {
+      "id": "agentsecrets-answer-echo-proof",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/401-envelope-echoes-proof",
+      "production": "agent-secrets client.doStatus and apiError: the envelope's words, through the record (redact.Carried)"
+    },
+    {
+      "id": "agentsecrets-answer-echo-terminal-proof",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/403-terminal-envelope-echoes-proof",
+      "production": "agent-secrets renewLoop's permanent refusal line, apiError.words, through the record (redact.Carried)"
+    },
+    {
+      "id": "devrelay-answer-echo-words",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes/words",
+      "production": "agent-secrets-devrelay apiClient.do: the envelope's words, through the record (redact.Carried)"
+    },
+    {
+      "id": "devrelay-answer-echo-code",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes/code",
+      "production": "agent-secrets-devrelay apiClient.do: the envelope's code, through the record (redact.Carried)"
+    },
+    {
+      "id": "listener-answer-echo-session",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerRefusalPrintsNoBearerItsAnswerEchoes/502-gateway/session",
+      "production": "dispatch/envoy Client.Session, unavailableGetStatus, through the record (redact.Carried)"
+    },
+    {
+      "id": "listener-answer-echo-send",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerRefusalPrintsNoBearerItsAnswerEchoes/403-listener/send",
+      "production": "dispatch/envoy Client.Send, listenerResponseError, through the record (redact.Carried)"
+    },
+    {
+      "id": "listener-answer-echo-sessions",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerRefusalPrintsNoBearerItsAnswerEchoes/502-gateway/sessions",
+      "production": "dispatch/envoy Client.Sessions, listFailure, through the record (redact.Carried)"
+    },
+    {
+      "id": "listener-answer-echo-role",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerRefusalPrintsNoBearerItsAnswerEchoes/404-lapsed-holder/role",
+      "production": "dispatch/envoy Client.Role, lapsedRoleHolder and RemoteText.SendBack, through the record (redact.Carried)"
     },
     {
       "id": "record-interleaved",
@@ -5151,6 +5295,21 @@
       "site": "brokerclient.(*Client).read: token_type, credential_expires_at and expires_in quoted with no request record",
       "source": "the review of #4368 at 63bd188095, finding 2",
       "guard": "brokerclient-answer-echo-token-type"
+    },
+    {
+      "site": "agent-secrets client.doStatus and apiError: a refusal's body or envelope echoing the request's body (a pod token) or its Proof header",
+      "source": "the review of #4368 at 63bd188095, class A",
+      "guard": "agentsecrets-answer-echo-proof"
+    },
+    {
+      "site": "agent-secrets-devrelay apiClient.do: an envelope echoing the bearer the call carried",
+      "source": "the review of #4368 at 63bd188095, class A",
+      "guard": "devrelay-answer-echo-words"
+    },
+    {
+      "site": "dispatch/envoy Client.Session and Send: a 502 gateway or a 403 echoing the bearer the call carried",
+      "source": "the review of #4368 at 63bd188095, class A",
+      "guard": "listener-answer-echo-send"
     }
   ]
 }

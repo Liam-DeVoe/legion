@@ -530,14 +530,16 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 // listener no longer holds.
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
 	// The holder's session id is sent back to the listener by the session read below
-	// (RemoteText.SendBack): only where the rule prints it as it came, so the route that read
-	// names, and any error that names the route, holds no more of the listener's words than a
-	// print of them shows.
+	// (RemoteText.SendBack): only where the rule prints it as it came, with every credential the
+	// lookup carried redacted first, so the route that read names, and any error that names the
+	// route, holds no more of the listener's words than a print of them shows, and never the
+	// bearer an answer in the listener's place echoed as a holder.
 	var refusal listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]
 	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
 		return Session{}, listenerRefusal(response, redact.RemoteText{})
 	}
-	if id, sent := refusal.Holder.SendBack(); sent && refusal.HolderState == holderStateUnresponsive {
+	carried := redact.Carried(response)
+	if id, sent := refusal.Holder.WithoutTokens(carried...).SendBack(); sent && refusal.HolderState == holderStateUnresponsive {
 		holder, err := c.Session(ctx, id)
 		if err == nil {
 			return holder, nil
@@ -546,7 +548,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	err := listenerRefusal(response, refusal.Error)
+	err := listenerRefusal(response, refusal.Error.WithoutTokens(carried...))
 	// The reason is the listener's word, compared as it came against the reasons the listener
 	// gives for a role no live session holds.
 	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
@@ -705,12 +707,14 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 // the caller does not take, carrying the listener's own reason when its body names one, and
 // ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
 // The two list reads answer their refusals through listFailure instead, which tells a refilling
-// listener from an unavailable one.
+// listener from an unavailable one. Whatever answers in the listener's place can echo the bearer
+// the read carried, so the reason prints with every credential the read carried redacted
+// (redact.Carried), as every refusal this client reads does.
 func unavailableGetStatus(response *http.Response, route string) error {
 	var failure listenerwire.APIErrorAs[redact.RemoteText]
 	if err := json.NewDecoder(response.Body).Decode(&failure); err == nil && !failure.Error.IsEmpty() {
 		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error))
+			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error.WithoutTokens(redact.Carried(response)...)))
 	}
 	return unavailableStatus(response.StatusCode,
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
@@ -830,15 +834,16 @@ func listenerResponseError(response *http.Response) error {
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return listenerRefusal(response, redact.RemoteText{})
 	}
-	return listenerRefusal(response, body.Error)
+	return listenerRefusal(response, body.Error.WithoutTokens(redact.Carried(response)...))
 }
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
 // its body named one, and its status when the body named nothing a caller could act on. A 502,
 // 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
 // it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request. The reason is the listener's words, or its stand-in's, so it prints as it
-// prints itself (redact.RemoteText).
+// about the request. The reason is the listener's words, or its stand-in's, held with the
+// credentials the request carried redacted (redact.Carried), so it prints as it prints itself
+// (redact.RemoteText).
 func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 	code := response.StatusCode
 	if !reason.IsEmpty() {
@@ -852,19 +857,21 @@ func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 
 // listFailure classifies a list read's non-200 answer from its body: the listener's refilling 503
 // is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
-// body names one, as it prints itself (redact.RemoteText), and ErrUnreachable too when the status
-// is a 502, 503 or 504, which comes from in front of the listener or from its starting gate rather
-// than from a verdict on the read.
+// body names one, as it prints itself (redact.RemoteText) with every credential the read carried
+// redacted (redact.Carried), and ErrUnreachable too when the status is a 502, 503 or 504, which
+// comes from in front of the listener or from its starting gate rather than from a verdict on the
+// read.
 func listFailure(response *http.Response, route string) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
 	decoded := json.NewDecoder(response.Body).Decode(&body) == nil
+	carried := redact.Carried(response)
 	if decoded && response.StatusCode == http.StatusServiceUnavailable && body.Code.Equal(listenerRefillingCode) {
-		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error}
+		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error.WithoutTokens(carried...)}
 	}
 	if !decoded || body.Error.IsEmpty() {
 		return unavailableStatus(response.StatusCode,
 			fmt.Errorf("%w: %s returned %d", ErrUnavailable, route, response.StatusCode))
 	}
 	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error))
+		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error.WithoutTokens(carried...)))
 }

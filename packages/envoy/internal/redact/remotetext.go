@@ -220,15 +220,16 @@ func (t RemoteText) OAuthCode() OAuthCode {
 }
 
 // SendBack is the field to send back to the party that wrote it - an id it named, which the next
-// request to it carries - and true, where the rule prints the field as it came. The text it
-// answers is the rule's, String's, so nothing leaves the field that a print of it does not show.
-// An empty field, one the rule changes and one it cannot read answer "" and false, and are sent
-// nowhere.
+// request to it carries - and true, where the rule prints the field as it came, each credential its
+// request carried redacted first (WithoutTokens). The text it answers is the rule's, String's, so
+// nothing leaves the field that a print of it does not show: a field that echoes a credential the
+// request carried is one the rule changes. An empty field, one the rule changes and one it cannot
+// read answer "" and false, and are sent nowhere.
 func (t RemoteText) SendBack() (string, bool) {
 	if t.text == nil || *t.text == "" {
 		return "", false
 	}
-	shown := Field(*t.text)
+	shown := fieldWithout(*t.text, t.carried)
 	if shown != *t.text {
 		return "", false
 	}

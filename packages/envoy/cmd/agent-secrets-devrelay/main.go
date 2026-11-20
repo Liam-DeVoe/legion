@@ -178,7 +178,9 @@ func (e *apiError) Format(f fmt.State, verb rune) {
 func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 
 // do sends a request carrying the caller's ServiceAccount token and, on a 2xx response, returns
-// its raw body; any other status decodes the broker's error envelope into an *apiError.
+// its raw body; any other status decodes the broker's error envelope into an *apiError, its code
+// and words held with every credential the request carried redacted (redact.Carried), since
+// whatever answers in the broker's place can echo the bearer back.
 func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -213,7 +215,8 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 			Error redact.RemoteText `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &envelope)
-		return nil, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code, reason: envelope.Error}
+		carried := redact.Carried(resp)
+		return nil, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code.WithoutTokens(carried...), reason: envelope.Error.WithoutTokens(carried...)}
 	}
 	return raw, nil
 }

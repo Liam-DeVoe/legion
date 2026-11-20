@@ -84,6 +84,48 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   },
   {
     place: "field",
+    name: "wait",
+    source:
+      "GET /v1/requests/{id}?wait=: the broker contract's hold on a pending request's read, in seconds",
+  },
+  {
+    place: "field",
+    name: "owner",
+    source:
+      "POST /v1/requests and POST /v1/grants/{id}/values: the broker contract's GitHub App narrowing, the owner a token is narrowed to",
+  },
+  {
+    place: "field",
+    name: "repositories",
+    source:
+      "POST /v1/requests and POST /v1/grants/{id}/values: the broker contract's GitHub App narrowing, the repositories a token is narrowed to",
+  },
+  {
+    place: "field",
+    name: "reason",
+    source:
+      "POST /v1/grants/{id}/values: the broker contract's release reason, which the broker records with the release",
+  },
+  {
+    place: "field",
+    name: "command",
+    source:
+      "POST /v1/grants/{id}/values: the broker contract's release command, which the broker records with the release",
+  },
+  {
+    place: "field",
+    name: "include",
+    source:
+      "GET /v1/sessions, /v1/roles/{role} and /v1/registry/{id}?include= (the Envoy listener): the registry states a read asks for",
+  },
+  {
+    place: "field",
+    name: "issue",
+    source:
+      "GET /v1/legion/agents?issue= (the Envoy listener): the Dispatch issue key the Legion agent registry is read for",
+  },
+  {
+    place: "field",
     name: "delegates",
     source:
       "IAM Service Account Credentials API, generateAccessToken: the service accounts of the chain",
