@@ -7,7 +7,7 @@
 // stopped Legion agent's daemon (LegionHandoff) and the subject it publishes it on
 // (LegionHandoffSubject), and the envelope and the states they carry. The
 // listener (cmd/listener) writes and reads these types, and so does each of its Go clients: the
-// broker's wake (internal/broker/wake), Dispatch's client (internal/dispatch/envoy), the load-test
+// broker's wake (internal/cipher/wake), Dispatch's client (internal/dispatch/envoy), the load-test
 // harness's listener client (loadtest/listenerclient), the refill rig
 // (internal/testnats/cmd/refillrig), and the Legion daemon's publisher, controller probe and agent
 // registry writer, which are another module and so need this package public. LegionHandoff is not

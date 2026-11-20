@@ -27,7 +27,7 @@ func TestListenerClientsUseListenerwire(t *testing.T) {
 		dir  string
 		pkgs []string
 	}{
-		{dir: "..", pkgs: []string{"./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"}},
+		{dir: "..", pkgs: []string{"./internal/cipher/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"}},
 		{dir: "../../daemon", pkgs: []string{"./internal/notify", "./internal/controller", "./internal/registrywrite"}},
 	} {
 		for _, finding := range wirecheck.Check(t, clients.dir, clients.pkgs, wire, nil) {
