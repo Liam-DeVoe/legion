@@ -93,6 +93,14 @@ type Config struct {
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
 	LeakCheckDir string
+	// LeakCheckIndexDir is the folder the launcher writes the leak check's index of sandbox lines
+	// in, which the daemon pushes it, and which each role sees at its home's leakguard.IndexDir:
+	// an issue pod's folder under the home mounts directory, which role-init binds back into every
+	// role's home, or the controller pod's own home's. The launcher writes the folder's pushed
+	// marker there before it dials the daemon, so no check in a role downloads the index
+	// (indexInstall). "" is a launcher that writes no index: no marker, and its hello says nothing
+	// of one (shimwire.LauncherHello.LeakCheckIndex).
+	LeakCheckIndexDir string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -289,10 +297,18 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// the install with `the served check could not be run: waitid: no child processes` (or, under
 	// gVisor, `wait: no child processes` or `waitid: no such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
+	// One writer of the leak check's index per launcher process: the daemon pushes each new index
+	// on every connection that takes it, and the first to bring it whole installs it for the pod.
+	// It writes the folder's pushed marker here, before any connection is dialed, so the marker is
+	// there before any role starts.
+	index, err := newIndexInstall(cfg.LeakCheckIndexDir)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, index: index, guard: guard,
 			acknowledged: make(chan struct{}),
 		}}, nil
 	}
@@ -314,7 +330,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, index: index, guard: guard,
 			acknowledged: make(chan struct{}),
 		})
 	}
@@ -349,13 +365,15 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start, stop, bundle and leak-check commands until the connection ends. The hello
-// names the launcher's leak-check pin and whether this process has installed it, so the daemon
-// pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing. The memory guard
-// settings it carries, or their absence, go to the pod's guard, and what it carries decides
-// whether the kill reports of this role's processes go on this connection (openMemoryReports);
-// what it carries for the pod's cache trimmer is put in force with the writer (applyAck).
+// state, then start, stop, bundle, leak-check and leak-check index commands until the connection
+// ends. The hello names the launcher's leak-check pin and whether this process has installed it,
+// so the daemon pushes the check only to a launcher that still needs it, and whether the launcher
+// writes the leak check's index, so the daemon pushes the index only to one that takes it. The
+// acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
+// still dialing. The memory guard settings it carries, or their absence, go to the pod's guard, and
+// what it carries decides whether the kill reports of this role's processes go on this connection
+// (openMemoryReports); what it carries for the pod's cache trimmer is put in force with the writer
+// (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -369,6 +387,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
+	hello.LeakCheckIndex = m.index.takes()
 	if err := writer.WriteFrame(hello); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
@@ -437,6 +456,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.restore.receive(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
+		case shimwire.LauncherLeakCheckIndex:
+			answer = m.index.receive(command)
 		default:
 			return fmt.Errorf("command: got %T", frame)
 		}
@@ -643,6 +664,10 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// index is the launcher process's one writer of the leak check's index, which every role
+	// manager of the container shares as it shares check; nil where the launcher was given no
+	// index folder (Config.LeakCheckIndexDir).
+	index *indexInstall
 	// guard holds the launcher's own children, which are no generation's, out of every reap of
 	// PID 1's (pidGuard): the orphan reaper's passes, and the controller pod's drain of an exited
 	// generation (cleanExitedGeneration).

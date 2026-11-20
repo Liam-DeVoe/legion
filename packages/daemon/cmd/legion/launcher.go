@@ -25,7 +25,7 @@ import (
 // (wordFirst).
 func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
+		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] [--leak-check-index-dir <dir>] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
 		Short:  "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command",
 		Hidden: true,
 	}
@@ -49,10 +49,11 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")
 	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
 	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
+	leakCheckIndexDir := flags.String("leak-check-index-dir", "", "the folder the pod's leak check index is written in, which each role sees at its home's .cache/public-leak-check")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		cfg := launcher.Config{
 			Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
-			Stdout: stdout, Stderr: stderr, MicroVM: *microVM,
+			Stdout: stdout, Stderr: stderr, MicroVM: *microVM, LeakCheckIndexDir: *leakCheckIndexDir,
 			SessionDatabase: ompsessions.Database{
 				Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser, ImpersonateServiceAccount: *sessionAccount,
 			},

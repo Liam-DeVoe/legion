@@ -102,6 +102,64 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 	}
 }
 
+// `legion launcher --leak-check-index-dir <dir>` takes the folder the pod's leak check index is
+// written in: the launcher has written the folder's pushed marker when it connects, and its hello
+// says it takes the index. A launcher that dropped the flag would write no marker and say nothing.
+func TestTheLauncherCommandTakesTheIndexFolder(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "home", ".cache", "public-leak-check")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr syncBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, []string{
+			"legion", "launcher", "--connect", "tcp://" + listener.Addr().String(), "--sandbox", "s", "--pod-uid", "p",
+			"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--stop-grace", "2s",
+			"--leak-check-index-dir", dir,
+		}, &stdout, &stderr)
+	}()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v; the launcher's log: %s", err, stderr.String())
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if info, err := os.Lstat(filepath.Join(dir, "sandbox-lines.idx.pushed")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("when the launcher connected the marker was %v (%v), want a regular file", info, err)
+	}
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := shimwire.Decode(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hello, ok := frame.(shimwire.LauncherHello); !ok || !hello.LeakCheckIndex {
+		t.Fatalf("first frame = %#v, want a launcher hello that takes the index", frame)
+	}
+	cancel()
+	select {
+	case code := <-exited:
+		if code != 0 {
+			t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launcher did not leave at the container's stop")
+	}
+}
+
 // The two forms do not mix: a roles directory holds every role's own token and private
 // directory, and the controller pod's single form names one role. Each mixture is a usage error
 // before anything is dialled.
