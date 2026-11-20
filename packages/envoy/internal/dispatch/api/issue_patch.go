@@ -103,6 +103,10 @@ type issueWriteCall struct {
 	outliving context.Context
 	// adviceRoute is the route that the write's advice names (writeAdviceBefore).
 	adviceRoute string
+	// comment is the comment that the write leaves on the issue, or nil for none. It is written in
+	// the write's own transaction, after the write's own events, so the write and its comment
+	// commit together or not at all. A write that changes nothing leaves no comment.
+	comment *issueComment
 }
 
 // issueWriteResult is what writeIssue wrote.
@@ -123,9 +127,9 @@ type issueWriteResult struct {
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
 // the issue and of every issue the write names, decides the write's refusals under them, and
-// writes the issue's row and everything beside it in a transaction of its own, which it commits.
-// Then it publishes what it appended. Each refusal is an error that writeHandlerError answers
-// with the status, code and text the PATCH answers.
+// writes the issue's row and everything beside it, the call's comment included, in a transaction
+// of its own, which it commits. Then it publishes what it appended. Each refusal is an error that
+// writeHandlerError answers with the status, code and text the PATCH answers.
 func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWriteResult, error) {
 	input, actor := call.fields, call.writer.actor
 	var blockers []string
@@ -215,6 +219,14 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
 		s.settleIssueBeforeClose(call.outliving, key)
+	}
+	// The call's comment makes its listener lookups before the transaction opens, as every
+	// comment's write does.
+	var commentResolved commentResolution
+	if call.comment != nil {
+		if commentResolved, err = s.resolveIssueComment(ctx, key, *call.comment); err != nil {
+			return issueWriteResult{}, err
+		}
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -692,6 +704,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			appended = append(appended, addedEvent)
 		}
 	}
+	if call.comment != nil {
+		// The call's comment comes after the write's own events, on the issue's owner, which the
+		// write's lock holds.
+		commented, err := s.queueIssueComment(ctx, tx, ledger, key, *call.comment, commentResolved)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		appended = append(appended, commented)
+	}
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it
 		// runs (clock_timestamp()), over the start of the transaction (now()) the update above
@@ -724,6 +745,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
 	// allows.
 	s.publish(ctx, appendedEvents(appended...)...)
+	if call.comment != nil {
+		s.storeDisplayTrees(ctx, key, call.comment.body)
+	}
 	if closing {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).

@@ -6,12 +6,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -410,13 +412,13 @@ func requireRuleRefusal(t *testing.T, request string, response *httptest.Respons
 	sentences := make([]string, 0, len(holders))
 	issues := make([]any, 0, len(holders))
 	for _, holder := range holders {
-		sentences = append(sentences, holder.sentence)
+		sentences = append(sentences, holder.sentence+".")
 		issues = append(issues, map[string]any{"key": holder.key, "title": holder.title, "status": holder.status, "relation": holder.relation})
 	}
 	want := map[string]any{
 		"code": "PARENT_STATUS_CONFLICT",
-		"error": "this change would leave a parent's status out of line with its children's: " + strings.Join(sentences, "; ") +
-			". A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+		"error": "this change would leave a parent's status out of line with its children's. " + strings.Join(sentences, " ") +
+			" A parent is done only when each child is done, and while a child is in work, its parent is in work.",
 		"issues": issues,
 	}
 	var got any
@@ -638,4 +640,132 @@ func TestTheParentStatusRuleWaitsForItsSetting(t *testing.T) {
 	}
 	// The status-change route's half goes here: with the setting off, its call that breaks the
 	// rule with no option is taken too.
+}
+
+// TestAStepAndItsCommentCommitTogether: a write of an issue that carries a comment (writeIssue's
+// issueWriteCall.comment) writes the comment in its own transaction, after its own events. Refused
+// under its locks, here by R24 with the rule on, the write leaves no comment and no event. The same
+// call, taken once the child that refused it is done, leaves exactly one comment: written by
+// Dispatch's system actor with the body given, with the reference that the body makes, and with
+// its comment.created event on the issue after the issue's own event. One transaction wrote each
+// of those rows (their xmin), and the write answers the comment's event as its last on the issue.
+// The event of a system author wakes nobody.
+func TestAStepAndItsCommentCommitTogether(t *testing.T) {
+	ctx := context.Background()
+	rig := newRuleRig(t, true)
+	parent := rig.file(t, "Parent closed with a comment", "in_progress", "")
+	child := rig.file(t, "Child that holds the close", "todo", parent)
+	body := "Dispatch closed this issue once " + child + " was done."
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	call := issueWriteCall{
+		writer:      issueWriter{actor: alice, human: true},
+		key:         parent,
+		fields:      updateIssueInput{Status: new("done")},
+		outliving:   ctx,
+		adviceRoute: "PATCH /api/v1/issues/{key}",
+		comment:     &issueComment{body: body, author: parentStatusRuleActor},
+	}
+	served := directServer(rig.deps)
+
+	// storedRow is a row of the comment as stored: a comment, an event or a reference, with the
+	// transaction that wrote it.
+	type storedRow struct {
+		id, kind string
+		actor    model.Actor
+		text     string
+		seq      int
+		notify   bool
+		xmin     string
+	}
+	read := func(t *testing.T, what, query string, args ...any) []storedRow {
+		t.Helper()
+		rows, err := rig.database.Pool.Query(ctx, query, args...)
+		if err != nil {
+			t.Fatalf("read %s: %v", what, err)
+		}
+		stored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedRow, error) {
+			var got storedRow
+			err := row.Scan(&got.id, &got.kind, &got.actor.Kind, &got.actor.ID, &got.text, &got.seq, &got.notify, &got.xmin)
+			return got, err
+		})
+		if err != nil {
+			t.Fatalf("read %s: %v", what, err)
+		}
+		return stored
+	}
+	comments := func(t *testing.T) []storedRow {
+		return read(t, "the comments", `
+			select id, '', author ->> 'kind', author ->> 'id', body, 0, false, xmin::text
+			from comments where issue_key = $1 order by created_at
+		`, parent)
+	}
+	eventsAfter := func(t *testing.T, seq int) []storedRow {
+		return read(t, "the events", `
+			select id::text, type, actor ->> 'kind', actor ->> 'id', coalesce(payload ->> 'id', ''), seq, notify, xmin::text
+			from events where issue_key = $1 and seq > $2 order by seq
+		`, parent, seq)
+	}
+	lastSeq := func(t *testing.T) int {
+		t.Helper()
+		var seq int
+		if err := rig.database.Pool.QueryRow(ctx, `select last_seq from issues where key = $1`, parent).Scan(&seq); err != nil {
+			t.Fatalf("read the last_seq of %s: %v", parent, err)
+		}
+		return seq
+	}
+
+	refusedAt := lastSeq(t)
+	if _, err := served.writeIssue(ctx, call); !errors.As(err, new(*parentStatusConflict)) {
+		t.Fatalf("the close of %s with a comment over its open child answered %v, want the rule's conflict", parent, err)
+	}
+	if stored := comments(t); len(stored) != 0 {
+		t.Errorf("the refused close left the comments %+v on %s, want none", stored, parent)
+	}
+	if stored := eventsAfter(t, refusedAt); len(stored) != 0 {
+		t.Errorf("the refused close left the events %+v on %s, want none", stored, parent)
+	}
+	if status, _ := rig.issue(t, parent); status != "in_progress" {
+		t.Errorf("the refused close left %s %s, want in_progress", parent, status)
+	}
+
+	rig.move(t, child, "done")
+	written, err := served.writeIssue(ctx, call)
+	if err != nil {
+		t.Fatalf("the close of %s with a comment once its child is done: %v", parent, err)
+	}
+	stored := comments(t)
+	if len(stored) != 1 {
+		t.Fatalf("the close left the comments %+v on %s, want exactly one", stored, parent)
+	}
+	comment := stored[0]
+	if comment.actor != parentStatusRuleActor || comment.text != body {
+		t.Errorf("the comment is %q by %+v, want %q by %+v", comment.text, comment.actor, body, parentStatusRuleActor)
+	}
+	appended := eventsAfter(t, written.previousLastSeq)
+	if len(appended) != 2 ||
+		appended[0].kind != "issue.closed" || appended[0].actor != alice ||
+		appended[1].kind != "comment.created" || appended[1].actor != parentStatusRuleActor || appended[1].text != comment.id {
+		t.Fatalf("the close appended %+v on %s, want issue.closed by %+v, then comment.created of %s by %+v",
+			appended, parent, alice, comment.id, parentStatusRuleActor)
+	}
+	created := appended[1]
+	if created.notify {
+		t.Errorf("the comment.created of Dispatch's system actor notifies, want it to wake nobody")
+	}
+	references := read(t, "the comment's references", `
+		select to_id, to_kind, '', '', '', 0, false, xmin::text from refs where from_kind = 'comment' and from_id = $1
+	`, comment.id)
+	if len(references) != 1 || references[0].id != child || references[0].kind != "issue" {
+		t.Errorf("the comment's references are %+v, want one to the issue %s", references, child)
+	}
+	for _, row := range append([]storedRow{appended[0], created}, references...) {
+		if row.xmin != comment.xmin {
+			t.Errorf("the %s %s was written by transaction %s, and the comment by %s: want one transaction", row.kind, row.id, row.xmin, comment.xmin)
+		}
+	}
+	last := written.appended[len(written.appended)-1]
+	if last.Type != "comment.created" || strconv.FormatInt(last.ID, 10) != created.id || written.issue.LastSeq != created.seq {
+		t.Errorf("the write answered its last event %s %d and last_seq %d, want the comment.created %s at %d",
+			last.Type, last.ID, written.issue.LastSeq, created.id, created.seq)
+	}
 }
