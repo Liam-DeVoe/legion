@@ -12,7 +12,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -72,8 +71,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if !*doExec && len(command) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets register: unexpected argument %q\n", command[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "register")
 	}
 
 	// --exec looks its command up before it asks the helper anything, so a command that is not on
@@ -206,7 +204,7 @@ func registerWithPatience(sock string, req helper.Request, patience time.Duratio
 // command line sets it, AGENT_SECRETS_PROJECTS otherwise (brokerclient.TradeProjects), each read
 // by the broker's own rule for a list (brokerclient.ParseProjectsSetting), so a list that is no
 // list is refused, naming the setting and never the value, before the helper is asked.
-func sessionProjectsFlag(raw string, flags *flag.FlagSet) ([]string, error) {
+func sessionProjectsFlag(raw string, flags *flagSet) ([]string, error) {
 	if !flagGiven(flags, "projects") {
 		return brokerclient.TradeProjects(os.Getenv)
 	}

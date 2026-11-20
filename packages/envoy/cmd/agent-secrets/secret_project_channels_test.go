@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -83,6 +84,9 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 			_, stderr, code := runSecret(args...)
 			if code != exitUsageError || !strings.Contains(stderr, "--project-channels") || !strings.Contains(stderr, policy.ReasonProjectChannelsMalformed) {
 				t.Errorf("%q: exit %d stderr %q; want %d naming --project-channels and %s", args, code, stderr, exitUsageError, policy.ReasonProjectChannelsMalformed)
+			}
+			if value := args[len(args)-1]; !strings.Contains(stderr, valueNotPrinted) || strings.Contains(stderr, strconv.Quote(value)) {
+				t.Errorf("%q: stderr %q; want it to say %s and not to print %q", args, stderr, valueNotPrinted, value)
 			}
 		}
 		if writes.describes != 0 || writes.tags != 0 || writes.untags != 0 {

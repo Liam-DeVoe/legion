@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -180,6 +181,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 // written (policy.ParseProject), so a lowercase key, two keys, a key too short or too long and,
 // on create, the word none are each a usage error naming --project and the reason the broker
 // would refuse the secret for, refused before the sign-in is read or the store is called at all.
+// The refusal does not print the value it refused (valueNotPrinted), as no tag flag's refusal does.
 func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
@@ -199,6 +201,9 @@ func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
 		_, stderr, code := runSecret(args...)
 		if code != exitUsageError || !strings.Contains(stderr, "--project") || !strings.Contains(stderr, policy.ReasonProjectMalformed) {
 			t.Errorf("%q: exit %d stderr %q; want %d naming --project and %s", args, code, stderr, exitUsageError, policy.ReasonProjectMalformed)
+		}
+		if value := args[len(args)-1]; !strings.Contains(stderr, valueNotPrinted) || strings.Contains(stderr, strconv.Quote(value)) {
+			t.Errorf("%q: stderr %q; want it to say %s and not to print %q", args, stderr, valueNotPrinted, value)
 		}
 	}
 	if writes.describes != 0 || writes.tags != 0 || writes.untags != 0 {
