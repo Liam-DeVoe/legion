@@ -113,7 +113,11 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 // TestLeaverHoldBound holds the membership pass off and polls the three broker-facing rows by
 // the wall clock. Removing the production gate leaves the real introspection response unheld, so
-// the first failure names the broker row rather than a timer or a fake.
+// the first failure names the broker row rather than a timer or a fake. Dispatch refreshes ada
+// through a code flow no sign-in has used (withRefreshFlowOfItsOwn), as a process started after
+// her sign-in does, so a refused refresh that makes two token requests is seen: at eight seconds
+// each it overruns the refresh's 15 seconds, Google reads as not reached, nothing is held, and no
+// refresh starts for a minute, so the eight-second row fails past its bound.
 func TestLeaverHoldBound(t *testing.T) {
 	for _, row := range []struct {
 		name  string
@@ -124,7 +128,7 @@ func TestLeaverHoldBound(t *testing.T) {
 		{name: "a half-second Google refusal", delay: 500 * time.Millisecond, bound: 40 * time.Second},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r := newLeaverRig(t, withBrokerGate())
+			r := newLeaverRig(t, withBrokerGate(), withRefreshFlowOfItsOwn())
 			ada := r.person(t, adaEmail)
 			r.ageConfirmation(t, adaEmail, time.Hour-time.Second)
 			expectAnswer(t, "ada@example.com's broker token at Dispatch before the confirmation lapses", http.StatusOK, "").got(r.brokerTokenAtDispatch(t, ada))
