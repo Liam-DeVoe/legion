@@ -32,8 +32,9 @@ import { asUser } from "./users";
 // end frame's count of items. No model is called on a keystroke, which the last row counts on
 // the fakes themselves. Every row runs in the models lane alone (`bun run e2e:models`).
 
-/** The words a person asks, which the seeded issue's title answers. */
-const question = "quasar sightings log";
+/** The words a person asks, which the seeded issue answers. They are not its exact title: words
+ *  that are a hit's own key or title are answered by that hit alone, and no model is asked (R2). */
+const question = "quasar sightings";
 const title = "Quasar sightings log";
 
 /** Records, in the page, the order in which the hits, the answer's first text and the answer's

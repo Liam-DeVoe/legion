@@ -14,6 +14,7 @@ import {
   decided,
   lineOnTop,
   newestRun,
+  newIssueRun,
   openBarOver,
   planCard,
   planOnPage,
@@ -114,11 +115,14 @@ test("with a session set for new issues, Enter on File as a new issue files it a
   await setLiveSessions([{ session_id: "new-issue-session", title: "New issues" }]);
   await setNewIssueSettings({ label: "", session: "new-issue-session" });
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
-  await scriptChat({ default: prose("A new issue.") });
+  const words = "we need a spectrograph for the nebulae";
+  const title = "A spectrograph for the nebulae";
+  // The pause's short answer, and the run Enter on the line starts, which proposes the create.
+  await scriptChat({ default: prose("A new issue."), runs: [newIssueRun(words, title)] });
   const before = (await listIssues("CORE")).map((made) => made.key);
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
-    await searchBox(page).fill("we need a spectrograph for the nebulae");
+    await searchBox(page).fill(words);
     await expect(lineOnTop(page)).toContainText("File as a new issue in CORE", {
       timeout: RUN_STEPS_MS,
     });
@@ -129,7 +133,8 @@ test("with a session set for new issues, Enter on File as a new issue files it a
     const made = (await listIssues("CORE")).find((issue) => !before.includes(issue.key));
     expect(made).toBeDefined();
     const filed = await getIssue(made?.key ?? "");
-    expect(filed.title).not.toBe("");
+    expect(filed.title).toBe(title);
+    expect(filed.project).toBe("CORE");
     expect(filed.route).toContain("new-issue-session");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
   });

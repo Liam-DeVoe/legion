@@ -178,6 +178,9 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
   const words = `split ${split.parent} in two from the inbox`;
   await scriptSplit(words, split);
   const before = (await listIssues("CORE")).length;
+  // The status the first child holds, which the unticked row would set to in_progress.
+  const firstStatus = (await getIssue(split.first)).status;
+  expect(firstStatus).not.toBe("in_progress");
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/");
     await askTheAgent(page, words);
@@ -201,7 +204,7 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
 
     await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
     expect((await getIssue(split.second)).title).toBe("Raise the dome, the half that turns");
-    expect((await getIssue(split.first)).status).toBe("todo");
+    expect((await getIssue(split.first)).status).toBe(firstStatus);
     expect((await listIssues("CORE")).length).toBe(before);
   });
 });

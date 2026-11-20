@@ -13,7 +13,8 @@ import { asUser } from "./users";
 // the text frame as raw HTML would put a link or an image in the prose, which this row catches.
 
 const title = "Quasar sightings log";
-const question = "quasar sightings log";
+/** Not the issue's exact title, which the bar answers with the hit alone and asks no model (R2). */
+const question = "quasar sightings";
 
 // SLOW(>=2s): a seeded issue, a decision and an answer.
 test("the model's links, image, bare address and tag show as text, and the only links are the item frames", async ({

@@ -1,6 +1,7 @@
 import { createIssue, createIssueArtifact, createProject, documentBase, search } from "./api";
-import type { ChatReply } from "./fake-chat-model";
+import type { ChatReply, ChatRunScript } from "./fake-chat-model";
 import type { DecisionReply } from "./fake-decision-model";
+import { proposePlan, say } from "./fake-models-helpers";
 import { expect, type Locator, type Page } from "./test";
 
 // What the command bar's rows share: the bar, its answer panel, opening the bar over a page,
@@ -169,23 +170,30 @@ export async function shownWords(page: Page): Promise<string[]> {
   return text.split(/\s+/).filter((word) => word !== "");
 }
 
-/** A decision of `action` at `confidence`, about the items the words name, with no runner-up
- *  unless `runnerUp` names one: the probabilities are written out, so the two best are the
- *  row's own and not the fake's even share of the rest. */
-export function decided(
-  action: string,
-  confidence: number,
-  runnerUp?: string,
-  display?: DecisionReply["display"]
-): DecisionReply {
+/** A decision of `action` at `confidence`, about the items the words name: the probabilities
+ *  are written out, so the action holds them all and not the fake's even share of the rest. */
+export function decided(action: string, confidence: number): DecisionReply {
   return {
-    action: {
-      choice: action,
-      confidence,
-      probabilities: runnerUp === undefined ? { [action]: 1 } : { [action]: 0.6, [runnerUp]: 0.3 },
-    },
+    action: { choice: action, confidence, probabilities: { [action]: 1 } },
     context: { choice: "named", confidence: 0.99 },
-    ...(display === undefined ? {} : { display }),
+  };
+}
+
+/** The run Enter on File as a new issue starts for `words`, as the fake writing model answers it:
+ *  one plan of one create of an issue of CORE titled `title`, which the server files at once, as
+ *  the agent's new-issue prompt asks (`going/agent/prompt.go`). */
+export function newIssueRun(words: string, title: string): ChatRunScript {
+  return {
+    afterwards: say("Filed."),
+    turns: [
+      proposePlan(`File ${title} in CORE.`, [
+        {
+          arguments: { project: "CORE", spec: `${words}.\n`, title },
+          tool: "dispatch_issue",
+        },
+      ]),
+    ],
+    words,
   };
 }
 

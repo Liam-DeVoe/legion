@@ -16,6 +16,7 @@ import {
   decided,
   lineOnTop,
   newestRun,
+  newIssueRun,
   openBarOver,
   prose,
   RUN_STEPS_MS,
@@ -153,11 +154,16 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
   await setLiveSessions([{ session_id: "new-issue-owner", title: "Owner of new issues" }]);
   await setNewIssueSettings({ label: "", session: "new-issue-owner" });
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
-  await scriptChat({ default: prose("A new issue.") });
+  const words = "we need a shutter for the dome";
+  // The pause's short answer, and the run Enter on the line starts, which proposes the create.
+  await scriptChat({
+    default: prose("A new issue."),
+    runs: [newIssueRun(words, "A shutter for the dome")],
+  });
   const before = (await listIssues("CORE")).map((issue) => issue.key);
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
-    await searchBox(page).fill("we need a shutter for the dome");
+    await searchBox(page).fill(words);
     await expect(lineOnTop(page)).toContainText("File as a new issue", { timeout: RUN_STEPS_MS });
     await searchBox(page).press("Enter");
     await expect(newestRun(page).getByTestId("going-undo-button")).toBeVisible({

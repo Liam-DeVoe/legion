@@ -17,11 +17,12 @@ import { withAlice } from "./users";
 // server's, from the chain the fake asks for over its read, never the number the fake writes in its
 // text. Negative control: a bar that draws the numbers the model wrote shows the wrong number.
 
-/** The value the chart draws for the point whose label matches `label`. */
-function chartValue(chart: Locator, label: RegExp): Locator {
+/** The value the chart draws for the point of `status`, whether the chart writes it as stored
+ *  (`in_progress`) or in words (`In progress`). */
+function chartValue(chart: Locator, status: string): Locator {
   return chart
     .getByTestId("going-block-chart-point")
-    .filter({ hasText: label })
+    .filter({ hasText: new RegExp(status.replaceAll("_", "[_ ]"), "i") })
     .locator("td")
     .nth(1);
 }
@@ -106,12 +107,12 @@ test("each number of a chart is the server's count over the read, and the number
   modelsLane();
   test.setTimeout(90_000);
   await createProject({ key: "CORE", name: "Core" });
-  for (const title of ["Grind the lens", "Silver the mirror", "Align the finder"]) {
+  for (const title of ["Grind the lens", "Silver the mirror"]) {
     const made = await createIssue({ project: "CORE", title });
-    if (title !== "Align the finder") {
-      await patchIssue(made.key, { status: "in_progress" });
-    }
+    await patchIssue(made.key, { status: "in_progress" });
   }
+  // The third issue keeps the status a new issue is given.
+  const unstarted = (await createIssue({ project: "CORE", title: "Align the finder" })).status;
   const words = "chart CORE's issues by status";
   await scriptChat({
     default: prose("A short answer while the person pauses."),
@@ -140,9 +141,9 @@ test("each number of a chart is the server's count over the read, and the number
     const chart = run.getByTestId("going-block");
     await expect(chart).toHaveAttribute("data-kind", "chart", { timeout: RUN_STEPS_MS });
     await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-    // Two issues are in progress and one is to do, each count beside its own status.
-    await expect(chartValue(chart, /progress/i)).toHaveText("2");
-    await expect(chartValue(chart, /todo/i)).toHaveText("1");
+    // Two issues are in progress and one keeps a new issue's status, each count beside its own.
+    await expect(chartValue(chart, "in_progress")).toHaveText("2");
+    await expect(chartValue(chart, unstarted)).toHaveText("1");
     await expect(chart).not.toContainText("47");
   });
 });
