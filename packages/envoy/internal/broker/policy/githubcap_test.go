@@ -10,33 +10,32 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// ossvAppChecks is OS Verify's OSSV_APP_CHECKS as the deployment that holds it declares it
-// (dispatch://INFRA-3885): the OSS Verify App's key, owned by the legion-daemon service, its tokens
-// capped to one repository of acme-org, oss-verify-proofs, and checks: write, asked for by OSSV's pods of that
-// service alone. The tag keys are written out rather than read from the package's constants, so
-// this fixture builds against a broker from before the cap and its test there is the rollback's
-// own reading.
-func ossvAppChecks() secrets.LocalSecret {
-	s := policytest.TypeSecret("OSSV_APP_CHECKS", "legion-daemon", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+// cappedApp is a github-app secret of a placeholder App whose tokens are capped to one repository
+// of acme-org, proofs, and checks: write, owned by the legion-daemon service and asked for by the
+// OSSV project's pods of that service alone (the shape dispatch://INFRA-3885 needs). The tag keys
+// are written out rather than read from the package's constants, so this fixture builds against
+// a broker from before the cap and its test there is the rollback's own reading.
+func cappedApp() secrets.LocalSecret {
+	s := policytest.TypeSecret("CAPPED_APP", "legion-daemon", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	s.Tags["github-owners"] = "acme-org"
-	s.Tags["github-repositories"] = "oss-verify-proofs"
+	s.Tags["github-repositories"] = "proofs"
 	s.Tags["github-permissions"] = "checks:write"
 	s.Tags["requesters"] = "legion-daemon/OSSV"
 	return s
 }
 
-// TestACappedSecretListingAProjectsPodsIsServed: OSSV_APP_CHECKS loads and is served. It uses no API
+// TestACappedSecretListingAProjectsPodsIsServed: CAPPED_APP loads and is served. It uses no API
 // a broker from before project requester entries lacks, so it runs at that broker too, and there it
 // fails: that broker reads legion-daemon/OSSV as a service no deployment registers and refuses the
 // whole secret as requesters-malformed, which is what makes a rollback serve it to nobody rather
 // than to every pod of legion-daemon.
 func TestACappedSecretListingAProjectsPodsIsServed(t *testing.T) {
-	set := policytest.Current(t, secrets.NewLocal(ossvAppChecks()), "legion-daemon").Get()
-	if refusal, refused := set.Refused[policytest.ID("OSSV_APP_CHECKS")]; refused {
-		t.Fatalf("OSSV_APP_CHECKS refused %s, want served", refusal.Reason)
+	set := policytest.Current(t, secrets.NewLocal(cappedApp()), "legion-daemon").Get()
+	if refusal, refused := set.Refused[policytest.ID("CAPPED_APP")]; refused {
+		t.Fatalf("CAPPED_APP refused %s, want served", refusal.Reason)
 	}
-	if _, served := set.Secrets["OSSV_APP_CHECKS"]; !served {
-		t.Fatalf("OSSV_APP_CHECKS is not served (served: %v)", set.Secrets)
+	if _, served := set.Secrets["CAPPED_APP"]; !served {
+		t.Fatalf("CAPPED_APP is not served (served: %v)", set.Secrets)
 	}
 }
 
@@ -46,7 +45,7 @@ func TestACappedSecretListingAProjectsPodsIsServed(t *testing.T) {
 // naming the project with no service are each denied requester-not-listed, before owner and tier
 // are read. The secret's cap reaches the minter as one repository and one permission.
 func TestAProjectRequesterEntryServesThatProjectsPodsAlone(t *testing.T) {
-	set := policytest.Current(t, secrets.NewLocal(ossvAppChecks()), "legion-daemon", "other-service").Get()
+	set := policytest.Current(t, secrets.NewLocal(cappedApp()), "legion-daemon", "other-service").Get()
 	for _, tc := range []struct {
 		name string
 		r    policy.Requester
@@ -61,7 +60,7 @@ func TestAProjectRequesterEntryServesThatProjectsPodsAlone(t *testing.T) {
 		{"a lowercase project", policy.Requester{Service: "legion-daemon", Project: "ossv"}, policy.Deny},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d, err := set.Evaluate("OSSV_APP_CHECKS", tc.r)
+			d, err := set.Evaluate("CAPPED_APP", tc.r)
 			if err != nil || d.Outcome != tc.want {
 				t.Fatalf("Evaluate = %+v, %v; want %s", d, err, tc.want)
 			}
@@ -70,8 +69,8 @@ func TestAProjectRequesterEntryServesThatProjectsPodsAlone(t *testing.T) {
 			}
 		})
 	}
-	want := secrets.GitHubCap{Repositories: []string{"oss-verify-proofs"}, Permissions: map[string]string{"checks": "write"}}
-	if got := set.Secrets["OSSV_APP_CHECKS"].GitHubCap(); !reflect.DeepEqual(got, want) {
+	want := secrets.GitHubCap{Repositories: []string{"proofs"}, Permissions: map[string]string{"checks": "write"}}
+	if got := set.Secrets["CAPPED_APP"].GitHubCap(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("GitHubCap = %+v, want %+v", got, want)
 	}
 }
@@ -82,7 +81,7 @@ func TestAProjectRequesterEntryServesThatProjectsPodsAlone(t *testing.T) {
 // cannot apply is ever served as though it held.
 func TestTheLoaderRefusesAMalformedOrMisplacedCap(t *testing.T) {
 	edit := func(name string, change func(*secrets.LocalSecret)) secrets.LocalSecret {
-		s := ossvAppChecks()
+		s := cappedApp()
 		s.Name = policytest.ID(name)
 		change(&s)
 		return s
@@ -92,7 +91,7 @@ func TestTheLoaderRefusesAMalformedOrMisplacedCap(t *testing.T) {
 		reason string
 	}{
 		"REPOS_COMMA":     {edit("REPOS_COMMA", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a,b" }), policy.ReasonGitHubRepositoriesMalformed},
-		"REPOS_OWNER":     {edit("REPOS_OWNER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "acme-org/oss-verify-proofs" }), policy.ReasonGitHubRepositoriesMalformed},
+		"REPOS_OWNER":     {edit("REPOS_OWNER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "acme-org/proofs" }), policy.ReasonGitHubRepositoriesMalformed},
 		"REPOS_EMPTY":     {edit("REPOS_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = " " }), policy.ReasonGitHubRepositoriesMalformed},
 		"REPOS_TWICE":     {edit("REPOS_TWICE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a A" }), policy.ReasonGitHubRepositoriesMalformed},
 		"PERMS_LEVEL":     {edit("PERMS_LEVEL", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks:admin" }), policy.ReasonGitHubPermissionsMalformed},
@@ -128,7 +127,7 @@ func TestTheLoaderRefusesAMalformedOrMisplacedCap(t *testing.T) {
 // wrote before the cap existed (the golden digest tests).
 func TestACapIsInThePolicyVersion(t *testing.T) {
 	versionOf := func(change func(*secrets.LocalSecret)) string {
-		s := ossvAppChecks()
+		s := cappedApp()
 		change(&s)
 		return policytest.Current(t, secrets.NewLocal(s), "legion-daemon").Get().Version
 	}

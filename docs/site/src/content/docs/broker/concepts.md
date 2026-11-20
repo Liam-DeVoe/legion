@@ -386,7 +386,7 @@ marked with tags or annotations:
 - **`github-repositories`** and **`github-permissions`** are optional, read on a `github-app`
   secret and refused on any other type (`github-cap-type`). They cap every token the secret mints:
   `github-repositories` names repositories of the one account `github-owners` lists, by name
-  alone and separated by spaces (`oss-verify-proofs`), and `github-permissions` names
+  alone and separated by spaces (`proofs widgets`), and `github-permissions` names
   `<permission>:<read|write>` entries as GitHub's token request spells them (`checks:write`). The
   broker sends the cap in GitHub's own installation-token request on every release, check and
   airlock mint, so GitHub mints nothing wider whatever the caller asked, and it refuses a token

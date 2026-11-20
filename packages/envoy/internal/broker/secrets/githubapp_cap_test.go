@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// checksCap is the cap OS Verify's OSSV_APP_CHECKS carries (dispatch://INFRA-3885): one repository
-// of the one account its github-owners lists, and checks: write alone.
-var checksCap = secrets.GitHubCap{Repositories: []string{"oss-verify-proofs"}, Permissions: map[string]string{"checks": "write"}}
+// checksCap is the cap of the secret these tests mint from, a placeholder App's: one repository of
+// the one account its github-owners lists, and checks: write alone.
+var checksCap = secrets.GitHubCap{Repositories: []string{"proofs"}, Permissions: map[string]string{"checks": "write"}}
 
 // cappedMint is a release of value under checksCap for ada, the one account the secret lists,
 // narrowed by narrowing (nil for none).
@@ -24,7 +24,7 @@ func cappedMint(value string, narrowing *secrets.GitHubNarrowing) secrets.MintRe
 // TestGitHubAppMintSendsTheSecretsCapToGitHub: a capped secret's every mint asks GitHub for a token
 // carrying the cap in GitHub's own access_tokens body, so GitHub mints nothing wider whatever the
 // caller asked: a release with no narrowing, a narrowing to the owner alone, a narrowing to the
-// cap's own repository, and a check, each send exactly {"repositories":["oss-verify-proofs"],
+// cap's own repository, and a check, each send exactly {"repositories":["proofs"],
 // "permissions":{"checks":"write"}} for the one listed account's installation and no other. A
 // release with no narrowing and no cap is today's: no body.
 func TestGitHubAppMintSendsTheSecretsCapToGitHub(t *testing.T) {
@@ -34,8 +34,8 @@ func TestGitHubAppMintSendsTheSecretsCapToGitHub(t *testing.T) {
 	}
 	github := newNarrowingGitHub(t)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
-	value := githubAppValue(t, "5447700", key)
-	want := map[string]any{"repositories": []any{"oss-verify-proofs"}, "permissions": map[string]any{"checks": "write"}}
+	value := githubAppValue(t, "123456", key)
+	want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"checks": "write"}}
 
 	for _, tc := range []struct {
 		name  string
@@ -44,7 +44,7 @@ func TestGitHubAppMintSendsTheSecretsCapToGitHub(t *testing.T) {
 	}{
 		{"no narrowing", cappedMint(value, nil), false},
 		{"the owner alone", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada"}), false},
-		{"the cap's repository", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"OSS-Verify-Proofs"}}), false},
+		{"the cap's repository", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"Proofs"}}), false},
 		{"a check", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada"}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,7 +62,7 @@ func TestGitHubAppMintSendsTheSecretsCapToGitHub(t *testing.T) {
 				t.Fatalf("token request body %q: %v", tokens[0].body, err)
 			}
 			if tc.name == "the cap's repository" {
-				want := map[string]any{"repositories": []any{"OSS-Verify-Proofs"}, "permissions": map[string]any{"checks": "write"}}
+				want := map[string]any{"repositories": []any{"Proofs"}, "permissions": map[string]any{"checks": "write"}}
 				if !reflect.DeepEqual(body, want) {
 					t.Fatalf("token request body = %v, want %v", body, want)
 				}
@@ -101,7 +101,7 @@ func TestGitHubAppMintRefusesANarrowingPastTheCap(t *testing.T) {
 	}
 	github := newNarrowingGitHub(t)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
-	value := githubAppValue(t, "5447700", key)
+	value := githubAppValue(t, "123456", key)
 
 	for _, tc := range []struct {
 		name  string
@@ -109,7 +109,7 @@ func TestGitHubAppMintRefusesANarrowingPastTheCap(t *testing.T) {
 		class error
 		names string
 	}{
-		{"another repository", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"oss-verify-proofs", "widgets"}}), secrets.ErrMintNarrowingRefused, "widgets"},
+		{"another repository", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"proofs", "widgets"}}), secrets.ErrMintNarrowingRefused, "widgets"},
 		{"read-only", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}), secrets.ErrMintNarrowingRefused, "checks:write"},
 		{"two accounts", secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubCap: checksCap}, secrets.ErrMintRefused, "one account"},
 	} {
@@ -136,7 +136,7 @@ func TestGitHubAppMintRefusesATokenWiderThanTheCap(t *testing.T) {
 	}
 	github := newNarrowingGitHub(t)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
-	value := githubAppValue(t, "5447700", key)
+	value := githubAppValue(t, "123456", key)
 	answer := func(permissions map[string]string, repositories ...string) func(string, []byte) (int, any) {
 		return func(installation string, _ []byte) (int, any) {
 			var named []map[string]string
@@ -155,12 +155,12 @@ func TestGitHubAppMintRefusesATokenWiderThanTheCap(t *testing.T) {
 		answer  func(string, []byte) (int, any)
 		refused bool
 	}{
-		{"exactly the cap and metadata", answer(map[string]string{"checks": "write", "metadata": "read"}, "oss-verify-proofs"), false},
-		{"checks read", answer(map[string]string{"checks": "read"}, "oss-verify-proofs"), false},
-		{"contents write too", answer(map[string]string{"checks": "write", "contents": "write"}, "oss-verify-proofs"), true},
-		{"metadata write", answer(map[string]string{"checks": "write", "metadata": "write"}, "oss-verify-proofs"), true},
-		{"no permissions named", answer(map[string]string{}, "oss-verify-proofs"), true},
-		{"another repository", answer(map[string]string{"checks": "write"}, "oss-verify-proofs", "widgets"), true},
+		{"exactly the cap and metadata", answer(map[string]string{"checks": "write", "metadata": "read"}, "proofs"), false},
+		{"checks read", answer(map[string]string{"checks": "read"}, "proofs"), false},
+		{"contents write too", answer(map[string]string{"checks": "write", "contents": "write"}, "proofs"), true},
+		{"metadata write", answer(map[string]string{"checks": "write", "metadata": "write"}, "proofs"), true},
+		{"no permissions named", answer(map[string]string{}, "proofs"), true},
+		{"another repository", answer(map[string]string{"checks": "write"}, "proofs", "widgets"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			github.setAnswer(tc.answer)

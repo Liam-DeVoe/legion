@@ -1,4 +1,5 @@
-// project_requester_test.go drives OS Verify's OSSV_APP_CHECKS (dispatch://INFRA-3885) through the
+// project_requester_test.go drives a capped secret of a placeholder App (the shape
+// dispatch://INFRA-3885 needs) through the
 // request machine: a secret whose requesters name one Dispatch project's pods of the legion-daemon
 // service (legion-daemon/OSSV), and whose github-repositories and github-permissions tags cap
 // every token it mints. Every Legion project's issue pods run as the one account legion-worker,
@@ -40,24 +41,24 @@ const (
 	legionDaemon      = "legion-daemon"
 )
 
-// ossvAppChecksSecret is OSSV_APP_CHECKS as the deployment that holds it declares it, under the
-// example account acme-org.
-func ossvAppChecksSecret() secrets.LocalSecret {
-	s := policytest.TypeSecret("OSSV_APP_CHECKS", legionDaemon, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+// cappedAppSecret is a github-app secret of a placeholder App under the example account acme-org,
+// capped to its repository proofs and checks: write, asked for by OSSV's legion-daemon pods alone.
+func cappedAppSecret() secrets.LocalSecret {
+	s := policytest.TypeSecret("CAPPED_APP", legionDaemon, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	s.Tags[policy.TagGitHubOwners] = "acme-org"
-	s.Tags[policy.TagGitHubRepositories] = "oss-verify-proofs"
+	s.Tags[policy.TagGitHubRepositories] = "proofs"
 	s.Tags[policy.TagGitHubPermissions] = "checks:write"
 	s.Tags[policy.TagRequesters] = legionDaemon + "/OSSV"
 	return s
 }
 
-// projectFixture is a Machine over OSSV_APP_CHECKS with legion/'s accounts as the broker reads them
+// projectFixture is a Machine over CAPPED_APP with legion/'s accounts as the broker reads them
 // from BROKER_SERVICES, BROKER_SERVICE_LOGINS and BROKER_EXCHANGE_ACCOUNTS, and a github-app minter
 // that records every request it is given.
 func projectFixture(t *testing.T) (*Machine, *[]secrets.MintRequest) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(ossvAppChecksSecret())
+	local := secrets.NewLocal(cappedAppSecret())
 	projects := map[string]string{
 		legionOssvDaemon: "OSSV", legionInfraDaemon: "INFRA",
 		legionOssvWorker: "OSSV", legionInfraWorker: "INFRA",
@@ -115,7 +116,7 @@ func podLaunchedBy(t *testing.T, st *store.Store, launcher, account string) (str
 	return id, key
 }
 
-// TestAProjectsPodsAloneGetTheCappedToken: OSSV_APP_CHECKS goes at once to a pod of legion-daemon
+// TestAProjectsPodsAloneGetTheCappedToken: CAPPED_APP goes at once to a pod of legion-daemon
 // whose project is OSSV — a legion-worker pod OSSV's daemon launched, or a pod running as OSSV's own
 // account — and its release with no narrowing hands the minter the secret's cap, one repository
 // and checks: write, so the token GitHub mints is capped whatever the pod asked. Every other pod is
@@ -125,7 +126,7 @@ func podLaunchedBy(t *testing.T, st *store.Store, launcher, account string) (str
 func TestAProjectsPodsAloneGetTheCappedToken(t *testing.T) {
 	ctx := context.Background()
 	m, minted := projectFixture(t)
-	wantCap := secrets.GitHubCap{Repositories: []string{"oss-verify-proofs"}, Permissions: map[string]string{"checks": "write"}}
+	wantCap := secrets.GitHubCap{Repositories: []string{"proofs"}, Permissions: map[string]string{"checks": "write"}}
 
 	for _, pod := range []struct{ name, launcher, account string }{
 		{"a legion-worker pod OSSV's daemon launched", legionOssvDaemon, legionWorker},
@@ -134,12 +135,12 @@ func TestAProjectsPodsAloneGetTheCappedToken(t *testing.T) {
 		t.Run(pod.name, func(t *testing.T) {
 			*minted = nil
 			id, key := podLaunchedBy(t, m.Store, pod.launcher, pod.account)
-			req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "OSSV_APP_CHECKS"), "", nil)
+			req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "CAPPED_APP"), "", nil)
 			if err != nil || req.State != "granted" || req.GrantID == nil {
 				t.Fatalf("Create = %+v, %v; want granted at once", req, err)
 			}
 			release, err := m.Values(ctx, *req.GrantID, id, nil, ReleaseCall{})
-			if err != nil || release.Values["OSSV_APP_CHECKS"] != "capped-token" {
+			if err != nil || release.Values["CAPPED_APP"] != "capped-token" {
 				t.Fatalf("Values = %v, %v; want the minted token", release.Values, err)
 			}
 			if len(*minted) != 1 || (*minted)[0].GitHubNarrowing != nil || !reflect.DeepEqual((*minted)[0].GitHubCap, wantCap) {
@@ -156,8 +157,8 @@ func TestAProjectsPodsAloneGetTheCappedToken(t *testing.T) {
 		t.Run(pod.name, func(t *testing.T) {
 			*minted = nil
 			id, key := podLaunchedBy(t, m.Store, pod.launcher, pod.account)
-			req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "OSSV_APP_CHECKS"), "", nil)
-			const want = "OSSV_APP_CHECKS: " + policy.ReasonRequesterNotListed
+			req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "CAPPED_APP"), "", nil)
+			const want = "CAPPED_APP: " + policy.ReasonRequesterNotListed
 			if err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil || *req.Detail != want {
 				t.Fatalf("Create = %+v, %v; want denied with %q and no grant", req, err, want)
 			}
@@ -168,14 +169,14 @@ func TestAProjectsPodsAloneGetTheCappedToken(t *testing.T) {
 	}
 }
 
-// TestAGrantEndsWhenThePodsProjectIsNoLongerNamed: a live grant of OSSV_APP_CHECKS stops releasing
+// TestAGrantEndsWhenThePodsProjectIsNoLongerNamed: a live grant of CAPPED_APP stops releasing
 // once the deployment stops naming the pod's project, at its next release, as a service mapping
 // dropped from BROKER_SERVICES does: the project is read on every release, not frozen at the grant.
 func TestAGrantEndsWhenThePodsProjectIsNoLongerNamed(t *testing.T) {
 	ctx := context.Background()
 	m, minted := projectFixture(t)
 	id, key := podLaunchedBy(t, m.Store, legionOssvDaemon, legionWorker)
-	req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "OSSV_APP_CHECKS"), "", nil)
+	req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "CAPPED_APP"), "", nil)
 	if err != nil || req.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", req, err)
 	}
@@ -200,7 +201,7 @@ func TestANarrowingPastTheCapIsRefusedBeforeAnyMint(t *testing.T) {
 	ctx := context.Background()
 	m, minted := projectFixture(t)
 	id, key := podLaunchedBy(t, m.Store, legionOssvDaemon, legionWorker)
-	req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "OSSV_APP_CHECKS"), "", nil)
+	req, err := m.Create(ctx, id, signRequestFor(t, m, key, anHour, "CAPPED_APP"), "", nil)
 	if err != nil || req.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", req, err)
 	}
@@ -209,14 +210,14 @@ func TestANarrowingPastTheCapIsRefusedBeforeAnyMint(t *testing.T) {
 		{Owner: "acme-org", ReadOnly: true},
 	} {
 		release, err := m.Values(ctx, *req.GrantID, id, narrowing, ReleaseCall{})
-		if !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "OSSV_APP_CHECKS") || release.Values != nil {
-			t.Fatalf("Values(%+v) = %v, %v; want ErrMintNarrowingRefused naming OSSV_APP_CHECKS, nothing released", narrowing, release.Values, err)
+		if !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "CAPPED_APP") || release.Values != nil {
+			t.Fatalf("Values(%+v) = %v, %v; want ErrMintNarrowingRefused naming CAPPED_APP, nothing released", narrowing, release.Values, err)
 		}
 	}
 	if len(*minted) != 0 {
 		t.Fatalf("a narrowing past the cap reached the minter %d times", len(*minted))
 	}
-	within := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"oss-verify-proofs"}}
+	within := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}
 	if _, err := m.Values(ctx, *req.GrantID, id, within, ReleaseCall{}); err != nil {
 		t.Fatalf("Values within the cap: %v", err)
 	}
