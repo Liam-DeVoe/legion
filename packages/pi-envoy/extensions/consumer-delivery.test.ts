@@ -882,6 +882,54 @@ describe("consumer delivery", () => {
     }
   });
 
+  // The pane note and the log line of that episode say what the card says: the listener did not
+  // record the registration, and then that it recorded one. None says that the session receives
+  // nothing, that its inbound messages are unavailable, or that they are back.
+  test("(e) the pane and the log tell a bus-outage 503 past the bound as a registration the listener did not record, and the accepted registration after it as one it recorded", async () => {
+    const logged: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.message.startsWith("envoy: ")) logged.push(`${entry.level} ${entry.message}`);
+    });
+    const session = await bootConsumer("consumer-unrecorded-lines", {
+      refuse: { status: 503, error: UNRECORDED },
+    });
+    const start = Date.now();
+    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
+    const claims = /receive[sd]? (nothing|again)|inbound messages are/;
+    try {
+      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await settle();
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      await refusedTick(session);
+      expect(session.notifications).toContain(
+        `envoy: the listener did not record this session's registration (${UNRECORDED}), and the session registers again at every heartbeat`
+      );
+      expect(logged).toContain(
+        `warn envoy: the listener did not record this session's registration: ${UNRECORDED}`
+      );
+
+      session.accept();
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 16_000));
+      await session.tick();
+      const restored = session.cards("Envoy inbound restored");
+      expect(restored).toHaveLength(1);
+      expect(restored[0]?.content).toContain(
+        "The listener recorded a registration of this session"
+      );
+      expect(restored[0]?.content).not.toMatch(/receive[sd]? nothing/);
+      expect(session.notifications).toContain(
+        "envoy: the listener recorded a registration of this session"
+      );
+      expect(logged).toContain("info envoy: the listener recorded a registration of this session");
+      expect(session.notifications.filter((message) => claims.test(message))).toEqual([]);
+      expect(logged.filter((line) => claims.test(line))).toEqual([]);
+    } finally {
+      setSystemTime();
+      await session.stop();
+      stopSink();
+    }
+  });
+
   // Row (d) of check l23, for this plugin (R24 of dispatch://INFRA-3589): a session that stops
   // while a heartbeat's pass waits behind a registration on the wire is told nothing. Its stop
   // closes the relay on purpose and deletes the record next, so no registration runs once the

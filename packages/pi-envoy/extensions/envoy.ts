@@ -40,6 +40,7 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  isUnrecordedRegistration,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -3305,31 +3306,48 @@ export default function envoyExtension(hostApi: PiApi): void {
     await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
-  // Said once per outage: the listener refused this session's registration, so no consumer
-  // delivers to it and Envoy inbound is unavailable. The session still starts and runs; the
-  // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
-  // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
-  // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted. A session whose first relay open is still being tried at
-  // its start is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. Once a registration is
-  // accepted after a told outage, the session is told once that it receives again, by the same
-  // path, so it learns that what the stream stored meanwhile is arriving. A session whose stop has
-  // begun is told neither (`stopping`): the stop closed the relay on purpose, and the record is
-  // deleted next.
+  // Said once per outage: the listener refused this session's registration or did not record it,
+  // or the session holds no relay subject. The session still runs, and the heartbeat registers
+  // again every tick until one is accepted. `why` is the error's message: for a refusal, the
+  // listener's own, with a reason `ErrorWireSchema.reason` lists. `inboundUnavailableNoticeText`
+  // words it for every host. A refusal leaves the session no consumer. After a bus-outage 503
+  // (`isUnrecordedRegistration`) the consumer may still deliver, so the log line and the pane
+  // note say only that the listener did not record the registration. A first relay open still
+  // being tried at the start, or a run of bus-outage 503s, is told only once
+  // `INBOUND_FIRST_OPEN_BOUND_MS` has passed. An accepted registration after a told outage tells
+  // the session once, by the same path, worded for the `why` it was told. A session whose stop
+  // has begun is told neither (`stopping`): the stop closed the relay on purpose, and the record
+  // is deleted next.
   const inboundOutage = inboundUnavailable(
     (why) => {
-      logger.warn(`envoy: this session receives nothing: ${why}`);
-      activeSessionContext?.ui.notify(
-        `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-        "warning"
-      );
+      if (isUnrecordedRegistration(why)) {
+        logger.warn(`envoy: the listener did not record this session's registration: ${why}`);
+        activeSessionContext?.ui.notify(
+          `envoy: the listener did not record this session's registration (${why}), and the session registers again at every heartbeat`,
+          "warning"
+        );
+      } else {
+        logger.warn(`envoy: this session receives nothing: ${why}`);
+        activeSessionContext?.ui.notify(
+          `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
+          "warning"
+        );
+      }
       unwritten.sendNotice(inboundUnavailableNoticeText(why));
     },
     {
-      restored: () => {
-        logger.info("envoy: this session receives again: a registration was accepted");
-        activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
-        unwritten.sendNotice(inboundRestoredNoticeText());
+      restored: (toldWhy) => {
+        if (isUnrecordedRegistration(toldWhy)) {
+          logger.info("envoy: the listener recorded a registration of this session");
+          activeSessionContext?.ui.notify(
+            "envoy: the listener recorded a registration of this session",
+            "info"
+          );
+        } else {
+          logger.info("envoy: this session receives again: a registration was accepted");
+          activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
+        }
+        unwritten.sendNotice(inboundRestoredNoticeText(toldWhy));
       },
       stopping: () => shuttingDown,
     }
@@ -4282,8 +4300,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       await establish();
     } catch (error) {
       // Whatever the pass failed at: the NATS connection it dials, the relay subject it opens
-      // for the session's consumer, or the registration the listener refused. The session runs
-      // either way, and it receives nothing until a pass gets through.
+      // for the session's consumer, or the registration the listener refused or did not record.
+      // The session runs either way. Until a pass gets through, a message reaches it only from a
+      // consumer the listener made before a bus-outage 503 (`isBusUnanswered`).
       context.ui.notify(
         `envoy: this session is not registered (${messageFor(error)}); retrying in the background`,
         "warning"

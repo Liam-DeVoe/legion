@@ -18,6 +18,7 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  isUnrecordedRegistration,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
@@ -1285,35 +1286,48 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * Said once per outage: the listener refused this session's registration, so it has no consumer
-   * and receives nothing. The session still runs, and the heartbeat registers again every tick
-   * until one is accepted; the reason is the listener's own, one of those
-   * `ErrorWireSchema.reason` lists (`@legion/envoy-client`'s `transport.ts`), which the error
-   * carries in its message and which `inboundUnavailableNoticeText` words for every host. Once a
-   * registration is accepted after a told outage, the session is told once that it receives
-   * again, by the same path, so it learns that what the stream stored meanwhile is arriving. A
-   * session whose shutdown has begun is told neither (`stopping`): the shutdown closed the relay
-   * on purpose, and the record is deleted next.
+   * Said once per outage: the listener refused this session's registration or did not record it,
+   * or the session holds no relay subject. The session still runs, and the heartbeat registers
+   * again every tick until one is accepted. `why` is the error's message: for a refusal, the
+   * listener's own, with a reason `ErrorWireSchema.reason` lists. `inboundUnavailableNoticeText`
+   * words it for every host. A refusal leaves the session no consumer. After a bus-outage 503
+   * (`isUnrecordedRegistration`) the consumer may still deliver, so the stderr lines say only that
+   * the listener did not record the registration. An accepted registration after a told outage
+   * tells the session once, by the same path, worded for the `why` it was told. A session whose
+   * shutdown has begun is told neither (`stopping`): the shutdown closed the relay on purpose, and
+   * the record is deleted next.
    */
   const inboundOutage = inboundUnavailable(
     (why) => {
+      const unrecorded = isUnrecordedRegistration(why)
       process.stderr.write(
-        `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
+        unrecorded
+          ? `envoy-channel: the listener did not record this session's registration (${why}), and the session registers again at every heartbeat\n`
+          : `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
+      const told = unrecorded
+        ? "that the listener did not record its registration"
+        : "that it receives nothing"
       delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
         process.stderr.write(
-          `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
+          `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
         )
       })
     },
     {
-      restored: () => {
+      restored: (toldWhy) => {
+        const unrecorded = isUnrecordedRegistration(toldWhy)
         process.stderr.write(
-          "envoy-channel: this session receives again: a registration was accepted\n",
+          unrecorded
+            ? "envoy-channel: the listener recorded a registration of this session\n"
+            : "envoy-channel: this session receives again: a registration was accepted\n",
         )
-        delivery.notice(inboundRestoredNoticeText()).catch((noticeError: unknown) => {
+        const told = unrecorded
+          ? "that the listener recorded its registration"
+          : "that it receives again"
+        delivery.notice(inboundRestoredNoticeText(toldWhy)).catch((noticeError: unknown) => {
           process.stderr.write(
-            `envoy-channel: the session could not be told that it receives again — ${messageFor(noticeError)}\n`,
+            `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
           )
         })
       },

@@ -832,20 +832,30 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
 }
 
 /**
+ * Whether `why`, the message `inboundUnavailable` told a session, is a registration the listener
+ * did not record: the bus-outage 503 (`isBusUnanswered`), whose message begins with
+ * `BUS_UNANSWERED_PREFIX`. Each host picks the words of its own one-line texts by this, so no host
+ * tests the prefix itself.
+ */
+export function isUnrecordedRegistration(why: string): boolean {
+  return why.startsWith(BUS_UNANSWERED_PREFIX);
+}
+
+/**
  * What a session is told when the listener can give it no consumer, worded once for every host:
  * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
  * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
  * `why` is the listener's own message, which carries its machine-readable reason. Each host
  * shows it where it shows a gap notice and says once per outage.
  *
- * A `why` that begins with the bus-outage prefix (`BUS_UNANSWERED_PREFIX`) is a registration the
- * listener did not record, because its message bus did not answer in time (`isBusUnanswered`).
+ * A `why` that begins with the bus-outage prefix (`isUnrecordedRegistration`) is a registration
+ * the listener did not record, because its message bus did not answer in time (`isBusUnanswered`).
  * The client cannot tell which of the registration's calls failed, and the session's consumer
- * may well exist and deliver, so that notice says the registration was not recorded and does
- * not say the session receives nothing.
+ * may well exist and deliver. So that notice says that the registration was not recorded, and
+ * not that the session has no consumer.
  */
 export function inboundUnavailableNoticeText(why: string): string {
-  if (why.startsWith(BUS_UNANSWERED_PREFIX)) {
+  if (isUnrecordedRegistration(why)) {
     return envoyNoticeText({
       notice: "Envoy inbound unavailable",
       error: why,
@@ -862,11 +872,20 @@ export function inboundUnavailableNoticeText(why: string): string {
 }
 
 /**
- * What a session is told when a registration is accepted after it was told that it receives
- * nothing (`inboundUnavailableNoticeText`), worded once for every host and shown where that
- * notice was shown.
+ * What a session is told when a registration is accepted after an outage it was told of
+ * (`inboundUnavailableNoticeText`), worded once for every host and shown where that notice was
+ * shown. `why` is the message that notice told. After a registration the listener did not record
+ * (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice says
+ * that the listener recorded a registration, and not that the session receives again.
  */
-export function inboundRestoredNoticeText(): string {
+export function inboundRestoredNoticeText(why: string): string {
+  if (isUnrecordedRegistration(why)) {
+    return envoyNoticeText({
+      notice: "Envoy inbound restored",
+      detail:
+        "The listener recorded a registration of this session. A message the stream stored that has not reached the session arrives now.",
+    });
+  }
   return envoyNoticeText({
     notice: "Envoy inbound restored",
     detail:
@@ -908,8 +927,9 @@ export interface InboundUnavailable {
    */
   refused(error: unknown): void;
   /**
-   * A registration was accepted: an outage the session was told of ends with `restored`, and the
-   * next outage tells the session again. An outage held and never told ends with nothing said.
+   * A registration was accepted: an outage the session was told of ends with `restored`, which
+   * takes the `why` that was told, and the next outage tells the session again. An outage held and
+   * never told ends with nothing said.
    */
   accepted(): void;
 }
@@ -923,8 +943,11 @@ export interface InboundUnavailableOptions {
    * (`INBOUND_FIRST_OPEN_BOUND_MS` unless a test passes one).
    */
   readonly firstOpenBoundMs?: number;
-  /** Tells the session once that it receives again, after it was told that it receives nothing. */
-  readonly restored?: () => void;
+  /**
+   * Tells the session once that an outage it was told of has ended, because a registration was
+   * accepted. `toldWhy` is the message `tell` took for that outage.
+   */
+  readonly restored?: (toldWhy: string) => void;
   /**
    * Whether the session has begun to stop; once it answers true, the report tells nothing, neither
    * `tell` nor `restored`. A stopping session closes its own relay on purpose, and a registration
@@ -935,13 +958,14 @@ export interface InboundUnavailableOptions {
 }
 
 /**
- * Says once per outage that the session receives nothing, and once that it receives again. The
- * listener refuses a registration it can give no consumer, and the host registers again at every
- * heartbeat, so a host that told the session each time would tell it every tick for as long as
- * the outage lasts; one that never told it again would leave a second outage silent. `tell` takes
- * the listener's own message (`messageFor`), which each host words with
- * `inboundUnavailableNoticeText` and shows where it shows a gap notice; `restored` shows
- * `inboundRestoredNoticeText` in the same place.
+ * Tells the session once per outage that it has no accepted registration, and once that a
+ * registration was accepted after that. The listener refuses a registration it can give no
+ * consumer, and the host registers again at every heartbeat, so a host that told the session each
+ * time would tell it every tick for as long as the outage lasts; one that never told it again
+ * would leave a second outage silent. `tell` takes the listener's own message (`messageFor`),
+ * which each host words with `inboundUnavailableNoticeText` and shows where it shows a gap notice.
+ * `restored` takes that same message, and the host words it with `inboundRestoredNoticeText` in
+ * the same place.
  *
  * A session whose first relay open is still being tried holds no relay subject for a while at
  * its start, and it receives once the relay opens. So until the session's first accepted
@@ -963,14 +987,15 @@ export function inboundUnavailable(
     stopping = () => false,
   }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
-  let told = false;
+  // The message this outage told the session, until a registration is accepted.
+  let toldWhy: string | undefined;
   let everAccepted = false;
   let heldSince: number | undefined;
   let unansweredSince: number | undefined;
   const say = (error: unknown) => {
-    if (told || stopping()) return;
-    told = true;
-    tell(messageFor(error));
+    if (toldWhy !== undefined || stopping()) return;
+    toldWhy = messageFor(error);
+    tell(toldWhy);
   };
   return {
     noRelay(error) {
@@ -992,9 +1017,10 @@ export function inboundUnavailable(
     accepted() {
       everAccepted = true;
       unansweredSince = undefined;
-      if (!told || stopping()) return;
-      told = false;
-      restored?.();
+      const why = toldWhy;
+      if (why === undefined || stopping()) return;
+      toldWhy = undefined;
+      restored?.(why);
     },
   };
 }

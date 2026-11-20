@@ -157,7 +157,10 @@ showing a message and recording it can show it twice, never lose it. A registrat
 can give no consumer is refused by name, and the session says once that Envoy inbound is
 unavailable and asks again at every heartbeat. When a registration is accepted after that, the
 session says once that Envoy inbound is restored and that what the stream stored meanwhile
-arrives now. At the session's start the first NATS dial can fail: the start warns in the pane that
+arrives now. A registration the listener answers with the bus-outage 503 (its message bus did not
+answer) is held for two minutes from the first such answer; after that the session is told once
+that the listener did not record its registration, and, when one is accepted, that the listener
+recorded one. At the session's start the first NATS dial can fail: the start warns in the pane that
 the session is not registered and keeps trying in the background, but the session is told that
 Envoy inbound is unavailable only when no registration is accepted within two minutes. A session
 whose stop has begun registers nothing, and is told neither that Envoy inbound is unavailable nor

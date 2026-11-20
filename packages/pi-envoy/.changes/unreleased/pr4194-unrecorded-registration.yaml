@@ -3,9 +3,18 @@ body: |-
   A registration the listener did not record, because its message bus did not answer in time
   (its 503 begins "envoy: the message bus did not answer"), no longer shows "Envoy inbound
   unavailable" at once. Such refusals are held for two minutes from the first one, and a
-  registration accepted in that time ends the hold with no notice. A notice shown after the two
-  minutes says that the listener did not record the registration and that Envoy messages may
-  still reach the session, where it said the session had no durable consumer and received none.
+  registration accepted in that time ends the hold with no notice. After the two minutes, the
+  session is told once that the listener did not record its registration. The card says so, and
+  that Envoy messages may still reach the session, where it said the session had no durable
+  consumer and received none. The pane note is
+  `envoy: the listener did not record this session's registration (<why>), and the session registers again at every heartbeat`,
+  and the warning log line is
+  `envoy: the listener did not record this session's registration: <why>`. Both said that the
+  session had no inbound messages. When a registration is accepted after that, the card "Envoy
+  inbound restored" says that the listener recorded a registration of this session, and that a
+  message the stream stored that has not reached the session arrives now. The pane note and the
+  info log line are `envoy: the listener recorded a registration of this session`. None of the
+  three says that the session receives again.
 time: 2026-11-20T00:04:52Z
 custom:
     Issue: pr4194

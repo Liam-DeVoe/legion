@@ -106,7 +106,10 @@ message from Dispatch's Agents page as that person's own turn.
   says once, on stderr and as a notice to the session, that Envoy inbound is unavailable, and asks
   again at every heartbeat. When a registration is accepted after that, it says once on stderr that
   the session receives again, and tells the session once, as a notice, that Envoy inbound is
-  restored and that what the stream stored meanwhile arrives now. A session whose shutdown has
+  restored and that what the stream stored meanwhile arrives now. A registration the listener
+  answers with the bus-outage 503 (its message bus did not answer) is held for two minutes from
+  the first such answer; after that the server says once that the listener did not record the
+  registration, and, when one is accepted, that the listener recorded one. A session whose shutdown has
   begun registers nothing, and is told neither that Envoy inbound is unavailable nor that it is
   restored.
 - No receipt is published. A role message reaches this session as a forward the listener stored on

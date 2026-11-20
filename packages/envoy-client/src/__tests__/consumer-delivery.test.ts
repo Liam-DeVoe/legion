@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
+import * as consumerDeliveryModule from "../consumer-delivery";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -10,6 +11,7 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
   RELAY_PROGRESS_INTERVAL_MS,
@@ -1436,5 +1438,94 @@ describe("one registration", () => {
     report.at(BOUND + 30_000);
     await report.withRelay(Promise.resolve("registered"));
     expect(report.restored).toEqual([BOUND + 30_000]);
+  });
+
+  // The accepted registration that ends a told episode is worded for the `why` that episode told.
+  // After a bus-outage 503 the consumer may have delivered all along, so that notice says the
+  // listener recorded a registration, and never that the session received nothing.
+  // `restored` builds the notice as every host does, from the `why` it is handed.
+  function reportRestoring() {
+    let clock = 0;
+    const told: string[] = [];
+    const restored: string[] = [];
+    const notices: string[] = [];
+    const outage = inboundUnavailable((why) => told.push(why), {
+      now: () => clock,
+      firstOpenBoundMs: BOUND,
+      restored: (why) => {
+        restored.push(why);
+        notices.push(inboundRestoredNoticeText(why));
+      },
+    });
+    return {
+      outage,
+      told,
+      restored,
+      notices,
+      at: (ms: number) => {
+        clock = ms;
+      },
+    };
+  }
+
+  test("(e) the accepted registration after a told bus-outage 503 says the listener recorded a registration, and never that the session received nothing", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(unrecorded());
+    report.at(BOUND);
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED]);
+    report.at(BOUND + 15_000);
+    report.outage.accepted();
+
+    expect(report.notices).toHaveLength(1);
+    const notice = report.notices[0] ?? "";
+    expect(notice).toContain("Envoy inbound restored");
+    expect(notice).toContain("The listener recorded a registration of this session");
+    expect(notice).toContain("arrives now");
+    expect(notice).not.toMatch(/receive[sd]? nothing/i);
+    expect(notice).not.toContain("receives Envoy messages again");
+  });
+
+  test("the accepted registration after a told refusal keeps its notice: the session receives again, and what was stored while it received nothing arrives now", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(new Error("no_grant"));
+    report.at(1_000);
+    report.outage.accepted();
+
+    expect(report.notices).toHaveLength(1);
+    expect(report.notices[0]).toContain(
+      "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now."
+    );
+  });
+
+  test("`restored` is handed the why its episode told: a refusal's, then a bus-outage 503's", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(new Error("no_grant"));
+    report.at(1_000);
+    report.outage.accepted();
+    report.at(2_000);
+    report.outage.refused(unrecorded());
+    report.at(2_000 + BOUND);
+    report.outage.refused(unrecorded());
+    report.at(2_000 + BOUND + 15_000);
+    report.outage.accepted();
+
+    expect([report.told, report.restored]).toEqual([
+      ["no_grant", UNRECORDED],
+      ["no_grant", UNRECORDED],
+    ]);
+  });
+
+  test("isUnrecordedRegistration is true only of a why that begins with the bus-outage prefix", () => {
+    // A namespace read, so this file still loads where the module lacks the export.
+    const { isUnrecordedRegistration } = consumerDeliveryModule;
+
+    expect(isUnrecordedRegistration(UNRECORDED)).toBe(true);
+    expect(isUnrecordedRegistration("no_grant")).toBe(false);
+    expect(isUnrecordedRegistration(NO_RELAY)).toBe(false);
+    expect(isUnrecordedRegistration(`listener: ${BUS_UNANSWERED_PREFIX}`)).toBe(false);
   });
 });

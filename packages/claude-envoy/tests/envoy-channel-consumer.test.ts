@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, spyOn, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
-import { legacyAgentSubject } from "@legion/contracts"
+import { BUS_UNANSWERED_PREFIX, legacyAgentSubject } from "@legion/contracts"
+import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -337,6 +338,74 @@ for (const refusal of [
     }
   })
 }
+
+// Row (e) of check l23 (R24 of dispatch://INFRA-3589), for this server: the listener answers its
+// bus-outage 503 to a registration it did not record, and the session's consumer may still
+// deliver. Such refusals are held for the bound. Past it, stderr says that the listener did not
+// record the registration, and the accepted registration after it says that it recorded one.
+// No line says that the session receives nothing or receives again.
+test("(e) past the bound a bus-outage 503 is written to stderr as a registration the listener did not record, and the accepted registration after it as one it recorded", async () => {
+  const unrecorded = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let refusing = true
+  const { client, registrations } = listener(() => {
+    if (!refusing) return { ...noInterest(), delivery: CONSUMER }
+    throw new EnvoyApiError({
+      method: "POST",
+      url: "http://127.0.0.1:4000/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: unrecorded }),
+    })
+  })
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 10,
+    }),
+  )
+  // A notice this server writes for itself is the one write that names no Envoy event.
+  const notices = () => notifier.written.filter((write) => write.eventId === undefined)
+  try {
+    // Inside the bound every refusal is held: nothing is said.
+    const asked = registrations.length
+    await waitFor(async () => registrations.length >= asked + 2, "two more registrations")
+    expect(notices()).toEqual([])
+
+    setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000))
+    await waitFor(async () => notices().length === 1, "the notice")
+    expect(notices()[0]?.content).toMatch(/not record/i)
+    expect(written).toContain(
+      `envoy-channel: the listener did not record this session's registration (${unrecorded}), and the session registers again at every heartbeat\n`,
+    )
+
+    refusing = false
+    await waitFor(async () => {
+      for (const write of notifier.pending) write.resolve()
+      return notices().length === 2
+    }, "the notice that the listener recorded a registration")
+    expect(notices()[1]?.content).toContain("Envoy inbound restored")
+    expect(notices()[1]?.content).toContain("The listener recorded a registration of this session")
+    expect(notices()[1]?.content).not.toMatch(/receive[sd]? nothing/)
+    expect(written).toContain(
+      "envoy-channel: the listener recorded a registration of this session\n",
+    )
+    expect(written.filter((line) => /receives (nothing|again)/.test(line))).toEqual([])
+  } finally {
+    setSystemTime()
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+    stderr.mockRestore()
+  }
+})
 
 /** Dispatch's BTW to this session: a side question, which this session never advertises. */
 function btwFrame(label: string): { readonly raw: string; readonly id: string } {
