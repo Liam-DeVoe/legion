@@ -18,9 +18,8 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
-import { specCheckResultCommand } from "./dispatch-commands/spec-check-results";
-import type { ActiveDispatchConfig } from "./dispatch-config";
-import { ownIdentityDispatch } from "./dispatch-config";
+import { specCheckResultCommand } from "./dispatch-commands/issues";
+import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import {
   checkDispatchCall,
@@ -72,6 +71,8 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** The one bound of a CI job's `dispatch result --project` (`RESULT_BOUND` by default), which a
+   *  test shortens to run it on the real clock. */
   readonly resultBound?: ResultBound;
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
@@ -443,6 +444,9 @@ export function fitOutput(
  * Code's rule. Recomputing the file from a shell's other variables would follow ones a launcher or
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
+ *
+ * The one call that runs as no session is a CI job's `dispatch result --project`
+ * (`ownIdentityResult`), which reads none of the above.
  */
 /**
  * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
@@ -523,6 +527,9 @@ export async function runDispatchCli(
     return code;
   };
 
+  // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
+  // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
+  // printed as `printable` text (`ownIdentityResult`).
   const job = isJobResult(argv);
   let parsed: ParsedCommand;
   try {
@@ -545,8 +552,7 @@ export async function runDispatchCli(
           parsed.tool
         );
   }
-
-  if (job) return ownIdentityResult(parsed, env, io, print, refuse);
+  if (job) return await ownIdentityResult(parsed, env, io, print, refuse);
 
   const hostName = ledgerHost();
   const host = HOSTS.find((name) => name === hostName);
@@ -855,9 +861,12 @@ export async function runDispatchCli(
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
-      // so the two stay one answer. A refusal the executor makes during the call, such as an id
-      // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
-      // Everything else here is Dispatch's own refusal or failure.
+      // so the two stay one answer. A refusal the executor makes during the call, such as an id of
+      // the wrong shape or an ask id prefix matching no ask, only the call reaches. Everything else
+      // here is Dispatch's own refusal or failure. No argument of the command reaches the client's
+      // refusal of a path value that names nothing (`DispatchEmptyPathError`): each flag whose
+      // value goes into a URL path is a `path` field of IDENTIFIER_FIELDS (`dispatch-command.ts`),
+      // which the parse refuses first, naming the flag.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
