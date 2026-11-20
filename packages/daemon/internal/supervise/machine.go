@@ -1531,7 +1531,8 @@ type Machine struct {
 	reportedAhead aheadReport
 	// turns is the count of the current process's turns this machine keeps, which tells the turn
 	// a report is of from the turn the daemon gave the pending task's take (turnCount). It is
-	// memory only.
+	// memory only: a daemon restarted under the process starts it not known (NewMachine), and the
+	// report of the own turn of a take it accepts since can make it known again (learnTurns).
 	turns turnCount
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
@@ -1794,7 +1795,9 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		awaitsAct:     true,
 		seenFromStore: c.TaskSeenRevision != TaskRevision{},
 		// The process the claim records may have run turns under an earlier daemon, which this
-		// one never saw end, so its count is not known until the next launch starts one afresh.
+		// one never saw end, so its count is not known until the report of a take this machine
+		// accepts places the turn it gave that take (learnTurns), or the next launch starts one
+		// afresh (counted).
 		turns: turnCount{generation: c.Generation},
 	}
 	m.idle = sync.NewCond(&m.mu)

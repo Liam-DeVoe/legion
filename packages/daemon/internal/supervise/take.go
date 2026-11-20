@@ -663,6 +663,10 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
 // the start of this take's turn, as at any turn's start or end (turnStarted).
 //
+// A take accepted while the claim's count of its process's turns is not known keeps what it saw,
+// in memory, for the report of its own turn to make that count known again (anchorTake,
+// learnTurns).
+//
 // None of it is the claim's until the store holds it. The take is composed on a copy of the
 // claim and one of its delivery, which memory takes only once the write lands, as queue's write
 // is, and everything else the take does follows that: its lines, the workflow told
@@ -696,6 +700,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 		c.EndedWork.Told, c.EndedWork.ToldBy = true, taken.ID
 	}
 	taken.TakeTold = Sentences{Abandoned: toldAbandoned, Ended: toldEnded}
+	first := m.claim.TaskTaken != taken.Number
 	c.TaskTaken = taken.Number
 	c.recordTake(request, TakeAccepted)
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, c, taken))); err != nil {
@@ -705,6 +710,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	c.Pending = p
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
+	m.anchorTake(first)
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)

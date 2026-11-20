@@ -1598,10 +1598,14 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // turn is counted once. The start is that turn's only where it is the start of the turn the report
 // is of, the turn after the ends the machine counted (turnCount): a later turn's start says the
 // reported turn's start was lost, and the mark goes; an earlier turn's start leaves it for the
-// reported one. A machine that has not counted the process's turns takes the next start for it.
+// reported one. A machine whose count of the process's turns is not known takes the next start
+// for it.
 //
 // The turn the take of the pending task is given is counted too (turnCount.take), so its report
-// tells that turn from every other (notTheTakesTurn).
+// tells that turn from every other (notTheTakesTurn). While the count is not known, the turn is
+// given no sequence, since the count's ends are not the producer's; for a take the machine
+// accepted meanwhile its place among the ends counted is kept instead (takeAnchor.given), where
+// the report of the take's own turn can place the count (learnTurns).
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
@@ -1628,6 +1632,8 @@ func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 		count.take = 0
 		if count.known {
 			count.take = running
+		} else if count.anchor.number == p.Number {
+			count.anchor.given = running
 		}
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
@@ -1719,10 +1725,14 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // the daemon saw this one. No take started it, so it is no task's turn and its line names none.
 //
 // A start over a turn running outside a compaction says the machine missed the end of a turn, or
-// was sent a start twice, so its count of the process's turns is no longer known (turnCount).
+// was sent a start twice, so its count of the process's turns is no longer known (turnCount), and
+// the turn given a take accepted while it was not known is no longer the last start the machine
+// saw, so that take's report places no count (takeAnchor, learnTurns): the report of a later
+// take's own turn may.
 func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 	if m.compacting == nil {
-		m.counted().known = false
+		count := m.counted()
+		count.known, count.anchor = false, takeAnchor{}
 		return nil
 	}
 	m.startTurn(0)
@@ -1934,9 +1944,11 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // holds it back from a turn on another claim of its issue, so R6's fence stands). The end is the
 // worker's act whoever saw it begin, so it resets the prompt budgets as every turn's end does.
 // A start a turn-outcome report ran ahead of is not coming any more where this end is of the
-// reported turn or a later one (Machine.reportedAhead), or where the machine has not counted the
-// process's turns: the turn it would have started is over. The end is counted with every other
-// (turnCount), since the producer numbered that turn too.
+// reported turn or a later one (Machine.reportedAhead), or where the machine's count of the
+// process's turns is not known: the turn it would have started is over. The end is counted with
+// every other (turnCount), known or not, since the producer numbered that turn too: a count a
+// take's report makes known again (learnTurns) holds it, and an end after the end of the turn
+// given that take says another turn ran after that one, so that take's report places no count.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
 	count := m.counted()
@@ -1959,10 +1971,13 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 // every turn of its process. So the machine no longer knows how many of the process's turns the
 // producer has ended (turnCount): counted or let by with the count still known, the end could
 // leave the turn the daemon gives a take named as an earlier one, and that turn's late report
-// would give back a take whose turn is running (notTheTakesTurn).
+// would give back a take whose turn is running (notTheTakesTurn). The count is known again where
+// the report of a take accepted after the ready places the turn given that take (learnTurns),
+// whichever way the producer numbered this one; a take's anchor kept before it goes with it.
 func turnEndedBeforeReady(m *Machine, _ context.Context, _ Event) error {
 	m.log.Info("supervise: a turn ended before the agent said ready; the count of its process's turns is no longer known")
-	m.counted().known = false
+	count := m.counted()
+	count.known, count.anchor = false, takeAnchor{}
 	return nil
 }
 
