@@ -198,6 +198,33 @@ exit $want" step "$samples_script" "$dir" >/dev/null 2>&1
   done
 done
 
+echo "case: each browser step's stop leaves neither the sampler nor a command it started running"
+# The reading after the stop reads the two files the sampler writes, so the stop waits for the
+# sampler (`wait "$sampler"`), and the sampler ends on SIGTERM only between its commands (its `trap
+# 'exit 0' TERM`): one killed in the middle of its 5 s sleep, its ps or its awk would leave that
+# command running, and writing, after the step's wait has returned. Each step's stop line, cut from
+# the workflow as above, runs against a real sampler caught in its sleep.
+for i in 0 1; do
+  dir=$(fixture "stop-$i")
+  "$samples_script" sample "$dir" &
+  sampler=$!
+  child=
+  for _ in $(seq 1 200); do
+    for c in $(cat "/proc/$sampler/task/"*/children 2>/dev/null || true); do
+      if [ "$(cat "/proc/$c/comm" 2>/dev/null || true)" = sleep ]; then child=$c; fi
+    done
+    [ -z "$child" ] || break
+    sleep 0.05
+  done
+  check "step $((i + 1))'s sampler reached its sleep" "$(is "${child:+yes}" yes)"
+  eval "${stops[$i]}"
+  check "step $((i + 1))'s stop leaves no sampler" "$(is "$(kill -0 "$sampler" 2>/dev/null && echo alive || echo gone)" gone)"
+  # A zombie runs nothing and writes nothing: gone.
+  state=$(awk '{ print $3 }' "/proc/$child/stat" 2>/dev/null || true)
+  [ "$state" != Z ] || state=
+  check "and no sleep the sampler had started" "$(is "${state:-gone}" gone)"
+done
+
 echo "case: a call the script cannot read"
 set +e
 out=$("$samples_script" 2>&1); status=$?
