@@ -259,6 +259,25 @@ func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.Strin
 	}).(pulumi.StringOutput)
 }
 
+// dispatchDirectorySetting is directoryAccount or directoryAdmin, input, as its
+// DISPATCH_DIRECTORY_* variable carries it, judged once it resolves, as dispatchIAPAudience judges
+// iapAudience: a blank or whitespace-only value, which Dispatch reads as unset, so it would not
+// boot behind the IAP door, and one holding an nkey seed, are each refused naming input and
+// never the value. ApplyT keeps the value's secrecy, so a delegated user a consumer holds as secret
+// configuration stays secret in the rendered pod.
+func dispatchDirectorySetting(value pulumi.StringInput, dispatch, input string) pulumi.StringOutput {
+	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
+		if strings.TrimSpace(v) == "" {
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input,
+				"%s is blank: Dispatch reads it as unset and refuses to boot behind the IAP door without it", input))
+		}
+		if bus.HoldsSeed(v) {
+			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+		}
+		return v, nil
+	}).(pulumi.StringOutput)
+}
+
 // dependsOnInput orders a child after the resources in's value comes from. A value used only for
 // ordering reaches no input of the child, so the dependencies a consumer's output carries into the
 // component would otherwise be lost; DependsOnInputs takes the dependencies of the output it is
@@ -700,10 +719,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on. The IAP door's three variables take that same place, since the resolver refuses
+	// sign-in on. The IAP door's five variables take that same place, since the resolver refuses
 	// the Google client beside it, and render only with iapAudience: the identity mode, the
-	// audience, and the domain whose accounts may use Dispatch, which Dispatch holds the signed
-	// header's hd claim to. A deployment without it names no identity mode, and Dispatch keeps its
+	// audience, the domain whose accounts may use Dispatch, which Dispatch holds the signed
+	// header's hd claim to, and the signer and the delegated user its Workspace Directory reads
+	// sign as and act as. A deployment without it names no identity mode, and Dispatch keeps its
 	// default. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
 	// output's own derivation (serverURL) and never a second spelling of it, and
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
@@ -718,7 +738,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.iap {
 		appEnv = append(appEnv, valueEnv("DISPATCH_IDENTITY", "iap"),
 			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_IAP_AUDIENCE"), Value: dispatchIAPAudience(args.IapAudience, dispatch)},
-			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
+			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain),
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_DIRECTORY_ACCOUNT"), Value: dispatchDirectorySetting(args.DirectoryAccount, dispatch, "directoryAccount")},
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_DIRECTORY_ADMIN"), Value: dispatchDirectorySetting(args.DirectoryAdmin, dispatch, "directoryAdmin")})
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
 	if s.outsideOrigin != "" {
