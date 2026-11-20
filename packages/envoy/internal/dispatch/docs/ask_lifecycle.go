@@ -767,7 +767,8 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 // the debt to the pending-settlement row - that the row still stands. Its caller decides whether to
 // run it again (SettleIssueDocuments). It waits for the room's durable appends to land first, but
 // not past deadline, so no attempt hangs past its caller's budget waiting for them; the settlement
-// itself runs under ctx alone. It takes the settleWG count of the timer it runs in place of, or one
+// itself runs under ctx and its own deadline, settleTimeout, as every settlement does
+// (settleRoomWithin). It takes the settleWG count of the timer it runs in place of, or one
 // of its own, so Shutdown joins it as it would the timer's settlement, and holds the room's state
 // across it, so the state the settlement looks up is the one whose generation it runs at.
 func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.Time) error {

@@ -2,9 +2,12 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -19,9 +22,10 @@ const SettlementResumeInterval = time.Minute
 // arms its settlement, whether or not the document's issue is closed. Every update refreshes the
 // row and arms a settlement in the process that wrote it, which runs two seconds later, so a row
 // this old was left by one that did not commit: a shutdown cut it short, a failure dropped it,
-// perhaps in another process, or its issue's close stopped it (closeRecordLocked). On a rolling
-// deploy that process stops after the new one has started, which is why this runs on an interval
-// and not only at start.
+// perhaps in another process, or its issue's close stopped it (closeRecordLocked) - or one that
+// is still running, which holds the row under its lease (leaseSettlementPending) and which the
+// pass leaves alone. On a rolling deploy that process stops after the new one has started, which
+// is why this runs on an interval and not only at start.
 const settlementResumeAge = time.Minute
 
 // settlementResumeBatch is the most documents one resumption pass arms, closed and open issues'
@@ -81,6 +85,15 @@ func (s *Service) RunSettlementResumption(ctx context.Context, leases duty.Lease
 // takes its own document's row as it commits, so a pass holding its row and waiting on a copy's
 // would wait on a settlement that waits on the pass.
 //
+// It skips a row whose lease is still ahead (leased_until) too: a settlement under way holds it,
+// in this process or another, from before it does anything to the document until it ends, and
+// holds no lock on it meanwhile. Arming that document again would move its room's generation under
+// the running settlement, which then ends writing nothing (applyStamp); a document whose every
+// settlement outlasted a period was armed again under each of them and never committed. A
+// settlement that commits deletes the row, and one that ends any other way gives the lease back
+// (releaseSettlementLease), so the next pass arms the document at once; only a settlement whose
+// process died, or whose give-back failed, leaves the lease to run out (settlementLease).
+//
 // The rows come back in no order, and none is needed: every document of the pass is armed with
 // the same settle delay.
 func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) error {
@@ -93,6 +106,7 @@ func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) 
 		with picked as (
 			select artifact_id from doc_settlements_pending
 			where marked_at <= now() - make_interval(secs => $1)
+				and (leased_until is null or leased_until <= now())
 			order by tried_at is not null, tried_at, marked_at
 			limit $2
 			for update skip locked
@@ -128,4 +142,83 @@ func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) 
 		slog.Info("dispatch: resumed owed document settlements", "documents", len(rooms))
 	}
 	return nil
+}
+
+// leaseSettlementPendingStatement is leaseSettlementPending's one statement: it marks the document
+// $1's pending-settlement row held by a settlement under way until the database's now() plus $2
+// seconds, answers that end, and writes nothing where the row has gone.
+const leaseSettlementPendingStatement = `
+	update doc_settlements_pending set leased_until = now() + make_interval(secs => $2)
+	where artifact_id = $1
+	returning leased_until`
+
+// leaseSettlementPending takes the lease of a settlement beginning its work on room: it marks the
+// document's pending-settlement row held for lease (settlementLease,
+// doc_settlements_pending.leased_until), which keeps every resumption pass from arming the
+// document again while the settlement runs (resumeOwedSettlements), and answers the lease's end,
+// nil where the document owes no settlement. The settlement takes it once it holds its slot,
+// before it warms a cold room, whichever way it was armed and in whichever process
+// (settleRoomWithin), and gives it back as it ends: committing deletes the row, and any other end
+// clears the lease where it is still this settlement's (releaseSettlementLease). Only a settlement
+// whose process dies, or whose give-back fails, leaves the lease to run out. The next settlement
+// of the document takes the lease again from its own start.
+//
+// It is one statement of its own on the settlements pool, through the connection the settlement's
+// slot holds for it there (settlementWorkers), outside any transaction: the row lock it takes ends
+// with the statement, so it holds no lock across the document's work, the copy lock a pass takes
+// later included. The statement waits for the row's lock only behind another writer of the row
+// until that writer's transaction ends: an append's upsert of it (settlementPendingStatement) and
+// a closing room's write of its latest edit source (persistLastActor), each in a short transaction
+// under the document's lock; a pass's pick, one statement; another process's settlement of the
+// document committing its delete, within settlementFinishBound; a removal of the document deleting
+// the row with its artifact (api.removeArtifact), after which it writes nothing; and a settlement
+// of another document that marked this one an owed copy (owedCopiesOf), within that settlement's
+// own deadline and finish. The settlement's deadline (ctx, settleTimeout) bounds the wait whatever
+// holds the row.
+//
+// The write is the settlement's bookkeeping, not a request's: a request that runs a settlement - an
+// issue's close settling its documents first (settleOwedNow) - writes it outside the transaction
+// its Idempotency-Key's commit step marks, and a repeat of that request after a crash takes it
+// again, which only moves the lease's end.
+func leaseSettlementPending(ctx context.Context, settlements *store.Pool, room string, lease time.Duration) (*time.Time, error) {
+	var until time.Time
+	err := settlements.QueryRow(ctx, leaseSettlementPendingStatement, room, lease.Seconds()).Scan(&until)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("lease the document's pending settlement: %w", err)
+	}
+	return &until, nil
+}
+
+// settlementLeaseReleaseBound bounds a settlement's give-back of its lease
+// (releaseSettlementLease), which runs apart from the settlement's own deadline, since a settlement
+// that ran past that deadline gives its lease back too.
+const settlementLeaseReleaseBound = 5 * time.Second
+
+// releaseSettlementLeaseStatement is releaseSettlementLease's one statement: it clears the lease
+// on the document $1's pending-settlement row where the row still holds the lease that ends at $2,
+// and writes nothing where the row has gone or another settlement has leased it since.
+const releaseSettlementLeaseStatement = `
+	update doc_settlements_pending set leased_until = null
+	where artifact_id = $1 and leased_until = $2`
+
+// releaseSettlementLease gives back the lease a settlement of room took (leaseSettlementPending),
+// which ended at until, as the settlement ends without having committed: it ran past its deadline,
+// the database did not serve it, a newer generation of the room superseded it, the issue's close
+// refused an update it held, or it failed. The row then reads as no settlement's, and the next
+// resumption pass arms the document at once rather than once the lease has run out. The statement
+// clears only a lease that is still this settlement's, so a newer settlement of the document, in
+// this process or another, keeps the one it took since. It runs on the settlements pool through
+// the connection the settlement's slot still holds, outside any transaction, on ctx's values
+// without its deadline and under settlementLeaseReleaseBound; a failure is logged, and the lease
+// then runs out by itself. Like the lease, it is the settlement's bookkeeping, not a request's.
+func releaseSettlementLease(ctx context.Context, settlements *store.Pool, room string, until time.Time) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settlementLeaseReleaseBound)
+	defer cancel()
+	if _, err := settlements.Exec(ctx, releaseSettlementLeaseStatement, room, until); err != nil {
+		slog.Warn("dispatch: give back a settlement's lease on its document's pending settlement; the lease runs out by itself",
+			"room", room, "error", err)
+	}
 }

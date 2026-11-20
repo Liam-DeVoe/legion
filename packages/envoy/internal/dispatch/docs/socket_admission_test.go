@@ -390,6 +390,13 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room:
 	// no room may idle out while the test fills the cap.
 	service.srv.RoomIdleTimeout = time.Hour
+	// Nor may the room budget's trim close one (trimPeerlessRooms, which a budget of 0 turns off):
+	// it closes the peerless rooms past roomBudgetMinIdle while the rooms holding places exceed
+	// the cap less its headroom (peerlessRoomsOverBudget), so wherever loading the thousand rooms
+	// took longer than that window it closed the first of them before the cap was reached, or a
+	// room later, freeing a place the cap then gave out. The counts this test is about are the
+	// caps', which the budget is no part of.
+	service.peerlessRoomBytes.Store(0)
 	ids := createDocuments(t, database, maxLiveRooms+2)
 	resident, spare := ids[:maxLiveRooms], ids[maxLiveRooms:]
 	warmRooms(t, service, resident)

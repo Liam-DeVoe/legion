@@ -6064,15 +6064,16 @@ const shortSettlementResume = 2 * time.Second
 
 // resumedSettlementPeriod and resumedSettleDelay are the resumption's period and the settle delay
 // of the process that settles, in a row that waits for a settlement the resumption arms to commit.
-// Every pass arms the settlement of each document still owing one (resumeOwedSettlements), and
-// arming it moves the room's generation, which supersedes the settlement armed before it that has
-// not committed: its timer is replaced, and a settlement already under way ends writing nothing
-// (settleRoomWithin, settlePass). In production a pass comes once a minute and the settlement it
-// arms has committed long before the next. At shortSettlementResume, with the server's own
-// two-second settle delay, each pass came as the timer the pass before it armed came due, and
-// superseded that settlement; in CI that went on for the whole thirty seconds the row waits, and
-// the document never settled. So such a row settles a fifth of a second after the pass and gives
-// the settlement the rest of a five-second period to commit before the next pass.
+// Every pass arms the settlement of each document still owing one whose row no settlement under
+// way holds (resumeOwedSettlements, leaseSettlementPending), and arming it moves the room's
+// generation, which supersedes the settlement armed before it that has not yet begun: its timer is
+// replaced. A settlement that has begun holds its row under a lease the pass leaves alone. In
+// production a pass comes once a minute and the settlement it arms has begun long before the
+// next. At shortSettlementResume, with the server's own two-second settle delay, each pass came as
+// the timer the pass before it armed came due, and replaced that timer before its settlement
+// began; in CI that went on for the whole thirty seconds the row waits, and the document never
+// settled. So such a row settles a fifth of a second after the pass and gives the settlement the
+// rest of a five-second period before the next pass.
 const (
 	resumedSettlementPeriod = 5 * time.Second
 	resumedSettleDelay      = 200 * time.Millisecond

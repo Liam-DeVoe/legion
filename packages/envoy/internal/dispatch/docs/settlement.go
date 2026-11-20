@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -120,6 +121,11 @@ type settlement struct {
 	doc         *crdt.Doc
 	settlements *store.Pool
 	generation  uint64
+	// lease is the end of the lease the settlement holds on the document's pending-settlement row
+	// (leaseSettlementPending), nil before it takes one, where the document owed none, and once
+	// its commit has deleted the row and the lease with it (commitVersion). settleRoomWithin gives
+	// back a lease still held here as the settlement ends (releaseSettlementLease).
+	lease *time.Time
 	// reads counts the reads of the room its passes have made. The first is quiet: the updates it
 	// classifies are in the tree this settlement reconciles and versions, and arming a settlement
 	// for them would end this one as superseded. A later pass's read arms one, since the
@@ -212,18 +218,21 @@ func skipUnreadableSettlement(room string, err error) bool {
 }
 
 // settleRoomWithin settles room under parent and reports how the settlement ended (settleOutcome),
-// leaving what follows to its caller: a timer's settlement under settleTimeout, the one Shutdown
-// runs under its drain budget, one settleOwedNow runs under its caller's context. Before anything
-// else - before it loads a cold room - it waits for one of the settlementWorkers slots, holding no
-// connection, so every way a settlement starts is bounded and the excess waits there. When parent
-// ends first, in that wait or after it, the settlement's database work is cancelled and its
-// transaction rolls back, and nothing retries it or counts it as a failure: the document's
-// pending-settlement row leaves it to resume (onLoadDocument, RunSettlementResumption). That is how
-// a shutdown that cannot settle every room within its budget leaves the rest to the next process. A
-// settlement the database did not serve (store.Unserved: the settlements pool's or the rooms
-// pool's acquire bound ran out, or the database stopped answering inside it), or whose warm-up's
-// load ran out the bound on its reads before the database answered them (errLoadReadsBound), is
-// left to resume the same way, so overload fails
+// leaving what follows to its caller: a timer's settlement, the one Shutdown runs under its drain
+// budget, one settleOwedNow runs under its caller's context. Every one of them also runs under a
+// deadline of its own, settleTimeout from here, so whichever way a settlement started it ends at
+// that deadline or at its caller's, whichever comes first, but for the two parts no deadline stops
+// (settlementTimeout).
+// Before anything else - before it loads a cold room - it waits for one of the settlementWorkers
+// slots, holding no connection, so every way a settlement starts is bounded and the excess waits
+// there. When parent or the deadline ends first, in that wait or after it, the settlement's
+// database work is cancelled and its transaction rolls back, and nothing retries it or counts it
+// as a failure: the document's pending-settlement row leaves it to resume (onLoadDocument,
+// RunSettlementResumption). That is how a shutdown that cannot settle every room within its budget
+// leaves the rest to the next process. A settlement the database did not serve (store.Unserved:
+// the settlements pool's or the rooms pool's acquire bound ran out, or the database stopped
+// answering inside it), or whose warm-up's load ran out the bound on its reads before the database
+// answered them (errLoadReadsBound), is left to resume the same way, so overload fails
 // no room (maxSettleFailures). It is one outcome for all three shapes that bound names, the
 // statement the database may still have run included: a settlement pass reads the document
 // again and writes what it reads, so running it again costs nothing whatever the statement did,
@@ -233,6 +242,15 @@ func skipUnreadableSettlement(room string, err error) bool {
 // closing, which refuses the write (allowInject). A room Shutdown has begun closing is not loaded
 // for a settlement unless mayLoad says this is the settlement the shutdown drain owes it, whose
 // warm-up loads through the shutdown (withShutdownLoad).
+//
+// Once it holds its slot it takes a lease on the document's pending-settlement row
+// (leaseSettlementPending) before it does anything to the document, so no resumption pass, in any
+// process, arms the document again while it runs: that arming would move the room's generation
+// under it and end it writing nothing. A commit deletes the row and the lease with it; a
+// settlement that ends any other way gives the lease back as it returns (releaseSettlementLease),
+// so the resumption may arm the document at once. Only a settlement that dies with its process, or
+// whose give-back fails, leaves the lease to run out (settlementLease) before the resumption
+// settles the document.
 //
 // The settlement itself does only what no caller can do after it: a settlement that wrote into
 // the room and cannot finish fails the room, whose reload arms the settlement again, and one whose
@@ -267,6 +285,8 @@ func skipUnreadableSettlement(room string, err error) bool {
 // the repairs, or finds the document moved under its read, is followed by another, at most
 // maxSettlePasses in all and maxSettleRereads reads again.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent, cancel := context.WithTimeoutCause(parent, s.settleTimeout, errSettlementTimeout)
+	defer cancel()
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stopShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless its deadline or parent has ended, the pools refused it
@@ -350,6 +370,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		return settle.stoppedShort(fmt.Errorf("open the settlements pool: %w", err))
 	}
 	settle.settlements = settlements
+	// The settlement's work on the document begins here, under its lease on the document's
+	// pending-settlement row, which keeps the resumption from arming it again while it runs. A
+	// settlement that ends without its commit having deleted the row gives the lease back as it
+	// returns, while it still holds its slot and with it a connection of the pool.
+	lease, err := leaseSettlementPending(parent, settlements, room, s.settleLease)
+	if err != nil {
+		return settle.stoppedShort(err)
+	}
+	settle.lease = lease
+	// The give-back runs once everything below has returned, when nothing this settlement started
+	// can still commit: its warm-up's Apply returns only once the load it started has (ygo runs a
+	// room's load on the goroutine whose Apply created the room, getOrCreateRoom), and a load it
+	// only waited for is another caller's, which commits nothing of this settlement; each pass
+	// returns only once its transaction has committed or rolled back (settlePass); and a commit
+	// whose outcome is unknown, which may still land, drops the lease from settle.lease
+	// (commitFailed), so it is left to run out.
+	defer func() {
+		if settle.lease != nil {
+			releaseSettlementLease(parent, settlements, room, *settle.lease)
+		}
+	}()
 	if s.srv.GetDoc(room) == nil {
 		state.mu.Lock()
 		state.settleWarming = true
@@ -739,8 +780,12 @@ func (s *settlement) roomRefusedUpdate() bool {
 
 // commitFailed ends a pass whose commit returned an error. Its outcome is unknown, and the room's
 // cursor took in the versions the pass appended (commitSettlement), so a room it stored any update
-// of fails too, and reloads the durable document whichever way the commit went.
+// of fails too, and reloads the durable document whichever way the commit went. The commit may
+// still land, so the settlement gives back no lease (releaseSettlementLease): a give-back while its
+// commit can still land is a lease cleared under a settlement that is not over, and the lease runs
+// out instead (settlementLease).
 func (p *settlementPass) commitFailed(advanced bool, err error) settleOutcome {
+	p.lease = nil
 	if advanced && len(p.slots) == 0 {
 		p.service.failRoom(p.room, err)
 		return settleOutcome{next: settleRoomFailed, err: err}
@@ -1318,6 +1363,8 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	}); err != nil {
 		return settleDone, p.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
+	// The commit deleted the row, and the lease with it (clearSettlementPending).
+	p.lease = nil
 	p.committed()
 	// A closed issue's settlement sweeps no marks: the unmark is an injection without the
 	// owner-verified mark, which allowInject refuses on a closed issue. The document's next

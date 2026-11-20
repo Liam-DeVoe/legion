@@ -157,8 +157,8 @@ func TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure(t *testi
 }
 
 // The settlement a room's last browser leaving runs in its timer's place (settleLastPeer) is held
-// to the deadline a timer's is (settleRoom, settleTimeout), besides carrying the mark a room its
-// warm-up loads is known by (withSettlementLoad). Here another transaction holds the document's
+// to the deadline a timer's is (settleRoomWithin, settleTimeout), besides carrying the mark a room
+// its warm-up loads is known by (withSettlementLoad). Here another transaction holds the document's
 // owner row past that deadline: the settlement rolls back at it, leaving the document owed and
 // counting no failure, and the departing browser's socket, which ends only once that settlement
 // has returned, ends then rather than once the owner row is let go.
@@ -167,6 +167,11 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
+	// The deadline the browser's leaving's settlement runs to, set before the server's goroutines
+	// start: the settlement reads it on the socket's goroutine. No settlement runs before the
+	// browser leaves: the edit's own is armed an hour away.
+	const deadline = 300 * time.Millisecond
+	service.settleTimeout = deadline
 	ended := make(chan struct{}, 1)
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		service.ServeHTTP(w, r)
@@ -197,8 +202,6 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 	if _, err := hold.Exec(ctx, `select key from issues where key = 'DOC-1' for no key update`); err != nil {
 		t.Fatalf("hold the document's owner row: %v", err)
 	}
-	const deadline = 300 * time.Millisecond
-	service.settleTimeout = deadline
 	closed := time.Now()
 	browser.Close()
 	// The socket ends within the bound a timer's settlement past its deadline returns within
@@ -240,9 +243,9 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 // idle stamp it found (sjawhar/ygo v1.55.1-sami.2, provider/websocket/idle_sweep.go:159-197), and an
 // armed settlement is a timer, which holds no Apply in the room. The settlement then loads the room
 // again itself and settles it. Its warm-up in settleRoomWithin is a Server.Apply made under the
-// deadline its timer runs it to (settleRoom, settleTimeout), which the room's load is handed; the
-// load reads the store on the pool that owns loads (store.Pool.Rooms: onLoadDocument, and
-// servicePersistenceAdapter.LoadDoc, whose read names no pool of its caller's), and the
+// deadline every settlement runs to (settleRoomWithin, settleTimeout), which the room's load is
+// handed; the load reads the store on the pool that owns loads (store.Pool.Rooms: onLoadDocument,
+// and servicePersistenceAdapter.LoadDoc, whose read names no pool of its caller's), and the
 // settlement's own passes then read and write on the settlements pool; neither takes a request-pool
 // connection. Here the room idles out a second after the edit while the settle delay is an hour, so
 // the sweep comes first, and nothing else closes a room (the default budget holds thousands of
@@ -374,8 +377,8 @@ func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T
 	if seen.settlements == 0 {
 		t.Error("the settlement took no settlements-pool connection once it had warmed the room, want its passes to read and write on that pool")
 	}
-	// The timer's deadline is set as settleRoom starts, just before settleRoomWithin's start
-	// read the clock.
+	// The settlement's deadline is set as settleRoomWithin starts, just before its beforeSettleStart
+	// hook read the clock.
 	if latest := seen.started.Add(service.settleTimeout); !seen.bounded || seen.deadline.After(latest) || seen.deadline.Before(latest.Add(-time.Second)) {
 		t.Errorf("the room's load for the settlement was handed deadline %v (bounded %v), want the settlement's own, within a second before %v (its start plus settleTimeout, %v)", seen.deadline, seen.bounded, latest, service.settleTimeout)
 	}
@@ -531,10 +534,142 @@ func TestAnOwedSettlementWhoseWarmUpLoadRunsOutItsReadsBoundStaysOwedForTheResum
 	}
 }
 
-// A settlement whose transaction finds every connection of the settlements pool taken for the
-// pool's whole acquire bound is refused it (store.ErrPoolBusy) and rolls back: the document stays
-// owed, its room stays resident, and the refusal counts as no settlement failure however often it
-// recurs, so overload fails no room. Once a connection is free the resumption settles it.
+// A cold room's load reads the room's stored history (servicePersistenceAdapter.LoadDoc) with no
+// context of ygo's to bound it, and so under a bound of its own, the one its hook's reads run under
+// (coldReadTimeout, errLoadReadsBound). Here a table lock the read waits behind - what a
+// migration's DDL takes - is held past that bound, shortened to a second: the load ends at the
+// bound with the lock still held, and the settlement whose warm-up it was stops short as one the
+// database did not serve (settleOverloaded), the document still owed. Unbounded, the load and the
+// settlement waiting on it waited for as long as the lock was held, past every bound the
+// settlement's lease on its row adds up (settlementLease).
+func TestARoomLoadWhoseHistoryReadWaitsPastItsBoundEndsAtIt(t *testing.T) {
+	logs := captureWarnings(t)
+	previous := coldReadTimeout
+	coldReadTimeout = time.Second
+	t.Cleanup(func() { coldReadTimeout = previous })
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	// The edit, once stored, owes the document a settlement, which the settle delay of an hour
+	// leaves armed and not run, holding the room's record (unusedLocked).
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	versions := latestVersionNumber(t, service, artifactID)
+	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+		t.Fatalf("close the document's room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+	state := service.room(artifactID)
+
+	ctx := context.Background()
+	hold, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the table lock's holder: %v", err)
+	}
+	defer hold.Rollback(ctx)
+	// The load's first read is the history's head, which reads doc_checkpoints (headVersion).
+	if _, err := hold.Exec(ctx, `lock table doc_checkpoints in access exclusive mode`); err != nil {
+		t.Fatalf("lock the table the room's load reads first: %v", err)
+	}
+	started := time.Now()
+	service.SettleNow(artifactID)
+	const within = 15 * time.Second
+	waitFor(t, within, "the settlement whose warm-up load waits behind the table lock to stop short", func() bool {
+		return logs.Lines("was not served by the database") != ""
+	})
+	took := time.Since(started)
+	var loadErr error
+	if failure := state.latestLoadFailure(); failure != nil {
+		loadErr = failure.err
+	}
+	if !errors.Is(loadErr, errLoadReadsBound) {
+		t.Fatalf("the warm-up's load ended with %v, want its reads' bound (errLoadReadsBound)", loadErr)
+	}
+	line := logs.Lines("dispatch: document settlement was not served by the database; the resumption settles it")
+	for _, want := range []string{"room=" + artifactID, "warm document for settlement", errLoadReadsBound.Error()} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the settlement whose warm-up load ran out its reads' bound logged %q, which lacks %q", line, want)
+		}
+	}
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatalf("release the table lock: %v", err)
+	}
+	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone, want it kept: nothing settled the edit")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
+		t.Fatalf("latest version = %d, want %d: no settlement whose warm-up load failed commits", latest, versions)
+	}
+	t.Logf("the load ended %v after the settlement was armed, with the table lock still held: %s", took.Round(time.Millisecond), strings.TrimSpace(line))
+}
+
+// The settlement an issue's close runs before it opens its transaction (SettleIssueDocuments,
+// settleOwedNow) runs under the deadline every settlement runs under (settleRoomWithin,
+// settleTimeout), not under its caller's context alone, which an unkeyed close's request leaves
+// with no deadline at all (api's outlivingTheClient). Here another transaction holds the document's
+// owner row past that deadline: each attempt rolls back at it, and SettleIssueDocuments returns
+// with the document still owed while the row is still held. Unbounded, it waited for as long as
+// the row was held, and the close with it.
+func TestTheSettlementAnIssuesCloseRunsFirstEndsAtItsDeadline(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	versions := latestVersionNumber(t, service, artifactID)
+
+	ctx := context.Background()
+	hold, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the owner row's holder: %v", err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `select key from issues where key = 'DOC-1' for no key update`); err != nil {
+		t.Fatalf("hold the document's owner row: %v", err)
+	}
+	const deadline = 300 * time.Millisecond
+	service.settleTimeout = deadline
+	t.Cleanup(func() { service.settleTimeout = settlementTimeout })
+	returned := make(chan error, 1)
+	started := time.Now()
+	go func() { returned <- service.SettleIssueDocuments(ctx, "DOC-1") }()
+	// issueSettleAttempts attempts, each ending at the deadline, inside issueSettleBudget.
+	const within = issueSettleBudget + 10*time.Second
+	select {
+	case err := <-returned:
+		if err == nil {
+			t.Fatal("SettleIssueDocuments returned no error, want the settlement that ran past its deadline reported")
+		}
+		t.Logf("SettleIssueDocuments returned after %v with the owner row held: %v", time.Since(started).Round(time.Millisecond), err)
+	case <-time.After(within):
+		_ = hold.Rollback(ctx)
+		<-returned
+		t.Fatalf("SettleIssueDocuments was still settling %v on with the owner row held, want each attempt ended at its %v deadline", within, deadline)
+	}
+	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone, want it kept: no settlement committed")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
+		t.Fatalf("latest version = %d, want %d: no settlement past its deadline commits", latest, versions)
+	}
+}
+
+// A settlement that finds every connection of the settlements pool taken for the pool's whole
+// acquire bound - for its lease on the document's pending-settlement row, the first statement it
+// runs there (leaseSettlementPending) - is refused it (store.ErrPoolBusy) and stops short: the
+// document stays owed, its room stays resident, and the refusal counts as no settlement failure
+// however often it recurs, so overload fails no room. It took no lease, so once a connection is
+// free the resumption settles it.
 func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -607,7 +742,10 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 // reads - so `store.Unserved` is what this branches on, not the narrower `IsPoolBusy`: under a
 // stall of the whole pod every room whose settlement met one would otherwise count a failure,
 // and three stalls would fail the room, which is the collapse these bounds exist to prevent
-// (INFRA-592).
+// (INFRA-592). The statement that stalls is the settlement's first on that pool, its lease on the
+// document's pending-settlement row (leaseSettlementPending): the database may have run it, and
+// the settlement, which never read the lease's end, cannot give back a lease it cannot name, so
+// the lease runs out as a dead process's does; the test runs it out before the resumption's pass.
 func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T) {
 	socket := storetest.NewStalledSocket(store.SettlementsPool)
 	database := storetest.Reopened(t, storetest.Open(t), func(config *pgxpool.Config) {
@@ -648,6 +786,7 @@ func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T
 		t.Fatalf("latest version = %d, want %d: no settlement the database left unanswered commits", latest, versions)
 	}
 
+	expireSettlementLeases(t, service.store, artifactID)
 	service.settle = 10 * time.Millisecond
 	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the owed settlement: %v", err)

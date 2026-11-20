@@ -35,7 +35,37 @@ var removalClears = []string{
 // under the lock, the pass went on with an owner it had read before the removal and failed on the
 // version that had gone with it - `read latest document version: no rows in result set`, logged
 // ERROR by the retry (retrySettle).
+//
+// A settlement first takes its lease on the document's pending-settlement row
+// (leaseSettlementPending), and the removal's delete of the artifacts row deletes that row with it
+// and holds it until it commits, so where the row stands the settlement waits there, in the
+// lease's statement, and its pass starts only once the removal has committed
+// (TestASettlementThatWaitedBehindARemovalEndsQuietly). Where the document owes no settlement the
+// lease updates nothing and waits for nothing, and the pass meets the removal at the owner lock,
+// the race the re-read under the lock is for
+// (TestASettlementOwingNoneThatWaitedBehindARemovalEndsQuietly).
 func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
+	settleBehindAHeldRemoval(t, true)
+}
+
+// A settlement runs whether or not its document's row still stands - settleRoomWithin reads no
+// row before it begins - and one finds none when another process's settlement committed the
+// updates it was armed for and deleted the row first: a re-arm for another process's change a
+// catch-up applied (rearmSettle), whose own settlement that process armed too, or a write's timer
+// in one process while the resumption's settlement of the same document commits in another. Such
+// a settlement's pass is the one that meets a removal at the owner lock.
+func TestASettlementOwingNoneThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
+	settleBehindAHeldRemoval(t, false)
+}
+
+// settleBehindAHeldRemoval runs a settlement of a resident document while a removal of it holds
+// the document's owner lock with every row deleted and only its commit left, commits the removal
+// once the settlement waits on it, and requires the settlement to end with nothing to settle and
+// nothing said. With owes the document's pending-settlement row stands, and the settlement waits
+// in its lease's statement; without, the row is deleted first, and it waits for the owner lock in
+// the owner lock's own statement (store.OwnerLockStatement, `... as owner_lock`).
+func settleBehindAHeldRemoval(t *testing.T, owes bool) {
+	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service, artifactID := newTestServiceWithDocument(t, database)
@@ -51,6 +81,16 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 	}
 	if service.srv.GetDoc(artifactID) == nil {
 		t.Fatal("the document has no room for a settlement to read")
+	}
+	wait := "%set leased_until = now()%"
+	if !owes {
+		if _, err := database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, artifactID); err != nil {
+			t.Fatalf("delete the document's pending-settlement row: %v", err)
+		}
+		wait = "%as owner_lock%"
+	}
+	if pending, err := settlementPending(ctx, database.Pool, artifactID); err != nil || pending != owes {
+		t.Fatalf("the document owes a settlement = %v (%v), want %v", pending, err, owes)
 	}
 
 	// The removal, held open at the point its commit is all that is left: the document's owner
@@ -72,11 +112,9 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 		}
 	}
 
-	// The settlement, which reads the artifacts row the removal has deleted but not committed,
-	// and then waits for the issue's owner lock the removal holds, in the owner lock's own
-	// statement (store.OwnerLockStatement, `... as owner_lock`), which is what its backend shows
-	// while it waits. Its generation is the room's as it stands now: a settlement armed meanwhile
-	// would be the room's own.
+	// The settlement, waiting where wait says, which is what its backend shows while it waits.
+	// Its generation is the room's as it stands now: a settlement armed meanwhile would be the
+	// room's own.
 	state := service.room(artifactID)
 	state.mu.Lock()
 	generation := state.roomGeneration
@@ -89,7 +127,7 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 		outcomes <- outcome
 		returned <- outcome.err
 	}()
-	waitForLockWait(t, ctx, database, "%as owner_lock%", returned)
+	waitForLockWait(t, ctx, database, wait, returned)
 	if err := removal.Commit(ctx); err != nil {
 		t.Fatalf("commit the removal: %v", err)
 	}

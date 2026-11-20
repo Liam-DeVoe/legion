@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // settlementWorkers is how many document settlements run at once, every way one starts: a timer, a
@@ -31,12 +33,16 @@ import (
 // them. The slots are what bounds them.
 const settlementWorkers = 4
 
-// settlementTimeout bounds a settlement a timer starts (settleRoom), from its wait for a slot to its
-// commit. A settlement still running at the bound rolls back, keeps the document's
+// settlementTimeout bounds every settlement (settleRoomWithin), from its wait for a slot to its
+// commit, whichever way it started: a timer, a room's last browser leaving, a retry, the
+// resumption, the settlement an issue's close runs first (settleOwedNow) and the shutdown drain. A
+// caller's own deadline that comes first ends it first: the drain's budget (ShutdownDrainBudget), a
+// keyed request's run. A settlement still running at the bound rolls back, keeps the document's
 // pending-settlement row and counts no failure: the resumption settles it once the load that held
 // it up has passed (RunSettlementResumption). Two parts it cannot stop: a cold room's load, since
-// ygo loads a room with no context of its own (servicePersistenceAdapter.LoadDoc), and what a pass
-// has left to do once it has written into the room (settlementFinishBound).
+// ygo loads a room with no context of its own (servicePersistenceAdapter.LoadDoc), whose reads run
+// under bounds of their own (coldReadTimeout), and what a pass has left to do once it has written
+// into the room (settlementFinishBound).
 const settlementTimeout = 60 * time.Second
 
 // errSettlementTimeout is the cause a settlement's context ends with at settlementTimeout, which
@@ -63,6 +69,33 @@ var errSettlementFinishTimeout = errors.New("document settlement ran past the bo
 func finishInRoom(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeoutCause(context.WithoutCancel(ctx), settlementFinishBound, errSettlementFinishTimeout)
 }
+
+// settlementLease is how long a settlement that has begun its work on a document holds the
+// document's pending-settlement row against the resumption (leaseSettlementPending,
+// doc_settlements_pending.leased_until) at most: the longest it can still be under way from that
+// point before it commits or gives up. A settlement that ends gives the lease back - its commit
+// deletes the row, and any other end clears the lease (releaseSettlementLease) - so the length
+// matters only while a settlement runs and once its process has died with the lease still held.
+// It is the sum of the bounds on what follows the lease, each counted to its end as if each ran
+// to its bound after the one before it had:
+//   - settlementTimeout: the settlement's deadline, which covers its wait for a slot, before the
+//     lease, and its passes' work after it (settleRoomWithin);
+//   - two cold reads (store.ColdReadBound, coldReadTimeout): a cold room's load, which the
+//     settlement's warm-up runs and no deadline of the settlement's stops, reads the room's stored
+//     history under one bound (servicePersistenceAdapter.LoadDoc) and then the document's issue and
+//     pending-settlement row under another (onLoadDocument);
+//   - settlementFinishBound: what a pass that has written into its room has left to do, which runs
+//     past the deadline.
+//
+// What none of these bounds is the load's decode of what it read (bootstrapLoadedState), work of
+// the processor alone over a history the room's item cap bounds (maxUpdateItems), and the sum
+// counts the load and the finish both to their ends, where a load that ran past the deadline
+// leaves the passes after it nothing they could write into the room. A lease longer than the
+// settlement only keeps a document whose settlement's process died, or whose give-back failed,
+// from the resumption for longer. One shorter than a running settlement lets a pass arm the
+// document again, which moves the room's generation under the settlement and ends it writing
+// nothing (applyStamp): a document whose every settlement outlasted that lease would never commit.
+const settlementLease = settlementTimeout + 2*store.ColdReadBound + settlementFinishBound
 
 // settlementSlots is the bound settlementWorkers sets: a slot per running settlement, and counts of
 // the settlements running and of those waiting for a slot, which the metrics endpoint reports.

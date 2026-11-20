@@ -312,8 +312,7 @@ func main() {
 	// not answer later fails only the call it was asked for, which its delivery tries again.
 	if boot.EnvoyGoogleAudience != "" {
 		if err := dispatchenvoy.CheckGoogleIdentity(context.Background()); err != nil {
-			slog.Error("dispatch: Envoy listener identity", "error", err)
-			os.Exit(1)
+			fatal("dispatch: Envoy listener identity", "error", err)
 		}
 	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays

@@ -222,6 +222,14 @@ type servicePersistenceAdapter struct {
 // waiter wakes (server.go:2025-2034). Recovered here, a load's failure is the load's own
 // (sjawhar/legion#2519). It is recorded on the room's record before the room fails
 // (noteLoadFailed), for the sockets whose joins ygo answers with it.
+//
+// Its reads - the check of a socket's preload (takePreload) or the stored history - are bounded as
+// the hook's reads after them are (onLoadDocument): at coldReadTimeout, with errLoadReadsBound as
+// the cause (loadReadFailed). ygo hands the load no context, and a read the database left
+// unanswered - one waiting behind a table lock a migration or other DDL holds, or on a connection
+// that stopped answering - held the room's load, every join waiting on it and a settlement's
+// warm-up with no end; a settlement's lease on its document's pending-settlement row counts on
+// this bound (settlementLease).
 func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	load := a.service.beginRoomLoad(room)
 	defer func() {
@@ -233,14 +241,20 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 			a.service.failRoomLoad(room, load, err)
 		}
 	}()
-	if taken, err := a.service.takePreload(room, load); err != nil || taken {
-		return nil, err
-	}
-	result, err := a.store.Load(context.Background(), room)
-	if err == nil {
-		err = loadableHistory(result.Update)
-	}
+	reads, cancel := context.WithTimeoutCause(context.Background(), coldReadTimeout, errLoadReadsBound)
+	defer cancel()
+	taken, err := a.service.takePreload(reads, room, load)
 	if err != nil {
+		return nil, loadReadFailed(reads, err)
+	}
+	if taken {
+		return nil, nil
+	}
+	result, err := a.store.Load(reads, room)
+	if err != nil {
+		return nil, loadReadFailed(reads, err)
+	}
+	if err := loadableHistory(result.Update); err != nil {
 		return nil, err
 	}
 	load.read(result.Version, result.Update, admissionRendering{})

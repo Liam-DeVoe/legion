@@ -168,9 +168,13 @@ type Service struct {
 	outside     *admission.Outside
 	serverURL   string
 	settle      time.Duration
-	// settleTimeout bounds a settlement a timer starts (settleRoom); settlementTimeout but in
-	// tests, which shorten it to see a settlement run past it.
+	// settleTimeout bounds every settlement (settleRoomWithin); settlementTimeout but in tests,
+	// which shorten it to see a settlement run past it.
 	settleTimeout time.Duration
+	// settleLease is how long a settlement under way holds its document's pending-settlement row
+	// against the resumption (leaseSettlementPending); settlementLease but in tests, which shorten
+	// it to see the lease end.
+	settleLease time.Duration
 	// settlements bounds the settlements running at once (settlementWorkers).
 	settlements       *settlementSlots
 	markWait          time.Duration
@@ -980,6 +984,7 @@ func New(deps Deps) *Service {
 		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
 		settle:            settle,
 		settleTimeout:     settlementTimeout,
+		settleLease:       settlementLease,
 		settlements:       newSettlementSlots(settlementWorkers),
 		markWait:          markWait,
 		now:               time.Now,
@@ -1914,9 +1919,10 @@ const (
 	// Nothing retries it or counts it as a failure: the document's pending-settlement row leaves it
 	// to resume.
 	settleOutOfBudget
-	// settlePastDeadline is a timer's settlement that ran past its own deadline (settleTimeout,
-	// errSettlementTimeout). The pending-settlement row leaves it to resume too, so a settlement that
-	// cannot finish gives its slot and its connection back and fails no room.
+	// settlePastDeadline is a settlement that ran past its own deadline (settleTimeout,
+	// errSettlementTimeout), which every settlement runs to (settleRoomWithin). The
+	// pending-settlement row leaves it to resume too, so a settlement that cannot finish gives its
+	// slot and its connection back and fails no room.
 	settlePastDeadline
 	// settleOverloaded is a settlement the database did not serve (store.Unserved: the
 	// settlements pool's or the rooms pool's acquire bound ran out, or the database stopped
@@ -1954,13 +1960,11 @@ type settleOutcome struct {
 
 // settleRoom runs the settlement a timer armed, or the one a room's last browser leaving runs in
 // its timer's place (settleLastPeer), under parent, which carries that departure's mark
-// (withSettlementLoad) and nothing for a timer's, and under settleTimeout with a cause of its own
-// (errSettlementTimeout), so a settlement that cannot finish gives its slot and its connection back
-// and is left to the resumption; then what follows it.
+// (withSettlementLoad) and nothing for a timer's, and under the deadline every settlement runs to
+// (settleRoomWithin, settleTimeout), so a settlement that cannot finish gives its slot and its
+// connection back and is left to the resumption; then what follows it.
 func (s *Service) settleRoom(parent context.Context, room string, generation uint64) {
-	ctx, cancel := context.WithTimeoutCause(parent, s.settleTimeout, errSettlementTimeout)
-	defer cancel()
-	s.followUpSettlement(room, s.settleRoomWithin(ctx, room, generation, false))
+	s.followUpSettlement(room, s.settleRoomWithin(parent, room, generation, false))
 }
 
 // followUpSettlement does what follows a settlement the timer or Shutdown ran, by how it ended

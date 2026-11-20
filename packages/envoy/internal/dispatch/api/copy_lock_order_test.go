@@ -48,12 +48,16 @@ var (
 // caller's, and end it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
 // each settlement settleOwedNow runs opens and commits its own, and SettleIssueDocuments, which
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
-// its own; and settleRoomWithin calls settlePass in a loop, each pass opening a transaction of its
+// its own; settleRoomWithin calls settlePass in a loop, each pass opening a transaction of its
 // own and committing or rolling it back, so what one pass took is released before the next pass
-// takes the copy lock.
+// takes the copy lock; and leaseSettlementPending, which settleRoomWithin calls before its first
+// pass, and releaseSettlementLease, which it calls as it returns, each run their one statement on
+// the settlements pool outside any transaction, so the row lock it takes ends with that statement.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"docs.settlement.settlePass",
+	"docs.leaseSettlementPending",
+	"docs.releaseSettlementLease",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
 }

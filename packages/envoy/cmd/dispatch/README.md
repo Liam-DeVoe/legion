@@ -1704,6 +1704,17 @@ A process that finds it held tries again
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
 The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
+A settlement takes a lease on its document's pending-settlement row as it begins its work on the document, once it holds one of the four settlement slots and before it warms a cold room, whichever way it was armed and in whichever process (`doc_settlements_pending.leased_until`, `docs.leaseSettlementPending`), and the pass skips a row whose lease has not run out.
+Arming a document moves its room's generation, and a settlement whose generation moved after it read the room ends writing nothing, so before the lease a document whose every settlement took longer than a period was armed again under each one and never committed.
+The lease is held while the settlement runs, and is at most 210 seconds (`docs.settlementLease`), the sum of the bounds on what can follow it:
+the settlement's own 60-second deadline, which every settlement runs under however it started and which covers its wait for a slot and its passes;
+a cold room's load, which no deadline of the settlement's stops, whose reads run under two 60-second bounds of their own, one on the stored history and one on the issue and the row;
+and the 30 seconds a pass that has written into its room has to finish.
+A settlement that commits deletes the row and its lease with it, and one that ends any other way (it ran out of time, the database did not serve it, a newer write's settlement superseded it, it failed) gives the lease back as it returns, once nothing it started can still commit (`docs.releaseSettlementLease`), so the next pass arms the document at once.
+The give-back clears the lease only where the row still holds the one that settlement took, so a newer settlement's lease stands.
+Only a settlement whose process dies, or whose lease, commit or give-back went unanswered, leaves its lease to run out, and the first pass after that arms the document again.
+The lease and its give-back are each a statement of their own on the settlements pool, outside any transaction, so neither holds a lock across the document's work.
+The release before the lease neither reads nor writes the column, so while one of its processes takes the resumption's turn (`duty.SettlementResumptionLease`), its pass arms a leased document as it always did, which supersedes only a settlement running in that same process.
 
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
@@ -1960,6 +1971,10 @@ Their censuses answer `0` for 0056–0061, which neither refuse nor rewrite a ro
 Migration `0063_doc_settlements_pending` creates the table in which every durable document update records the settlement it owes, which the settlement deletes when it commits.
 A room's load and the server's minute-by-minute resumption arm the settlement a row names, whether or not the document's issue is closed, so one that a shutdown or a close cuts short still runs.
 It creates a table and touches no row; its census answers `0`.
+
+Migration `20261120124333_doc_settlements_leased_until` adds `doc_settlements_pending.leased_until`, nullable with no default: the end of the lease a settlement under way holds on its document's row, which keeps the minute-by-minute resumption from arming that document again while it runs (Background loops, above).
+A row owed before it reads null there, held by no settlement.
+It rewrites no row and its census answers `0`; the alter waits for `doc_settlements_pending` within the five-second lock bound, as `20261114100038`'s alter of the table does.
 
 Migrations `0064`–`0066` let an approval request follow its document's versions.
 `0064` backfills `requested_version` into every approval ask from its `version`, rebuilds `asks_approval_kind_check` to require it, and adds the nullable `asks.handed_back_reply_id` and an insert trigger that gives an older binary's approval row the same value; it locks `asks` alone.

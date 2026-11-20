@@ -40,10 +40,11 @@ func withdrawnReason(issueKey string) string {
 // (docs.Service.RunSettlementResumption).
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
-// whether or not the client waits for the close, as the settlement it stands in for would. On a
-// keyed request it still ends at the keyed run's bound (keyedRunLimit). issueSettleBudget
-// (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable appends and whether a
-// retry starts, not a settlement already running.
+// whether or not the client waits for the close, as the settlement it stands in for would. Each
+// settlement ends at its own deadline, as every settlement does (docs' settleTimeout), and on a
+// keyed request at the keyed run's bound (keyedRunLimit) where that comes first.
+// issueSettleBudget (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable
+// appends and whether a retry starts, not a settlement already running.
 func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return

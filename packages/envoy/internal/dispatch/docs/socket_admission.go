@@ -64,16 +64,16 @@ type preloadedDocument struct {
 // is swept where the load records itself (onLoadDocument), and one offered after is not stored
 // (offerPreload).
 //
-// The head is read from the store in one statement on the pool that owns loads, beside the
-// document's pending-settlement row the room's load reads next (preloadCheckStatement). What it
-// read of that row goes on the record whether or not the preload is current
-// (roomLoad.readSettlement), with where the room's record stood as to its edit source just before
-// the read (markEditSource), so the load's hook reads the row no second time (onLoadDocument). A
-// load that takes a socket's preload therefore reads the store once: the socket's admission read
-// the history, and the issue (admittedIssueRead). A read that fails is the load's failure,
-// returned to its caller (LoadDoc): nothing was read to load from, and the pool that refused it is
-// the one a read of the whole history would wait on next.
-func (s *Service) takePreload(room string, load *roomLoad) (bool, error) {
+// The head is read from the store in one statement on the pool that owns loads, under the bound
+// ctx carries on the load's reads (LoadDoc), beside the document's pending-settlement row the
+// room's load reads next (preloadCheckStatement). What it read of that row goes on the record
+// whether or not the preload is current (roomLoad.readSettlement), with where the room's record
+// stood as to its edit source just before the read (markEditSource), so the load's hook reads the
+// row no second time (onLoadDocument). A load that takes a socket's preload therefore reads the
+// store once: the socket's admission read the history, and the issue (admittedIssueRead). A read
+// that fails is the load's failure, returned to its caller (LoadDoc): nothing was read to load
+// from, and the pool that refused it is the one a read of the whole history would wait on next.
+func (s *Service) takePreload(ctx context.Context, room string, load *roomLoad) (bool, error) {
 	value, ok := s.preloads.LoadAndDelete(room)
 	if !ok {
 		return false, nil
@@ -82,7 +82,7 @@ func (s *Service) takePreload(room string, load *roomLoad) (bool, error) {
 	loaded, rendered := preload.loaded, preload.rendered
 	preload.loaded, preload.rendered = persistence.LoadResult{}, admissionRendering{}
 	settlement := &owedSettlement{mark: s.markEditSource(room)}
-	head, err := s.readPreloadCheck(room, settlement)
+	head, err := s.readPreloadCheck(ctx, room, settlement)
 	if err != nil {
 		return false, err
 	}
@@ -106,14 +106,14 @@ const preloadCheckStatement = `
 // readPreloadCheck reads preloadCheckStatement for room on the pool that owns loads, where
 // PgVersioned.Head reads the head, and puts what it read of the pending-settlement row on
 // settlement.
-func (s *Service) readPreloadCheck(room string, settlement *owedSettlement) (persistence.Version, error) {
+func (s *Service) readPreloadCheck(ctx context.Context, room string, settlement *owedSettlement) (persistence.Version, error) {
 	rooms, err := s.store.Pool.Rooms()
 	if err != nil {
 		return 0, err
 	}
 	var head int64
 	var encoded []byte
-	if err := rooms.QueryRow(context.Background(), preloadCheckStatement, room).Scan(&head, &settlement.owed, &encoded); err != nil {
+	if err := rooms.QueryRow(ctx, preloadCheckStatement, room).Scan(&head, &settlement.owed, &encoded); err != nil {
 		return 0, fmt.Errorf("read document head and pending settlement: %w", err)
 	}
 	if settlement.lastActor, err = decodeOwedEditSource(encoded); err != nil {
