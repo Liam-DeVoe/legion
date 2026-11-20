@@ -1097,7 +1097,7 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 		return
 	}
 	s.tellUpdateStalled(ctx, updateStall{
-		issue: issue, round: round, at: clock.now, pod: pod, reasons: reasons, group: told,
+		issue: issue, round: round, pod: pod, reasons: reasons, group: told,
 		waiting: waiting,
 		reason:  why,
 	})
@@ -1317,7 +1317,6 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 type updateStall struct {
 	issue   string
 	round   string
-	at      time.Time
 	pod     string
 	reasons string
 	waiting []record.UpdateWaiting
@@ -1330,7 +1329,9 @@ type updateStall struct {
 // find it open: the telling is marked on every claim of the round (UpdateToldAt), and a round
 // already marked, or whose mark this daemon owes, is told nothing more (roundTold). The mark is
 // written after the row is enqueued, so a row the store refuses is written again at the next tick
-// rather than swallowed.
+// rather than swallowed. The mark is dated at the clock as the row is enqueued, which is when the
+// round was told, and never at the sweep's now (roundClock): the walk can wait before it reaches
+// this round, on a write it makes to the store for an issue before it.
 //
 // A round over the pod of a claim of another project's issue, which the operator's spawn makes,
 // queues no notice: its row would be keyed by that issue, which only that project's daemon runs
@@ -1366,7 +1367,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 		s.log.Warn("supervise: an update round is held past its bound; its issue is another project's, whose rows this daemon writes none of, so the controller is told nothing and this line is the whole of the telling",
 			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", stall.reason, "waiting", stall.waiting)
 	}
-	s.markUpdateTold(ctx, stall.issue, stall.group, stall.round, stall.at)
+	s.markUpdateTold(ctx, stall.issue, stall.group, stall.round, s.plan.clock.Now())
 }
 
 // markUpdateTold records on every claim of the round that this round was told at at, so no later

@@ -267,3 +267,48 @@ func TestPodUpdateADaemonThatRestartsBeforeAnOwedToldMarkTellsTheRoundOnceMore(t
 		t.Fatalf("the controller has been told %d times of the round, want twice: once by each daemon", len(notices))
 	}
 }
+
+// A late round's told mark carries the moment the walk told the round, not the top of its sweep.
+// Here the walk first writes the ask of an earlier issue's open round, which takes 20 seconds
+// (sweepHeldInAWrite), and only then reaches the late round and tells it, so the two moments are
+// 20 seconds apart.
+func TestPodUpdateALateRoundsToldMarkCarriesTheMomentTheWalkToldIt(t *testing.T) {
+	asked, late := "ACME-1", "ACME-2"
+	rig := newLimitRig(t, asked, late)
+	rig.outboxProject("ACME")
+	rig.drifts(asked)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened the late round", late)
+	rig.podless(late)
+
+	// 30 seconds before the late round's bound, the asked issue's round opens; the walk of the
+	// sweep after it writes that round's ask.
+	rig.clock.advance(podUpdateGrace - 30*time.Second)
+	rig.drifts(asked, limitDrift)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened the asked round", asked, late)
+	if n := len(rig.controllerNotices()); n != 0 {
+		t.Fatalf("the late round was told %d times before its bound, want none", n)
+	}
+
+	rig.clock.advance(time.Minute)
+	top := rig.clock.Now()
+	rig.sent(late, claim.RoleArchitect)
+	rig.sweepHeldInAWrite(asked, 20*time.Second)
+	if n := len(rig.controllerNotices()); n != 1 {
+		t.Fatalf("the sweep past the late round's bound told the controller %d times, want once", n)
+	}
+	told := top.Add(20 * time.Second)
+	testwait.Eventually(t, "the late round's told mark to be made", func() bool {
+		if rig.claimOf(late, claim.RoleArchitect).UpdateToldAt != nil {
+			return true
+		}
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		return false
+	})
+	if got := rig.claimOf(late, claim.RoleArchitect).UpdateToldAt; !got.Equal(told) {
+		t.Errorf("the late round was marked told at %s, want %s: the walk told it %s after the top of its sweep, %s",
+			got.Format(time.RFC3339), told.Format(time.RFC3339), told.Sub(top), top.Format(time.RFC3339))
+	}
+}
