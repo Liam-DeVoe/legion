@@ -442,11 +442,14 @@ var projections = append([]projection{{
 	// node side that began at the rows could never find it. A block whose only links are of other
 	// kinds - its placement, its from_ask, its decided_by - states no link here and is no node of
 	// this kind; the block kind holds its placement. An item's block projects into its kind's link
-	// table, not into block_refs, so it is none either.
+	// table, not into block_refs, so it is none either. Nor is a block's identity mention, its
+	// mentions of a person, an agent's session or a role (refs.IdentityKinds): the block index
+	// states it in the store alone, since block_refs holds no party (refs.TargetOf), so no row
+	// projects it, and the kind counts it as a figure of its own (identity_mentions).
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[]) and not `+blockIdentityMention) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`) + `
 		) held
 		where held.links <> ''`,
@@ -454,6 +457,19 @@ var projections = append([]projection{{
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	narrowings: []narrowing{{
+		name: "identity_mentions",
+		note: "mentions of a person, an agent's session or a role out of a document's block, which the block index" +
+			" states in the store alone and no block_refs row projects, since block_refs holds no party",
+		count: `
+		select count(*) from graph_nodes n
+		cross join lateral (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.asserted`,
+			`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = n.id and t.to_kind <> '`+graphstore.KindValue+`'
+			  and t.kind = any($1::text[]) and `+blockIdentityMention) + `
+		) held
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`) + ` and held.asserted`,
+	}},
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
@@ -681,6 +697,12 @@ func statedLinks(links ...string) string {
 	return `(select coalesce(string_agg(stated.link, ',' order by stated.link), '')
 		from (values (` + strings.Join(links, `), (`) + `)) stated (link))`
 }
+
+// blockIdentityMention is a predicate over a tuple t that holds of an identity mention: a
+// `mentions` to a person, an agent's session or a role (refs.IdentityKinds), which an index
+// states in the store alone, no projected row holding a party (block_ref's identity_mentions).
+var blockIdentityMention = `(t.kind = '` + graphstore.TupleMentions + `' and t.to_kind in ('` +
+	strings.Join(refs.IdentityKinds, `', '`) + `'))`
 
 // currentLinks is every link the node n of kind fromKind states now under the tuple kinds the
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation:

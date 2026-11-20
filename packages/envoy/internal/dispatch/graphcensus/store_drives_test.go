@@ -57,6 +57,12 @@ type StoreDrive struct {
 // is nil, every site only those drives run is listed and not driven, and the test fails naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
 
+// PublishTheLog is publishTheLog for this package's external test, whose census of what the
+// server wrote reads the log published, as production's does: a role a comment routes to has its
+// node made by the outbox's publish of the event that names it (outbox.deliveredGraph), and the
+// server the external test drives runs no outbox of its own.
+var PublishTheLog = publishTheLog
+
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that
 // no drive runs, naming it, so a site added to the register is a site this test drives before it
 // passes; and on every site a drive says it runs that the register does not list.
