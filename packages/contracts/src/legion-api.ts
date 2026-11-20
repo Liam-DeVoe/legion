@@ -432,7 +432,7 @@ const legionMergeWaitView = z.object({
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
- * ancestor's approval (contract 189) holds the version its root registered there, which no person
+ * ancestor's approval (contract 191) holds the version its root registered there, which no person
  * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
  * reader that names a person's approval reads `gatedSteps`, not this. */
 const legionGateView = z.object({
@@ -447,7 +447,7 @@ const legionGateView = z.object({
 const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
- * approval request it waits on (contract 189): the ancestor `issue`, its document's `artifactId`
+ * approval request it waits on (contract 191): the ancestor `issue`, its document's `artifactId`
  * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
  * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
  * where Dispatch gave one; for a request, its `askId`. */
@@ -468,7 +468,7 @@ const legionGatedStepBasis = z.object({
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, which lets the work past the step) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). Contract 189 adds two
+ * `changesReason` the reason they gave; absent under every other status). Contract 191 adds two
  * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
  * approval of an ancestor's document, which lets the work past the step as an approval does and is
  * no person's approval of the root, its `approvedVersion` being the root's version registered; and
@@ -737,12 +737,12 @@ const legionIssue = z.object({
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
-   * (`record.TreeRuns`, contract 189): its lifecycle stands open under the workflow, the root does
+   * (`record.TreeRuns`, contract 191): its lifecycle stands open under the workflow, the root does
    * not linger, and the root does not wait in the line for that tree to be opened. On every root
    * the daemon records and on no other issue, since no other field decides it in every case: a
    * root a re-admission left at `todo` waiting for a slot runs nothing whatever its architect's
    * claim reads, and a root a person answered runs while it waits in the line for its resume.
-   * Absent from every issue of the body the route serves a caller before 189
+   * Absent from every issue of the body the route serves a caller before 191
    * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
   treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
@@ -1953,7 +1953,7 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
  * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`, `basisVersion` and `reason` name a basis
- * (contract 189): the same step's document of an ancestor on the issue's Dispatch `child_of`
+ * (contract 191): the same step's document of an ancestor on the issue's Dispatch `child_of`
  * chain, the version of it a person approved or an open approval request asks a person to
  * approve, and the architect's reason, 1 to 1,000 characters with no decision block, which the
  * daemon posts on the issue. The three come together or not at all (`BASIS_INCOMPLETE`), and the
@@ -1981,7 +1981,7 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). Since contract 189 the daemon refuses it on an issue in
+ * grant's (`ISSUE_NOT_GRANTS`). Since contract 191 the daemon refuses it on an issue in
  * `awaiting_children` (`WAITING_ON_CHILDREN`, naming its open Dispatch children and the start it
  * holds), which stands in no phase a move back acts on (dispatch://INFRA-3320, R11). */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -2015,7 +2015,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 189 it
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 191 it
  * is refused after that while a root whose design-gate step rests on the issue's approval is still
  * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
  * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the
