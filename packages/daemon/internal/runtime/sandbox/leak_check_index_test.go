@@ -546,9 +546,9 @@ func TestANegativeIndexPollIsRefused(t *testing.T) {
 	}
 }
 
-// testStartReserve is the reserve the start-bound tests give a launchers in place of the
-// production one (startFrameReserve): short enough that a test waits it out in about a second, and
-// long enough for a start frame and its answer over a pipe.
+// testStartReserve is the reserve the start-bound tests give a launchers, which a runtime sets to
+// its termination grace: short enough that a test waits it out in about a second, and long enough
+// for a start frame and its answer over a pipe.
 const testStartReserve = time.Second
 
 // bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
