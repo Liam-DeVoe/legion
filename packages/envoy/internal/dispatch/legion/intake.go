@@ -553,7 +553,8 @@ type messageAttempt struct {
 	seq       int64
 	delivered uint64
 	// pending is a whole read this message made that is not recorded yet (readWhole), and readMade
-	// whether one was recorded, after which the message calls for no read of its own (judge).
+	// whether one was recorded (makeRead), after which the message calls for no read of its own
+	// (ownRead).
 	pending  *wholeRead
 	readMade bool
 	// cursor is the project's cursor as the last batch read it (applyBatch), and reason the whole
@@ -564,14 +565,21 @@ type messageAttempt struct {
 	reason string
 	// back is how long the message goes back to the stream for, unacknowledged: above zero where it
 	// holds its project's owed read, and 0 where it is acknowledged. released is whether it went
-	// back stateMaxHolds times and the cursor no longer names it as the read's holder. The attempt
-	// that answers the message sets both (readAnswer.back, readAnswer.release), and only once the
-	// write that records the answer has committed (applyBatch, readRefused).
+	// back stateMaxHolds times and the cursor no longer names it as the read's holder. answered sets
+	// both from the read rule's answer (answerRead), and applyBatch and readRefused call it only
+	// once the write that records the answer has committed.
 	back     time.Duration
 	released bool
 	// refusal is the database's refusal for good of the message's batch, once there is one: the
 	// message is not tried again, and one whole read is made of its project (readRefused).
 	refusal *pgconn.PgError
+}
+
+// answered sets the message's back and released from answer, the read rule's answer for it
+// (answerRead). applyBatch and readRefused call it once the write that recorded answer has
+// committed, and never before.
+func (a *messageAttempt) answered(answer readAnswer) {
+	a.back, a.released = answer.back, answer.release
 }
 
 // deliveryOf is msg's sequence in the stream (bus.Stream), which tells the message that holds its
@@ -589,13 +597,13 @@ func deliveryOf(msg *natsgo.Msg) (seq int64, delivered uint64) {
 
 // applyMessage is one attempt at a message: its batch (applyBatch), or the whole read the batch
 // found is to be made first (cursor.readFor). The read waits on the daemon, so it is made outside
-// the batch's transaction, and the attempt is then made again: the batch decides once more on the
-// cursor the read left. A read that is owed and not due is recorded owed by the batch, which takes
-// the message or leaves it unapplied as judge says, and the message goes back to the stream where
-// it holds the owed read (messageAttempt.back). A starting point is not taken while a Dispatch
-// process of an earlier build is in the fleet (startBlocked): the message is acknowledged
-// unapplied. A batch the database refuses for good (refusedForGood) is not tried again, and calls
-// for one whole read of the project (readRefused); deliver logs the refusal.
+// the batch's transaction (makeRead), and the attempt is then made again: the batch decides once
+// more on the cursor the read left. A read that is owed and not due is recorded owed by the batch
+// (answerRead), which takes the message or leaves it unapplied as judge says, and the message goes
+// back to the stream where it holds the owed read (messageAttempt.back). A starting point is not
+// taken while a Dispatch process of an earlier build is in the fleet (startBlocked): the message is
+// acknowledged unapplied. A batch the database refuses for good (refusedForGood) is not tried
+// again: it calls for one whole read of the project (readRefused), and deliver logs the refusal.
 func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	if attempt.refusal != nil {
 		return in.readRefused(ctx, attempt)
@@ -611,61 +619,58 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 	if blocked, err := in.startBlocked(ctx, read.reason); err != nil || blocked {
 		return outcomeEarlierBuild, err
 	}
-	// A read takes up to RequestTimeout: the message is still in hand.
-	inProgress(attempt.msg)
-	recorded, err := in.readWhole(ctx, *read, &attempt.pending)
-	if err != nil {
-		return outcomeDone, err
-	}
-	if recorded {
-		attempt.readMade = true
-	}
-	return outcomeAgain, nil
+	return in.makeRead(ctx, attempt, *read)
 }
 
 // readRefused is the whole read a message the database refused for good calls for
 // (ReadReasonRefused): the read's rows then hold the daemon's state, the refused message's events
 // among it, since the daemon commits each event before it publishes it. The read rule decides it as
-// it decides every read (cursor.readFor). A read that is due is made, and readRefused then decides
-// again on the cursor the read left, the message calling for no read of its own once one was made
-// for it. A read that is not due is recorded owed (owe), and once that is written the message goes
-// back to the stream where it holds the owed read, and is acknowledged otherwise. Nothing is read
-// where the project has no setting, or a setting whose starting point its change queues (a cursor
-// that does not follow it), or where the database refuses for good the read's record as well, the
-// record of the owed read, or the project's position itself (a key it does not take): the message
-// is acknowledged all the same. Any other failure of the database is tried again in place, as every
-// database step is.
+// it decides every read a message calls for (answerRead), and what the rule owes is recorded
+// through the pool, since no batch is open. A read that is due is made (makeRead), and readRefused
+// then decides again on the cursor the read left, the message calling for no read of its own once
+// one was made for it (ownRead). A read that is not due is recorded owed, and once that is written
+// the message goes back to the stream where it holds the owed read, and is acknowledged otherwise
+// (messageAttempt.answered). Nothing is read where the project has no setting, or a setting whose
+// starting point its change queues (a cursor that does not follow it), or where the database
+// refuses for good the read's record as well, the record of the owed read, or the project's
+// position itself (a key it does not take): the message is acknowledged all the same. Any other
+// failure of the database is tried again in place, as every database step is.
 func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (outcome, error) {
-	project := attempt.message.Project
-	setting, current, found, err := in.position(ctx, project)
+	setting, current, found, err := in.position(ctx, attempt.message.Project)
 	if err != nil || !found || !current.follows(setting.StateURL) {
 		if refusedForGood(err) != nil {
 			err = nil
 		}
 		return outcomeDone, err
 	}
-	reason := ReadReasonRefused
-	if attempt.readMade {
-		reason = ""
-	}
-	attempt.reason = reason
-	answer := current.readFor(reason, in.now(), attempt.seq, attempt.delivered)
-	if !answer.read {
-		if err := owe(ctx, in.pool, project, answer, attempt.seq); err != nil {
-			if refusedForGood(err) != nil {
-				err = nil
-			}
-			return outcomeDone, err
-		}
-		attempt.back, attempt.released = answer.back, answer.release
-		return outcomeDone, nil
-	}
-	inProgress(attempt.msg)
-	recorded, err := in.readWhole(ctx, answer.of(setting), &attempt.pending)
+	attempt.reason = ownRead(ReadReasonRefused, attempt.readMade)
+	answer, err := in.answerRead(ctx, in.pool, attempt, current, attempt.reason)
 	if err != nil {
 		if refusedForGood(err) != nil {
 			err = nil
 		}
+		return outcomeDone, err
+	}
+	if !answer.read {
+		attempt.answered(answer)
+		return outcomeDone, nil
+	}
+	result, err := in.makeRead(ctx, attempt, answer.of(setting))
+	if refusedForGood(err) != nil {
+		return outcomeDone, nil
+	}
+	return result, err
+}
+
+// makeRead makes read, the whole read the attempt's message calls for, outside any transaction
+// (readWhole), and answers outcomeAgain, so the attempt is made again on the cursor the read left.
+// It sets readMade once readWhole has recorded the read, after which the message calls for no read
+// of its own (ownRead). applyMessage and readRefused call it.
+func (in *Intake) makeRead(ctx context.Context, attempt *messageAttempt, read owedRead) (outcome, error) {
+	// A read takes up to RequestTimeout: the message is still in hand.
+	inProgress(attempt.msg)
+	recorded, err := in.readWhole(ctx, read, &attempt.pending)
+	if err != nil {
 		return outcomeDone, err
 	}
 	if recorded {
@@ -698,6 +703,22 @@ type owedRead struct {
 // readOf is the whole read of setting's daemon made for reason alone.
 func readOf(setting Settings, reason string) owedRead {
 	return owedRead{setting: setting, reason: reason, joined: []string{reason}}
+}
+
+// answerRead runs the read rule (cursor.readFor) on current for reason, the whole read the
+// attempt's message calls for, and answers what the rule decides. Where the rule makes no read now,
+// answerRead first records what the rule owes (owe) through db: the batch's transaction
+// (applyBatch), or the pool (readRefused). The caller sets the message's answer from it
+// (messageAttempt.answered) only once that write has committed.
+func (in *Intake) answerRead(ctx context.Context, db Execer, attempt *messageAttempt, current cursor, reason string) (readAnswer, error) {
+	answer := current.readFor(reason, in.now(), attempt.seq, attempt.delivered)
+	if answer.read {
+		return answer, nil
+	}
+	if err := owe(ctx, db, attempt.message.Project, answer, attempt.seq); err != nil {
+		return readAnswer{}, err
+	}
+	return answer, nil
 }
 
 // owe records on project's cursor, through db (a batch's transaction, or the pool), what answer
@@ -1012,8 +1033,9 @@ func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL stri
 // and the parts of a split transaction held for it. It answers the outcome of the message where no
 // whole read is made first, outcomeDone for a message whose events above the position are taken,
 // and the reason of the whole read the message calls for, "" for none, which applyBatch hands to
-// the read rule (cursor.readFor). A message whose read was made (readMade) is judged again on the
-// cursor the read left, and calls for no read of its own:
+// the read rule (answerRead). A message whose read was made (readMade) is judged again on the
+// cursor the read left. judge answers every reason but ReadReasonStart through ownRead, so that
+// message calls for no read of its own other than a starting point:
 //
 //   - A project with no starting point calls for a read whatever else holds (ReadReasonStart),
 //     which is always due: there is no read before it to wait after.
@@ -1037,44 +1059,55 @@ func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL stri
 //     that follows the position and whose schema version moved (stateMessage.movesSchema) calls
 //     for a read (ReadReasonSchema) and is taken, as is every message that follows.
 func judge(current cursor, held []part, stateURL string, message stateMessage, readMade bool) (outcome, string) {
-	switch {
-	case !current.follows(stateURL):
+	if !current.follows(stateURL) {
 		return outcomeDone, ReadReasonStart
+	}
+	result, reason := outcomeDone, ""
+	switch {
 	case current.stateID == nil:
-		return outcomeNoStore, ""
+		result = outcomeNoStore
 	case *current.stateID != message.StateID:
-		if readMade {
-			return outcomeOtherStore, ""
-		}
-		return outcomeOtherStore, ReadReasonStore
+		result, reason = outcomeOtherStore, ReadReasonStore
 	case readMade && !current.readOwed():
 		if current.lastSeq != nil && message.FirstSeq > *current.lastSeq+1 {
-			return outcomeBeyond, ""
+			result = outcomeBeyond
 		}
-		return outcomeDone, ""
-	}
-	if reason := message.unfollowed(current, held); reason != "" {
-		if readMade {
-			return outcomeUnfollowed, ""
+	default:
+		reason = message.unfollowed(current, held)
+		switch {
+		case reason != "":
+			result = outcomeUnfollowed
+		case message.movesSchema(current, held):
+			reason = ReadReasonSchema
 		}
-		return outcomeUnfollowed, reason
 	}
-	if !readMade && message.movesSchema(current, held) {
-		return outcomeDone, ReadReasonSchema
+	return result, ownRead(reason, readMade)
+}
+
+// ownRead is the rule that a message whose whole read was made calls for no read of its own: it
+// answers "" where readMade is set, and reason, the read the message calls for, otherwise. The
+// read that was made holds the message's events, since the daemon commits each event before it
+// publishes it, and the message is judged again on the cursor that read left. A read the cursor
+// still owes is made or held all the same (cursor.readFor). judge answers every reason but
+// ReadReasonStart through it, and readRefused its ReadReasonRefused.
+func ownRead(reason string, readMade bool) string {
+	if readMade {
+		return ""
 	}
-	return outcomeDone, ""
+	return reason
 }
 
 // applyBatch takes the attempt's message in one transaction that holds the project's position
 // (lockPosition, and the parts held for it, heldParts). It hands the read the message calls for
-// (judge) to the read rule (cursor.readFor). Where the rule makes a read now, the batch writes
-// nothing and answers that read: the caller makes it outside the transaction and tries again.
-// Otherwise the transaction records what the rule owes (owe), and the message comes to judge's
-// outcome: it is acknowledged once its batch commits, or goes back to the stream where it holds
-// the owed read, which the commit sets (messageAttempt.back). A message judge leaves unapplied
-// writes nothing else (outcomeNoStore, outcomeOtherStore, outcomeUnfollowed, outcomeBeyond), and
-// neither does one whose project has no setting (outcomeDropped), one at or below the position,
-// or one with more of its transaction to come, which is held (holdPart).
+// (judge) to the read rule (answerRead). Where the rule makes a read now, the batch writes nothing
+// and answers that read: the caller makes it outside the transaction (makeRead) and tries again.
+// Otherwise the transaction records what the rule owes (answerRead, owe), and the message comes to
+// judge's outcome: it is acknowledged once its batch commits, or goes back to the stream where it
+// holds the owed read, which is set once the commit succeeds (messageAttempt.answered). A message
+// judge leaves unapplied writes nothing else (outcomeNoStore, outcomeOtherStore,
+// outcomeUnfollowed, outcomeBeyond), and neither does one whose project has no setting
+// (outcomeDropped), one at or below the position, or one with more of its transaction to come,
+// which is held (holdPart).
 //
 // The last message of a transaction applies every event of it above the cursor, the held parts'
 // and its own, each field at its last value in sequence order, written where it differs from
@@ -1103,13 +1136,13 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	}
 	result, reason := judge(current, held, stateURL, message, attempt.readMade)
 	attempt.cursor, attempt.reason = current, reason
-	answer := current.readFor(reason, in.now(), attempt.seq, attempt.delivered)
+	answer, err := in.answerRead(ctx, tx, attempt, current, reason)
+	if err != nil {
+		return outcomeDone, nil, err
+	}
 	if answer.read {
 		read := answer.of(Settings{Project: project, StateURL: stateURL})
 		return outcomeDone, &read, nil
-	}
-	if err := owe(ctx, tx, project, answer, attempt.seq); err != nil {
-		return outcomeDone, nil, err
 	}
 	// Every return from here commits: a read this batch recorded owed is part of it, and so is the
 	// holder it recorded or released, so the message's answer is set once the commit succeeds.
@@ -1117,7 +1150,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		if err := tx.Commit(ctx); err != nil {
 			return outcomeDone, nil, fmt.Errorf("commit the Legion state events of %s: %w", project, err)
 		}
-		attempt.back, attempt.released = answer.back, answer.release
+		attempt.answered(answer)
 		return result, nil, nil
 	}
 	if result != outcomeDone {
