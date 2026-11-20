@@ -467,7 +467,10 @@ test("moving between issue documents leaves one open document connection, not on
   browser,
 }) => {
   const navdoc = rowKey("NAVDOC");
-  await createProject({ key: navdoc, name: "Navigation" });
+  // Named for no label of the shell: every project of the stack is a link in the navigation,
+  // named by its key and its name, and `Navigation` is the name of the navigation itself, which
+  // rows read it by.
+  await createProject({ key: navdoc, name: "Document visits" });
   const first = await createIssue({
     project: navdoc,
     spec: "# First document\n\nFirst body.\n",
@@ -793,7 +796,9 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
   browser,
 }) => {
   const nav = rowKey("NAV");
-  await createProject({ key: nav, name: "Navigation" });
+  // Named for no label of the shell: `Navigation` is the name of the navigation, which lists
+  // every project of the stack as a link and which rows read by that name.
+  await createProject({ key: nav, name: "Link clicks" });
   const target = await createIssue({
     project: nav,
     title: "Navigation target",

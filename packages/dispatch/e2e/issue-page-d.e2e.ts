@@ -1132,7 +1132,10 @@ test("a project document page draws its margin, and none of the issue page's pan
   browser,
 }) => {
   const doc = rowKey("DOC");
-  await createProject({ key: doc, name: "Documents" });
+  // Named for no label of the shell: every project of the stack is a link in the navigation,
+  // named by its key and its name, and `Documents` is the label every project page's own tab
+  // carries, which rows read it by.
+  await createProject({ key: doc, name: "Handbook pages" });
   const document = await createProjectDocument(doc, {
     content: "# The handbook\n\nIts margin is the margin every document page has.\n",
     name: "handbook.md",

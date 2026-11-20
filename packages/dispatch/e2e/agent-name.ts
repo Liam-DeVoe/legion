@@ -66,10 +66,13 @@ export interface Seeded {
  *  two claims, the three messages, the two asks - go together; the two margin comments stay in
  *  order behind them, since each anchors into the same spec.
  *
- *  `project` is the key of the project it makes: a real-stack row passes its own (`rowKey`,
- *  e2e/test.ts), and `agent-name.stub.e2e.ts` replays a recording made under `AGT`. */
-export async function seed(project = "AGT"): Promise<Seeded> {
-  await createProject({ key: project, name: "Agents" });
+ *  `project` is the key of the project it makes and `name` its name: a real-stack row passes its
+ *  own key (`rowKey`, e2e/test.ts) and a name no link of the shell's navigation has, since every
+ *  project of the stack is a link there, named by its key and its name, so a project named
+ *  `Agents` is one more link a row's `{ name: "Agents" }` finds beside the navigation's own.
+ *  `agent-name.stub.e2e.ts` replays a recording made under `AGT` and `Agents`. */
+export async function seed(project = "AGT", name = "Agents"): Promise<Seeded> {
+  await createProject({ key: project, name });
   const runIssue = await createIssue({
     project,
     spec: "The running agent comments here. The stopped agent comments there.",

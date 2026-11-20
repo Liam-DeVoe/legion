@@ -196,7 +196,7 @@ export const realStackReasons: Record<string, string> = {
   "keyboard-issue.e2e.ts":
     "writes a priority and a pin, then reloads; the server's refusal; asserts what was written",
   "keyboard-palette.e2e.ts":
-    "the action is a write; the server's search answer; the server's search hits",
+    "the action is a write; the hits the server's search answers over every project of the stack, read at the row's start and held to the bar; the server's search hits",
   "keyboard-session-pickers.e2e.ts": "the switch is sent to the live session and its answer read",
   "keyboard.e2e.ts": "creates an issue and opens what the API returned; status and rank writes",
   "keyed-send.e2e.ts": "idempotency keys and one delivery proved against the server",

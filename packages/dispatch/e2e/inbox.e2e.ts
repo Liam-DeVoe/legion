@@ -246,15 +246,19 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Delayed Inbox thread" });
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for the selected row alone, its first, which is this row's question only in a list that
+  // holds no other row's. The held snapshot is her own list too, as the server answers her.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Delayed Inbox thread" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which delayed thread should refresh?" },
     session
   );
-  const snapshot = await getInbox();
-  const alice = await asUser(browser, "alice");
+  const snapshot = await getInbox({ login: me });
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   const listRequested = Promise.withResolvers<void>();
   const releaseList = Promise.withResolvers<void>();
