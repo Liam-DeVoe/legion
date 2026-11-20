@@ -5104,7 +5104,9 @@ Each item below names a path with its method and identity, then its purpose.
       A word that the list does not name is no verb, so `Read the log, especially the last line` and `Count the rows, minus the header` give one instruction.
       A listed verb that a noun phrase and then an auxiliary or a verb ending in -s or -ed follow is a noun of the object, as `output` in `Read the input and output the tool writes`, so that sentence gives one instruction.
       A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and each of its sentences has at most 25 words.
-      The refusal gives its ways out, each as the sentence it makes, and a test applies each and holds the result to the rule: each instruction in a sentence of its own, `that` before the clause after a listed verb that is no verb there, and, after a condition at the start, the condition as a sentence of its own.
+      The refusal gives its ways out, and a test applies each and holds the result to the rule: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there.
+      It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
+      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition opens a clause, as in `If the run fails, read the log and send the report`, the split cuts an instruction off from the condition that governs it: there the refusal says to keep the choice or the condition, and shows no split.
       Six forms are stated limits.
       A verb that the list does not name starts no instruction, so `Seed the database and run the test` breaks no rule.
       A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.

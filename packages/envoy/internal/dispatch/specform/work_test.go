@@ -84,30 +84,32 @@ func workRows(race bool) []workRow {
 // that breaks no rule. A row's n is the larger of two: twice the least n at which the walk that the
 // row is for, made a walk for each pair, still failed the bound when its n was searched at steps of
 // about 1.41, and the n at which the row's smaller window lasts about 110 ms on the machine of 288
-// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the twelve walks
-// failed its rows in 5 of 5 runs at the table's n, each walk broken in turn: ste-lint's count of a
-// column from the start of the line (many semicolons, many phrasal verbs, many marketing
-// adjectives, many nominalizations); the list of distinct addresses and titles, read through for
-// each one (many links, many titles, many images); the texts already kept for a node, read through
-// for each new one (many purpose lines of one id); the links found, read through for each key
-// (many references, many keys); the brackets before each closing bracket of a reference, counted
-// again (one reference before many closing brackets); a word's letters before each stop, read again
-// (one word of many stops); the names found, read through for each handle and each name (many
-// handles, many names of a person); the pull requests found, read through for each form (many
-// numbers of a pull request, many pull requests of a repository); a footnote's count of sentences
-// that does not stop once it is full (many statements that refer to one chain of footnotes);
-// goldmark's own footnote reference parser, which reads every definition for each reference (many
-// footnotes, one statement that refers to many footnotes); the record of the footnotes a text was
-// given, made new for each text (many statements that refer to one long footnote, to one footnote
-// of many links, or to one chain of footnotes); and the instructions rule's read of a sentence's
-// words again at each word (one long procedure sentence, one sentence of many spans of code). A
-// row's smaller text can be shorter than 16 KB, which Go's regexp reads a faster way, so that its
-// growth is up to about 1.3 times more; the worst growth of the table (workScale) holds that. A walk
-// for each pair whose step is a comparison of a few nanoseconds needs units that cost little else:
-// so the footnotes of the rows "many footnotes" and "one statement that refers to many footnotes",
-// and the statements of the first, hold a word or two each, and the row of purpose lines of one id
-// times the reader alone (read), since the walk that it is for is the reader's, and the judgment of
-// each line costs several times the reading of it.
+// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the thirteen
+// walks failed its rows in 5 of 5 runs at the table's n, each walk broken in turn: ste-lint's
+// count of a column from the start of the line (many semicolons, many phrasal verbs, many
+// marketing adjectives, many nominalizations); the list of distinct addresses and titles, read
+// through for each one (many links, many titles, many images); the texts already kept for a node,
+// read through for each new one (many purpose lines of one id); the links found, read through for
+// each key (many references, many keys); the brackets before each closing bracket of a reference,
+// counted again (one reference before many closing brackets); a word's letters before each stop,
+// read again (one word of many stops); the names found, read through for each handle and each
+// name (many handles, many names of a person); the pull requests found, read through for each
+// form (many numbers of a pull request, many pull requests of a repository); a footnote's count of
+// sentences that does not stop once it is full (many statements that refer to one chain of
+// footnotes); goldmark's own footnote reference parser, which reads every definition for each
+// reference (many footnotes, one statement that refers to many footnotes); the record of the
+// footnotes a text was given, made new for each text (many statements that refer to one long
+// footnote, to one footnote of many links, or to one chain of footnotes); the instructions rule's
+// read of a sentence's words again at each word (one long procedure sentence, one sentence of many
+// spans of code); and its split of a sentence into one sentence for each instruction, read again
+// from each instruction to the end of the sentence (one sentence of many instructions, also after
+// a condition). A row's smaller text can be shorter than 16 KB, which Go's regexp reads a faster
+// way, so that its growth is up to about 1.3 times more; the worst growth of the table (workScale)
+// holds that. A walk for each pair whose step is a comparison of a few nanoseconds needs units
+// that cost little else: so the footnotes of the rows "many footnotes" and "one statement that
+// refers to many footnotes", and the statements of the first, hold a word or two each, and the row
+// of purpose lines of one id times the reader alone (read), since the walk that it is for is the
+// reader's, and the judgment of each line costs several times the reading of it.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -263,6 +265,14 @@ func workTable() []workRow {
 			extracted(func(n int) string { return procedureCheck("Run the test with " + strings.Repeat("word ", n) + "now.") })},
 		{"one sentence of many spans of code", ruleInstructions, 1_000,
 			extracted(func(n int) string { return procedureCheck("Run " + strings.Repeat("`x` and ", n) + "read the log.") })},
+		{"one sentence of many instructions", ruleInstructions, 300,
+			extracted(func(n int) string {
+				return procedureCheck("Run the test, " + strings.Repeat("read the log, ", n) + "send the report.")
+			})},
+		{"one sentence of many instructions after a condition", ruleInstructions, 300,
+			extracted(func(n int) string {
+				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
+			})},
 	}
 }
 

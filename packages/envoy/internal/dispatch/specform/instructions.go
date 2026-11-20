@@ -71,58 +71,109 @@ var (
 )
 
 // instructionBreaks is a finding of the rule instructions for each sentence of a procedure that
-// gives two instructions (secondInstruction). A span in code font counts as one word of the
+// gives two instructions (instructionStarts). A span in code font counts as one word of the
 // sentence, where the rules that count words read none. The finding gives its ways out, each
 // written from a change of the sentence that gives one instruction in each sentence: the
-// instructions in sentences of their own (splitInstructions); "that" before the clause, for a
-// listed verb that is a noun of the object there; and, after a condition at the start, the
-// condition as a sentence of its own (conditionSentence), for a list of verbs in the condition.
+// instructions in sentences of their own (splitInstructions), where that keeps what the sentence
+// means (splitKeepsMeaning); "that" before the clause, for a listed verb that is a noun of the
+// object there; and, after a condition at the start, the condition as a sentence of its own
+// (conditionSentence), for a list of verbs in the condition. Where the split would change what the
+// sentence means, the finding says what the sentences must keep, and gives no split.
 func instructionBreaks(line string) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
 	for _, sentence := range sentencesOf(coded) {
 		words, commas := sentenceWords(sentence)
-		second, ok := secondInstruction(words, commas)
-		if !ok {
+		starts := instructionStarts(words, commas)
+		if len(starts) < 2 {
 			continue
 		}
+		second := starts[1]
 		said := func(words []string) string { return spans.Replace(strings.Join(words, " ")) }
 		original := said(sentence)
-		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
-		ways := [maxWays]wayOut{
-			{original, said(splitInstructions(sentence))},
-			{original, said(slices.Insert(slices.Clone(sentence), second+1, "that"))},
+		var ways [maxWays]wayOut
+		keep := splitKeepsMeaning(words, commas, starts)
+		if len(keep) == 0 {
+			ways[0] = wayOut{original, said(splitInstructions(sentence, words, starts))}
 		}
-		detail := fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q. "+
-			`Write each instruction in a sentence of its own, as in %q, or, if %q is no verb here, write "that" before the clause after it`,
-			quoted, ways[0].to, words[second])
+		ways[1] = wayOut{original, said(slices.Insert(slices.Clone(sentence), second+1, "that"))}
 		if condition, ok := conditionSentence(sentence, words, commas); ok {
 			ways[2] = wayOut{original, said(condition)}
-			detail += fmt.Sprintf(", or, if the words before it are part of the condition, write the condition as a sentence of its own, as in %q",
-				ways[2].to)
 		}
-		found = append(found, broken{rule: ruleInstructions, detail: detail, ways: ways})
+		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
+		found = append(found, broken{rule: ruleInstructions, detail: instructionsDetail(quoted, words[second], keep, ways), ways: ways})
 	}
 	return found
 }
 
-// splitInstructions is sentence with each instruction in a sentence of its own: the words before
-// the second instruction, without the word that joins it, end with a stop, and the rest, with a
-// capital, is split the same way.
-func splitInstructions(sentence []string) []string {
-	words, commas := sentenceWords(sentence)
-	second, ok := secondInstruction(words, commas)
-	if !ok {
-		return sentence
+// instructionsDetail is the detail of a finding of the rule instructions whose second instruction
+// starts with quoted and its word verb, written from the ways out that the finding gives (ways):
+// each instruction in a sentence of its own, as in the split, or, where the split would change what
+// the sentence means, with the words that each sentence must keep (keep, splitKeepsMeaning); "that"
+// before the clause; and the condition as a sentence of its own.
+func instructionsDetail(quoted, verb string, keep []string, ways [maxWays]wayOut) string {
+	own := "write each instruction in a sentence of its own"
+	switch {
+	case ways[0] != (wayOut{}):
+		own += fmt.Sprintf(", as in %q", ways[0].to)
+	case len(keep) > 0:
+		own += " and keep " + joinList(keep)
 	}
-	first := slices.Clone(sentence[:second])
-	if joiners[words[second-1]] {
-		first = first[:len(first)-1]
+	options := []string{own}
+	if ways[1] != (wayOut{}) {
+		options = append(options, fmt.Sprintf(`if %q is no verb here, write "that" before the clause after it`, verb))
 	}
-	first[len(first)-1] = strings.TrimRight(first[len(first)-1], ",") + "."
-	rest := slices.Clone(sentence[second:])
-	rest[0] = capitalized(rest[0])
-	return append(first, splitInstructions(rest)...)
+	if ways[2] != (wayOut{}) {
+		options = append(options, fmt.Sprintf("if the words before it are part of the condition, write the condition as a sentence of its own, as in %q", ways[2].to))
+	}
+	return fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q. %s",
+		quoted, capitalized(strings.Join(options, ", or, ")))
+}
+
+// splitKeepsMeaning is what the sentences that splitInstructions writes would lose of what the
+// sentence means, none where they keep it: the choice between two instructions that "or" joins, as
+// two sentences are two steps where "Read the diff or run the tests" is one of them; and a
+// condition that opens a clause of the sentence, as each instruction that it governs leaves it: the
+// condition at the start of "If the run fails, read the log and send the report" governs both, and
+// in "Read the log and, if it fails, send the report" it governs the second, which the split cuts
+// off from it. A condition word inside a clause, as in "Read the log before the run ends", opens
+// none.
+func splitKeepsMeaning(words []string, commas []bool, starts []int) []string {
+	var keep []string
+	for _, start := range starts[1:] {
+		if words[start-1] == "or" {
+			keep = append(keep, "the choice between them")
+			break
+		}
+	}
+	for at, word := range words {
+		if conditions[word] && (at == 0 || commas[at-1] || joiners[words[at-1]]) {
+			keep = append(keep, "the condition with each instruction that it governs")
+			break
+		}
+	}
+	return keep
+}
+
+// splitInstructions is sentence with each instruction in a sentence of its own, written in one pass
+// from where each instruction starts (starts, instructionStarts): the words before each later
+// instruction, without the word that joins it, end with a stop, and that instruction starts with a
+// capital.
+func splitInstructions(sentence, words []string, starts []int) []string {
+	split := make([]string, 0, len(sentence))
+	from := 0
+	for _, start := range starts[1:] {
+		end := start
+		if joiners[words[start-1]] {
+			end--
+		}
+		split = append(split, sentence[from:end]...)
+		last := len(split) - 1
+		split[last] = strings.TrimRight(split[last], ",") + "."
+		split = append(split, capitalized(sentence[start]))
+		from = start + 1
+	}
+	return append(split, sentence[from:]...)
 }
 
 // conditionThen is how a sentence after a condition of its own goes on from it, for each word
@@ -261,27 +312,49 @@ func inflected(word string) bool {
 	return false
 }
 
-// secondInstruction is where the second instruction of a sentence starts, when it gives two. A
-// sentence gives an instruction when its words open one at instructionStart. A second instruction
-// is a listed verb that opens one after a word that joins it (joiners) or a comma, once the first
-// instruction's object stands between them. So two verbs of one object, as in "Push and hold the
-// switch", are one instruction, as ASD-STE100 lets two actions at the same time be. A verb after a
-// relative clause is no instruction: in "the requests that open and close the same day" the verbs
-// are the clause's.
-func secondInstruction(words []string, commas []bool) (int, bool) {
+// eachInstruction visits where each instruction of a sentence starts, in the order of the
+// sentence, until visit answers false: none when its words open no instruction at
+// instructionStart. A later instruction is a listed verb that opens one after a word that joins it
+// (joiners) or a comma, once the object of the instruction before stands between them. So two
+// verbs of one object, as in "Push and hold the switch", are one instruction, as ASD-STE100 lets
+// two actions at the same time be. A verb after a relative clause is no instruction, and nor is any
+// after it: in "the requests that open and close the same day" the verbs are the clause's. It is
+// one pass over the sentence, whatever the count of its instructions.
+func eachInstruction(words []string, commas []bool, visit func(at int) bool) {
 	start, ok := instructionStart(words, commas)
-	if !ok {
-		return 0, false
+	if !ok || !visit(start) {
+		return
 	}
 	for at := start + 2; at+1 < len(words); at++ {
 		if relatives[words[at-1]] {
-			return 0, false
+			return
 		}
-		if (commas[at-1] || joiners[words[at-1]]) && opensInstruction(words, commas, at) {
-			return at, true
+		if (commas[at-1] || joiners[words[at-1]]) && opensInstruction(words, commas, at) && !visit(at) {
+			return
 		}
 	}
-	return 0, false
+}
+
+// instructionStarts is where each instruction of a sentence starts (eachInstruction).
+func instructionStarts(words []string, commas []bool) []int {
+	var starts []int
+	eachInstruction(words, commas, func(at int) bool {
+		starts = append(starts, at)
+		return true
+	})
+	return starts
+}
+
+// secondInstruction is where the second instruction of a sentence starts, when it gives two
+// (eachInstruction).
+func secondInstruction(words []string, commas []bool) (int, bool) {
+	second, seen := 0, 0
+	eachInstruction(words, commas, func(at int) bool {
+		seen++
+		second = at
+		return seen < 2
+	})
+	return second, seen == 2
 }
 
 // isInstruction reports whether sentence, as sentencesOf reads a line, is an instruction: it

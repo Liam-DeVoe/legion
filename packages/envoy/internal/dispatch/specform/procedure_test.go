@@ -22,8 +22,10 @@ import (
 // `name` in "the step, name `lint`", reads as a second instruction, and so does one before a
 // clause whose verb has no -s or -ed, as `output` in "the input and output the tools write"; and
 // a listed verb before a word that starts no object, as in "Run tests against the server", starts
-// no instruction, so its sentence keeps 25 words. Each finding's ways out are the sentences that
-// TestEachWayOutOfARefusalPasses applies.
+// no instruction, so its sentence keeps 25 words. A finding writes the instructions as sentences of
+// their own only where that keeps what the sentence means: no "or" joins two of them, and no
+// condition opens a clause of it; elsewhere it names what the sentences must keep. Each finding's
+// ways out are the sentences that TestEachWayOutOfARefusalPasses applies.
 func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testing.T) {
 	procedure := func(body string) Text { return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where} }
 	twoInstructions := func(second, split, verb string) string {
@@ -31,6 +33,14 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 			`". Write each instruction in a sentence of its own, as in "` + split + `", or, if "` + verb +
 			`" is no verb here, write "that" before the clause after it`
 	}
+	// kept is the detail of a sentence whose split would change what it means: it names what each
+	// sentence must keep, and gives no split.
+	kept := func(second, keep, verb string) string {
+		return `a sentence gives two instructions, and a sentence of a procedure gives one: "` + second +
+			`". Write each instruction in a sentence of its own and keep ` + keep + `, or, if "` + verb +
+			`" is no verb here, write "that" before the clause after it`
+	}
+	const condition, choice = "the condition with each instruction that it governs", "the choice between them"
 	const twenty = "Run the merge test against a fixture server that holds two approved specs of the same issue and three requests."
 	const twentyOne = "Run the merge test against a fixture server that holds two approved specs of the same issue and three open requests."
 	const named = "Run the test of the step, name `lint`, with the race detector."
@@ -60,10 +70,23 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 			[]Finding{finding(procedure("Run the test, then read the log."), ruleInstructions,
 				twoInstructions("read the log", "Run the test. Read the log.", "read"))}},
 		// After "If so," the second sentence still gives two instructions, so the finding offers no
-		// condition of its own.
+		// condition of its own; and the split would cut the second instruction off from the condition
+		// that governs it, so the finding gives none.
 		{"a second instruction after a condition", procedure("If the run fails, read the log and send the report."),
 			[]Finding{finding(procedure("If the run fails, read the log and send the report."), ruleInstructions,
-				twoInstructions("send the report", "If the run fails, read the log. Send the report.", "send"))}},
+				kept("send the report", condition, "send"))}},
+		{"a condition before the second instruction alone", procedure("Read the log and, if it fails, send the report."),
+			[]Finding{finding(procedure("Read the log and, if it fails, send the report."), ruleInstructions,
+				kept("send the report", condition, "send"))}},
+		{"a choice of two instructions", procedure("Read the diff or run the tests."),
+			[]Finding{finding(procedure("Read the diff or run the tests."), ruleInstructions,
+				kept("run the tests", choice, "run"))}},
+		{"the control: a condition word inside the first instruction", procedure("Read the log before the run ends and send the report."),
+			[]Finding{finding(procedure("Read the log before the run ends and send the report."), ruleInstructions,
+				twoInstructions("send the report", "Read the log before the run ends. Send the report.", "send"))}},
+		{"the control: three instructions, each in a sentence of its own", procedure("Read the log, record the time and send the report."),
+			[]Finding{finding(procedure("Read the log, record the time and send the report."), ruleInstructions,
+				twoInstructions("record the time and send the report", "Read the log. Record the time. Send the report.", "record"))}},
 		{"an object in code font", procedure("Run `go test` and read the log."),
 			[]Finding{finding(procedure("Run `go test` and read the log."), ruleInstructions,
 				twoInstructions("read the log", "Run `go test`. Read the log.", "read"))}},
@@ -82,7 +105,7 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 		{"the control: a word and a comma at the start", procedure("Locally, the tests read each file and record the time."), nil},
 		{"the stated limit: a list of verbs in a condition", procedure("Before you plan, file an issue or post a finding, run the search."),
 			[]Finding{finding(procedure("Before you plan, file an issue or post a finding, run the search."), ruleInstructions,
-				twoInstructions("post a finding, run the search", "Before you plan, file an issue. Post a finding. Run the search.", "post")+
+				kept("post a finding, run the search", choice+" and "+condition, "post")+
 					`, or, if the words before it are part of the condition, write the condition as a sentence of its own, as in `+
 					`"You plan, file an issue or post a finding. Before that, run the search."`)}},
 		{"the stated limit: a listed verb that is a noun of the object", procedure(named),

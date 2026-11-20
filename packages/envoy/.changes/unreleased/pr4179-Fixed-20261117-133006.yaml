@@ -12,8 +12,10 @@ body: |-
   a description of it with more than 25, and a sentence breaks it with two instructions (rule
   instructions), as ASD-STE100 writes a procedure. A word outside that list is no verb, so a plain
   procedure of one instruction, such as "Read the log, especially the last line.", passes. The
-  refusal of two instructions gives its ways out as the sentences they make (the instructions
-  apart, and after a condition the condition as a sentence of its own), and each passes the rule.
+  refusal of two instructions gives its ways out: the instructions apart, only where that keeps what
+  the sentence means (no "or" joins them and no condition opens a clause of it), and after a
+  condition the condition as a sentence of its own, each as the sentence it makes, and "that"
+  before a clause; each passes the rule.
   An address with no scheme is read against every page that draws its document, as the dashboard's
   route table lists them, as well as against the origin of the server, so a short path such as
   artifacts/notes-md, decisions or #b-x1 in a spec links to a record from the issue's page and from
