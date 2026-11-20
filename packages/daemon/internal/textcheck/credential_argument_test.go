@@ -37,7 +37,7 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\
 // credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
 // request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
 // itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
-// case-sensitive, since `-D` and `-U` are other flags; `--token-file` and `--github-token` are
+// case-sensitive, since `-D` and `-U` are other flags; `--token-file` and gh's `--with-token` are
 // other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token|--oauth2-bearer)(?:=|[ \t]+)`)
 
@@ -269,7 +269,8 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`printf '%s' "$(field token)" | curl -sS --data-urlencode token@- "$url"`,
 		`  --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \`,
 		`dev-airlock-stands enroll-pod --url "$URL" --token-file "$REGISTRAR_TOKEN_FILE"`,
-		`agent-secrets "$GITHUB_SECRET" --github-owner "$owner" --github-token -- sh -c 'exit 0'`,
+		`agent-secrets GITHUB_READ --target "$owner" -- sh -c 'exit 0'`,
+		`gh auth login --with-token <"$GH_TOKEN_FILE"`,
 		`python3 run_search.py --url http://127.0.0.1:8799 --token fixture-token --workers 8`,
 		`kubectl config set users.legion-daemon.tokenFile "$token_file"`,
 		`human -X POST "$url/api/v1/broadcasts" -H "Idempotency-Key: broadcast-$run"`,

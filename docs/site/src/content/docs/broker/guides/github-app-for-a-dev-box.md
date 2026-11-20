@@ -61,15 +61,21 @@ sends your request to its owners. An owner must approve the request before the b
 
 ## Tell the administrator which accounts the box uses
 
-The broker makes tokens only for the accounts that the secret's `github-owners` tag lists. Anyone
-can install a public App. The tag stops a token for an account that you did not choose.
+The broker makes tokens only for the accounts that the secret's `github-owners` tag lists, and
+that the profile you ask for names. Anyone can install a public App. The tag stops a token for an
+account that you did not choose.
 
 You cannot change the tag. The deployment sets it when it creates your secret. Send the
 administrator the account names where you installed the App. Ask them to add any account that the
 deployment does not list.
 
+The broker serves a `github-app` secret only through the profiles that the deployment's profiles
+file declares for it, and refuses the secret by its own name when no profile names it. The
+administrator declares your profiles with your secret: one of its own name, with the permissions
+your App holds, and others that narrow it, such as `GITHUB_APP_<PERSON>_READ`, a read profile.
+
 The broker returns one token for each installation that is not suspended, on an account that the
-tag lists. An installation on any other account gets no token.
+profile names. An installation on any other account gets no token.
 
 ## Store the App key
 
@@ -234,51 +240,34 @@ The token expires at the time in `expires_at`. Read the secret again after the t
 ## Give a narrowed token to another machine
 
 A token you give to another machine, such as a virtual machine that must only read one
-repository, must be narrowed. Use these flags on the `agent-secrets` command that reads the
-secret:
+repository, must be narrowed. Ask for a profile that narrows the App's permissions, such as
+`GITHUB_APP_<PERSON>_READ`, and narrow it further on the `agent-secrets` command that reads it:
 
-- `--github-owner <owner>` gives a token for the installation on that account only. The account
-  must be in the `github-owners` tag of the secret.
-- `--github-repo <repository>` limits the token to that repository of the account. Use the flag
-  one time for each repository, at most 100 times. Give the repository name without the account.
-  The token keeps every permission the App holds, its organization permissions too, unless you
-  also give `--github-read-only`.
-- `--github-read-only` limits the token to `contents: read`, `metadata: read`,
-  `pull_requests: read`, `actions: read`, `checks: read` and `statuses: read`. An App whose
-  installation has not been granted Actions, checks or commit statuses does not get those. A
-  machine that must only read needs it, with or without `--github-repo`.
-- `--github-token` hands over that one installation's token alone, in place of the JSON object
-  of installations. A command that sends the token to GitHub in a header needs this form.
+- `--target <owner>` gives a token for the installation on that account only. The account must be
+  one that the profile names.
+- `--target <owner>/<repository>` limits the token to that repository of the account. Use the
+  flag one time for each repository, all of one account, at most 100 times. A repository must be
+  one that the profile reaches.
 
-`--github-repo`, `--github-read-only` and `--github-token` need `--github-owner`.
-`agent-secrets` checks the flags before it asks for the secret: a flag the broker would refuse
-exits 2, and nothing is sent.
+`--target` never widens a profile, and it narrows a run of that one name.
+`agent-secrets` checks it before it asks for the secret: a target of two accounts exits 2, and
+nothing is sent.
+A target that the profile does not hold is refused `400 TARGET_REFUSED`, and the message names the
+profile's accounts and repositories.
 
 ```sh
-agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON> \
-  --github-owner <owner> --github-repo <repository> --github-read-only --github-token -- sh -ceu '
-printf %s "$GITHUB_APP_<PERSON>"
+agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON>_READ \
+  --target <owner>/<repository> -- sh -ceu '
+printf %s "$GITHUB_APP_<PERSON>_READ" | jq -r ".installations[\"<owner>\"].token"
 '
 ```
 
-With `--github-token` the variable holds that one account's token, so the example needs no `jq`
-and no account key. The case you type in `--github-owner` therefore does not matter to it.
-Without the flag the variable holds the JSON object of installations, which the examples
-earlier on this page read with `jq`.
+In the `jq` key, write the account's login as GitHub writes it: the release names each
+installation by that login, whatever case you type in `--target`.
+A profile whose `github.value` is `token` puts that one account's token in the variable in place of
+the JSON object of installations, so a command that sends it to GitHub in a header needs no `jq`.
+Such a profile needs one account in effect: give `--target` when it names more than one.
 
-The broker no longer takes this narrowing.
-Each of these flags sends it as the `github_app` field of the request, and the broker refuses every
-body that carries that field with `400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks
-anyone, so `agent-secrets` exits 1 and runs nothing.
-On the local stack of [Run the broker locally](/legion/broker/guides/run-locally/) it reads:
-
-```console
-$ agent-secrets DEMO_GITHUB_APP --github-owner acme-org -- sh -c 'echo ran'
-agent-secrets: github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY] (GITHUB_APP_FIELD_REMOVED) (answer 7746a1139d9db026a4ec5e7dd4621df8); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-```
-
-A narrowed token is a profile of the secret now: the deployment's profiles file names it, with its
-accounts, repositories and permissions, and you ask for it by that name.
 The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and
 names each permission it left out in the release (`github_left_out`).
 A profile that asks for more than `metadata` and whose permissions the installation holds none of
@@ -296,6 +285,12 @@ grant.
 The broker gives out a token only when GitHub's answer shows that it holds no more than the profile
 asked.
 
-The narrowing applies to this read only. The next read without these flags gives the token for
-all repositories of each installation. Keep a narrowed token apart from the other tokens, so
-that you do not use one in place of the other.
+An `agent-secrets` of an earlier release took this narrowing as flags of its own, and sent it in the
+request's `github_app` field. The broker refuses every body that carries that field with
+`400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks anyone, so such a client runs
+nothing. This release refuses those flags itself, with exit 2, and names `--target` and the
+profile form.
+
+The target applies to this read only. The next read of the profile without `--target` gives the
+token for every account and repository that the profile names. Keep a narrowed token apart from
+the other tokens, so that you do not use one in place of the other.
