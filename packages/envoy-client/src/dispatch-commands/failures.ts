@@ -92,6 +92,26 @@ export function writeMayHaveLanded(error: unknown): boolean {
   return !(error instanceof DispatchServiceError) || error.status >= 500;
 }
 
+/** The reason a call posted before its close: the message's id and its `dispatch://` reference. */
+export interface ClosingNote {
+  readonly id: string;
+  readonly ref: string;
+}
+
+/** What a call whose closing reason landed says when its close then failed with `error`: where the
+ *  reason is, and whether the close may have landed anyway, since a blind retry would post the
+ *  reason a second time. A gateway's timeout or rate limit refused nothing there is to fix. */
+export function closeAccount(error: unknown, closingNote: ClosingNote): string {
+  const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
+  const fix =
+    error instanceof DispatchGatewayError && error.transient
+      ? ""
+      : "fix what refused the close, then ";
+  return writeMayHaveLanded(error)
+    ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
+    : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
+}
+
 /**
  * An error that is no refusal (a timeout, a transport error) with `account`, the caller's clause
  * on what its call did, after its message: joined to it with "; ", or as a sentence of its own

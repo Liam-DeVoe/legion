@@ -383,11 +383,11 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
   return brokenParts([
     [
-      !(input.include_children === true && input.unlink_children === true),
+      !(input["include_children"] === true && input["unlink_children"] === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
     ],
     [
-      typeof input.status === "string",
+      typeof input["status"] === "string",
       `status is required with ${named}. Add status, or drop ${named}.`,
     ],
     [

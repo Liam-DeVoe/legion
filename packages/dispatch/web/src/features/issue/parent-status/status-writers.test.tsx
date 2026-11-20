@@ -273,16 +273,21 @@ async function dropInColumn(article: HTMLElement, status: string): Promise<void>
     clientY: 1500,
   };
   await act(async () => {
+    // dnd-kit's pointer sensor is driven by this mouse press; user-event's pointer API sends a
+    // fixed sequence that never lifts the card.
     fireEvent.mouseDown(article, { button: 0, ...from });
   });
   await act(async () => {
-    // The move that lifts the card, past dnd-kit's 8 px.
+    // The move that lifts the card, past dnd-kit's 8 px: user-event sends no mousemove of its own.
     fireEvent.mouseMove(document, { clientX: from.clientX, clientY: from.clientY + 40 });
   });
   await act(async () => {
+    // The move over the `status` column, which dnd-kit reads as the drop target: user-event sends
+    // no mousemove of its own.
     fireEvent.mouseMove(document, to);
   });
   await act(async () => {
+    // The release that drops it, the other half of a gesture user-event cannot drive.
     fireEvent.mouseUp(document, to);
   });
 }
