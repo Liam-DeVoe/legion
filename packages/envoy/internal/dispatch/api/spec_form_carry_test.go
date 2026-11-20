@@ -84,33 +84,47 @@ func TestTheAnswerCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 // The person approves a spec outside every root, the issue moves under a root, and the agent
 // changes the text and then puts it back. The restore carry would approve the version that holds
 // the approved text again. With a statement of three sentences in it, that version breaks the
-// form, and it stays unapproved. The control: the same steps with a statement of two sentences
-// carry the approval, as they always did.
+// form, and it stays unapproved: also where the changed version keeps the form, so the version
+// before the carry's is no stand-in for the one it judges (spec_form.go reads the version that
+// the carry queued). The control: the same steps with a statement of two sentences carry the
+// approval, as they always did.
 func TestTheRestoreCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 	for _, test := range []struct {
-		statement string
-		breaks    bool
+		name          string
+		statement     string
+		change, back  map[string]string
+		breaks        bool
+		changedBreaks bool
 	}{
-		{carryThreeSentences, true},
-		{carryTwoSentences, false},
+		{"a changed word, in a text of three sentences", carryThreeSentences,
+			replaceOp("Dispatch keeps", "Dispatch stores"), replaceOp("Dispatch stores", "Dispatch keeps"), true, true},
+		{"a change that keeps the form, then the approved text of three sentences again", carryThreeSentences,
+			replaceOp("Dispatch indexes each comment. ", ""),
+			replaceOp("Dispatch keeps each comment. Dispatch shows", "Dispatch keeps each comment. Dispatch indexes each comment. Dispatch shows"),
+			true, false},
+		{"the control: a changed word, in a text of two sentences", carryTwoSentences,
+			replaceOp("Dispatch keeps", "Dispatch stores"), replaceOp("Dispatch stores", "Dispatch keeps"), false, false},
 	} {
 		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
 		document := createFormIssue(t, tree.handler, tree.outside, "Keep each comment", carrySpec(test.statement))
 		reviewDocument(t, tree.handler, document.PrimaryArtifactID, "alice", "approved", "")
 		reparentFormIssue(t, tree.handler, document.Key, tree.root)
-		agentEdit(t, tree.handler, document.PrimaryArtifactID, 2, replaceOp("Dispatch keeps", "Dispatch stores"))
-		agentEdit(t, tree.handler, document.PrimaryArtifactID, 3, replaceOp("Dispatch stores", "Dispatch keeps"))
+		agentEdit(t, tree.handler, document.PrimaryArtifactID, 2, test.change)
+		if broken := len(specFormReadAtVersion(t, tree, document.PrimaryArtifactID, 2).Findings) > 0; broken != test.changedBreaks {
+			t.Fatalf("%s: the read of version 2 breaks the form: %t; want %t", test.name, broken, test.changedBreaks)
+		}
+		agentEdit(t, tree.handler, document.PrimaryArtifactID, 3, test.back)
 
 		findings := specFormReadAtVersion(t, tree, document.PrimaryArtifactID, 3).Findings
 		if broken := len(findings) > 0; broken != test.breaks {
-			t.Fatalf("%q: the read of version 3 has findings %+v; want a break: %t", test.statement, findings, test.breaks)
+			t.Fatalf("%s: the read of version 3 has findings %+v; want a break: %t", test.name, findings, test.breaks)
 		}
 		if !test.breaks {
 			requireReviewCarriedWith(t, tree.handler, document.PrimaryArtifactID, 3, 1, restoreSentence(1), nil)
 			continue
 		}
 		if got := approvedVersions(t, tree, document.PrimaryArtifactID); len(got) != 1 || got[0] != 1 {
-			t.Errorf("%q: the approved versions are %v; want only version 1, which the person approved outside the root", test.statement, got)
+			t.Errorf("%s: the approved versions are %v; want only version 1, which the person approved outside the root", test.name, got)
 		}
 	}
 }
