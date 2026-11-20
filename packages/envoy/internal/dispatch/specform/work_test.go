@@ -22,7 +22,9 @@ const workSamples = 3
 // plain runs of the table at a load average of 138 to 310 (the race build claims no bound), the
 // worst growth was 28.7 (the row "many addresses of a pull request"); and with each walk that a
 // row is for made a walk for each pair in turn, the least growth of a broken row was 39.0 (the
-// ste-lint walk).
+// ste-lint walk). With the four rows of the split and of the judge of the ways out, 10 more plain
+// runs at a load average of 155 to 318 gave a worst growth of 25.2 (the row "many short lines"),
+// and each of those four rows, its walk broken, grew 118.2 times or more in 5 of 5 runs.
 const (
 	workScale = 16
 	workBound = 32
