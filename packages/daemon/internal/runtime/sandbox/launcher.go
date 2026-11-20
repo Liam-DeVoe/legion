@@ -392,7 +392,7 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// takes this pod's one restore attempt (restoreWorkspace). It goes before the index: this send
 	// is the bundle's one attempt, and the index has the poll's next push besides.
 	if err := d.restoreWorkspace(ctx, token, podUID); err != nil {
-		return err
+		return startNotSent{err: err}
 	}
 	// The leak check's index of sandbox lines goes over last, so the check in the role's pod reads
 	// the newest index the daemon holds from the role's first write. It never stops the start, and
@@ -934,6 +934,16 @@ func (e bundleStoreFault) Error() string {
 }
 
 func (e bundleStoreFault) Unwrap() []error { return []error{runtime.ErrSessionStore, e.err} }
+
+// startNotSent is a start that stopped before its start frame was sent: the saved bundle's ask
+// stopped it (restoreWorkspace), with a store fault or with the start's own time run out. No
+// generation can be running, so the runtime sends no Stop for it (Runtime.stopIssuedChild). It
+// reads, and unwraps, as the error that stopped it.
+type startNotSent struct{ err error }
+
+func (e startNotSent) Error() string { return e.err.Error() }
+
+func (e startNotSent) Unwrap() error { return e.err }
 
 // restoreReported drops the saved bundle of the release a launcher's report names, once that
 // launcher reports that its restore put the work back. It is the one confirmation a bundle is
