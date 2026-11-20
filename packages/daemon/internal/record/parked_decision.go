@@ -30,9 +30,9 @@ const (
 	// RelayNoPersonWaiting is a decision no person made on a tree whose root waits for its slot:
 	// nothing is kept, since only a person decides, and nobody is told.
 	RelayNoPersonWaiting
-	// RelayNotParked is a decision on a lingering root someone has since moved to a status of the
-	// workflow (admission's releaseUnslotted leaves one at in_progress): it is nobody's parked
-	// tree, so nothing is kept and nobody is told.
+	// RelayNotParked is a decision on a root out of Legion's work that someone has since moved to a
+	// status of the workflow, a root at phase done (admission's releaseUnslotted leaves one at
+	// in_progress): it is nobody's parked tree, so nothing is kept and nobody is told.
 	RelayNotParked
 )
 
@@ -82,8 +82,9 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //
 //   - A root that waits for its slot (WaitsForSlot) keeps a person's decision for the start its
 //     admission will queue, and the controller is told nothing: the tree already runs again.
-//   - A tree that runs hears the decision itself (RelayNone), and a lingering root someone has
-//     moved back into the workflow is nobody's parked tree (RelayNotParked): either keeps nothing.
+//   - A tree that runs hears the decision itself (RelayNone), and a root out of Legion's work that
+//     someone moved back into a status of the workflow is nobody's parked tree (RelayNotParked):
+//     either keeps nothing.
 //   - Only a person decides (PersonActor): a session's write, the daemon's own included, is no
 //     decision to relay (RelayNoPerson).
 //   - What is kept is kept under issue, the issue it was decided on, never under a root: the tree
@@ -110,7 +111,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		if !nobodyHears {
 			return RelayNone, nil
 		}
-		if root.Lingers() && !OutOfWorkflow(root.Status) {
+		if !InLegionsWork(root) && !OutOfWorkflow(root.Status) {
 			return RelayNotParked, nil
 		}
 	}

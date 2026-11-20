@@ -52,7 +52,6 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		Project:        "LEGION",
 		Steps:          config.DesignGateOff.Steps(),
 		ReviewRoundCap: 3,
-		Linger:         time.Hour,
 		Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "gate-registration", intake.GateRegistered{
@@ -247,7 +246,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "register-captured-gate", intake.GateRegistered{Issue: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Version: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("register gate: %v", err)
 	}
@@ -460,93 +459,6 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 	}
 	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" || notice["verdict"] != "pass" {
 		t.Fatalf("phase-finished notice = %s, want the tester's summary and its verdict pass", payload)
-	}
-}
-
-// A root's merge while a child runs records the merge and waits, so the close is the one its last
-// child's departure brings. That close lingers once: linger suspends, and its expiry stops, every
-// claim the tree holds — the root architect admission started and a worker that never reported a
-// handoff included, neither of which has a phase row. A redelivered merge changes nothing. Every
-// expiry row names the root generation whose linger it expires, a child's too, which keeps the
-// earlier generation of the run that admitted it. The close opens the root's production check,
-// whose first look the tester reports here before the linger ends, since the tree's close
-// waits for an open check (check_test.go). No child of such a tree is left mid-run, so the expiry
-// hands none over; the hand-over of a root a person closed is admit's cover (finished_root_test.go).
-func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testing.T) {
-	pool := migratedPool(t)
-	ctx := context.Background()
-	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U"})
-	parent := "LEGION-208"
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Merging, Generation: 3, Status: "retro", Rank: "V", LastDispatchSeq: 1})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
-
-	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
-	if _, err := intake.ApplyFact(ctx, pool, "github", "merged", merged, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact merged: %v", err)
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "github", "merged-echo", merged, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact merged echo: %v", err)
-	}
-	assertPhase(t, pool, phase.Merging)
-	assertOutboxCount(t, pool, "linger_close", 0)
-	assertOutboxCount(t, pool, "dispatch_status", 0)
-
-	if _, err := intake.ApplyFact(ctx, pool, "github", "child-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact the child's merge: %v", err)
-	}
-	assertPhase(t, pool, phase.Done)
-	var lingerUntil time.Time
-	if err := pool.QueryRow(ctx, "select linger_until from issues where key = $1", "LEGION-208").Scan(&lingerUntil); err != nil {
-		t.Fatalf("read linger deadline: %v", err)
-	}
-	if !lingerUntil.Equal(now.Add(time.Hour)) {
-		t.Fatalf("LingerUntil = %s, want %s", lingerUntil, now.Add(time.Hour))
-	}
-	everyClaim := map[string]int{}
-	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		for _, role := range claim.Roles {
-			everyClaim[issue+"/"+string(role)]++
-		}
-	}
-	// The close suspends every claim once, the merger whose READY the merge ended among them: no
-	// transition suspends a worker of its own.
-	suspended := superviseRequests(t, pool, "suspend")
-	if !sameCounts(suspended, everyClaim) {
-		t.Fatalf("linger suspended %v, want each tree claim once: %v", suspended, everyClaim)
-	}
-	assertOutboxCount(t, pool, "linger_close", 1)
-	assertOutboxCount(t, pool, "dispatch_status", 2)
-	// Both checks the two closes opened are reported before the linger ends: the tree's close waits
-	// for any member's open check (check_test.go).
-	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		if result, err := intake.ApplyFact(ctx, pool, "api", "check:"+issue+":1:pass", intake.CheckReport{Issue: issue, Look: 1, Verdict: "pass", Summary: "driven"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
-			t.Fatalf("ApplyFact %s's check pass = %+v, %v", issue, result.Refusal, err)
-		}
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "timer", "linger-current", intake.LingerExpired{Issue: "LEGION-208", Generation: 7}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact current linger expiry: %v", err)
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "timer", "linger-stale", intake.LingerExpired{Issue: "LEGION-208", Generation: 6}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact stale linger expiry: %v", err)
-	}
-	if stopped := superviseRequests(t, pool, "tree_close"); !sameCounts(stopped, everyClaim) {
-		t.Fatalf("linger expiry stopped %v, want each tree claim once: %v", stopped, everyClaim)
-	}
-	assertOutboxCount(t, pool, "workspace_remove", 2)
-	var handedOver int
-	if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = 'hand-over'`).Scan(&handedOver); err != nil || handedOver != 0 {
-		t.Fatalf("hand-over writes = %d, %v; want none: the close waited until no child was running", handedOver, err)
-	}
-	assertOutboxCount(t, pool, "dispatch_status", 2)
-	var other int
-	if err := pool.QueryRow(ctx, `select count(*) from outbox where (kind = 'workspace_remove' or (kind = 'supervise' and payload->>'op' = 'tree_close'))
-		and payload->>'linger' is distinct from '7'`).Scan(&other); err != nil || other != 0 {
-		t.Fatalf("expiry rows naming another linger than the root's generation 7 = %d, %v; want none", other, err)
 	}
 }
 
@@ -923,7 +835,7 @@ const testReviewApp = "legion-reviewer[bot]"
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }

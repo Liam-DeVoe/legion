@@ -304,8 +304,8 @@ func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *
 // One row of a person's handover at a time: while a marked row is pending for the root, a second
 // approval — the stream's redelivery under another event id, or the person approving again — queues
 // nothing, since the pending row carries the same write, at either status a parked root holds. The
-// workflow's other status rows suppress nothing: a hand-over row, also a todo, pending for the root
-// leaves the person's handover queued beside it.
+// workflow's other status rows suppress nothing: a re-assertion row pending for the root leaves the
+// person's handover queued beside it.
 func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testing.T) {
 	for _, status := range []string{"backlog", "icebox"} {
 		t.Run("a pending marked row at "+status, func(t *testing.T) {
@@ -320,9 +320,9 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 			}
 		})
 	}
-	t.Run("a pending hand-over row", func(t *testing.T) {
+	t.Run("a pending re-assertion row", func(t *testing.T) {
 		pool := migratedPool(t)
-		handOver := record.HandOverStatusWrite("todo", "backlog", "LEGION-200", 3)
+		handOver := record.ReassertStatusWrite("todo", "backlog")
 		row, err := record.NewOutboxRow("LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
 		if err != nil {
 			t.Fatal(err)
@@ -330,14 +330,14 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 			return record.NewStore().Enqueue(context.Background(), tx, row)
 		}); err != nil {
-			t.Fatalf("queue the hand-over row: %v", err)
+			t.Fatalf("queue the re-assertion row: %v", err)
 		}
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
 		apply("approval", approvalOf(askPerson, parkedRootView("backlog")))
 
 		if got, want := statusWrites(t, pool, "LEGION-208"), []record.StatusWrite{handOver, personHandoverWrite("backlog")}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("status writes = %#v, want the hand-over row and the person's handover, %#v", got, want)
+			t.Fatalf("status writes = %#v, want the re-assertion row and the person's handover, %#v", got, want)
 		}
 	})
 }

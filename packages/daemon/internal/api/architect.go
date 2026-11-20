@@ -210,24 +210,6 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	return recorded, tx.Commit(ctx)
 }
 
-// treeMembers is every record of tree, read in one short read-only transaction: what rerun_child
-// reads once to find the tree root it refuses a lingering tree by.
-func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, error) {
-	if s.pool == nil || s.records == nil {
-		return nil, errors.New("record dependencies are unavailable")
-	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	members, err := s.records.TreeIssues(ctx, tx, tree)
-	if err != nil {
-		return nil, err
-	}
-	return members, tx.Commit(ctx)
-}
-
 // chainsOf is the Dispatch chains of the daemon's project with keys named (record.ReadChains),
 // read in one short read-only transaction: what a handler that judges work against the issues
 // above it reads once and asks record.AcceptedAncestorIn of, rather than opening a transaction
@@ -559,11 +541,9 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 // releasableChild accepts an issue of the architect's tree that has not entered the workflow and
 // that the architect owns: a triage, backlog, or icebox issue whose Dispatch parent chain reaches
 // the grant's tree, through the grant's own issue for a sub-architect. The record cannot answer,
-// since it holds a child only once the child is todo, and a root that queued in admission before a
-// person made it a child of the tree is recorded in a tree of its own until the release adopts it
-// (adoptReleasedChildren); the shipped daemon checks the same membership over its mirrored issue
-// graph. An issue already in the workflow is refused, since writing todo would move an in-progress
-// child back.
+// since it holds a child only once the child is todo; the shipped daemon checks the same
+// membership over its mirrored issue graph. An issue already in the workflow is refused, since
+// writing todo would move an in-progress child back.
 //
 // A sub-architect releases only issues under its own, as it parks and runs again only those
 // (architectOwnsUnder): the tree root, its own issue, a sibling of it and an issue under a sibling
@@ -640,19 +620,19 @@ const (
 )
 
 // enterTodoChild records a released child Dispatch already shows todo that the daemon has no
-// record of. The workflow records a child from an observation of it in todo while its tree is live
-// (workflow's recordChildUnderLiveTree), and a child set todo before its tree was live, by a person
-// or another session, has none: the release writes it nothing, and Dispatch would make no event for
-// a status the issue already has. So the release applies Dispatch's view of the child, as just read,
-// as that observation, at the child's own Dispatch sequence: the child takes the path its todo event
-// would, recorded under the live tree and started once its gate is open, and a live event of it
-// from before the read stops at the sequence fence. The view applies only while the child stays
-// unrecorded (intake.DispatchIssue.Observed): an event that recorded it meanwhile has the record
-// carried on by the child's own events, each with its actor. A child already recorded in the
-// grant's tree — by the earlier attempt of a wave this call retries, or by the release's adoption
-// of a root that queued in admission (adoptReleasedChildren) — has had that observation. One
-// recorded in any other tree is not that tree's, and is answered CHILD_IN_OTHER_TREE; the adoption
-// leaves none.
+// record of. The workflow records a child from an observation of it in todo under a parent in
+// Legion's work (workflow's recordChildUnderParentAtWork), and a child set todo before its parent
+// was at work, by a person or another session, has none: the release writes it nothing, and
+// Dispatch would make no event for a status the issue already has. So the release applies
+// Dispatch's view of the child, as just read, as that observation, at the child's own Dispatch
+// sequence: the child takes the path its todo event would, recorded under its parent and started
+// once every gate above it is open, and a live event of it from before the read stops at the
+// sequence fence. The view applies only while the child stays unrecorded
+// (intake.DispatchIssue.Observed): an event that recorded it meanwhile has the record carried on by
+// the child's own events, each with its actor. A child already recorded — by the earlier attempt of
+// a wave this call retries, or as a root of its own before it got this parent — has had that
+// observation, and its place is read from the Dispatch chain as it stands (R19 of
+// dispatch://INFRA-3320): no child is moved into any tree.
 //
 // The workflow records a child only under a recorded parent. A parent this same wave writes todo is
 // recorded by its own write first (waveRelease, releaseOrder); one outside the wave, or one the
@@ -684,11 +664,6 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant cr
 	recorded, err := s.recordedIssue(r.Context(), child.Key)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
-		return "", false
-	}
-	if recorded != nil && recorded.Tree != grant.Tree {
-		refusal := intake.ChildInOtherTree(child.Key, recorded.Tree, grant.Tree)
-		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return "", false
 	}
 	if recorded != nil {
@@ -1000,8 +975,7 @@ func (s *server) listedIssues(ctx context.Context) (map[string]dispatch.IssueSum
 // waveRelease releases children of the architect's tree into its run. Every child is checked
 // (releasableChild: in the tree, owned by the calling architect, which for a sub-architect means
 // under its own issue, and not yet in the workflow) before anything is written, so a wave that names
-// one issue the architect does not own releases none; then a child recorded outside the tree joins
-// it (adoptReleasedChildren), or the release answers why it cannot and writes nothing; then each
+// one issue the architect does not own releases none; then each
 // triage, backlog or icebox child is written todo in Dispatch and recorded from its own write
 // (recordOwnStatusWrite), and each child already todo is recorded (enterTodoChild). So a child is in
 // the tree when the release answers it released, except a written child the record could not take
@@ -1047,8 +1021,8 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		children = append(children, releasedChild{view: child, write: write})
 	}
-	// The records are read before the adoption writes anything, so releaseOutcome counts a child
-	// the adoption started as one this request started.
+	// The records are read before anything is written, so releaseOutcome counts a child the
+	// release started as one this request started.
 	if err := s.readReleasedBefore(r.Context(), children); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the records of the children to release")
 		return
@@ -1086,7 +1060,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if !s.adoptReleasedChildren(w, r, grant.Tree, children) {
+	if !s.mirrorRecordedChildren(w, r, children) {
 		return
 	}
 	// A child the release writes todo under none of the wave's todo children is written, then
@@ -1103,8 +1077,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	// admission, which applies after it, would take one carrying the legion label for an orphan and
 	// record it as a root of its own. A written child the record does not take still stands
 	// released: Dispatch shows it todo, and its write's event records it when the consumer delivers
-	// it, so that failure is logged and does not fail the release. A child the adoption moved into
-	// the tree is written and recorded here like any other, already in the tree.
+	// it, so that failure is logged and does not fail the release.
 	ordered := releaseOrder(children)
 	underTodo := underTodoChild(children)
 	written := make(map[string]dispatch.Issue, len(ordered))
@@ -1349,47 +1322,24 @@ func runsPhase(issue *record.Issue) bool {
 	return issue != nil && issue.Phase != phase.Admitted && issue.Phase != phase.Done
 }
 
-// adoptReleasedChildren moves into tree each released child recorded in another tree: a root that
-// queued in admission (its own tree) before a person made it a child of tree, which no Dispatch
-// event moves (admit's recordObservation keeps a recorded tree). The children are applied as one
-// ChildAdoption fact, under the Dispatch parent the release read, and admission adopts them all
-// or refuses the fact, writing nothing: a refusal is the release's answer, naming the child and
-// why, and nothing more is written, Dispatch included. A wave with no such child applies no fact.
-// An adopted child that waits on an unfinished Dispatch issue joins the tree and is held there,
-// never started (blockers.Holds); releaseOutcome names it held.
-func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, tree string, children []releasedChild) bool {
-	outside := recordedOutside(tree, children)
-	if len(outside) == 0 {
-		return true
-	}
-	result, err := s.apply(r.Context(), "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside})
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not adopt the released children")
-		return false
-	}
-	if result.Refusal != nil {
-		writeFailure(w, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
-		return false
-	}
-	return true
-}
-
-// recordedOutside returns each released child whose record, as the release read it before its
-// writes (readReleasedBefore), is in a tree other than tree, with the Dispatch parent and the
-// blocked-by links the release read. Admission reads each record again under the fact lock before
-// it adopts, but it cannot read Dispatch there, and its mirror of those links can be older than
-// this request's own read — a person's re-parent and link are one edit, and the daemon's consumer
-// may not have delivered its event — so the links travel with the fact and hold the adopted child
-// as the mirror's own do (workflow's enterChild, dispatch://INFRA-714/spec R3).
-func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChild {
-	var outside []intake.AdoptedChild
+// mirrorRecordedChildren applies the release's own read of each child the daemon records already as
+// a reading of Dispatch (intake.ObservedIssue), which reaches the copy of Dispatch's issues alone
+// (intake's settleObserved: no actor is known to have written its state, so the workflow and
+// admission decide nothing on it). The copy can be older than this request's read — a person's
+// re-parent and link are one edit, and the daemon's consumer may not have delivered its event — and
+// the release's promotion judges the child's links and parent over the copy, so the read reaches
+// it first (dispatch://INFRA-714/spec R3). A wave with no recorded child applies no fact.
+func (s *server) mirrorRecordedChildren(w http.ResponseWriter, r *http.Request, children []releasedChild) bool {
 	for _, child := range children {
-		if child.before != nil && child.before.Tree != tree {
-			outside = append(outside, intake.AdoptedChild{Issue: child.view.Key, Parent: intake.ObservedIssue(child.view).Parent,
-				Status: child.view.Status, BlockedBy: child.view.BlockedBy, Seq: child.view.LastSeq})
+		if child.before == nil {
+			continue
+		}
+		if _, err := s.apply(r.Context(), "api", requestFactID("waves/read"), intake.ObservedIssue(child.view)); err != nil {
+			writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record the release's read of %s", child.view.Key))
+			return false
 		}
 	}
-	return outside
+	return true
 }
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
@@ -1617,9 +1567,7 @@ func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 // sibling: a sub-architect holds a grant for the whole tree and can name any issue of it. A chain
 // that leaves the tree before reaching the grant's issue (no parent on a child, a parent not
 // recorded or recorded in another tree, a cycle) ends at the tree root, whose architect owns the
-// issue: a human's re-parent in Dispatch leaves an issue's tree as it was (admit's
-// recordObservation), except a root that never ran, which joins its parent's live tree
-// (workflow/adopt.go), and the notice router ends the same walk at the same place
+// issue: the notice router ends the same walk at the same place
 // (record.OwningArchitect), so the architect the reviewer's phase-finished notice reaches is the
 // one that may accept the issue. The walk reads every parent in one read-only transaction, opened
 // only when it has a parent to read.
@@ -1663,9 +1611,9 @@ func (s *server) owns(ctx context.Context, grant credential.Grant, recorded reco
 // parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue
 // under its own) out of the workflow by moving it to backlog in Dispatch, the move a human would
 // make, and applies that move to the record before it answers (applyOwnStatusWrite), as the move's
-// event would: the child is parked as any child leaving the workflow is (the workflow's leave).
+// event would: the child stops as any issue leaving Legion's work does (the workflow's leave).
 // Every claim of the child, its own architect's included, is suspended with its session kept, its
-// phase is parked, and the architect above it is told (child-status). The record does not wait for
+// phase is kept, and the architect above it is told (child-status). The record does not wait for
 // the event to come back through the Dispatch consumer, which can run far behind: until then the
 // workflow would keep running the child, start its next phase's worker on a completion, and refuse
 // rerun_child. The event, once delivered, finds the record at its sequence and changes nothing.
@@ -1675,7 +1623,7 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if child.Phase == phase.Done {
+	if !record.InLegionsWork(child) {
 		writeFailure(w, http.StatusConflict, "CHILD_NOT_RUNNING", fmt.Sprintf("%s is already out of the workflow; rerun_child runs it again", child.Key))
 		return
 	}
@@ -1685,44 +1633,24 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 }
 
 // rerunChild runs a child the architect owns (childOfTree: for a sub-architect, an issue under its
-// own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
-// the move a human would make, and applies that move to the record before it answers
-// (applyOwnStatusWrite), as the move's event would: the child's next run starts under the tree from
-// planning (the workflow's reenterChild), and the event, once delivered, changes nothing. A running
-// child is parked first, and a lingering tree runs nothing more; a todo it reached anyway would
-// admit the child as an orphan root of its own.
+// own) again once it is out of Legion's work, parked or signed off, by moving it to todo in
+// Dispatch, the move a human would make, and applies that move to the record before it answers
+// (applyOwnStatusWrite), as the move's event would: a parked child returns to work, and a child at
+// phase done opens a new run (the workflow's backInWork), and the event, once delivered, changes
+// nothing. A running child is parked first.
 //
 // It is refused while an ancestor of the child has already been accepted
 // (CHILD_UNDER_ACCEPTED_PARENT): work entering the workflow beneath such an ancestor would let
 // that ancestor merge a head that does not carry it, which is the order children-first keeps.
 // The ancestor is named, and the chain is walked past a parent already done, so a grandchild
 // under a done parent is refused by whichever issue above it is still merging.
-//
-// The tree is read once (treeMembers) and both judgements are made over those records, as
-// release_children judges a whole wave over one read of them: the root whose linger stops a
-// rerun is among them, and the chain the ancestor is found on is walked over them
-// (record.AcceptedAncestorIn).
 func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	child, ok := s.childOfTree(w, r, "rerun_child")
 	if !ok {
 		return
 	}
-	if child.Phase != phase.Done {
-		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase))
-		return
-	}
-	members, err := s.treeMembers(r.Context(), child.Tree)
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree of the child to rerun")
-		return
-	}
-	at := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == child.Tree })
-	if at < 0 {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree root")
-		return
-	}
-	if root := members[at]; root.Lingers() {
-		writeFailure(w, http.StatusConflict, "TREE_LINGERING", fmt.Sprintf("the tree %s is lingering after it left the workflow, so %s cannot run in it again", root.Key, child.Key))
+	if record.InLegionsWork(child) {
+		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s at status %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase, child.Status))
 		return
 	}
 	chains, err := s.chainsOf(r.Context(), []string{child.Key})

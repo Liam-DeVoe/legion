@@ -139,7 +139,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 
 	newEngine := func() *workflow.Engine {
 		return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-			Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			Clock: func() time.Time { return fixedNow }}, nil)
 	}
 
 	t.Run("a mid-phase member brings back the roles that have run", func(t *testing.T) {

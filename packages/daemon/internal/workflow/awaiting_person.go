@@ -26,7 +26,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 	switch {
 	case !issue.HandedOver:
 		return "the legion label was removed", nil
-	case issue.Lingers() || !record.InWorkflow(issue):
+	case !record.InWorkflow(issue):
 		return "it left the workflow", nil
 	}
 	claimedBy, err := store.DispatchClaim(ctx, tx, issue.Key)

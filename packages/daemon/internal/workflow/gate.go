@@ -1057,8 +1057,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // once as such, and a child's own architect is not told of the root's gate, whose merge hold
 // reaches the child's merger once it holds merging.
 //
-// Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
-// suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
+// A gate root out of Legion's work (record.InLegionsWork) stands where its stop left it, every role
+// of it suspended, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1071,8 +1071,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil || root == nil {
 		return err
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(*root) {
+		return nil
 	}
 	// The gate's tree is key and the issues in Legion's work whose gate root key is on the Dispatch
 	// chain (record.Chains.GateTree), whatever tree their records store.

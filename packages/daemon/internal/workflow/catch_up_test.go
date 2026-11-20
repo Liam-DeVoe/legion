@@ -83,22 +83,19 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 	}
 }
 
-// A root a hand-over created at this generation is said to be handed over in its architect's
-// catch-up, whatever the phase, so the architect resumes rather than decomposing the tree anew; it
-// is said to be carried as well when its old root's gate came with it, so the architect registers
-// no spec. The same root at a later generation (closed and reopened) is a root like any other.
+// A root a hand-over carried in at this generation (record.Issue.CarriedGeneration) is said to be
+// handed over in its architect's catch-up, whatever the phase, so the architect resumes rather than
+// decomposing the tree anew; it is said to be carried as well when its old root's gate came with it
+// (record.Issue.CarriedGate), so the architect registers no spec. The same root at a later
+// generation (closed and reopened) is a root like any other.
 func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Planning, phase.Reviewing, phase.Accepting} {
 		for _, gateCarried := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, gate carried %t", at, gateCarried), func(t *testing.T) {
 				pool := migratedPool(t)
-				root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: at, Generation: 2, Status: "in_progress", Rank: "U"}
+				root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: at, Generation: 2, Status: "in_progress", Rank: "U",
+					CarriedGeneration: 2, CarriedGate: gateCarried}
 				seedIssue(t, pool, root)
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutHandedOverRoot(context.Background(), tx, record.HandedOverRoot{Issue: root.Key, Generation: 2, GateCarried: gateCarried})
-				}); err != nil {
-					t.Fatalf("seed handed-over root: %v", err)
-				}
 				engine := testEngine(config.DesignGateRootIssues, nil)
 				claimReady(t, pool, engine, root.Key, claim.RoleArchitect, 1)
 				if got := lastCatchUp(t, pool); !got.HandedOver || got.Carried != gateCarried {
@@ -229,16 +226,10 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 	}
 }
 
-// Only a live tree's architects are told their issues. A tree that lingers or has left the
-// workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
+// Only the architects of an issue in Legion's work are told their issues. A root that has left
+// Legion's work is told nothing, nor is a phase worker on the root; a child's own architect is told
 // the child and the issues under it, with no gate.
 func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
-	// A lingering root set back to todo still lingers until admission takes it again: only its
-	// linger, not its status, says the tree has left the workflow.
-	lingering := func(root *record.Issue) {
-		until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
-		root.Phase, root.Status, root.LingerUntil = phase.Done, "todo", &until
-	}
 	for _, tc := range []struct {
 		name  string
 		root  func(*record.Issue)
@@ -246,7 +237,6 @@ func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 		role  claim.Role
 		want  []string
 	}{
-		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
 		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
 		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
 			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},

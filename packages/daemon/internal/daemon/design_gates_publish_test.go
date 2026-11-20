@@ -148,7 +148,7 @@ func newGatePublishRig(t *testing.T, slots int) *gatePublishRig {
 	records := record.NewStore()
 	rig := &gatePublishRig{t: t, ctx: context.Background(), pool: pool, records: records, client: &gatePublishDispatch{}}
 	rig.engine = workflow.New(records, workflow.Config{Project: gatePublishProject, Repositories: testRepositories,
-		Steps: gatePublishSteps, Linger: time.Hour, Clock: rig.clock}, quietLogger())
+		Steps: gatePublishSteps, Clock: rig.clock}, quietLogger())
 	rig.admission = admit.New(records, rig.engine, slots, gatePublishProject, quietLogger())
 	rig.runner = &outbox{pool: pool, records: records, dispatch: rig.client, dispatchProject: gatePublishProject,
 		now: rig.clock, log: quietLogger()}

@@ -510,9 +510,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // a role holder with a message. A role named twice, the implementer holding the phase, is told
 // once, and a phase no worker holds names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
-// suspended there, so the settlement is recorded and nobody is told. A parent waiting in
+// the same conclusions tells nobody again, and so does a settlement that stands for no head. An
+// issue out of Legion's work (record.InLegionsWork) stands where its stop left it, every role of
+// it suspended, so the settlement is recorded and nobody is told. A parent waiting in
 // awaiting_children is told nothing either, and neither is the architect that owns it: no role
 // works the parent while it waits, and the forward merge its return asks for gives its head new
 // checks (dispatch://INFRA-3320 R11), so the settlement is recorded and no message goes out.
@@ -535,8 +535,8 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil || issue == nil || issue.Phase == phase.AwaitingChildren {
 		return err
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(*issue) {
+		return nil
 	}
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
@@ -1216,9 +1216,9 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
 // again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
-// architect asks the decision on. Linger holds a member of a closed tree where it stood
-// (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
-// runs again.
+// architect asks the decision on. An issue out of Legion's work stands where its stop left it
+// (record.InLegionsWork), and leaves no mark: nothing was told, so the head is told when the issue
+// returns to work.
 //
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
@@ -1227,8 +1227,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return false, err
+		if !record.InLegionsWork(issue) {
+			return false, nil
 		}
 		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
 	case roundApproved:
@@ -1242,8 +1242,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if r.stuckAs(before) {
 			return false, nil
 		}
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return false, err
+		if !record.InLegionsWork(issue) {
+			return false, nil
 		}
 		reviewer, err := reviewerToken(issue)
 		if err != nil {
@@ -1265,8 +1265,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // It is deduped against the mark the last notice left on the reviewer's decision (told), which
 // outlives the answers GitHub gives in between: the state is read back from GitHub every time,
 // and `blocked`, `unknown`, `blocked` is one finding told once. The mark is written with the
-// notice, so a notice linger holds (record.TreeLingers) leaves none and the head is told when
-// the tree runs again.
+// notice, so a notice held for an issue out of Legion's work (record.InLegionsWork) leaves none
+// and the head is told when the issue returns to work.
 //
 // The reviewer's own message is a role message (record.RoleMessage, the way the daemon reaches a
 // role holder with something to read): the reviewer approved that head and would otherwise watch
@@ -1277,8 +1277,8 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if told(row, r) {
 		return nil
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(issue) {
+		return nil
 	}
 	reviewer, err := reviewerToken(issue)
 	if err != nil {

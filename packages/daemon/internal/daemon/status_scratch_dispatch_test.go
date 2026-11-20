@@ -51,7 +51,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
 	// A person leaves a comment while the row is between its read and its write; the status is
@@ -94,7 +94,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
 	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
@@ -130,7 +130,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
 	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {

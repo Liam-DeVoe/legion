@@ -160,16 +160,6 @@ func (s *Postgres) AncestorsOf(ctx context.Context, tx pgx.Tx, project string, k
 	return issues, nil
 }
 
-func (s *Postgres) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]Issue, error) {
-	issues, err := queryIssues(ctx, tx, "select "+issueColumns+` from issues
-		where status = 'todo' and handed_over and key = tree and $1 = any(ancestry)
-		order by key`, key)
-	if err != nil {
-		return nil, fmt.Errorf("list the queued roots whose chain holds %s: %w", key, err)
-	}
-	return issues, nil
-}
-
 // queryIssues is every issue record query selects with args, in its order.
 func queryIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]Issue, error) {
 	rows, err := tx.Query(ctx, query, args...)
@@ -1633,14 +1623,6 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
-// ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
-// new generation of the whole tree, and its children carried the old one's pull request, gate and
-// handoffs into it — a child re-entered at the new generation read a handoff of the last.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree), now)
-}
-
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
 // their issue column, and issues selects the same issues in the issues table. The design gates go
 // with them, in a statement of their own (clearGates).
@@ -1668,14 +1650,14 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
-		// rather than level with it, and the re-admitted tree's promotion raises the entry again
-		// and writes the task of that entry beside it (admit's startMidPhaseMembers). That the
-		// number is never reset is also what keeps a review of the old entry from moving the
-		// reviewer's commit after the promotion: its footer names a number the row has left
-		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about. The time the entry was
-		// raised stays with the number it belongs to, and so does the move that raised it
-		// (entry_moved_back), which that same promotion writes again. The counts go with the
+		// rather than level with it, and the new run's next start raises the entry again and
+		// writes the task of that entry beside it. That the number is never reset is also what
+		// keeps a review of the old entry from moving the reviewer's commit after that start: its
+		// footer names a number the row has left (PhaseRow.ReviewedHead), and until that start the
+		// row holds no entry's task. The mark that the task is sent as written goes with the task
+		// it was about. The time the entry was raised stays with the number it belongs to, and so
+		// does the move that raised it (entry_moved_back), which that same start writes again. The
+		// counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
 		// with them, so the architect is told again at the new generation's own first crossing of
 		// the cap. The commit the daemon recorded for the reviewer's own review goes with the
@@ -1800,18 +1782,11 @@ func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check Prod
 	return nil
 }
 
+// OpenProductionChecks is every open check, oldest opened first, then by issue.
 func (s *Postgres) OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error) {
-	return openProductionChecks(ctx, tx, "", "list the open production checks")
-}
-
-func (s *Postgres) OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error) {
-	return openProductionChecks(ctx, tx, tree, fmt.Sprintf("list the open production checks of tree %s", tree))
-}
-
-// openProductionChecks is every open check, of tree when tree is not "", oldest opened first.
-func openProductionChecks(ctx context.Context, tx pgx.Tx, tree, describe string) ([]ProductionCheck, error) {
+	const describe = "list the open production checks"
 	rows, err := tx.Query(ctx, "select "+productionCheckColumns+` from production_checks
-		where closed_at is null and ($1::text = '' or tree = $1::text) order by opened_at, issue`, tree)
+		where closed_at is null order by opened_at, issue`)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
@@ -2317,63 +2292,35 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 	return int(tag.RowsAffected()), nil
 }
 
-// CarryAssignments settles the assignments of key, a child handed over as a tree of its own, from
-// the tree it left. The copy comes first: every tree-unit assignment row of from's root, onto key
-// with its arm, its mode and its instant verbatim and the carried mark set, so the work that has
-// been running under those arms goes on running under them. Then each experiment of settled — the
-// experiments declared at the hand-over — is written at no variant, no mode and no instant, under
-// the same write-once insert, so it lands only for an experiment the copy left unwritten: an
-// experiment the old tree held a tree row for keeps the copy, and one it held none for is settled
-// here at no variant and is never drawn for later. A row key already holds stands either way. It
-// reports how many rows the two wrote.
+// CarryAssignments gives key, an issue at its first start, the tree-unit assignments of the issues
+// above it in Legion's work (R17 of dispatch://INFRA-3320): above is those issues nearest first
+// (Chains.Above), and for each tree-unit experiment the row of the nearest of them that holds one
+// is copied onto key with its arm, its mode and its instant verbatim and the carried mark set, so
+// the work under that issue runs under the arm it runs under. The write is the write-once insert,
+// so a row key already holds stands: a draw stays as it was made, whatever parent the issue has
+// later. It reports how many rows it wrote; an experiment no issue of above holds a row for is
+// left for key's own draw (experiment.DrawAndRecord, whose write is the same write-once one).
 //
-// Only the tree rows are copied. A tree row is the whole tree's answer, which every issue of the
-// tree is shown (internal/projection's assignmentViews) and which a launch of any of them reads
-// off the root's key, so the child takes it on as the root of its own tree. An issue row of the
-// old root is that one issue's own answer, drawn for it and read back under its own key alone: it
-// says nothing about the child, which held no row of its own for that experiment and so ran in no
-// arm of it before the hand-over. Copied, the child would run in the old root's arm afterwards
-// and be marked as having carried it, where the settling below is what answers for it — at no
-// variant, as for any experiment the tree it left held no row for.
-//
-// The driver row is the old tree's lifecycle row, under project, the normalized runtime token
-// tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
-// never opened and hands nothing over, so key is drawn for at its own first open. The old tree's
-// root record is not required — an operator opened a tree the daemon recorded no root for —
-// since the copy reads the assignment rows themselves, of which such a tree has none, and the
-// settled rows then answer for it. key's own record is required, as PutAssignments' target is: a
-// child the daemon holds no record of takes no row and raises nothing.
-func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error) {
+// Only the tree rows are copied. An issue row is that one issue's own answer, drawn for it and
+// read back under its own key alone, so it says nothing about the issues under it. key's own
+// record is required, as PutAssignments' target is: an issue the daemon holds no record of takes
+// no row and raises nothing.
+func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, key string, above []string) (int, error) {
+	if len(above) == 0 {
+		return 0, nil
+	}
 	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
-		from tree_lifecycles life
-		join issues target on target.key = $2
-		join experiment_assignments source on source.issue_key = $3 and source.unit = 'tree'
-		where life.project = $1 and life.tree = $3
-		on conflict (issue_key, experiment) do nothing`, project, key, from)
+		select distinct on (source.experiment) target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
+		from issues target
+		cross join unnest($2::text[]) with ordinality as up(key, nearness)
+		join experiment_assignments source on source.issue_key = up.key and source.unit = 'tree'
+		where target.key = $1
+		order by source.experiment, up.nearness
+		on conflict (issue_key, experiment) do nothing`, key, above)
 	if err != nil {
-		return 0, fmt.Errorf("carry the experiment assignments of %s to %s: %w", from, key, err)
+		return 0, fmt.Errorf("carry the tree-unit experiment assignments above %s: %w", key, err)
 	}
-	written := int(tag.RowsAffected())
-	if len(settled) == 0 {
-		return written, nil
-	}
-	experiments := make([]string, len(settled))
-	units := make([]string, len(settled))
-	for i, row := range settled {
-		experiments[i], units[i] = row.Experiment, row.Unit
-	}
-	tag, err = tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-		select target.key, declared.experiment, declared.unit, '', '', null::timestamptz, true
-		from tree_lifecycles life
-		join issues target on target.key = $2
-		cross join unnest($4::text[], $5::text[]) as declared(experiment, unit)
-		where life.project = $1 and life.tree = $3
-		on conflict (issue_key, experiment) do nothing`, project, key, from, experiments, units)
-	if err != nil {
-		return 0, fmt.Errorf("settle %d experiments of %s at the hand-over out of %s: %w", len(settled), key, from, err)
-	}
-	return written + int(tag.RowsAffected()), nil
+	return int(tag.RowsAffected()), nil
 }
 
 // AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one

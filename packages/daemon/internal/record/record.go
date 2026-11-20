@@ -385,27 +385,19 @@ type Assignment struct {
 	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
-	// off, which draws for no unit, and the answer a hand-over settles a child at for an
-	// experiment the tree it left held no row for.
+	// off, which draws for no unit, and the answer a hand-over of the release before settled a
+	// child at for an experiment the tree it left held no row for.
 	Variant string
 	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
-	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
-	// mode.
+	// a hand-over of the release before settled the row with no draw under any mode.
 	Mode string
-	// DrawnAt is when the draw was made, nil where a hand-over settled the row with no draw.
+	// DrawnAt is when the draw was made, nil where a hand-over of the release before settled the
+	// row with no draw.
 	DrawnAt *time.Time
-	// Carried marks a row a hand-over wrote rather than a draw: the answer this unit took from the
-	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
+	// Carried marks a row copied rather than drawn: the answer this issue took at its first start
+	// from the nearest issue above it in Legion's work that held one (Store.CarryAssignments), or,
+	// in a row the release before wrote, from the tree a hand-over moved it out of.
 	Carried bool
-}
-
-// DeclaredExperiment is one experiment a hand-over settles a child at: the name the project
-// declares it under and the unit it covers, which together are the whole of what the settling
-// write records (Store.CarryAssignments). A settled row carries no arm, no mode and no instant
-// by construction, so there is no field here to pass one in.
-type DeclaredExperiment struct {
-	Experiment string
-	Unit       string
 }
 
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
@@ -1850,15 +1842,6 @@ type OutboxRow struct {
 	HeldByPause int64
 }
 
-// Handover is a root linger's pending move of one child to an independent tree. It persists from
-// the decision until the daemon-authored Dispatch event consumes or rejects it.
-type Handover struct {
-	Issue      string
-	Tree       string
-	Generation uint64
-	Cancelled  bool
-}
-
 // ReleaseRetry is the bounded wait for a released todo child whose parent event has not reached the
 // daemon yet. A changed Dispatch sequence begins a fresh bounded attempt.
 type ReleaseRetry struct {
@@ -1867,15 +1850,6 @@ type ReleaseRetry struct {
 	Attempts  int
 	NextAt    time.Time
 	Exhausted bool
-}
-
-// HandedOverRoot is a root a hand-over created: the generation at which the child became a root of
-// its own, carrying its phase, phase rows and pull request, and whether its old root's gate came
-// with them.
-type HandedOverRoot struct {
-	Issue       string
-	Generation  uint64
-	GateCarried bool
 }
 
 // DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
@@ -1954,10 +1928,6 @@ type Store interface {
 	// leaves out, so the one chain walk (Ancestors) crosses a parent already done. No keys read
 	// nothing.
 	AncestorsOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error)
-	// QueuedRootsUnder is every labelled todo root whose Ancestry holds key, by key: the roots the
-	// waiting line may hold under a live root on a chain key is on (Waiting), whose Ancestry an
-	// event of key reads again.
-	QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]Issue, error)
 	// SlottedIssues is the record of each issue of project that holds an admission slot, in slot
 	// order, in one read: another project's slot in the shared table, and every issue holding no
 	// slot, are left out of the read rather than of the caller's loop.
@@ -2098,10 +2068,8 @@ type Store interface {
 	// one per issue.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error
-	// OpenProductionChecks is every open check, oldest opened first, then by issue;
-	// OpenProductionChecksOfTree those of tree's issues, in the same order.
+	// OpenProductionChecks is every open check, oldest opened first, then by issue.
 	OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error)
-	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
 	// SessionClaimsOf says whether the agent session holds a claim of one of issues: the issues
@@ -2293,12 +2261,11 @@ type Store interface {
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
 	// the start of a step's record raises it in its own transaction (workflow's startStep), and
 	// the row keeps the agent, the moment and the identity that write carries. ClearGeneration
-	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
+	// leaves the count: the generation is part of the record's id already,
 	// and the count only rises.
 	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
@@ -2389,23 +2356,12 @@ type Store interface {
 	// it has been running under, and nothing ever updates a row. Writing nothing is no error, and
 	// an issue the daemon holds no record of — an operator's spawn — takes no row at all.
 	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
-	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
-	// from the tree it left: every tree-unit assignment of from's root copied verbatim — its arm,
-	// its mode and the instant it was drawn — and then each experiment of settled, the experiments
-	// declared at the hand-over, written at no variant, no mode and no instant for the experiments
-	// the copy left unwritten. Every row is marked carried, and every write is the write-once one,
-	// so an experiment the old tree held a tree row for keeps the copy, one it held none for is
-	// settled at no variant and is never drawn for later, and a row key already holds stands. It
-	// reports how many rows it wrote.
-	//
-	// An issue-unit row of the old root is left where it is: it is that one issue's own answer,
-	// shown to no other issue of the tree and read back under its own key alone, so the child
-	// ran in no arm of that experiment before the hand-over and is settled at none by it.
-	//
-	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
-	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
-	// carries nothing, and its own first draw answers for it.
-	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error)
+	// CarryAssignments gives key, an issue at its first start, the tree-unit assignment of each
+	// experiment from the nearest issue of above (the issues above it in Legion's work, nearest
+	// first: Chains.Above) that holds one, copied verbatim and marked carried, under the
+	// write-once insert, so a row key already holds stands. It reports how many rows it wrote; an
+	// experiment none of above holds is left for key's own draw.
+	CarryAssignments(ctx context.Context, tx pgx.Tx, key string, above []string) (int, error)
 	// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one
 	// read; an issue with no assignment has no entry, and an empty list reads nothing. It is the
 	// read of the one or two keys a launch asks for.
@@ -2567,20 +2523,9 @@ type Store interface {
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
-	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
-	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error
-	CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree string, generation uint64) error
-	DeleteHandover(ctx context.Context, tx pgx.Tx, issue string) error
-	// DeleteHandoverAt deletes issue's fence only while it is the one tree and linger generation
-	// name: a newer linger's fence on the same issue belongs to its own outbox row.
-	DeleteHandoverAt(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64) error
 	ReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) (*ReleaseRetry, error)
 	PutReleaseRetry(ctx context.Context, tx pgx.Tx, retry ReleaseRetry) error
 	DeleteReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) error
-	// HandedOverRoot is issue's record as a root a hand-over created, nil for none;
-	// PutHandedOverRoot records it.
-	HandedOverRoot(ctx context.Context, tx pgx.Tx, issue string) (*HandedOverRoot, error)
-	PutHandedOverRoot(ctx context.Context, tx pgx.Tx, root HandedOverRoot) error
 	// WaitingNotices is every notice row of project's issues not yet due at now, oldest first.
 	WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)
 	// ExpediteOutbox makes row due at now if it was due later. It takes the row, not its id, so a
@@ -2796,14 +2741,6 @@ type RoleClaim struct {
 	Pending   *supervise.Delivery
 }
 
-// TreeLingers says whether tree lingers after its close: its root is recorded with a linger
-// deadline, which re-admission clears. Linger holds every member where it stood, so nothing in such
-// a tree transitions, starts a worker, or records a completion.
-func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool, error) {
-	root, err := store.Issue(ctx, tx, tree)
-	return root != nil && root.Lingers(), err
-}
-
 // PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that
 // role: a role no transition has ever handed work on, which stands on no entry, names no handoff
 // and holds no claim. Every reader of one role's row among an issue's picks it here — the state
@@ -2821,65 +2758,16 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	return PhaseRow{}
 }
 
-// Lingers says whether the root lingers after its close: its linger deadline is set, and
-// re-admission clears it.
-func (i Issue) Lingers() bool { return i.LingerUntil != nil }
-
-// Lingering says whether the root's linger is still running at now: its deadline is set and now
-// is before it. It is not Lingers, which answers whether a deadline was ever armed and stays
-// true for ever after: nothing clears LingerUntil but a re-admission (admit's readmit), so a
-// tree whose linger expired long ago, and a root a person parked, each still answer Lingers.
-// Where a rule asks whether the tree is being torn down now, rather than whether it ever left
-// the workflow, it asks this: the held list's tree_closed word (HeldReasonOf), which reads a
-// parked root's member as tree_parked once that root's linger has run out, and the route that
-// takes a closed tree's member into a live tree (workflow's AdoptionRefusal), which C4 of
-// dispatch://INFRA-3107 opens only once no linger is left to run.
-//
-// The zero moment reads every armed linger as still running, which is the conservative answer: a
-// reader with no clock of its own leaves the member where it stands rather than reading its tree
-// as torn down already.
-func Lingering(issue Issue, now time.Time) bool {
-	return issue.LingerUntil != nil && now.Before(*issue.LingerUntil)
-}
-
-// LingersAt says whether the root lingers after the close of its generation: it lingers, and
-// re-admission has not moved it to a later generation. A row a linger's expiry wrote acts in that
-// linger only, not in the tree's next run nor in a later linger of it.
-func (i Issue) LingersAt(generation uint64) bool {
-	return i.Lingers() && i.Generation == generation
-}
-
-// Readmittable says whether a todo on this record starts a new generation of its tree: it is a
-// root, and its tree lingers after its sign-off or was closed. A child's done is only the
-// child's.
-//
-// It is the one definition of that question, because two readers decide opposite ways on it and
-// neither may fire where the other does: admission re-admits such a todo at a new generation
-// (admit's readmit), and the workflow releases a held root's hold on a todo that is not this one
-// (workflow's releaseHeldRoot, whose branch reads `!issue.Readmittable()`). A case added to one
-// expression and not to the other would let one todo do both.
-func (i Issue) Readmittable() bool {
-	return claim.IsTreeRoot(i.Key, i.Tree) && (i.Lingers() || i.Phase == phase.Done)
-}
-
 // Standing is where the issue stands for the gate every path that acts on an idle or released
-// pod reads (pods.InWorkflowNotLingering).
+// pod reads (pods.InWorkflowWithRoot).
 func (i Issue) Standing() pods.Standing {
-	return pods.Standing{Phase: i.Phase, Status: i.Status, Lingers: i.Lingers()}
+	return pods.Standing{Phase: i.Phase, Status: i.Status}
 }
 
-// CarriesRun says whether the issue carries a run: it started a phase, and its tree neither left
-// it admitted nor finished or parked it (phase done). It is one reading with two uses, and the
-// only definition of it.
-//
-// A child moving to a root of its own carries its run there when it has one: a child still
-// admitted never started under its old tree's gate, and a finished one (set back to todo during
-// its tree's linger, say) has no run to carry — carried at done, its new root would take a slot
-// and start an architect with nothing to run. Every path that moves a child to a tree of its own
-// asks it: a hand-over's event, the outbox's direct consumption, and a person's labelling of an
-// orphan. And the promotion never holds a candidate that carries a run by its links, whatever
-// they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its links like any
-// other issue's.
+// CarriesRun says whether the issue carries a run: it started a phase, and it is neither admitted
+// nor finished (phase done). The promotion never holds a candidate that carries a run by its
+// links, whatever they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its
+// links like any other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work

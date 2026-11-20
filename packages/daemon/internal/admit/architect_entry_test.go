@@ -140,48 +140,25 @@ func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 	}
 }
 
-// A hand-over carries a root into a tree of its own at the phase it ran in elsewhere, and its
-// promotion hands that architect the work of taking that phase up: the entry is raised and the
-// start carries it, for a root standing past admitted exactly as for one standing at it.
-//
-// The hand-over runs as it does in production: the end of the old root's linger fences the child,
-// the daemon's labelled todo re-admits it carrying its run, and the same pass promotes it. So
-// what says the root was carried is what the record holds at that promotion, and the one reader
-// of it, the hand-over row of the root's generation (workflow.ArchitectStartOf), reads the row
-// that re-admission wrote in that pass, while the promotion's own write clears the mark on the
-// issue. The derived task is not marked to be sent as written, so a send of that entry again
-// derives it once more.
+// A root a hand-over of the release before carried in, at the phase it ran in elsewhere, is
+// promoted as its own first start under this release, and that promotion hands its architect the
+// work of taking that phase up: the entry is raised and the start carries it, for a root standing
+// past admitted exactly as for one standing at it. What says the root was carried is its own
+// record (record.Issue.CarriedGeneration at its generation, which the first boot's conversion
+// writes, workflow.ArchitectStartOf). The derived task is not marked to be sent as written, so a
+// send of that entry again derives it once more.
 func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
-	const oldRoot, root = "LEGION-700", "LEGION-301"
-	until := fixedNow.Add(time.Hour)
-	parent := oldRoot
-	putIssue(t, pool, record.Issue{Key: oldRoot, Tree: oldRoot, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "the root whose linger ends", Phase: phase.Done,
-		Generation: 1, Status: "done", LingerUntil: &until})
-	putIssue(t, pool, record.Issue{Key: root, Tree: oldRoot, Parent: &parent, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root to promote", Phase: phase.Accepting,
-		Generation: 1, Status: "needs_review", Rank: "A", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutHandover(context.Background(), tx, record.Handover{Issue: root, Tree: oldRoot, Generation: 1}); err != nil {
-			t.Fatalf("fence the hand-over of %s: %v", root, err)
-		}
-	})
+	const root = "LEGION-301"
+	carriedRoot(t, pool, root, phase.Accepting, "A")
 
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "todo", Title: root, Parent: oldRoot, Rank: "A", HandedOver: true, DaemonActor: true}, admission.engine)
+	tick(t, pool, admission, "tick")
 
 	stands := issue(t, pool, root)
-	if stands.Tree != root || stands.Generation != 2 || stands.Phase != phase.Accepting || stands.Status != "in_progress" || stands.HandedOverFrom != "" {
-		t.Fatalf("the carried root after the hand-over = %#v, want a tree of its own at generation 2, promoted in accepting with its mark cleared", stands)
+	if stands.Generation != 2 || stands.Phase != phase.Accepting || stands.Status != "in_progress" || stands.CarriedGeneration != 2 {
+		t.Fatalf("the carried root after its promotion = %#v, want generation 2, promoted in accepting, still marked carried", stands)
 	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		handed, err := record.NewStore().HandedOverRoot(context.Background(), tx, root)
-		if err != nil || handed == nil || handed.Generation != 2 {
-			t.Fatalf("the hand-over row of %s = %#v, %v; want the one the re-admission wrote at generation 2: the case's premise", root, handed, err)
-		}
-	})
 	start := assertArchitectEntry(t, pool, root, 1)
 	if !strings.Contains(start.Task, workflow.ArchitectCarriedPhaseLabel) {
 		t.Fatalf("the carried root's architect task = %q, want the take-the-phase-up instruction the derivation writes for it", start.Task)

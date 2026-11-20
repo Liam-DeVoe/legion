@@ -35,7 +35,6 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
-		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
 		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
@@ -161,7 +160,6 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
-		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}
 	if len(built) != len(StatusRowKinds) {
@@ -214,7 +212,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	}
 
 	enqueue("LEGION-208", PersonHandoverStatusWrite("todo", "triage"))
-	enqueue("LEGION-209", HandOverStatusWrite("todo", "backlog", "LEGION-200", 3))
+	enqueue("LEGION-209", ReassertStatusWrite("todo", "backlog"))
 	enqueue("LEGION-210", OrdinaryStatusWrite("todo", "triage", ""))
 	enqueue("LEGION-210", ControllerNotice{Kind: TriageNotice})
 
@@ -222,7 +220,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 		t.Fatalf("PersonHandoverPending(LEGION-208) = false, want true while its marked row is in the outbox")
 	}
 	if pending("LEGION-209") {
-		t.Fatalf("PersonHandoverPending(LEGION-209) = true, want false for an issue whose only pending row is a hand-over")
+		t.Fatalf("PersonHandoverPending(LEGION-209) = true, want false for an issue whose only pending row is a re-assertion")
 	}
 	if pending("LEGION-210") {
 		t.Fatalf("PersonHandoverPending(LEGION-210) = true, want false for an unmarked todo and a triage wake")
@@ -631,7 +629,6 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
 		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
-		{name: "a reason on a hand-over", payload: StatusWrite{Kind: HandOverStatusRow, Status: "todo", ObservedStatus: "in_progress", HandOverTree: "LEGION-200", HandOverLinger: 3, Reason: "handed over"}, reason: "only a done write or the workflow's own move does"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},

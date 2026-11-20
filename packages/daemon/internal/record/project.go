@@ -1099,18 +1099,12 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		if _, waitingAsRoot := queued[issue.Key]; !waitingAsRoot {
 			continue
 		}
-		// A queued root holding a row the daemon granted it is one it has already started — a
-		// root whose architect is writing the spec, which a person set back to todo — and a
-		// second promotion would start a second architect. A root that arrived from another
-		// tree is the other half of that branch and stays: an issue holds its row from the moment
-		// the daemon starts it until its work is past its review (KeepsSlot), and a queued root
-		// keeps it even while it waits on another issue (blockers.waitsOf leaves a queued root
-		// out), so a root that arrives carrying a phase up to the review carries the row it held
-		// (HandedOverFrom, the one mark of that arrival, which ran is written over and the
-		// promotion clears). Dropped from the line, nothing would promote it, the release would
-		// keep its row (NeedsSlot) and no later pass would find it again. It is the one statement
-		// of that reasoning: the doc above, QueuedRoot, WaitsForSlot and AwaitsPromotion, which
-		// reads it, each point here rather than repeating it.
+		// A queued root holding a slot row is one the daemon has already started — a root whose
+		// architect is writing the spec, which a person set back to todo, or a root a hand-over of
+		// the release before carried in (CarriedIn) that its promotion started — and a second
+		// promotion would start a second architect, so a root that holds a row is never a queued
+		// root. It is the one statement of that reasoning: the doc above, QueuedRoot, ran and
+		// AwaitsPromotion, which reads it, each point here rather than repeating it.
 		_, holds := slotted[issue.Key]
 		if !AwaitsPromotion(issue, facts.Gates[issue.Key], holds) {
 			hold(issue)
@@ -1292,9 +1286,9 @@ func WaitingIssues(line []LineEntry) []Issue {
 // relay of a person's decision (WaitsForSlot), so that no two of them disagree about a root that
 // has still to start.
 //
-// The slot does not answer it: a root arriving from another tree in a phase up to its review may
-// carry the row it held there while its own first start has still to come, which Waiting's
-// queued-root loop states at the skip it guards.
+// The slot does not answer it: a root a hand-over of the release before carried in, in a phase up
+// to its review, may carry the row it held there while its own first start has still to come,
+// which Waiting's queued-root loop states at the skip it guards.
 func QueuedRoot(issue Issue, gate TreeGate) bool {
 	if !issue.HandedOver || ran(issue, gate) {
 		return false
@@ -1307,30 +1301,37 @@ func QueuedRoot(issue Issue, gate TreeGate) bool {
 // its own (Issue.CarriesRun — neither admitted nor done): it is at work, merging, in accepting,
 // held or waiting on a person. Or its design gate has opened at every step the deployment gates
 // at some point (TreeGate.EverOpened), after which the root stands at admitted while its architect
-// revises the design and its own first phase waits in the line (LineFirstPhase). A re-admission
-// clears the gate with the rest of the generation, so a root Legion takes back queues again as a
-// root that never ran, which is what it is.
+// revises the design and its own first phase waits in the line (LineFirstPhase).
 //
-// The one record that carries a run and has still to run here is a root that has just arrived
-// from another tree with the phase it ran there (Issue.HandedOverFrom): its promotion starts the
-// role of whatever phase it carries. The mark is the arrival and not the root's whole life: the
-// promotion clears it (admit's promoteHolds), because from then on the run the record carries is
-// its own. Without that a person's todo on such a root, running and holding no row in accepting
-// or merging, would queue it here again and promote it a second time, starting its merger over a
-// merge that has already been made.
+// The one record that carries a run and has still to start here is a root a hand-over of the
+// release before carried in (CarriedIn): its promotion starts it in the phase it carries
+// (workflow.Engine.StartCarriedRun). The mark stays once the promotion has run, since the
+// architect's start reads it (workflow.ArchitectCarried), so the record does not say the root has
+// started. A root holding a slot row is never queued (AwaitsPromotion), so a person's todo on a
+// promoted carried root in a phase that keeps its row queues nothing. One case is left: a promoted
+// carried root in a phase that keeps no row (accepting, retro, merging or awaiting_children) that a
+// person sets back to todo at the same generation is queued and promoted a second time, which
+// starts its architect and the worker of its phase again at a new entry. No hand-over makes such a
+// root any more, so the case ends once each root the first boot converted has run past it.
 func ran(issue Issue, gate TreeGate) bool {
-	return issue.HandedOverFrom == "" && (issue.CarriesRun() || gate.EverOpened())
+	return !CarriedIn(issue) && (issue.CarriesRun() || gate.EverOpened())
+}
+
+// CarriedIn says whether issue is a root a hand-over of the release before carried in at the
+// generation it stands at (Issue.CarriedGeneration, which the first boot's conversion copied from
+// that release's hand-over rows): the issue's own facts, not the tree it was recorded in, tell it
+// apart (R19 of dispatch://INFRA-3320). No hand-over makes one any more.
+func CarriedIn(issue Issue) bool {
+	return issue.CarriedGeneration != 0 && issue.CarriedGeneration == issue.Generation
 }
 
 // AwaitsPromotion says whether root waits for the promotion that starts it: it is a queued root
-// (QueuedRoot, over gate, its own design gate), and holds, whether it holds a slot row, names no
-// row the daemon granted it. A queued root holding such a row has been promoted already, while a
-// root that arrived from another tree (Issue.HandedOverFrom) may carry the row it held there and
-// still wait; Waiting's queued-root loop, which reads this, states why. Until that promotion
-// nothing of the root runs: its carried phase starts there, so the boot and the settle open and
-// record no run of it (workflow's generationStarted).
+// (QueuedRoot, over gate, its own design gate) and holds no slot row (holds). A root holding a row
+// has been started already; Waiting's queued-root loop, which reads this, states why. Until that
+// promotion nothing of the root runs: a carried phase starts there, so the boot and the settle
+// open and record no run of it (workflow's generationStarted).
 func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
-	return QueuedRoot(root, gate) && !(holds && root.HandedOverFrom == "")
+	return QueuedRoot(root, gate) && !holds
 }
 
 // TreeLive says whether root's tree is live (R15 of dispatch://INFRA-3320): root is a gate root in

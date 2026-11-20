@@ -62,7 +62,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !view.Found || view.Tree != rootIssue || view.Phase != phase.Implementing || view.Generation != 1 || view.Status != "in_progress" {
 		t.Fatalf("view = %+v, want the running issue", view)
 	}
-	if !view.IsRoot() || view.Root.AwaitingPerson || view.Root.LingerUntil != nil {
+	if !view.IsRoot() || view.Root.AwaitingPerson {
 		t.Fatalf("root = %+v, want the running root", view.Root)
 	}
 	if len(view.Claims) != 1 {

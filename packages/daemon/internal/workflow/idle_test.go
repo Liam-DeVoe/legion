@@ -105,11 +105,6 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldTreeNotLive,
 		},
 		{
-			name:  "the tree root lingers",
-			view:  func() pods.IdleView { v := idleChild(); v.Root.LingerUntil = &idleNow; return v }(),
-			image: true, want: IdleHoldTreeNotLive,
-		},
-		{
 			name:  "the project is paused",
 			view:  func() pods.IdleView { v := idleChild(); v.Paused = true; return v }(),
 			image: true, want: IdleHoldPaused,
@@ -385,11 +380,6 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		{
 			name:    "the issue has left the workflow",
 			view:    func() pods.IdleView { v := unownedIssue(); v.Status = "backlog"; return v }(),
-			sandbox: true, want: IdleHoldUnownedTreeNotLive,
-		},
-		{
-			name:    "the tree lingers after its close",
-			view:    func() pods.IdleView { v := unownedIssue(); v.Root.LingerUntil = &idleNow; return v }(),
 			sandbox: true, want: IdleHoldUnownedTreeNotLive,
 		},
 		{

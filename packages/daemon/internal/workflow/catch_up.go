@@ -20,10 +20,11 @@ import (
 
 // claimReady tells an architect at each launch the issues it owns. For a child's own architect it
 // is the first instruction: a child's first phase start launches that architect with no task, and
-// a re-entered child resumes its session. A tree's root architect is launched with the task its
-// record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
-// nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
+// a child whose run comes back resumes its session. A tree's root architect is launched with the
+// task its record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions
+// kept while nobody in its tree could hear them (ParkedDecisionTask), or with none where the
+// derivation gives none, and a root whose run comes back resumes its session. A claim the provider
+// refused out of its launch
 // budget has failed, and the start that retries it starts a new session (supervise's
 // freshSession), as does any launch whose session no store holds any more (startFresh). So at each
 // launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
@@ -38,7 +39,7 @@ import (
 // else claims, so a decision a release left unclaimed reaches this architect here; one still
 // claimed by a queued start or catch-up is that row's to settle. A child's names none: what a
 // person decided while nobody could hear it is kept for the tree, and stays its root architect's.
-// A tree that lingers or has left the workflow is told nothing, and so is the architect of an
+// An issue that has left the workflow is told nothing, and so is the architect of an
 // issue the daemon has not recorded — an operator's spawn of an issue no record of the project
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
@@ -69,25 +70,18 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 		return intake.Result{}, err
 	}
 	// An issue that holds its own design gate on the Dispatch chain (record.Chains.HoldsOwnGate) is
-	// told while its own record stands in the workflow; any other issue's architect is told while
-	// its issue is in the workflow and the stored tree it ran in does not linger.
+	// told while its own status stands in the workflow; any other issue's architect is told while
+	// its issue is in the workflow.
 	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return intake.Result{}, err
 	}
 	if chains.HoldsOwnGate(issue.Key) {
-		if issue.Lingers() || record.OutOfWorkflow(issue.Status) {
+		if record.OutOfWorkflow(issue.Status) {
 			return intake.Result{}, nil
 		}
-	} else {
-		// A child's own record does not say whether its tree lingers: the close arms the linger on
-		// the root alone (record.TreeLingers).
-		if !record.InWorkflow(*issue) {
-			return intake.Result{}, nil
-		}
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return intake.Result{}, err
-		}
+	} else if !record.InWorkflow(*issue) {
+		return intake.Result{}, nil
 	}
 	now := e.now()
 	var paced time.Time
@@ -195,7 +189,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
 // one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
-// its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
+// and its phase's own terminating fact has not arrived (PhaseFinished) —
 // a merged root stands in merging for as long as the rest of its tree runs, and its merger must
 // not be handed merging again at every launch. A claim of another project's issue finds no record
 // here, as a claim of an issue nobody records finds none: the daemon's store reads no record of
@@ -246,9 +240,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if role == "" || role == claim.RoleArchitect || role != fact.Role {
 		return nil
 	}
-	// The run's linger is its gate root's on the Dispatch chain (gateRootOf), not the stored tree's.
 	root, _, err := e.gateRootOf(ctx, tx, *issue)
-	if err != nil || root.Lingers() {
+	if err != nil {
 		return err
 	}
 	finished, err := e.phaseFinished(ctx, tx, *issue)
@@ -310,11 +303,11 @@ type treeWaits struct {
 // treeCatchUp is what issue's architect acts on as the Dispatch chain shows it (R18 of
 // dispatch://INFRA-3320): the issue itself and every issue in Legion's work under it on the chain
 // (record.Chains.Under), listed in key order at the issue's own generation. An issue that holds its
-// own design gate (record.Chains.HoldsOwnGate) also has the catch-up say whether a hand-over
-// created it at this generation, and whether its old root's gate came with it, and each
-// design-gate step it must hold open and how it stands; an issue under a gate holder registers no
-// gate and no hand-over creates one, so its catch-up states no step and is neither handed over nor
-// carried.
+// own design gate (record.Chains.HoldsOwnGate) also has the catch-up say whether a hand-over of the
+// release before carried it in at this generation, and whether its old root's gate came with it
+// (ArchitectCarried, the issue's own record), and each design-gate step it must hold open and how
+// it stands; an issue under a gate holder registers no gate and was carried in by no hand-over, so
+// its catch-up states no step and is neither handed over nor carried.
 //
 // With it come the keys, in key order, of the listed issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
@@ -341,12 +334,8 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	holdsGate := chains.HoldsOwnGate(issue.Key)
 	if holdsGate {
-		handed, err := ArchitectCarried(ctx, tx, store, issue)
-		if err != nil {
-			return record.CatchUp{}, treeWaits{}, err
-		}
-		if handed != nil {
-			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
+		if carried, gate := ArchitectCarried(issue); carried {
+			catchUp.HandedOver, catchUp.Carried = true, gate
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
 		if err != nil {

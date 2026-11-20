@@ -15,12 +15,12 @@ import (
 // decided no change at the design gate, or the issue is moot. sign_off
 // needs the production check and a backward move a phase worker, so without this only a human's
 // status write could end such a tree. The close writes done to Dispatch with the architect's
-// reason, which the write posts on the issue first, and lingers the tree as any close does; the
+// reason, which the write posts on the issue first, and leaves as any close does (leave); the
 // admission slot is released in the same fact.
 //
 // It is refused, as the sign-off is and with the same code, while any issue beneath the root is
-// still in the workflow (OpenBeneath): the close lingers the whole tree, which would suspend
-// those issues mid-turn and lose their work, and the order a tree keeps is that its children
+// still in the workflow (OpenBeneath): the close would close their parent under those issues
+// mid-turn, and the order a tree keeps is that its children
 // finish first. A root at admitted with children running is exactly the shape children-first
 // creates, so this is the common case rather than a corner of it. Past that, it is refused as the
 // sign-off is, in the same order (acceptanceHeld, dispatch://INFRA-3320 R8), while a root whose
@@ -45,7 +45,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *root, closeCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	if !closableAtPhase(root.Phase) || root.Lingers() || record.OutOfWorkflow(root.Status) {
+	if !closableAtPhase(root.Phase) || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — at admitted, whether or not it holds its slot, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
 	}
 	held, err := e.acceptanceHeld(ctx, tx, *root)
@@ -54,7 +54,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	}
 	switch held.code {
 	case signOffChildInWorkflow:
-		return refused(held.code, fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
+		return refused(held.code, fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would close their parent under them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
 			root.Key, held.names)), nil
 	case signOffRestingRoot:
 		return refused(held.code, fmt.Sprintf("%s is not closed while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",

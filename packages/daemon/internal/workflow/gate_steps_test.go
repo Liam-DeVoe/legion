@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -40,7 +39,7 @@ const gatedRoot = "LEGION-208"
 // is what every reader of the step set takes.
 func stepsEngine(steps []record.DesignStep, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, Linger: time.Hour, ReviewAppLogin: testReviewApp,
+		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, ReviewAppLogin: testReviewApp,
 		Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
@@ -435,61 +434,6 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 		return err
 	})
 	return gates
-}
-
-// A hand-over carries a copy of every step of its old root's gate, and each copy holds the new
-// root's work until it is open. The carry itself is admission's (internal/admit's test of this
-// name drives it); here the new root holds the two copies the carry left, its architect's
-// catch-up says the gate was carried and names both steps, and the approval of the old root's
-// Verification document opens the copy that was closed, which starts the new root's first phase.
-func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
-	pool := migratedPool(t)
-	engine := stepsEngine(twoSteps(), nil)
-	apply := applyFacts(t, pool, engine)
-	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: gatedRoot, Project: "LEGION", Title: "the old root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"})
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-209", Project: "LEGION", Title: "the carried root", Parent: new(gatedRoot), Phase: phase.Admitted, Generation: 2,
-		Status: "in_progress", Rank: "V", HandedOver: true, HandedOverFrom: gatedRoot, LastDispatchSeq: 1})
-	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	seedTreeLifecycle(t, pool, "LEGION-209")
-	// The old root's own rows, and the copies the hand-over left on the new root: the Verification
-	// document took a new version while the old tree lingered, so that step's copy is closed.
-	for _, issue := range []string{gatedRoot, "LEGION-209"} {
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2, ApprovedVersion: new(1)})
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4)})
-	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: "LEGION-209", Generation: 2, GateCarried: true})
-	})
-
-	claimReady(t, pool, engine, "LEGION-209", claim.RoleArchitect, 1)
-	caught := lastCatchUp(t, pool)
-	if !caught.HandedOver || !caught.Carried {
-		t.Fatalf("the catch-up says handed over %t, carried %t; want both of a root whose gate came with it", caught.HandedOver, caught.Carried)
-	}
-	want := []record.CatchUpGate{
-		{Step: record.DesignStepCriteria, Gated: true, Artifact: criteriaDoc, Version: 2, Approved: 1},
-		{Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
-	}
-	if fmt.Sprint(caught.Gates) != fmt.Sprint(want) {
-		t.Fatalf("the catch-up states %#v, want one entry for each carried step: %#v", caught.Gates, want)
-	}
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted {
-		t.Fatalf("the carried root = %s while a carried step is closed, want it admitted", got)
-	}
-
-	apply("approve-the-old-document", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 9}))
-	// The opening starts no phase itself: admission's pass gives the carried root the slot its
-	// first phase needs (record.Waiting's LineFirstPhase).
-	admissionPass(t, pool, engine)
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
-		t.Fatalf("the carried root = %s once every carried step is open, want planning", got)
-	}
-	opened := noticesOfKind(t, pool, "LEGION-209", "carried-gate-opened")
-	if len(opened) != 1 || opened[0].Version != 2 {
-		t.Fatalf("the carried root's notices = %#v, want one carried-gate-opened of version 2", opened)
-	}
 }
 
 // Every design decision a notice carries names the document the person reviewed, because a

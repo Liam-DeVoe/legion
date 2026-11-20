@@ -17,11 +17,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A root architect whose human decided no change at the design gate ends its tree while the root
+// A root architect whose human decided no change at the design gate ends its root while the root
 // is admitted: the daemon writes done to Dispatch with the architect's reason, which the write
-// posts first, and the tree lingers as any close does. The journal follows the tree: the close with
-// its status, the linger armed, and, once it expires, the linger's close. The Dispatch event the
-// daemon's own write brings back changes nothing and logs nothing more.
+// posts first, and the root leaves Legion's work as any close does (leave): its claims close, and no
+// deadline is armed for anything. The journal follows the close. The Dispatch event the daemon's
+// own write brings back changes nothing and logs nothing more.
 func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -45,8 +45,8 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), "select status, phase, linger_until from issues where key = 'LEGION-1'").Scan(&status, &rootPhase, &until); err != nil {
 		t.Fatalf("read the root: %v", err)
 	}
-	if status != "done" || rootPhase != phase.Done || until == nil {
-		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, lingering", status, rootPhase, until)
+	if status != "done" || rootPhase != phase.Done || until != nil {
+		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, no linger", status, rootPhase, until)
 	}
 	var write record.StatusWrite
 	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'status', payload->>'observedStatus', payload->>'reason',
@@ -57,22 +57,19 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	if write != record.CloseStatusWrite("done", "in_progress", "Closed by its architect before its first phase: the human decided no change is needed", 2) {
 		t.Fatalf("status write %+v; want the close of generation 2, done over in_progress with the architect's reason", write)
 	}
-	assertOutboxCount(t, pool, "linger_close", 1)
+	assertOutboxCount(t, pool, "linger_close", 0)
 	var reasons []string
-	rows, err := pool.Query(context.Background(), "select distinct payload->>'reason' from outbox where kind = 'supervise' and payload->>'op' = 'suspend'")
+	rows, err := pool.Query(context.Background(), "select distinct payload->>'reason' from outbox where kind = 'supervise' and payload->>'op' = 'issue_close'")
 	if err != nil {
-		t.Fatalf("read the suspends: %v", err)
+		t.Fatalf("read the closes: %v", err)
 	}
-	if reasons, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil || fmt.Sprint(reasons) != "[the tree of LEGION-1 lingers]" {
-		t.Fatalf("suspend reasons %q, %v; want the linger's", reasons, err)
+	if reasons, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil || fmt.Sprint(reasons) != "[LEGION-1 is done]" {
+		t.Fatalf("close reasons %q, %v; want the issue's own", reasons, err)
 	}
 
 	apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root", Rank: "U"})
-	apply("linger", intake.LingerExpired{Issue: "LEGION-1", Generation: 2})
 	want := []string{
-		`msg="workflow: issue left the workflow" issue=LEGION-1 tree=LEGION-1 status=done`,
-		`msg="workflow: tree lingers" tree=LEGION-1 generation=2 until=2026-09-23T01:00:00.000Z`,
-		`msg="workflow: linger closed the tree" tree=LEGION-1 generation=2 issues=1`,
+		`msg="workflow: issue left Legion's work" issue=LEGION-1 status=done phase=done`,
 	}
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
@@ -84,10 +81,9 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 }
 
 // A root waiting on a person has started no phase either — it reaches awaiting_person only from
-// admitted — so the answer "close this" ends its tree the same way: the reason posted, done
-// written over the status the record kept, and the tree lingering. Before, close_root refused it
-// as a tree past its first phase, and the only way out was a person's own status write
-// (dispatch://INFRA-545).
+// admitted — so the answer "close this" ends it the same way: the reason posted, done written over
+// the status the record kept, and no deadline armed. Before, close_root refused it as a tree past
+// its first phase, and the only way out was a person's own status write (dispatch://INFRA-545).
 func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 	pool := migratedPool(t)
 	since := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
@@ -107,8 +103,8 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), "select status, phase, linger_until from issues where key = 'LEGION-1'").Scan(&status, &rootPhase, &until); err != nil {
 		t.Fatalf("read the root: %v", err)
 	}
-	if status != "done" || rootPhase != phase.Done || until == nil {
-		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, lingering", status, rootPhase, until)
+	if status != "done" || rootPhase != phase.Done || until != nil {
+		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, no linger", status, rootPhase, until)
 	}
 	var write record.StatusWrite
 	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'status', payload->>'observedStatus', payload->>'reason',
@@ -119,11 +115,11 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 	if write != record.CloseStatusWrite("done", "in_progress", "Closed by its architect before its first phase: the person answered: close this", 1) {
 		t.Fatalf("status write %+v; want the close of generation 1, done over in_progress with the architect's reason", write)
 	}
-	assertOutboxCount(t, pool, "linger_close", 1)
+	assertOutboxCount(t, pool, "linger_close", 0)
 }
 
-// close_root ends a tree only while its root has started no phase, and only a root: past that the
-// tree ends through its workflow or a human, and a child leaves with park_child under the park rule
+// close_root ends a root only while it has started no phase, and only a root: past that the root
+// ends through its workflow or a human, and a child leaves with park_child under the park rule
 // the refusal states.
 func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 	for _, tc := range []struct {
@@ -132,7 +128,6 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 		code  string
 	}{
 		{"a root in planning", record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Phase: phase.Planning, Status: "in_progress"}, "CLOSE_AFTER_PHASE_STARTED"},
-		{"a root already lingering", record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Phase: phase.Admitted, Status: "done", LingerUntil: new(time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC))}, "CLOSE_AFTER_PHASE_STARTED"},
 		{"a root moved to backlog", record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Phase: phase.Admitted, Status: "backlog"}, "CLOSE_AFTER_PHASE_STARTED"},
 		{"a child", record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Parent: new("LEGION-1"), Phase: phase.Admitted, Status: "in_progress"}, "ROOT_REQUIRED"},
 	} {

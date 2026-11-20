@@ -361,10 +361,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// recorded refusal blocks no later call: its key carries the issue generation this route read,
 	// the one the issue has since left, so a retry is refused here (recording nothing) and the new
 	// run's completion carries the new issue generation and serving run, another key. The tree's
-	// generation is part of it for the same reason: re-admission starts a new generation of the tree
-	// by bumping only the root's, and restarts a child's worker in the phase it stood in, so a
-	// child's completion refused before (while the tree lingered, or while the old gate was closed)
-	// would otherwise take the new generation's key.
+	// generation is part of it for the same reason: a new run raises the issue's own generation,
+	// so a completion refused before (while the issue was stopped, or while the old gate was
+	// closed) would otherwise take the new run's key.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -372,7 +371,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
-	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
+	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.stopped && storetext.Text(reported) != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
 		}
@@ -940,7 +939,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 }
 
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
-// snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, its
+// snapshot: the issue record, its tree's generation (the root's) and whether the issue is out of
+// Legion's work (record.InLegionsWork), its
 // pass — the implementer's count of returns to an earlier phase, which tells each implementing,
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
@@ -950,7 +950,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
-	lingers        bool
+	stopped        bool
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -996,7 +996,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
+	return completionPosition{issue: issue, treeGeneration: root.Generation, stopped: !record.InLegionsWork(*issue), pass: pass,
 		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

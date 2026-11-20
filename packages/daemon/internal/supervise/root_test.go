@@ -158,15 +158,15 @@ func TestARetryAfterAFailedRootExitAndRefusedResumesWaitsOutTheExitedProcess(t *
 	h.wantCalls("Spawn", 1)
 }
 
-// The tree's close is the one thing that releases its root: a root the daemon already suspended
-// has no process, so the release carries no locator.
+// The issue's close is the one thing of the workflow's that releases its root: a root the daemon
+// already suspended has no process, so the release carries no locator.
 func TestTreeCloseReleasesASuspendedRootWithNoLocator(t *testing.T) {
 	h := newHarnessOf(t, rootClaim())
 	h.reach(StateIdle)
 	h.must(RequestExit{Claim: rootToken, Generation: h.generation(), Session: session, Reason: "tree waiting"})
 	h.wantState(StateSuspended)
 
-	h.must(RequestTreeClose{Claim: rootToken})
+	h.must(RequestIssueClose{Claim: rootToken})
 
 	wantReleasedWithNoLocator(t, h, rootToken)
 	h.wantState(StateRetired)
@@ -180,7 +180,7 @@ func TestTreeCloseReleasesALiveRoot(t *testing.T) {
 			h.reach(state)
 			loc := h.locator()
 
-			h.must(RequestTreeClose{Claim: rootToken})
+			h.must(RequestIssueClose{Claim: rootToken})
 
 			if released := h.wantCalls("Release", 1)[0].Released; released.Claim != rootToken || released.Locator == nil || *released.Locator != loc {
 				t.Errorf("released %+v, want %s at %+v", released, rootToken, loc)
@@ -196,7 +196,7 @@ func TestTreeCloseReleasesALiveRoot(t *testing.T) {
 // refused in every state and changes nothing. The refusal is ErrRootStop, whatever the state, and
 // says what stops the root's process where one runs: suspend, once its agent has registered. What
 // ends a tree no workflow issue backs is the operator's close, so its refusal names that too; a
-// workflow issue's tree ends when its linger expires, and its refusal does not.
+// workflow issue's tree ends with its issue's close, and its refusal does not.
 func TestAStopThatIsNotTheTreesCloseNeverRetiresItsRoot(t *testing.T) {
 	const (
 		refused   = "stop refused: the tree's root claim ends only when its tree closes; "

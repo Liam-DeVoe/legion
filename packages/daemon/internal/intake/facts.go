@@ -51,9 +51,9 @@ type DispatchIssue struct {
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
 	Labels []string
-	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells its
-	// own status write from a user or an untyped actor: a pending hand-over fence is consumed only
-	// by its daemon-authored todo event.
+	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells the
+	// daemon's own status write from a user or an untyped actor: the event of a write the daemon
+	// made is the daemon talking to itself, which moves no issue (workflow's dispatchIssue).
 	ActorSession string
 	DaemonActor  bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
@@ -79,20 +79,6 @@ type DispatchIssue struct {
 	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
-	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
-	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
-	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
-	// labelled todo of an unrecorded issue or a recorded root under a parent, recorded or not;
-	// empty for any other fact. Admission records it, and keeps such a root out of its waiting line
-	// while any live root is on it (record.Waiting).
-	Ancestry []string
-	// Reread is the Ancestry read again, when an event of an issue the workflow does not record, or
-	// a fresh event of a recorded issue whose Dispatch parent differs from its record's, is
-	// prepared, of every labelled todo root whose recorded Ancestry holds the issue's key, keyed by
-	// that root, for each one the read changes (nil for none now): a person may have moved that
-	// very issue, and the root under it has no event of its own. Nil when none changes. Admission
-	// writes each before anything else it applies; the workflow reads none of it.
-	Reread map[string][]string
 	// ClaimedBy is who the observation shows holding the issue's Dispatch claim, `<kind>:<id>`, or
 	// "" for nobody, and ClaimKnown says the observation showed the claim at all: an event retained
 	// from a Dispatch that did not yet send it, or an event or read whose claim names no actor
@@ -100,14 +86,15 @@ type DispatchIssue struct {
 	// at the observation's Seq, behind the claim's own fence (record.PutDispatchClaim).
 	ClaimedBy  string
 	ClaimKnown bool
-	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
-	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
-	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
+	// Observed is a fact made from Dispatch's view of an issue, not from one event, so no actor is
+	// known to have written its state (ObservedIssue). It reaches a handler as a plain observation
+	// only while the workflow does not record the issue when it applies, and only while no later
 	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
-	// (release_children, or another delivery, recording it meanwhile), or nothing when Delivered is
-	// nil, so a state the view shows never reaches a record without the actor of the event that
-	// wrote it.
+	// (release_children, or another delivery, recording it meanwhile), or, when Delivered is nil,
+	// the view itself with Observed still set, which the copy of Dispatch's issues takes as a
+	// reading (blockers.Mirror) and which the workflow and admission decide nothing on: a state the
+	// view shows never reaches a record without the actor of the event that wrote it.
 	Observed bool
 	// Delivered is the event an Observed fact was prepared in place of, as it was delivered, or the
 	// event a route's own status write made (api's recordOwnStatusWrite); nil for a view prepared in
@@ -151,7 +138,8 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
 // Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
-// release_children's todo child and an unrecorded issue's admission event are applied from it.
+// release_children's todo child, its read of a child the daemon records already (a reading of the
+// copy alone, settleObserved) and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
@@ -188,47 +176,6 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
 }
-
-// Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
-// with the legion label, so PATCH would make no event. Admission validates the durable fence.
-type Handover struct {
-	Issue      string
-	Tree       string
-	Generation uint64
-}
-
-func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
-
-// ChildAdoption is an architect's release of children recorded outside its tree Tree, the root
-// key its grant names: each a root that queued in admission before a person made it a child of
-// Tree, under the Dispatch parent the release read. Admission adopts every one into Tree or, when
-// any cannot join it (workflow's AdoptionRefusal, or Tree is not live), refuses the whole fact and
-// writes nothing.
-type ChildAdoption struct {
-	Tree     string
-	Children []AdoptedChild
-}
-
-// AdoptedChild is one child a ChildAdoption moves into its tree, as the release's own Dispatch
-// read showed it: its Dispatch parent, the status and the keys it waits on, and the sequence
-// Dispatch had run to at that read. The daemon's copy of those links can be older than the read
-// — a person's re-parent and link are one edit of Dispatch, whose event the consumer may not have
-// delivered — and an adopted root is already recorded, so no observation of it applies to correct
-// the copy (settleObserved). The read therefore travels with the fact: the mirror takes it
-// (blockers.Mirror) before the adoption judges the child, as a reading of the parent, the status
-// and the blockers at Seq, each of which it changes only where the copy holds it from an older
-// reading or from none, leaving the labels and the rank, which the read does not carry, as the
-// copy holds them; and the workflow holds the child on it as well as on the copy's row (workflow's
-// enterChild).
-type AdoptedChild struct {
-	Issue     string
-	Parent    string
-	Status    string
-	BlockedBy []string
-	Seq       int64
-}
-
-func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
 
@@ -1449,14 +1396,6 @@ type CatchUpApplied struct {
 
 func (f CatchUpApplied) namedIssue() (string, bool) { return f.Issue, true }
 
-// LingerExpired records the generation whose post-close linger elapsed.
-type LingerExpired struct {
-	Issue      string
-	Generation uint64
-}
-
-func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
-
 // DaemonBooted records a boot of the daemon: every stored claim has its machine again, and the
 // boot replayed what its claims' terminal states owe the workflow. Boot is the boot's record id
 // (daemon_boot), which makes each boot's fact its own.
@@ -1692,20 +1631,6 @@ func ChainUnknown(key string, chain record.Chain) *Refusal {
 	return &Refusal{Status: 409, Code: "CHAIN_UNKNOWN", Message: fmt.Sprintf("%s, so who may act on %s is not known; the daemon reads Dispatch again, and the call can be made again once the chain is known", why, key)}
 }
 
-// ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of
-// tree, when it is asked to join want: it is that tree's, not want's. A release of children and
-// the workflow's adoption both answer it.
-func ChildInOtherTree(key, tree, want string) *Refusal {
-	return &Refusal{Status: 409, Code: "CHILD_IN_OTHER_TREE", Message: fmt.Sprintf("%s runs in the tree of %s, not %s", key, tree, want)}
-}
-
-// ChildNotAdoptable is the 409 CHILD_NOT_ADOPTABLE refusal of key, a recorded root, when it is
-// asked to join the tree of tree and cannot, for reason. The workflow's adoption and a release of
-// children both answer it.
-func ChildNotAdoptable(key, tree, reason string) *Refusal {
-	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
-}
-
 // NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
 // does not work p, the phase issue stands in: the code every phase worker's prompt names for a
 // completion of a phase it no longer works (prompts/go/worker-common.md). The workflow's handoff
@@ -1911,10 +1836,12 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
-// issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone,
-// or nothing when it was prepared in place of none. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// issue of its key, and once one is recorded the event it was prepared in place of (Delivered), or,
+// when it was prepared in place of none, the view itself with Observed still set: a reading of
+// Dispatch, which the copy of Dispatch's issues takes as any reading (blockers.Mirror), as
+// release_children's read of a child the daemon records reaches it, and on which the workflow and
+// admission decide nothing, since no actor is known to have written its state. Every other fact
+// applies as it is.
 //
 // A view older than an event of the issue the daemon has already applied (the mirror, which every
 // applied issue event writes first, holds a later sequence) applies nothing while the issue is
@@ -1942,11 +1869,9 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		issue.Observed, issue.Delivered = false, nil
 		return issue, true, nil
 	case issue.Delivered == nil:
-		return nil, false, nil
+		return issue, true, nil
 	default:
-		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
-		return delivered, true, nil
+		return *issue.Delivered, true, nil
 	}
 }
 

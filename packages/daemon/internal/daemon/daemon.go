@@ -3037,14 +3037,6 @@ func (s projectRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) 
 	return s.own(all), nil
 }
 
-func (s projectRecords) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]record.Issue, error) {
-	all, err := s.Store.QueuedRootsUnder(ctx, tx, key)
-	if err != nil {
-		return nil, err
-	}
-	return s.own(all), nil
-}
-
 // own is every issue of all that the daemon's project owns (owns), in all's order.
 func (s projectRecords) own(all []record.Issue) []record.Issue {
 	issues := make([]record.Issue, 0, len(all))
@@ -3192,15 +3184,6 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue st
 		return nil
 	}
 	return s.Store.ClearGeneration(ctx, tx, issue, now)
-}
-
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
-func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
-		return nil
-	}
-	return s.Store.ClearTreeGeneration(ctx, tx, tree, now)
 }
 
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction

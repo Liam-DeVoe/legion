@@ -11,10 +11,10 @@ import (
 	"sort"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -91,14 +91,11 @@ var stepPlaces = map[phase.Phase]record.StepPlace{
 }
 
 // assertNoRunOpenWhereItsIssueNoLongerStands fails, naming what, for each run the store holds open
-// that is over: its issue stands at another place or in another generation, or its tree's run is
-// over — the root lingers — and the run is not a merge that can still land in that tree (the
-// linger still runs, the pull request is open, or the linger's close handed the member over).
-// lingerClosed says the fact closed the linger, which ends its window whatever the clock says.
+// that is over: its issue stands at another place or in another generation, or it is out of
+// Legion's work and the run is not a merge that can still land (its pull request is open).
 // It states the end rule itself rather than calling workflow's (runOver, mergeCanLand): a check
-// that read the rule it judges would agree with any fault in it. With mergeCanLand made to answer
-// true for every merge, this check fails a linger close that leaves a merge open.
-func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool, what string, now time.Time, lingerClosed bool) {
+// that read the rule it judges would agree with any fault in it.
+func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool, what string) {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue, task, kind, place, coalesce(record->>'generation', '') from step_starts where run = 'open' order by issue, kind, place`)
 	if err != nil {
@@ -138,28 +135,19 @@ func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool
 					what, run.issue, run.place, run.generation, at, stands.Generation)
 				continue
 			}
-			root, err := records.Issue(ctx, tx, stands.Tree)
-			if err != nil {
-				t.Fatalf("read the root of %s: %v", run.issue, err)
-			}
-			if root == nil || !root.Lingers() {
+			if record.InLegionsWork(*stands) {
 				continue
 			}
 			mergeCanLand := false
-			if stands.Key != root.Key && (stands.Phase == phase.Merging || stands.Phase == phase.Held && stands.Hold != nil && stands.Hold.From == phase.Merging) {
+			if stands.Phase == phase.Merging || stands.Phase == phase.Held && stands.Hold != nil && stands.Hold.From == phase.Merging {
 				pr, err := records.PullRequest(ctx, tx, stands.Key)
 				if err != nil {
 					t.Fatalf("read the pull request of %s: %v", run.issue, err)
 				}
-				handover, err := records.Handover(ctx, tx, stands.Key)
-				if err != nil {
-					t.Fatalf("read the hand-over of %s: %v", run.issue, err)
-				}
-				mergeCanLand = record.Lingering(*root, now) && !lingerClosed || pr != nil && pr.State == record.PullRequestOpen ||
-					handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation
+				mergeCanLand = pr != nil && pr.State == record.PullRequestOpen
 			}
 			if !mergeCanLand {
-				t.Errorf("%s: the run of %s at %+v is open, and its tree's root %s lingers", what, run.issue, run.place, root.Key)
+				t.Errorf("%s: the run of %s at %+v is open, and the issue is out of Legion's work", what, run.issue, run.place)
 			}
 		}
 	})
@@ -223,8 +211,8 @@ func TestTheEndOfARunReadsNoOtherIssuesRuns(t *testing.T) {
 	}
 }
 
-// parkFinishingTree parks the running tree's root, a person's: it leaves the workflow and its
-// tree lingers.
+// parkFinishingTree parks the running tree's root, a person's: it leaves Legion's work, and
+// nothing under it stops.
 func parkFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 	t.Helper()
 	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
@@ -247,8 +235,8 @@ func (wayOut) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Resul
 // Every way out of a step ends its run, whatever fact takes the issue out and whatever writes it:
 // the end follows from the record at the one point every fact passes, not from a call each way
 // out must remember. For each kind of fact the workflow and admission apply, on a tree whose
-// issues each run a step, no run is left open where its issue no longer stands, nor in a tree whose
-// run is over, but for a merge that can still land there. Each row that takes an issue out says
+// issues each run a step, no run is left open where its issue no longer stands, nor where its
+// issue is out of Legion's work, but for a merge that can still land. Each row that takes an issue out says
 // which, and the row fails when the fact did not take it out, so a row cannot quietly stop testing
 // its way out. A row whose fact is no way out, though it acts on an issue standing in a step, says
 // which issue it keeps there, and fails when that issue's step moved or its run ended. A kind of
@@ -265,9 +253,8 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		// keeps is the issue the fact acts on and leaves in the step it stands in, its run still
 		// open, "" for none, and then what the fact must have written on that issue's pull request,
 		// nil for nothing to check.
-		keeps        string
-		then         func(t *testing.T, pr record.PullRequest)
-		lingerClosed bool
+		keeps string
+		then  func(t *testing.T, pr record.PullRequest)
 	}
 	none := func(*testing.T, *pgxpool.Pool, *Admission, intake.Handler) {}
 	parked := parkFinishingTree
@@ -282,19 +269,17 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 	moves := map[string][]row{
 		"DispatchIssue": {
 			{name: "a person parks a child", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
-			{name: "a person parks the root, and its tree lingers", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
+			{name: "a person parks the root, and nothing under it stops", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
 			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), leaves: planning},
-			{name: "a person reopens the closed root, and the tree is promoted again", arrange: closed, fact: issueFact(finishedRoot, "todo")},
+			{name: "a person's todo on the closed root returns it to work", arrange: closed, fact: issueFact(finishedRoot, "todo")},
 		},
 		"BackwardMove": {{name: "the implementer moves its retro back", arrange: none,
 			fact: intake.BackwardMove{Issue: inRetro, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "redo"}, leaves: inRetro}},
 		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting}, leaves: inAccepting}},
-		"PullRequestMerged": {{name: "a member's merge lands while its tree lingers", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
+		"PullRequestMerged": {{name: "a member's merge lands while the root is parked", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 			seedAwaitingPullRequest(t, pool)
 			parked(t, pool, admission, engine)
 		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
-		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: parked, source: "timer",
-			fact: intake.LingerExpired{Issue: finishedRoot, Generation: lingerOfRoot}, lingerClosed: true}},
 		// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the second
 		// read that confirms the conflict asks the implementer to merge the base forward while the
 		// merger keeps merging's step (workflow's mergeForward, which writes no transition), and
@@ -383,7 +368,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 						})
 					}
 				}
-				assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, kind+"/"+tc.name, fixedNow, tc.lingerClosed)
+				assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, kind+"/"+tc.name)
 			})
 		}
 	}
@@ -395,7 +380,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		if got := issue(t, pool, planning); got.Phase != phase.Done {
 			t.Fatalf("the unknown way out left %s in %s, want it done", planning, got.Phase)
 		}
-		assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, "the unknown way out", fixedNow, false)
+		assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, "the unknown way out")
 	})
 }
 
@@ -414,8 +399,8 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
-		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{}, intake.PendingBasisRead{}, intake.BasisChangesRead{}, intake.ReparentRead{},
+		intake.ControllerTick{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
+		intake.CloseRoot{}, intake.PendingBasisRead{}, intake.BasisChangesRead{}, intake.ReparentRead{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

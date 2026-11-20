@@ -376,8 +376,8 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
 // read: the claim is still released, its issue is one this daemon records, and its tree is live —
-// neither the issue nor its root has left the workflow and neither lingers
-// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
+// neither the issue nor its root has left the workflow (pods.InWorkflowWithRoot). A pod in any
+// other state is a close's to stop or an operator's to
 // resume, never a wake's.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
@@ -426,7 +426,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil {
 		return false, err
 	}
-	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+	if !pods.InWorkflowWithRoot(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)

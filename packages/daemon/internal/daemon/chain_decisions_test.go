@@ -850,7 +850,7 @@ func newChainDaemon(t *testing.T, project string, wrong bool) *chainDaemon {
 	}
 
 	steps := config.DesignGateRootIssues.Steps()
-	engine := workflow.New(d.records, workflow.Config{Project: project, Repositories: testRepositories, Steps: steps, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(d.records, workflow.Config{Project: project, Repositories: testRepositories, Steps: steps}, quietLogger())
 	admission := admit.New(d.records, engine, len(chainRows), project, quietLogger())
 	d.handlers = []intake.Handler{blockers.NewMirror(d.records, project), engine, admission}
 	// The supervisor holds the claims the store holds, as a daemon's boot restores them: with

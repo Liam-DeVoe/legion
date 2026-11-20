@@ -34,7 +34,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newEngine := func() *workflow.Engine {
 		return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-			Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, quiet)
+			Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, quiet)
 	}
 	todo := func(key, parent, rank string, seq int64, handedOver bool) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",

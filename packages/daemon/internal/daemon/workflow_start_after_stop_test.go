@@ -101,13 +101,11 @@ func startedAgainGitHub(t *testing.T) string {
 // startedAgainDaemon is the daemon each subtest boots: the rig the stop's own tests use
 // (stoppedWorkerDaemon — its own database, a controller tick every stopTickInterval, and a
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
-// GitHub above, a linger no tree of these subtests outlives, and the shipped production check
-// bound.
+// GitHub above and the shipped production check bound.
 func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
-	cfg.Linger = time.Hour
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
 	return pool, cfg, o, rt

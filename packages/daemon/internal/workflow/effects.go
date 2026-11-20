@@ -107,8 +107,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
-// not linger, up and between turns, in no update round, holding no task it still works, with no
+// of the role that works issue's phase (OpenPhaseRole), on an issue at work in Legion's work, up
+// and between turns, in no update round, holding no task it still works, with no
 // acting stop and no queued start. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last two
 // terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
@@ -127,7 +127,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	// root is issue's gate root (admit's phaseWorkerOf), so the issue holds its own gate exactly
 	// where it is its own gate root; a phase a worker role works is never admitted, so AtWork
 	// reads no gate for it.
-	if !record.AtWork(issue, root.Key == issue.Key, gate) || root.Lingers() {
+	if !record.AtWork(issue, root.Key == issue.Key, gate) || !record.InLegionsWork(issue) {
 		return false
 	}
 	c := run.Claim
@@ -173,7 +173,7 @@ func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload r
 	return e.enqueueAt(ctx, tx, issue, payload, e.now())
 }
 
-// enqueueAt enqueues payload for issue due at at: a deadline row (a linger's close, a production
+// enqueueAt enqueues payload for issue due at at: a deadline row (a production
 // check's bounds), where enqueue's rows are due now.
 func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, at time.Time) error {
 	row, err := queuedRow(ctx, tx, e.store, issue, payload, at)
@@ -338,12 +338,6 @@ func (e *Engine) warnOnCommit(ctx context.Context, msg string, args ...any) {
 // refused is a committed 409: the fact changed nothing, and the caller is told why.
 func refused(code, message string) intake.Result {
 	return intake.Result{Refusal: &intake.Refusal{Status: 409, Code: code, Message: message}}
-}
-
-// refusedLingering refuses a worker's request on issue while its tree lingers: linger holds the
-// member where it stood (record.TreeLingers), so the request changed nothing.
-func refusedLingering(issue record.Issue, request string) intake.Result {
-	return refused("TREE_LINGERING", fmt.Sprintf("the tree %s is lingering after it left the workflow, so %s of %s changed nothing", issue.Tree, request, issue.Key))
 }
 
 // clearHandoff empties the handoff a role reported for its previous phase — its commit, the
@@ -619,18 +613,16 @@ func entryWork(issue record.Issue, row record.PhaseRow) string {
 	return ResumePhaseTask(issue)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask), which asks for the forward merge an implementing member still owes.
+// StartPromotedWorker starts the phase worker of a root a hand-over of the release before carried
+// in, at its promotion (StartCarriedRun), on the resume task of the phase it stands in
+// (ResumePhaseTask), which asks for the forward merge an implementing issue still owes.
 //
-// It raises the entry, where the promotion's other role starts raise none: the promotion is
-// handing that role its work again, and the re-admission cleared the task its entry named with
-// the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
-// holds names work nothing would send. The start is marked a resume task, so the outbox still
-// hands no second prompt to a claim that holds its phase's task
-// (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
-// The entry it raises is of no move back: the promotion hands the role the phase it already
-// stands in, and moves the issue nowhere.
+// It raises the entry: the promotion is handing that role its work again, and the hand-over that
+// carried the root in started a new generation of it, so the entry the record holds names work
+// nothing would send. The start is marked a resume task, so the outbox still hands no second
+// prompt to a claim that holds its phase's task (record.SuperviseRequest.ResumeTask), and it sends
+// the task enter stored (startMarks.stored). The entry it raises is of no move back: the promotion
+// hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
 	entry, sent, err := e.enter(ctx, tx, issue, role, task, "", false)
@@ -936,9 +928,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // their own task: the number is known only once it is raised, here.
 //
 // The move back is written with them: whether the move that raised this entry, out of from into
-// the phase issue stands in now, went back to an earlier phase (phase.MovesBack), or is the
-// return out of awaiting_children (ReturnFromChildren), which asks for the held phase's work to
-// be done again on a head that is to carry the children's merges. Its one reader is the
+// the phase issue stands in now, went back to an earlier phase (phase.MovesBack), is the return
+// out of awaiting_children (ReturnFromChildren), which asks for the held phase's work to be done
+// again on a head that is to carry the children's merges, or is a return to work after a stop
+// (ReturnToWork, whose from is the phase the issue stands in), which R20 of dispatch://INFRA-3320
+// raises as a move back raises one. Its one reader is the
 // completion route's entry fence, which takes a completion of an earlier entry at the head the
 // record holds and refuses it whatever head it names when the entry standing now was raised by a
 // move back, since such an entry asks for the phase's work to be done again
@@ -960,7 +954,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return 0, "", err
 	}
-	movedBack := from == phase.AwaitingChildren || phase.MovesBack(from, issue.Phase)
+	movedBack := from == phase.AwaitingChildren || from == issue.Phase || phase.MovesBack(from, issue.Phase)
 	row.Entry++
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = verbatim, e.now(), movedBack, from
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
@@ -1116,14 +1110,6 @@ func HeldNotice(issue record.Issue) record.Notice {
 	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
-// ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
-// re-enters it: reenterChild for a live tree's reopened child, or admission's
-// reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
-func ChildReenteredNotice(child, root string) record.Notice {
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
-}
-
 // ChildStartedNotice is the notice the architect above a child is told whenever the child starts
 // its first phase (Engine.StartFirstPhase), its reason saying why it starts now and that the
 // child's own architect starts with it. waited is every issue the child's mirror row still names,
@@ -1160,5 +1146,3 @@ func ChildStartedNotice(child, root string, waited []string) record.Notice {
 		"hold its role, which the daemon's holdsRole decides", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
-
-func (e *Engine) lingerAt() time.Time { return e.now().Add(e.cfg.Linger) }

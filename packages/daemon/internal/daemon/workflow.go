@@ -918,10 +918,10 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
-		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
-		ProductionCheckRole: project.ProductionCheck,
-		ReviewAppLogin:      reviewAppLogin,
-		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
+		ProductionCheckBound: cfg.ProductionCheckBound,
+		ProductionCheckRole:  project.ProductionCheck,
+		ReviewAppLogin:       reviewAppLogin,
+		RepositoryRenames:    cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments: cfg.ExperimentsDeclared(),
 	}
 }
@@ -1250,18 +1250,16 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 // boot's whole listing (keep nil, boot set, which also holds the roots the boot's catch-up reads
 // out of admission's decision and refills the project's rows of the copy of Dispatch's issues
 // where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
-// keep keeps, judged against every record, while every summary of the listing is still the walk
-// each chain is read up.
+// keep keeps, judged against every record.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
-	// The transaction performs no I/O: what admission reads of a todo issue's repository, the
-	// Dispatch chain above its parent, and who set the label of a labelled triage root the workflow
-	// does not record, are read now, up one walk over the whole listing (listingAncestry); each
-	// listed issue's fact carries that chain, or that setter, to admission.
+	// The transaction performs no I/O: what admission reads of a todo issue's repository, and who
+	// set the label of a labelled triage root the workflow does not record, are read now, against
+	// the records read once (listingRecords); each listed issue's fact carries that repository, or
+	// that setter, to admission.
 	var records map[string]*record.Issue
-	var walk ancestry
 	var err error
 	if keep != nil {
-		if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
+		if records, err = w.listingRecords(ctx); err != nil {
 			return err
 		}
 	}
@@ -1273,23 +1271,21 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
-		if fact.Status == "todo" || labelledTriageRoot {
-			if walk == nil {
-				if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-					return err
-				}
+		if (fact.Status == "todo" || labelledTriageRoot) && records == nil {
+			if records, err = w.listingRecords(ctx); err != nil {
+				return err
 			}
 		}
 		switch {
 		case fact.Status == "todo":
-			prepared, err := w.prepareListed(ctx, records, walk, fact, boot)
+			prepared, err := w.prepareListed(ctx, records, fact, boot)
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
-			// What the preparation read: the chain it walked, and the refusal GitHub answered for
-			// a repository no mapping names, which this listing's own apply says on the issue
+			// What the preparation read: the refusal GitHub answered for a repository no mapping
+			// names, which this listing's own apply says on the issue
 			// (intake.DispatchIssue.RepositoryRefusal).
-			fact.Ancestry, fact.RepositoryRefusal = prepared.Ancestry, prepared.RepositoryRefusal
+			fact.RepositoryRefusal = prepared.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is

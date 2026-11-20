@@ -499,25 +499,18 @@ type RequestRuleResume struct {
 // close it is making, and the table holds a row for each.
 type RequestStop struct{ Claim claim.Token }
 
-// RequestTreeClose is the workflow closing a tree: every claim of a tree whose linger expired,
-// the root's included. It is the workflow's own decision and is not put to TreeClosable — the
-// workflow still holds the issue record of the tree it is closing, which is the very record
-// TreeClosable refuses on, so asking would refuse exactly the closes it is entitled to make.
-type RequestTreeClose struct{ Claim claim.Token }
-
-// RequestIssueClose is the workflow closing a child issue as done (workflow's leave): the claim
-// ends as a tree close ends it, keeping its whole session - the id, which the volume reaping reads
-// as its evidence, and the resume path. It is not a lost workspace: nothing is recovered, and the
-// issue's next run, should a person set it todo again, resumes that session on a pod and a disk of
-// its own, or a new one once Machine.forgetSession has dropped it. That start asks for no new
-// session itself. Like the tree's close it is the workflow's own decision and is not put to
-// TreeClosable.
+// RequestIssueClose is the workflow closing an issue as done (workflow's leave): the claim
+// ends keeping its whole session - the id, which the volume reaping reads as its evidence, and
+// the resume path. It is not a lost workspace: nothing is recovered, and the issue's next run,
+// should a person set it todo again, resumes that session on a pod and a disk of its own, or a
+// new one once Machine.forgetSession has dropped it. That start asks for no new session itself.
+// It is the workflow's own decision and is not put to TreeClosable.
 type RequestIssueClose struct{ Claim claim.Token }
 
 // RequestOperatorClose is the operator closing a tree through the API, through its root claim; the
 // tree's other claims are stopped, not closed (api.closeTree). It is put to TreeClosable: an
-// operator may close a tree no workflow issue backs, and a tree one does back closes when its
-// linger expires, never by hand.
+// operator may close a tree no workflow issue backs, and a tree one does back ends with its issue's
+// close, never by hand.
 type RequestOperatorClose struct{ Claim claim.Token }
 
 // RequestRetry relaunches a failed or retired claim with fresh budgets. It has two callers: the
@@ -685,7 +678,6 @@ func (RequestSuspend) isEvent()       {}
 func (RequestResume) isEvent()        {}
 func (RequestRuleResume) isEvent()    {}
 func (RequestStop) isEvent()          {}
-func (RequestTreeClose) isEvent()     {}
 func (RequestIssueClose) isEvent()    {}
 func (RequestOperatorClose) isEvent() {}
 func (RequestRetry) isEvent()         {}
@@ -734,7 +726,6 @@ const (
 	onResume        eventKind = "request_resume"
 	onRuleResume    eventKind = "request_rule_resume"
 	onStop          eventKind = "request_stop"
-	onTreeClose     eventKind = "request_tree_close"
 	onIssueClose    eventKind = "request_issue_close"
 	onOperatorClose eventKind = "request_operator_close"
 	onRetry         eventKind = "request_retry"
@@ -811,8 +802,6 @@ func kindOf(ev Event) eventKind {
 		return onRuleResume
 	case RequestStop:
 		return onStop
-	case RequestTreeClose:
-		return onTreeClose
 	case RequestIssueClose:
 		return onIssueClose
 	case RequestOperatorClose:
@@ -854,7 +843,7 @@ func requestName(ev Event) (string, bool) {
 		return "resume", true
 	case RequestStop:
 		return "stop", true
-	case RequestTreeClose, RequestOperatorClose, RequestIssueClose:
+	case RequestOperatorClose, RequestIssueClose:
 		return "close", true
 	case RequestRetry, RequestOperatorRetry:
 		return "retry", true
@@ -1190,9 +1179,6 @@ func fillTable(t *builder) {
 		StateReady, StateWorking, StateIdle, StateSuspended, StateFailed}
 	t.row(onStop, "release the claim and retire it; the tree's root only at the tree's close", stop, []ClaimState{StateRetired}, stoppable...)
 	t.row(onStop, "already retired", nothingToDo, nil, StateRetired)
-
-	t.row(onTreeClose, "the workflow's close of the tree: release the claim and retire it", treeClose, []ClaimState{StateRetired}, stoppable...)
-	t.row(onTreeClose, "already retired", nothingToDo, nil, StateRetired)
 
 	t.row(onIssueClose, "the workflow's close of the issue as done: release the claim and retire it, its session kept for a reopen", issueClose,
 		[]ClaimState{StateRetired}, stoppable...)
@@ -2732,19 +2718,14 @@ func stop(m *Machine, ctx context.Context, _ Event) error {
 	return &RefusedError{State: m.claim.State, Request: "stop", Err: rootStopRefusal(m.claim.State, closable)}
 }
 
-// treeClose is the workflow's close of the tree, which ends the root claim too. It is the
-// workflow's own decision: it stops every claim of a tree whose linger expired, and the issue
-// record it still holds for that tree is exactly what TreeClosable refuses on, so it is not asked.
-func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
-
-// issueClose is the workflow's close of a child issue as done: it releases the claim through the
+// issueClose is the workflow's close of an issue as done: it releases the claim through the
 // runtime, which ends at most this role's process and forgets the claim. It deletes no issue
 // Sandbox — under Agent Sandbox a release deletes only the controller's, whose Sandbox is that
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
-// disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
-// claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
-// that fails changes nothing, so the close can be asked again.
+// disk it owns go with the separately fenced IssueSuspend. That is why a merged close leaves the
+// checking role's pod standing: its siblings take this close and no IssueSuspend is queued until
+// the production check closes (workflow/leave.go). A release that fails changes nothing, so the
+// close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,
@@ -2827,7 +2808,7 @@ func (m *Machine) closeRefusal(ctx context.Context) error {
 	}
 	if !closable {
 		return &RefusedError{State: m.claim.State, Request: "close",
-			Err: fmt.Errorf("%s is a workflow issue's tree, which closes when its linger expires", m.claim.Tree)}
+			Err: fmt.Errorf("%s is a workflow issue's tree, which ends with its issue's close", m.claim.Tree)}
 	}
 	return nil
 }
@@ -2854,7 +2835,7 @@ func (m *Machine) end(ctx context.Context, cause string) error {
 // rootStopRefusal is ErrRootStop with what stops the root's process in state instead: a suspension,
 // which takes a registered agent, and nothing where no process runs. A tree no workflow issue backs
 // (closable) ends by the operator's close, which the refusal names; a workflow issue's tree ends
-// when its linger expires.
+// with its issue's close.
 func rootStopRefusal(state ClaimState, closable bool) error {
 	var err error
 	switch {

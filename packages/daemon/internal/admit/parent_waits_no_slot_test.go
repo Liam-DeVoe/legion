@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -52,7 +51,7 @@ func pnAdmission(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 // engine applies a person's or a hand-over's Dispatch event to a tree that lingers.
 func pnLingering() *workflow.Engine {
 	return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }},
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -681,98 +680,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		spPass(t, pool, admission)
 		if got := issue(t, pool, grandparent); got.Phase != phase.Implementing || got.ChildrenWait != nil {
 			t.Fatalf("%s once %s reached done = phase %s, held start %+v; want implementing", grandparent, parent, got.Phase, got.ChildrenWait)
-		}
-	})
-
-	// The linger's hand-over of a closed tree's child in awaiting_children carries its run and the
-	// start it holds; the handed-over root is promoted as any is, and comes back as above.
-	t.Run("a linger's hand-over carries a waiting child whole, which is promoted holding no slot and comes back as above", func(t *testing.T) {
-		const (
-			root       = "LEGION-208"
-			child      = "LEGION-209"
-			grandchild = "LEGION-210"
-			artifact   = "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26"
-			task       = "Continue LEGION-209. Issue: LEGION-209. Phase: implementing."
-			reason     = "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)"
-		)
-		pool := migratedPool(t)
-		admission := pnAdmission(t, pool, 1)
-		seedStarted(t, pool, spFiller, phase.Implementing, nil)
-		until, waited := fixedNow.Add(time.Hour), fixedNow.Add(-2*time.Hour)
-		held := record.ChildrenWait{Start: phase.Implementing, Task: task, Reason: reason, Since: waited}
-		parent := root
-		inTx(t, pool, func(tx pgx.Tx) {
-			records, ctx := record.NewStore(), context.Background()
-			for _, put := range []error{
-				records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
-					Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-				records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
-					Project: testProject, Title: child, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress", Rank: "B",
-					LastDispatchSeq: 1, ChildrenWait: &held, ForwardMergeOwed: true, ChildrenWaitedAt: &waited}),
-				records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
-				records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209",
-					HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen}),
-				records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleImplementer, Claim: "implementer", Entry: 2,
-					EntryTask: task, EntryRaisedAt: waited.Add(-time.Hour)}),
-				records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-			} {
-				if put != nil {
-					t.Fatalf("seed: %v", put)
-				}
-			}
-		})
-		seedMirrorChild(t, pool, grandchild, "backlog", child)
-
-		apply(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-			Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true, DaemonActor: true}, pnLingering())
-
-		got := issue(t, pool, child)
-		if got.Tree != child || got.Generation != 2 || got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &held) ||
-			!got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) {
-			t.Fatalf("the handed-over child = %+v; want its own tree at generation 2, waiting still with %+v, the merge owed and the wait's moment", got, held)
-		}
-		if got.Status != "in_progress" || got.HandedOverFrom != "" || holdsSlot(t, pool, child) {
-			t.Fatalf("the handed-over child = status %s, handed over from %q, slots %v; want it promoted in_progress holding no slot",
-				got.Status, got.HandedOverFrom, pnSlotted(t, pool))
-		}
-		written := false
-		for _, effect := range effects(t, pool) {
-			written = written || (effect.issue == child && reflect.DeepEqual(effect.payload, record.OrdinaryStatusWrite("in_progress", "todo", "")))
-		}
-		if !written {
-			t.Fatalf("outbox effects = %+v, want %s written in_progress at its promotion", effects(t, pool), child)
-		}
-		if starts := pwWorkerStarts(t, pool, child); len(starts) != 0 || architectStarts(t, pool, child) != 1 {
-			t.Fatalf("starts of %s = %+v, want its architect's alone", child, startsOf(t, pool, child))
-		}
-		inTx(t, pool, func(tx pgx.Tx) {
-			records, ctx := record.NewStore(), context.Background()
-			pr, err := records.PullRequest(ctx, tx, child)
-			if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-				t.Fatalf("carried pull request = %+v, %v; want head-42 at generation 2", pr, err)
-			}
-			gates, err := records.GatesOf(ctx, tx, child)
-			if gate := record.SpecGate(gates); err != nil || gate == nil || gate.ArtifactID != artifact {
-				t.Fatalf("carried gate = %+v, %v; want the old root's", gates, err)
-			}
-		})
-		if row := spPhaseRow(t, pool, child, claim.RoleImplementer); row.Entry != 2 || row.EntryTask != task {
-			t.Fatalf("the implementer's phases row = %+v, want it carried at entry 2", row)
-		}
-
-		spMirror(t, pool, grandchild, "done", child, 2)
-		spPass(t, pool, admission)
-
-		if back := issue(t, pool, child); back.Phase != phase.Implementing || back.ChildrenWait != nil || !back.ForwardMergeOwed {
-			t.Fatalf("the carried root after its child is done = phase %s, held start %+v, merge owed %t; want implementing, the merge still owed", back.Phase, back.ChildrenWait, back.ForwardMergeOwed)
-		}
-		starts := pwWorkerStarts(t, pool, child)
-		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !starts[0].needsSlot || starts[0].claimable ||
-			!strings.HasPrefix(starts[0].task, task+" ") || strings.Count(starts[0].task, spMergeLine) != 1 {
-			t.Fatalf("starts of %s = %+v, want the implementer's on the held task with the forward merge, waiting for a slot under the full cap", child, starts)
-		}
-		if entry := spEntry(spLine(t, pool), child); entry == nil || entry.Kind != record.LineReturning {
-			t.Fatalf("the carried root's place in the line = %+v, want it among the issues whose work came back", entry)
 		}
 	})
 

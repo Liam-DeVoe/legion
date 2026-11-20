@@ -1373,28 +1373,27 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		pwStatuses(t, pool, spParent, nil)
 	})
 
-	// A root handed over from another tree, carrying the slot it held there in implementing, waits
-	// in the line for its tree to be opened (record.QueuedRoot). The pass leaves it where it stands
-	// and its promotion opens its tree on the slot it carries and starts the phase it carries.
-	t.Run("a root handed over carrying its slot in implementing starts the phase it carries", func(t *testing.T) {
+	// A root a hand-over of the release before carried in, in implementing, waits in the line for
+	// its first start under this release (record.CarriedIn). The pass leaves it where it stands and
+	// its promotion takes a slot and starts the phase it carries.
+	t.Run("a root handed over in implementing starts the phase it carries", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
 		carriedRoot(t, pool, spParent, phase.Implementing, "A")
-		takeSlot(t, pool, spParent)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
 
 		got := issue(t, pool, spParent)
-		if got.Phase != phase.Implementing || got.ChildrenWait != nil || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
-			t.Fatalf("the carried root = phase %s, held start %+v, handed over from %q, tree open %t; want implementing in a tree of its own, nothing held",
-				got.Phase, got.ChildrenWait, got.HandedOverFrom, treeOpen(t, pool, spParent))
+		if got.Phase != phase.Implementing || got.ChildrenWait != nil || !issueOpen(t, pool, spParent) {
+			t.Fatalf("the carried root = phase %s, held start %+v, started %t; want implementing, started, nothing held",
+				got.Phase, got.ChildrenWait, issueOpen(t, pool, spParent))
 		}
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer {
 			t.Fatalf("worker starts = %+v, want the implementer's start of the phase it carries", starts)
 		}
 		if !holdsSlot(t, pool, spParent) {
-			t.Fatalf("slots = %+v, want the one it carried", slots(t, pool))
+			t.Fatalf("slots = %+v, want the one its promotion took", slots(t, pool))
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 0 {
 			t.Fatalf("awaiting-children notices = %+v, want none", told)

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // The tree lifecycle (internal/treelifecycle) is the store's barrier between a tree's runnable
@@ -206,37 +205,12 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	return relaunch(ctx)
 }
 
-// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
-// only such a claim may move to another tree.
+// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates).
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
 
 // Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
 // let go, so a project's pause has nothing of it to stop.
 func (c Claim) Gone() bool { return IsGone(c.State) }
-
-// Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
-// re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
-// claim drops its old tree's epoch, so its next start binds the new tree's lifecycle and launches
-// in the new tree's resources, and keeps its session: the session is the issue's, on the host under
-// tmux, and under a sandbox in the runtime's session database (runtime.kubernetes.session_store
-// postgres), which every tree's pods read, so it resumes in the new tree while the old tree
-// lingers, whatever the old tree's cleanup takes. Only a claim that runs nothing is re-pointed; one
-// whose process still runs in the old tree is a wait (wait.ErrWaiting): the new tree's start
-// suspends it first, keeping its session, and waits for that suspension to land (the daemon's
-// outbox, stopElsewhere).
-func (m *Machine) Retree(ctx context.Context, tree string) error {
-	m.mu.Lock()
-	defer m.unlock()
-	if m.claim.Tree == tree {
-		return nil
-	}
-	if !m.claim.RunsNothing() {
-		return wait.Errorf("re-point claim %s from tree %s to %s: it is %s there", m.claim.Token, m.claim.Tree, tree, m.claim.State)
-	}
-	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
-	m.claim.Tree, m.claim.TreeEpoch = tree, 0
-	return m.persist(ctx)
-}
 
 // MarkGate records on the claim whether its issue holds its own design gate, as the Dispatch chain
 // reads it when the claim is started (Claim.HoldsGate, record.Chains.HoldsOwnGate): the daemon's

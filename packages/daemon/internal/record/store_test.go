@@ -170,56 +170,6 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 	})
 }
 
-// QueuedRootsUnder lists, by key, exactly the labelled todo roots whose Ancestry holds the key,
-// whatever their parent: not a root whose chain holds another key, an unlabelled one, one in
-// another status, nor a child in a tree. A root's Ancestry reads back as it was written.
-func TestQueuedRootsUnderListsTheLabelledTodoRootsWhoseChainHoldsTheKey(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	issue := func(key, tree, status string, handed bool, ancestry ...string) Issue {
-		issue := issueFixture(key)
-		issue.Tree, issue.Status, issue.HandedOver, issue.Ancestry = tree, status, handed, ancestry
-		if len(ancestry) != 0 {
-			issue.Parent = ParentOf(ancestry[0])
-		}
-		return issue
-	}
-	inTx(t, st, func(tx pgx.Tx) {
-		for _, recorded := range []Issue{
-			issue("LEGION-300", "LEGION-300", "in_progress", true),
-			issue("LEGION-302", "LEGION-302", "todo", true, "LEGION-401", "LEGION-400", "LEGION-300"),
-			issue("LEGION-301", "LEGION-301", "todo", true, "LEGION-400", "LEGION-300"),
-			issue("LEGION-303", "LEGION-303", "todo", true, "LEGION-300"),
-			issue("LEGION-304", "LEGION-304", "todo", false, "LEGION-400"),
-			issue("LEGION-305", "LEGION-305", "backlog", true, "LEGION-400"),
-			issue("LEGION-306", "LEGION-300", "todo", true, "LEGION-400"),
-			issue("LEGION-307", "LEGION-307", "todo", true),
-		} {
-			must(t, records.PutIssue(ctx, tx, recorded))
-		}
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		roots, err := records.QueuedRootsUnder(ctx, tx, "LEGION-400")
-		must(t, err)
-		var keys []string
-		for _, root := range roots {
-			keys = append(keys, root.Key)
-		}
-		if !reflect.DeepEqual(keys, []string{"LEGION-301", "LEGION-302"}) {
-			t.Fatalf("QueuedRootsUnder(LEGION-400) = %v, want LEGION-301 and LEGION-302", keys)
-		}
-		if !reflect.DeepEqual(roots[1].Ancestry, []string{"LEGION-401", "LEGION-400", "LEGION-300"}) || roots[1].Status != "todo" {
-			t.Fatalf("QueuedRootsUnder(LEGION-400)[1] = %#v, want the whole record of LEGION-302", roots[1])
-		}
-		none, err := records.Issue(ctx, tx, "LEGION-307")
-		must(t, err)
-		if none.Ancestry != nil {
-			t.Fatalf("LEGION-307 reads back with Ancestry %#v, want nil as written", none.Ancestry)
-		}
-	})
-}
-
 // A record written before the schema carried the issue's repository has none, and the boot fills
 // it (daemon's backfillRepositories): UnfilledIssues lists one project's unfilled records, and
 // FillIssueRepository fills one, once, with GitHub's spelling beside the record's own.
@@ -1035,16 +985,6 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		if len(open) != 2 || !sameProductionCheck(&open[0], woken) || !sameProductionCheck(&open[1], fresh) {
 			t.Fatalf("open production checks = %+v, want the root's then the child's", open)
 		}
-		ofTree, err := records.OpenProductionChecksOfTree(ctx, tx, root.Key)
-		must(t, err)
-		if len(ofTree) != 2 || ofTree[0].Issue != root.Key || ofTree[1].Issue != child.Key {
-			t.Fatalf("open production checks of %s = %+v, want the root's then the child's", root.Key, ofTree)
-		}
-		ofOther, err := records.OpenProductionChecksOfTree(ctx, tx, other.Key)
-		must(t, err)
-		if len(ofOther) != 0 {
-			t.Fatalf("open production checks of %s = %+v, want none: its one check is closed", other.Key, ofOther)
-		}
 	})
 	refused := done
 	refused.Outcome = "shrug"
@@ -1240,9 +1180,6 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	}{
 		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
 			return NewStore().ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
-		}},
-		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
-			return NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

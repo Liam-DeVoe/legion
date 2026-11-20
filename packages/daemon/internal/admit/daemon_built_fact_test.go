@@ -35,7 +35,7 @@ func TestADaemonBuiltFactLeavesTheCopy(t *testing.T) {
 	t.Run("admission's start of a stranded child", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 		seedSlotted(t, pool, "LEGION-ACTIVE", "A")
 		const root, child = "LEGION-WAIT", "LEGION-CHILD"
 		parent := root

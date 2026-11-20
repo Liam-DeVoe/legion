@@ -80,12 +80,10 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 			{Key: "LEGION-901", Project: testProject, Status: "done", Seq: 6}}}, rows: []string{"LEGION-901"}},
 		// A turn with nothing waiting reads nothing from Dispatch, which is almost every turn.
 		{name: "ControllerTick with no observation", fact: intake.ControllerTick{}},
-		{fact: intake.ChildAdoption{Tree: "LEGION-800", Children: []intake.AdoptedChild{
-			{Issue: "LEGION-902", Parent: "LEGION-800", Status: "todo", Seq: 7}}}, rows: []string{"LEGION-902"}},
 		{fact: intake.DispatchClaim{Key: "LEGION-903", Seq: 3, ClaimedBy: "user:alice"}, claims: []string{"LEGION-903"}},
 	}
 	for _, fact := range []intake.Fact{
-		intake.Handover{}, intake.RepoMappingChanged{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
+		intake.RepoMappingChanged{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
@@ -94,7 +92,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.CloseRoot{}, intake.ClaimFailed{}, intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
-		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
+		intake.CatchUpApplied{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
 		intake.ReparentRead{},
@@ -149,10 +147,9 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 // holds it, at the sequence of the reading that wrote it. Each row first takes one reading at 10
 // of all five values (a), then one reading of its kind at 20 (b), and reads each value back with
 // its sequence. An issue event, an Observed fact (the daemon's own status write, release_children's
-// read of a todo child, admission's read before it applies an event), the turn's re-read of one
-// issue and a listing (the boot's, the repository recovery's, the turn's above its single-read
-// bound) each carry all five. The release's read of a child it adopts carries the status, the
-// parent and the blockers, and leaves the labels and the rank as the reading at 10 wrote them.
+// read of a child, admission's read before it applies an event), the turn's re-read of one issue
+// and a listing (the boot's, the repository recovery's, the turn's above its single-read bound)
+// each carry all five.
 func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
@@ -163,8 +160,6 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 		Labels: []string{"design"}, LabelsSeq: 10, Rank: "a0", RankSeq: 10, Seq: 10}
 	b := copyRow{Status: "todo", StatusSeq: 20, Parent: parent, ParentSeq: 20, Blockers: blockedBy, BlockersSeq: 20,
 		Labels: labels, LabelsSeq: 20, Rank: "UUU", RankSeq: 20, Seq: 20}
-	released := b
-	released.Labels, released.LabelsSeq, released.Rank, released.RankSeq = a.Labels, a.LabelsSeq, a.Rank, a.RankSeq
 	apply := func(fact intake.Fact) func(pgx.Tx) error {
 		return func(tx pgx.Tx) error {
 			result, err := mirror.Apply(context.Background(), tx, fact)
@@ -188,8 +183,6 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 			return Reconcile(context.Background(), tx, records, testProject, []dispatch.IssueSummary{{Key: "LEGION-913", Status: "todo",
 				Parent: &parent, Rank: "UUU", Labels: labels, LastSeq: 20, BlockedBy: blockedBy}})
 		}, want: b},
-		{name: "the release's read", key: "LEGION-914", read: apply(intake.ChildAdoption{Tree: parent, Children: []intake.AdoptedChild{
-			{Issue: "LEGION-914", Parent: parent, Status: "todo", BlockedBy: blockedBy, Seq: 20}}}), want: released},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, pool, func(tx pgx.Tx) {
@@ -241,25 +234,25 @@ func TestMirrorWritesEveryRowAControllerTickObserved(t *testing.T) {
 	}
 }
 
-// An adoption carries the release's own read of each child, and the mirror writes what that read
-// carries: the status, the keys the child waits on and the parent it showed, each at the read's
-// sequence. The parent is among them because the children-first rule (record.ChildWaitsOf) reads
-// the child under the parent the read showed (dispatch://INFRA-714/spec R3); a reading that did
-// not carry it would leave the parent an older reading wrote.
-func TestMirrorWritesTheParentAnAdoptionRead(t *testing.T) {
+// release_children's view of a child the daemon records already reaches the mirror alone, as a
+// reading (intake's settleObserved), and the mirror writes what that view carries: the status, the
+// keys the child waits on and the parent it showed, each at the view's sequence. The parent is
+// among them because the children-first rule (record.ChildWaitsOf) reads the child under the parent
+// the view showed (dispatch://INFRA-714/spec R3); a reading that did not carry it would leave the
+// parent an older reading wrote.
+func TestMirrorWritesTheParentAReleasesViewRead(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
 	mirror := NewMirror(records, testProject)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: "LEGION-900", Project: testProject, Seq: 4,
-			Status: record.Carry("todo"), Parent: record.Carry("LEGION-800"), Blockers: record.Carry[[]string](nil)}); err != nil {
+			Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("seed the child's row: %v", err)
 		}
-		result, err := mirror.Apply(context.Background(), tx, intake.ChildAdoption{Tree: "LEGION-800",
-			Children: []intake.AdoptedChild{{Issue: "LEGION-900", Parent: "LEGION-800", Status: "todo",
-				BlockedBy: []string{"LEGION-901"}, Seq: 7}}})
+		result, err := mirror.Apply(context.Background(), tx, intake.DispatchIssue{Key: "LEGION-900", Seq: 7, Status: "todo",
+			Parent: "LEGION-800", Blockers: []string{"LEGION-901"}, Observed: true})
 		if err != nil {
-			t.Fatalf("apply the adoption: %v", err)
+			t.Fatalf("apply the release's view: %v", err)
 		}
 		if result.Refusal != nil {
 			t.Fatalf("the mirror refused %#v; it decides nothing", result.Refusal)

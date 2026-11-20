@@ -28,7 +28,6 @@ const (
 	EffectSuspend EffectKind = "suspend"
 	EffectStart   EffectKind = "start"
 	EffectNotice  EffectKind = "notice"
-	EffectLinger  EffectKind = "linger"
 )
 
 // Snapshot is the record state a row guard reads. Guards are pure and contain no side effects.
@@ -68,7 +67,7 @@ var Table = append([]Row{
 	{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact.
-	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
+	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice}},
 }, backwardRows()...)
 
 // backwardRows is the edge from every phase back to each phase before it. Like every other row,

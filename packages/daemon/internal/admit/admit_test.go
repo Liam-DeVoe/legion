@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,28 +125,6 @@ func TestApplyFactLeavesEngineRecordedChildWithoutSlotOrEffects(t *testing.T) {
 	assertEffects(t, pool, nil)
 }
 
-func TestApplyFactAdmitsOrphanAndLogsOnce(t *testing.T) {
-	pool := migratedPool(t)
-	var logs bytes.Buffer
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logs, nil)))
-
-	apply(t, pool, admission, "orphan-todo", intake.DispatchIssue{Key: "LEGION-ORPHAN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "orphan", Parent: "LEGION-MISSING", Rank: "A", HandedOver: handed}, engineStub{})
-	orphan := issue(t, pool, "LEGION-ORPHAN")
-	if orphan.Parent == nil || *orphan.Parent != "LEGION-MISSING" || orphan.Tree != orphan.Key {
-		t.Fatalf("orphan record = %#v, want root tree preserving missing parent", orphan)
-	}
-	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		if strings.Contains(line, `msg="admission orphan"`) {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) != 1 || !strings.Contains(lines[0], "LEGION-ORPHAN") || !strings.Contains(lines[0], "LEGION-MISSING") {
-		t.Fatalf("orphan logs = %q, want exactly one orphan line naming orphan and parent", logs.String())
-	}
-	assertSlots(t, pool, []record.Slot{{Issue: orphan.Key, Index: 0, AdmittedAt: fixedNow}})
-}
-
 func TestApplyFactDropsWaitingIssueWhenHumanMovesItOutOfTodo(t *testing.T) {
 	for _, status := range []string{"triage", "icebox", "backlog", "done"} {
 		t.Run(status, func(t *testing.T) {
@@ -194,255 +171,6 @@ func TestApplyFactReleasesSlotWhenDispatchLeavesActiveSetAndPromotesHead(t *test
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
 	if got := issue(t, pool, "LEGION-ACTIVE"); got.Status != "done" {
 		t.Fatalf("released issue status = %q, want done", got.Status)
-	}
-}
-
-// A lingering or closed root set back to todo is re-admitted as a new generation. It runs through
-// the real workflow engine, which applies every Dispatch issue fact before admission sees it: an
-// engine that records the todo itself leaves admission nothing to re-admit, and the old tree's
-// linger deadline then stops the new architect.
-func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	until := fixedNow.Add(time.Hour)
-	lingering := record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}
-	putIssue(t, pool, lingering)
-
-	fact := intake.DispatchIssue{Key: lingering.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: lingering.Title, Rank: lingering.Rank, HandedOver: handed}
-	apply(t, pool, admission, "readmit", fact, engine)
-	readmitted := issue(t, pool, lingering.Key)
-	if readmitted.Generation != 4 || readmitted.LingerUntil != nil || readmitted.Phase != phase.Admitted || readmitted.Status != "in_progress" {
-		t.Fatalf("readmitted root = %#v, want generation 4, admitted, and no linger", readmitted)
-	}
-	assertSlots(t, pool, []record.Slot{{Issue: lingering.Key, Index: 0, AdmittedAt: fixedNow}})
-	readmittedEffects := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: lingering.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
-		{kind: record.OutboxKindIssueBranch, issue: lingering.Key, payload: record.IssueBranch{Generation: 4}},
-		{kind: record.OutboxKindSupervise, issue: lingering.Key, payload: record.SuperviseRequest{Op: "start", Tree: lingering.Key, Role: claim.RoleArchitect, Generation: 4,
-			Task: architectStart(t, pool, admission, lingering.Key, ""), Entry: 1}},
-	}
-	assertEffects(t, pool, readmittedEffects)
-
-	apply(t, pool, admission, "own-echo", intake.DispatchIssue{Key: lingering.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "in_progress", Title: lingering.Title, Rank: lingering.Rank}, engine)
-	assertSlots(t, pool, []record.Slot{{Issue: lingering.Key, Index: 0, AdmittedAt: fixedNow}})
-	assertEffects(t, pool, readmittedEffects)
-
-	// The previous generation's linger deadline is stale: it stops nothing in the new tree.
-	if _, err := intake.ApplyFact(context.Background(), pool, "timer", "old-linger", intake.LingerExpired{Issue: lingering.Key, Generation: 3}, engine, admission); err != nil {
-		t.Fatalf("ApplyFact old linger expiry: %v", err)
-	}
-	assertEffects(t, pool, readmittedEffects)
-}
-
-// A tree that closed retired every member's claim, so a re-admitted root's children sit mid-phase
-// with nothing running: the architect cannot release a child already in the workflow, and only a
-// worker's own handoff moves it. Admission starts each mid-phase child's role with its architect,
-// whichever mid-phase that is — retro included, whose role is the implementer's (phase.RoleFor)
-// — and tells it to carry that phase on: the run whose handoff began the phase is over, and a start
-// with no task leaves the resumed agent holding its old transcript with nothing asked of it.
-//
-// A child in accepting waits on the architect that owns it, here the tree's, which the promotion
-// starts, so no task is queued for it; its branch row is, because every member past admitted gets
-// one. No child here holds a claim row, the durable record that a role has run, so no role of any
-// of them is brought back by a task-less start — and such a start, which these effects leave out,
-// would not be counted here anyway.
-//
-// The testing child's start waits for its issue's admission slot and the retro child's does not:
-// an issue past its review holds no slot (record.KeepsSlot), so the mark the start carries is
-// the phase the start is for (workflow.StartOrOwe) and the retro row is claimable at once.
-func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
-	putIssue(t, pool, root)
-	parentKey := root.Key
-	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "mid-phase child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
-	putIssue(t, pool, record.Issue{Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "finished child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Done, Generation: 1, Status: "done", Rank: "C", LastDispatchSeq: 1})
-	putIssue(t, pool, record.Issue{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "retro child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "D", LastDispatchSeq: 1})
-	putIssue(t, pool, record.Issue{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "accepting child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "E", LastDispatchSeq: 1})
-
-	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
-
-	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
-		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
-		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
-		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
-		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
-			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
-		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
-	})
-}
-
-// A re-admitted tree's merging child is resumed with no approved head: the re-admission clears the
-// generation, which empties the review round's decision with the rest of the tree's handoffs
-// (record.ClearTreeGeneration), so the merger refuses for want of one and the round is reviewed
-// again rather than merged on the last generation's approval.
-func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
-	putIssue(t, pool, root)
-	parentKey := root.Key
-	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "merging child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleReviewer, Claim: "review-claim",
-			HandoffCommit: "approved-head", Decision: &record.ReviewDecision{State: "approved", Head: "approved-head"}}); err != nil {
-			t.Fatalf("seed the reviewer's row: %v", err)
-		}
-	})
-
-	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
-
-	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
-		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
-		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
-		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
-	})
-	inTx(t, pool, func(tx pgx.Tx) {
-		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
-		if err != nil {
-			t.Fatalf("read the child's phase rows: %v", err)
-		}
-		if len(rows) != 2 {
-			t.Fatalf("phase rows = %#v, want the reviewer's row still standing beside the merger's, which its start entered", rows)
-		}
-		for _, row := range rows {
-			if row.Role == claim.RoleReviewer && (row.Decision != nil || row.HandoffCommit != "") {
-				t.Fatalf("reviewer row = %#v, want its decision and handoff cleared with the generation", row)
-			}
-		}
-	})
-}
-
-// A tree's linger disarms every member's open pull request, and its re-admission clears the old
-// generation's handoffs, the merger's READY among them. A child the tree left awaiting its merge
-// would then wait with nothing armed and no READY to arm, and nothing would move it, so
-// re-admission sends it back to merging and starts its merger there, to build a READY for the new
-// run.
-func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
-	putIssue(t, pool, root)
-	parentKey := root.Key
-	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "awaiting child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleMerger, Claim: "merge-claim",
-			HandoffCommit: "ready-head", Summary: "READY #42 at ready-head"}); err != nil {
-			t.Fatalf("seed the merger's READY: %v", err)
-		}
-	})
-
-	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
-
-	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
-		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
-		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
-		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
-	})
-	inTx(t, pool, func(tx pgx.Tx) {
-		child, err := record.NewStore().Issue(context.Background(), tx, "LEGION-209")
-		if err != nil || child == nil || child.Phase != phase.Merging {
-			t.Fatalf("the awaiting child after re-admission = %+v, %v; want it in merging", child, err)
-		}
-	})
-}
-
-// A merge is the one fact GitHub never sends again, and a child whose READY was posted can be
-// merged after its root closed. The lingering tree starts no phase worker, and the merge closes
-// the child: done, with its production check open, whose first look is the one start a member of
-// a lingering tree takes — the implementer's, fenced on the check's look (CheckLook 1), a wake of
-// the claim the linger suspended. Re-admission, which clears the tree's generation (merged pull
-// requests, gates, handoffs) and starts a role only for a phase one works, leaves the open check as
-// it is and starts nobody for the done child.
-func TestAMergeWhileTheTreeLingersClosesTheChildAndWakesItsCheck(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return fixedNow }}, nil)
-	until := fixedNow.Add(time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}
-	putIssue(t, pool, root)
-	parentKey := root.Key
-	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "merged child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 42,
-			Branch: "legion/LEGION-209", HeadSHA: "head", Failing: []string{}}); err != nil {
-			t.Fatalf("seed pull request: %v", err)
-		}
-	})
-	childStarts := func() []string {
-		t.Helper()
-		rows, err := pool.Query(context.Background(), `select payload->>'role' || ':' || coalesce(payload->>'phase', '') || ':' || coalesce(payload->>'checkLook', '0')
-			from outbox where issue = 'LEGION-209' and kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> '' order by id`)
-		if err != nil {
-			t.Fatalf("read the child's starts: %v", err)
-		}
-		defer rows.Close()
-		var starts []string
-		for rows.Next() {
-			var start string
-			if err := rows.Scan(&start); err != nil {
-				t.Fatalf("scan a start: %v", err)
-			}
-			starts = append(starts, start)
-		}
-		return starts
-	}
-	check := func() *record.ProductionCheck {
-		t.Helper()
-		var got *record.ProductionCheck
-		inTx(t, pool, func(tx pgx.Tx) {
-			var err error
-			if got, err = record.NewStore().ProductionCheck(context.Background(), tx, "LEGION-209"); err != nil {
-				t.Fatalf("read the child's production check: %v", err)
-			}
-		})
-		return got
-	}
-
-	if _, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge"}, engine, admission); err != nil {
-		t.Fatalf("ApplyFact merge: %v", err)
-	}
-	wantStarts := []string{"tester::1"}
-	if got, starts := issue(t, pool, "LEGION-209"), childStarts(); got.Phase != phase.Done || got.Status != "done" || !slices.Equal(starts, wantStarts) {
-		t.Fatalf("the merged child while its tree lingers = %s/%s with starts %v, want done/done with the check's look alone %v", got.Phase, got.Status, starts, wantStarts)
-	}
-	if got := check(); got == nil || !got.Open() || got.Looks != 1 || !got.LookOpen || got.MergeSHA != "merge" || got.Repo != "acme/widgets" || got.Number != 42 {
-		t.Fatalf("the merged child's production check = %+v, want it open at look 1 on merge commit merge of acme/widgets#42", got)
-	}
-	if got := superviseOps(t, pool, "LEGION-209", "issue_close"); got != 0 {
-		t.Fatalf("issue_close rows of the lingering member = %d, want none: the tree's close retires its claims", got)
-	}
-	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
-	if got, starts := issue(t, pool, "LEGION-209"), childStarts(); got.Phase != phase.Done || !slices.Equal(starts, wantStarts) {
-		t.Fatalf("the merged child after re-admission = %s with starts %v, want done with nobody more started", got.Phase, starts)
-	}
-	if got := check(); got == nil || !got.Open() || got.Looks != 1 || !got.LookOpen || got.MergeSHA != "merge" {
-		t.Fatalf("the production check after re-admission = %+v, want it left open at look 1 as it was", got)
 	}
 }
 
@@ -560,7 +288,7 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 			seedSlotted(t, pool, "LEGION-100", "A")
 			root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 2}
 			putIssue(t, pool, root)
@@ -673,7 +401,7 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 func TestApplyFactRecordsRankTitleAndParentChangesAtTheSameStatus(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	seedSlotted(t, pool, "LEGION-1", "A")
 	seedWaiting(t, pool, "LEGION-2", "B")
 	seedWaiting(t, pool, "LEGION-3", "C")
@@ -695,7 +423,7 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	pool := migratedPool(t)
 	facts := store.NewPool(pool)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	seedSlotted(t, pool, "LEGION-1", "A")
 	seedWaiting(t, pool, "LEGION-3", "C")
 	const title = "re\x00named"
@@ -736,227 +464,10 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	}
 }
 
-// A generation owns its facts. Generation 1 left a merged, approved pull request, an implementer
-// two review rounds in, a READY pending, and an approved design gate; the re-admitted generation 2
-// starts with none of them. Its architect registers the spec again, the approval opens the gate,
-// and planning moves it to implementing, where the implementer's first handoff waits for its own
-// pull request instead of starting the tester on generation 1's. A child's READY the old gate
-// refused goes with the rest: its packet is cleared with the handoffs, so the new gate's approval
-// neither posts a READY with no packet nor moves the child on.
-func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testing.T) {
-	pool := migratedPool(t)
-	// Two slots: the cap counts the issues at work, and this tree has two of them — the carried
-	// child, whose merger resumes with the re-admission, and the root, whose planning starts when
-	// its new gate opens. With one slot the child, whose work came back, would hold it and the
-	// root would wait, which is the line's own order and not what this test is about.
-	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	const key, artifact = "LEGION-LINGER", "4f2a9c1e-8b3d-4e7f-9a60-2c5d8e1b7f34"
-	until, approved := fixedNow.Add(time.Hour), 1
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1})
-	const child = "LEGION-2"
-	parent := key
-	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Tree: key, Parent: &parent, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		ctx := context.Background()
-		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, ArtifactID: artifact, LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
-			t.Fatalf("seed gate: %v", err)
-		}
-		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "merged", CheckedHead: "merged", Failing: []string{}}); err != nil {
-			t.Fatalf("seed pull request: %v", err)
-		}
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
-			t.Fatalf("seed implementer: %v", err)
-		}
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleMerger, Claim: "merger", Summary: "READY #85 at gen1 (approved at gen1) for " + child}); err != nil {
-			t.Fatalf("seed the child's merger: %v", err)
-		}
-	})
-
-	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "lingering", Rank: "A", HandedOver: handed}, engine)
-	readmitted := issue(t, pool, key)
-	if readmitted.Generation != 2 || readmitted.Phase != phase.Admitted {
-		t.Fatalf("readmitted = %#v, want generation 2, admitted", readmitted)
-	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		if pr, err := records.PullRequest(context.Background(), tx, key); err != nil || pr != nil {
-			t.Fatalf("generation 2 pull request = %#v, %v; want none", pr, err)
-		}
-		if gates, err := records.GatesOf(context.Background(), tx, key); err != nil || len(gates) != 0 {
-			t.Fatalf("generation 2 gates = %#v, %v; want none until its architect registers", gates, err)
-		}
-		rows, err := records.Phases(context.Background(), tx, key)
-		if err != nil {
-			t.Fatalf("read phases: %v", err)
-		}
-		for _, row := range rows {
-			if row.Completed() || row.HandoffVersion != 0 || row.Rounds != 0 || row.Verdict != "" {
-				t.Fatalf("generation 2 %s row = %#v, want no handoff commit or record, rounds, or verdict", row.Role, row)
-			}
-			if row.Role == claim.RoleImplementer && row.LastHandoff != "gen1-implement" {
-				t.Fatalf("generation 2 implementer row = %#v, want the record it last named kept", row)
-			}
-		}
-	})
-
-	for _, step := range []struct {
-		id   string
-		fact intake.Fact
-	}{
-		{id: "gen2-register", fact: intake.GateRegistered{Issue: key, ArtifactID: artifact, Version: 1}},
-		{id: "gen2-approved", fact: intake.DispatchArtifact{Key: key, ArtifactID: artifact, Kind: intake.DispatchArtifactApproved, Version: 1}},
-		{id: "gen2-plan", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Claim: "planner", Summary: "planned", HandoffRecord: "gen2-plan", HandoffVersion: 1}},
-		{id: "gen2-implement", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "gen2-handoff", HandoffRecord: "gen2-implement", HandoffVersion: 4}},
-	} {
-		if result, err := intake.ApplyFact(context.Background(), pool, "api", step.id, step.fact, engine, admission); err != nil || result.Refusal != nil || result.Duplicate {
-			t.Fatalf("%s = %#v, %v", step.id, result, err)
-		}
-	}
-	if got := issue(t, pool, key); got.Phase != phase.Implementing {
-		t.Fatalf("generation 2 phase = %s, want implementing until its own pull request opens", got.Phase)
-	}
-	var messages int
-	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = 'dispatch_message'", child).Scan(&messages); err != nil || messages != 0 {
-		t.Fatalf("the child's Dispatch messages = %d, %v; want no READY posted by generation 2's approval", messages, err)
-	}
-	if got := issue(t, pool, child); got.Phase != phase.Merging {
-		t.Fatalf("the child is in %s, want it left in merging", got.Phase)
-	}
-}
-
-// A signed-off child reopened to todo belongs to its tree while the tree is live: it runs in that
-// tree (decision 11; the shipped admitOnTodo) and needs no label of its own. The workflow
-// re-enters it, and the waiting line starts the child's next generation under the open gate once
-// a slot of its own is free, and with it the child's own architect, which every child's first
-// phase start starts (workflow.Engine.StartFirstPhase); its tree stays the tree's. Under a
-// lingering tree the child is an orphan, and admission admits it as a root of its own, as the
-// shipped daemon does — handed to Legion by its label, as every root is.
-//
-// The tree's architect hears twice about the live-tree re-entry, and the two sentences are
-// different: the re-entry says the child is todo and runs again (workflow.ChildReenteredNotice),
-// and the start says it has begun its first phase (workflow.ChildStartedNotice). They are two
-// events now that a child starts at its slot rather than at its re-entry, and each is told once.
-func TestAReopenedChildReentersALiveTreeAndIsAnOrphanRootOfALingeringOne(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		lingering  bool
-		handedOver bool
-	}{
-		{name: "live tree"},
-		{name: "lingering tree", lingering: true, handedOver: handed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-			const root, child, artifact = "LEGION-1", "LEGION-2", "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26"
-			approved := 1
-			seedSlotted(t, pool, root, "A")
-			parent := root
-			inTx(t, pool, func(tx pgx.Tx) {
-				records, ctx := record.NewStore(), context.Background()
-				rootIssue, err := records.Issue(ctx, tx, root)
-				if err != nil {
-					t.Fatalf("read root: %v", err)
-				}
-				rootIssue.Phase = phase.Implementing
-				if tc.lingering {
-					until := fixedNow.Add(time.Hour)
-					rootIssue.Phase, rootIssue.Status, rootIssue.LingerUntil = phase.Done, "done", &until
-					if err := records.ReleaseSlot(ctx, tx, root); err != nil {
-						t.Fatalf("release root slot: %v", err)
-					}
-				}
-				for _, put := range []error{
-					records.PutIssue(ctx, tx, *rootIssue),
-					records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 1, ApprovedVersion: &approved}),
-					records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 2}),
-					records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleImplementer, Claim: "child-implementer", HandoffCommit: "child-check", LastHandoff: "child-check", Rounds: 1}),
-				} {
-					if put != nil {
-						t.Fatalf("seed: %v", put)
-					}
-				}
-			})
-
-			apply(t, pool, admission, "child-reopened", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B", HandedOver: tc.handedOver}, engine)
-			reopened := issue(t, pool, child)
-			var architectStarts, told int
-			for _, got := range effects(t, pool) {
-				if request, ok := got.payload.(record.SuperviseRequest); ok && got.issue == child && request.Op == "start" && request.Role == claim.RoleArchitect {
-					architectStarts++
-				}
-				if notice, ok := got.payload.(record.Notice); ok && got.issue == child && notice.Kind == "child-status" {
-					told++
-				}
-			}
-			if !tc.lingering {
-				if reopened.Tree != root || reopened.Generation != 2 || reopened.Phase != phase.Planning || architectStarts != 1 || told != 2 {
-					t.Fatalf("reopened child = %#v with %d architect starts and %d child-status notices, want planning again in tree %s as the child's generation 2, its own architect started with its first phase, and the tree's architect told of the re-entry and of the start", reopened, architectStarts, told, root)
-				}
-				assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}, {Issue: child, Index: 1, AdmittedAt: fixedNow}})
-				return
-			}
-			if reopened.Tree != child || reopened.Phase != phase.Admitted || architectStarts != 1 {
-				t.Fatalf("reopened orphan = %#v with %d architect starts, want its own admitted root with its architect started", reopened, architectStarts)
-			}
-			assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-		})
-	}
-}
-
-// Re-entering a child creates a new generation, so a completion or production-check report from
-// the generation it left cannot apply to the new run. Its live claims stay live: re-entry queues
-// no suspension for the interrupted phase worker or for an open production-check look.
-func TestReenteringAnOpenChildDoesNotSuspendItsLiveClaims(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		phase phase.Phase
-		check *record.ProductionCheck
-	}{
-		{name: "an interrupted phase worker", phase: phase.Testing},
-		{name: "an implementer in an open production-check look", phase: phase.Done,
-			check: &record.ProductionCheck{Project: testProject, Tree: "LEGION-1", Repo: "acme/widgets", Number: 1,
-				MergeSHA: "merged", OpenedAt: fixedNow, BoundAt: fixedNow.Add(time.Hour), Looks: 1, LookOpen: true}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := newAdmission(t, 1, nil)
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
-			const root, child = "LEGION-1", "LEGION-2"
-			seedSlotted(t, pool, root, "A")
-			liveRoot := issue(t, pool, root)
-			liveRoot.Phase = phase.Implementing
-			putIssue(t, pool, liveRoot)
-			parent := root
-			putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Tree: root, Project: testProject, Title: "child", Parent: &parent, Phase: tc.phase, Generation: 1, Status: "in_progress", Rank: "B"})
-			if tc.check != nil {
-				check := *tc.check
-				check.Issue = child
-				inTx(t, pool, func(tx pgx.Tx) {
-					if err := record.NewStore().PutProductionCheck(context.Background(), tx, check); err != nil {
-						t.Fatalf("seed production check: %v", err)
-					}
-				})
-			}
-
-			apply(t, pool, admission, "child-reentered", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2,
-				Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B"}, engine)
-
-			for _, effect := range effects(t, pool) {
-				if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == child && request.Op == "suspend" {
-					t.Fatalf("outbox effect = %#v, want no suspension when the child remains in the workflow", request)
-				}
-			}
-		})
-	}
-}
-
-// The boot read re-admits only a root: a signed-off child the human reopened while the daemon was
-// down keeps its tree and takes no slot.
+// The boot read opens a new run of a child the daemon closed that a person set back to todo while
+// the daemon was down, as the live event does (decision 8 of dispatch://INFRA-4730): a new
+// generation at admitted, under its parent on Dispatch's chain. Its tree is written once and stays,
+// it is no root, and its first phase waits for the gate above it, so it takes no slot.
 func TestReconcileNeverReadmitsAChildAsARoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -968,87 +479,25 @@ func TestReconcileNeverReadmitsAChildAsARoot(t *testing.T) {
 		{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Title: "LEGION-1", Status: "in_progress", Rank: "A"},
 		{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Title: "child", Status: "todo", Parent: &parent, Rank: "B"},
 	})
-	if got := issue(t, pool, "LEGION-2"); got.Tree != "LEGION-1" || got.Generation != 1 {
-		t.Fatalf("reconciled child = %#v, want it kept in LEGION-1's tree at generation 1", got)
+	if got := issue(t, pool, "LEGION-2"); got.Tree != "LEGION-1" || got.Generation != 2 || got.Phase != phase.Admitted || got.HoldsGate {
+		t.Fatalf("reconciled child = %#v, want a new run at generation 2, admitted, under LEGION-1 and holding no gate of its own", got)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
 }
 
-// The boot read re-admits a lingering root the human set back to todo while the daemon was down,
-// exactly as the live event does: a new generation, admitted, its linger cleared.
+// The boot read opens a new run of a root the daemon closed that a person set back to todo while
+// the daemon was down, exactly as the live event does: a new generation at admitted, promoted.
 func TestReconcileReadmitsALingeringRootSetBackToTodo(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until})
+	putIssue(t, pool, record.Issue{Key: "LEGION-CLOSED", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "closed", Tree: "LEGION-CLOSED", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", HoldsGate: true})
 
-	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "A", HandedOver: handed}})
-	readmitted := issue(t, pool, "LEGION-LINGER")
-	if readmitted.Generation != 4 || readmitted.LingerUntil != nil || readmitted.Phase != phase.Admitted || readmitted.Status != "in_progress" {
-		t.Fatalf("reconciled root = %#v, want generation 4, admitted, and no linger", readmitted)
+	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-CLOSED", ResolvedRepo: "acme/widgets", Title: "closed", Status: "todo", Rank: "A", HandedOver: handed}})
+	again := issue(t, pool, "LEGION-CLOSED")
+	if again.Generation != 4 || again.Phase != phase.Admitted || again.Status != "in_progress" {
+		t.Fatalf("reconciled root = %#v, want a new run at generation 4, admitted and promoted", again)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-LINGER", Index: 0, AdmittedAt: fixedNow}})
-}
-
-// A root set back to todo is a new generation of the whole tree. Only the root's own generation
-// facts were cleared, so a child re-entered at the new generation still carried the last one's
-// design gate and recorded handoff — and read them as its own.
-func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until})
-	putIssue(t, pool, record.Issue{Key: "LEGION-CHILD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Tree: "LEGION-LINGER", Parent: record.ParentOf("LEGION-LINGER"), Phase: phase.Done, Generation: 3, Status: "done", Rank: "B"})
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: "LEGION-CHILD", ArtifactID: "artifact-child", LatestVersion: 2}); err != nil {
-			t.Fatalf("seed the child's gate: %v", err)
-		}
-		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
-			t.Fatalf("seed the child's handoff: %v", err)
-		}
-		// An open pull request survives the new generation; the settlement it carried is the last
-		// generation's reading of a head nobody has judged since.
-		if err := records.PutPullRequest(context.Background(), tx, record.PullRequest{
-			Issue: "LEGION-CHILD", Repo: "acme/widgets", Number: 9, Branch: "legion/LEGION-CHILD", HeadSHA: "abc",
-			HeadUpdatedAt: fixedNow, CheckedHead: "abc", Failing: []string{"ci"},
-			State: record.PullRequestOpen,
-		}); err != nil {
-			t.Fatalf("seed the child's open pull request: %v", err)
-		}
-	})
-
-	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "A", HandedOver: handed}})
-
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		gates, err := records.GatesOf(context.Background(), tx, "LEGION-CHILD")
-		if err != nil {
-			t.Fatalf("read the child's gate: %v", err)
-		}
-		if len(gates) != 0 {
-			t.Errorf("the child kept the last generation's design gate: %#v", gates)
-		}
-		phases, err := records.Phases(context.Background(), tx, "LEGION-CHILD")
-		if err != nil {
-			t.Fatalf("read the child's phases: %v", err)
-		}
-		for _, row := range phases {
-			if row.HandoffCommit != "" || row.Rounds != 0 || row.Verdict != "" {
-				t.Errorf("the child kept the last generation's handoff: %#v", row)
-			}
-		}
-		pr, err := records.PullRequest(context.Background(), tx, "LEGION-CHILD")
-		if err != nil {
-			t.Fatalf("read the child's pull request: %v", err)
-		}
-		if pr == nil {
-			t.Fatal("the child's open pull request went with the generation; an open one is kept")
-		}
-		if pr.CheckedHead != "" || len(pr.Failing) != 0 {
-			t.Errorf("the kept pull request carried the last generation's reading: %#v", pr)
-		}
-	})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-CLOSED", Index: 0, AdmittedAt: fixedNow}})
 }
 
 func TestReconcileFillsRaisedCapInRankOrderAndIsIdempotent(t *testing.T) {

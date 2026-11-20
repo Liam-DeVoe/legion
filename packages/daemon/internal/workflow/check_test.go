@@ -3,7 +3,6 @@ package workflow
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -18,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // failedClaim is issue's role failing as the daemon applies it (daemon's applyTerminal): the
@@ -57,7 +55,7 @@ func newCheckRig(t *testing.T) checkRig {
 	pool := migratedPool(t)
 	clock := &checkClock{now: checkOpened}
 	logged := &bytes.Buffer{}
-	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: checkBound, ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ProductionCheckBound: checkBound, ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
 		slog.New(slog.NewTextHandler(logged, nil)))
 	return checkRig{pool: pool, engine: engine, clock: clock, logged: logged, apply: applyFacts(t, pool, engine)}
 }
@@ -91,8 +89,8 @@ func rootCheckRig(t *testing.T) checkRig {
 	return rig
 }
 
-// A report on the root's check while its tree lingers is recorded: linger holds the members of a
-// closed tree, and the check after the close is the one thing a member still does there.
+// A report on the root's check after its close is recorded: the check after the close is the one
+// thing an issue out of Legion's work still does.
 func TestACheckReportWhileTheRootLingersIsRecorded(t *testing.T) {
 	rig := rootCheckRig(t)
 	if result := rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Claim: "tester", Look: 1, Verdict: "pass", Summary: "driven in production"}); result.Refusal != nil {
@@ -352,7 +350,7 @@ func TestACheckRecordingTheImplementerStartsTheImplementerAndTakesItsReport(t *t
 // its own.
 func TestACheckOpenedUnderTheTesterKeepsItWhenTheSettingGoesOff(t *testing.T) {
 	rig := childCheckRig(t)
-	off := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: checkBound, Clock: rig.clock.Now}, nil)
+	off := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: checkBound, Clock: rig.clock.Now}, nil)
 	apply := applyFacts(t, rig.pool, off)
 
 	apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "not deployed yet"})
@@ -532,48 +530,6 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 	}
 }
 
-// The tree's close at the end of its linger waits for an open check: the expiry returns a wait
-// naming the moment the check is bound to have ended its last look, rolls back unapplied, and the
-// tree stays as it was. The check's close re-arms the linger's close, due now, and the expiry then
-// applies.
-func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
-	rig := rootCheckRig(t)
-	rig.clock.now = checkOpened.Add(time.Hour)
-	expiry := intake.LingerExpired{Issue: "LEGION-208", Generation: 7}
-	_, err := intake.ApplyFact(context.Background(), rig.pool, "outbox", "linger:LEGION-208:7", expiry, rig.engine, admissionStub{})
-	if !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the linger's expiry with an open check = %v, want a wait", err)
-	}
-	if at, ok := wait.UntilAt(err); !ok || !at.Equal(checkOpened.Add(checkBound+CheckLookBound)) {
-		t.Fatalf("the wait names %s (%t), want the check's bound plus the look bound", at, ok)
-	}
-	if !strings.Contains(err.Error(), "member LEGION-208's production check is open") {
-		t.Fatalf("the wait says %q, want it to name the open check", err)
-	}
-	if got := superviseRequests(t, rig.pool, "tree_close"); len(got) != 0 {
-		t.Fatalf("tree_close rows = %v, want none while the check is open", got)
-	}
-	assertOutboxCount(t, rig.pool, "linger_close", 1)
-
-	rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Look: 1, Verdict: "pass"})
-	closes := issueOutboxOf(t, rig.pool, "LEGION-208", "linger_close")
-	if len(closes) != 2 || !closes[1].nextAt.Equal(rig.clock.now) {
-		t.Fatalf("linger_close rows after the check's close = %+v, want a second due now", closes)
-	}
-	if _, err := intake.ApplyFact(context.Background(), rig.pool, "outbox", "linger:LEGION-208:7", expiry, rig.engine, admissionStub{}); err != nil {
-		t.Fatalf("the linger's expiry once the check closed: %v", err)
-	}
-	everyClaim := map[string]int{}
-	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		for _, role := range claim.Roles {
-			everyClaim[issue+"/"+string(role)]++
-		}
-	}
-	if got := superviseRequests(t, rig.pool, "tree_close"); !sameCounts(got, everyClaim) {
-		t.Fatalf("tree_close rows = %v, want each tree claim once: %v", got, everyClaim)
-	}
-}
-
 // A done child set back to todo closes its open check as not run before its new run starts. The
 // tester's live claim stays live: the closed check rejects its old look's report.
 func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
@@ -640,8 +596,8 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	}
 	rows.Close()
 	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.Merging} {
-		if phases[key] != want || lingering[key] != (want == phase.Done) {
-			t.Fatalf("%s after the boot = %s lingering %t, want %s", key, phases[key], lingering[key], want)
+		if phases[key] != want || lingering[key] {
+			t.Fatalf("%s after the boot = %s lingering %t, want %s and no linger", key, phases[key], lingering[key], want)
 		}
 	}
 	for _, key := range []string{"LEGION-301", "LEGION-304"} {
@@ -679,8 +635,8 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-303", Seq: 2, Type: "issue.closed", Status: "done", Title: "running child", Parent: "LEGION-302", Rank: "C"})
 	var rootPhase phase.Phase
 	var rootLingers bool
-	if err := rig.pool.QueryRow(context.Background(), "select phase, linger_until is not null from issues where key = 'LEGION-302'").Scan(&rootPhase, &rootLingers); err != nil || rootPhase != phase.Done || !rootLingers {
-		t.Fatalf("the parent once its last child left = %s lingering %t, %v; want done and lingering", rootPhase, rootLingers, err)
+	if err := rig.pool.QueryRow(context.Background(), "select phase, linger_until is not null from issues where key = 'LEGION-302'").Scan(&rootPhase, &rootLingers); err != nil || rootPhase != phase.Done || rootLingers {
+		t.Fatalf("the parent once its last child left = %s lingering %t, %v; want done and no linger", rootPhase, rootLingers, err)
 	}
 	if check := productionCheck(t, rig.pool, "LEGION-302"); check == nil || !check.Open() || check.MergeSHA != "m2" {
 		t.Fatalf("the parent's check = %+v, want it open on m2", check)

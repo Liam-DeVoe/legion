@@ -94,7 +94,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 			t.Fatalf("seed the claim %s: %v", c.Token, err)
 		}
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 3, "LEGION", quietLogger())
 	handlers := []intake.Handler{blockers.NewMirror(records, "LEGION"), engine, admission}
 	answers := &workflowRuntime{pool: pool, records: records, handlers: handlers, log: quietLogger()}

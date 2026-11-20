@@ -209,27 +209,27 @@ func (r *mainPathRig) decide(ask string) string {
 	return ref
 }
 
-// park is a person setting the running root to backlog: the engine takes it out of the workflow,
-// where its tree lingers and every claim of it is queued a suspend.
+// park is a person setting the running root to backlog: the engine stops it where it stands (R20
+// of dispatch://INFRA-3320), and every claim of it is queued a suspend.
 func (r *mainPathRig) park() {
 	r.t.Helper()
 	r.apply("backlog", intake.DispatchIssue{Key: r.key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "A", HandedOver: true})
-	if got := r.issue(); got.Status != "backlog" || !got.Lingers() {
-		r.t.Fatalf("the parked root = %+v, want it out of the workflow with its tree lingering", got)
+	if got := r.issue(); got.Status != "backlog" {
+		r.t.Fatalf("the parked root = %+v, want it out of Legion's work", got)
 	}
 }
 
-// handBack is a person setting the parked root to todo again: admission re-admits it at the next
-// generation and this same pass admits it, which queues its architect's start.
+// handBack is a person setting the parked root to todo again: it returns to Legion's work at the
+// same generation (workflow.Engine.ReturnToWork), and its architect is started again in its own
+// session.
 func (r *mainPathRig) handBack() {
 	r.t.Helper()
 	before := r.issue().Generation
 	r.apply("todo-again", intake.DispatchIssue{Key: r.key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true})
-	got := r.issue()
-	if got.Generation != before+1 || got.Status != "in_progress" || got.Lingers() {
-		r.t.Fatalf("the re-admitted root = %+v, want generation %d running again", got, before+1)
+	if got := r.issue(); got.Generation != before || !record.InLegionsWork(got) {
+		r.t.Fatalf("the returned root = %+v, want generation %d back in Legion's work", got, before)
 	}
 }
 

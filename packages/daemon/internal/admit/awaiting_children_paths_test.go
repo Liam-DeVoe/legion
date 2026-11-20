@@ -168,55 +168,64 @@ func TestTheMeasureReadsAWaitingParentAsAFirstPhaseChildrenWait(t *testing.T) {
 	})
 }
 
-// A root that waited in awaiting_children and that a person moved to the backlog lingers at done
-// with nothing held (workflow's leave), and a person's todo then re-admits it as a new generation
-// at admitted with no held start: the start it held went with the generation that held it. Its
-// first phase waits on its still open child under the children-first rule, as any re-admitted
-// root's does.
-func TestARootReadmittedFromTheBacklogHoldsNoStart(t *testing.T) {
+// A root that waited in awaiting_children and that a person moved to the backlog is stopped where
+// it stands (workflow's leave, R20 of dispatch://INFRA-3320): its phase and the start it holds stay
+// on its record, and nothing lingers. A person's todo then returns it to Legion's work at the same
+// generation (workflow.Engine.ReturnToWork), still in awaiting_children and holding the same
+// start: its first phase after the wait is the one it held, and it waits on its still open child.
+func TestARootStoppedInAwaitingChildrenKeepsItsHeldStart(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	spWaiting(t, pool, spParent, phase.Implementing, acHeldTask, acHeldReason, func(issue *record.Issue) { issue.LastDispatchSeq = 1 })
 	seedMirrorChild(t, pool, spChild, "backlog", spParent)
+	held := issue(t, pool, spParent)
 
 	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: spParent, Rank: spParent, HandedOver: true}, engine)
-	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.Done || onBacklog.ChildrenWait != nil || onBacklog.LingerUntil == nil {
-		t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want done, nothing held, lingering", onBacklog.Phase, onBacklog.ChildrenWait, onBacklog.LingerUntil)
+	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.AwaitingChildren || !sameHeldStart(onBacklog.ChildrenWait, held.ChildrenWait) ||
+		onBacklog.LingerUntil != nil {
+		t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want awaiting_children holding %+v, no linger",
+			onBacklog.Phase, onBacklog.ChildrenWait, onBacklog.LingerUntil, held.ChildrenWait)
 	}
 
-	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+	apply(t, pool, admission, "returned", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
 		Status: "todo", Title: spParent, Rank: spParent, HandedOver: true}, engine)
 
 	got := issue(t, pool, spParent)
-	if got.Generation != 2 || got.Phase != phase.Admitted || got.ChildrenWait != nil {
-		t.Fatalf("the re-admitted root = generation %d, phase %s, held start %+v; want generation 2 at admitted holding nothing",
-			got.Generation, got.Phase, got.ChildrenWait)
+	if got.Generation != held.Generation || got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, held.ChildrenWait) {
+		t.Fatalf("the returned root = generation %d, phase %s, held start %+v; want generation %d in awaiting_children holding %+v",
+			got.Generation, got.Phase, got.ChildrenWait, held.Generation, held.ChildrenWait)
+	}
+	if starts := startsOf(t, pool, spParent); len(starts) != 0 {
+		t.Fatalf("the return of %s queued %+v, want no start: it waits on its open child", spParent, starts)
 	}
 }
 
-// The re-admission's own clear of the held start, read where it is written (readmit's non-orphan
-// branch): a root whose record still stands in awaiting_children when its todo re-admits it — a
-// row no departure of this release leaves, since the leave writes the phase done and takes the
-// held start with it — starts its new generation at admitted with nothing held, rather than
-// failing the record's shape, which refuses a held start beside any other phase.
-func TestAReadmissionClearsTheHeldStart(t *testing.T) {
+// A return to work read where it is written (Engine.ReturnToWork): a root whose record stands in
+// awaiting_children when a todo brings it back, after a stop that left its phase and the start it
+// holds, comes back at the same generation still holding that start, rather than at a new
+// generation that would drop it.
+func TestAReturnToWorkKeepsTheHeldStart(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
-	until := fixedNow.Add(time.Hour)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	spWaiting(t, pool, spParent, phase.Testing, "Continue LEGION-300. Issue: LEGION-300. Phase: testing.", acHeldReason, func(issue *record.Issue) {
-		issue.Status, issue.LingerUntil, issue.LastDispatchSeq = "backlog", &until, 1
+		issue.Status, issue.LastDispatchSeq = "backlog", 1
 	})
+	seedMirrorChild(t, pool, spChild, "backlog", spParent)
+	stopped := issue(t, pool, spParent)
 
-	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "todo", Title: spParent, Rank: spParent, HandedOver: true}, engineStub{})
+	apply(t, pool, admission, "returned", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "todo", Title: spParent, Rank: spParent, HandedOver: true}, engine)
 
 	got := issue(t, pool, spParent)
-	if got.Generation != 2 || got.Phase != phase.Admitted || got.ChildrenWait != nil {
-		t.Fatalf("the re-admitted root = generation %d, phase %s, held start %+v; want generation 2 at admitted holding nothing",
-			got.Generation, got.Phase, got.ChildrenWait)
+	if got.Generation != stopped.Generation || got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, stopped.ChildrenWait) ||
+		!record.InLegionsWork(got) {
+		t.Fatalf("the returned root = %+v; want generation %d in awaiting_children, in Legion's work, holding %+v",
+			got, stopped.Generation, stopped.ChildrenWait)
 	}
 }
 

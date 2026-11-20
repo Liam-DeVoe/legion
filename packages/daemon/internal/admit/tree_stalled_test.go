@@ -1519,8 +1519,8 @@ func TestAFullCapWithAHandedOverRootPastItsReviewStillMoves(t *testing.T) {
 	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
 	tick(t, pool, admission, "measure")
 
-	if !treeOpen(t, pool, carried) {
-		t.Fatalf("the tree of %s is closed after the pass: the premise is that its promotion opens it under the full cap", carried)
+	if !issueOpen(t, pool, carried) {
+		t.Fatalf("%s holds no open lifecycle after the pass: the premise is that its promotion starts it under the full cap", carried)
 	}
 	if got := stalledRoots(t, pool); got != nil {
 		t.Fatalf("the controller was told of %v, want nothing: the promotion of this pass starts %s under the full cap, so the line moves",

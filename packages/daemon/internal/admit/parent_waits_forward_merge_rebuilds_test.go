@@ -3,7 +3,6 @@ package admit
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The first implementing round after a wait on the children asks the implementer to merge the
@@ -68,63 +66,6 @@ func TestAFreshSessionRetryOfTheReturnsImplementerStillAsksForTheForwardMerge(t 
 	fmAsksOnce(t, "the restarted implementer's task", restarted.Task)
 	if got := issue(t, pool, spParent); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
 		t.Fatalf("the parent after the restart = phase %s, merge owed %t; want implementing, the merge still owed", got.Phase, got.ForwardMergeOwed)
-	}
-}
-
-// A member of a tree waited on its own child and came back to implementing, and its start waited
-// for the slot the return's line gave it. Before that start reached the implementer, a person
-// moved the tree's root to the backlog: the tree lingers, and the same fact's pass finishes the
-// member's start undelivered (finishFencedStarts). The person's todo then re-admits the tree, and
-// its promotion starts the member's implementer again on the resume task of its phase
-// (startMidPhaseMembers, workflow.Engine.StartPromotedWorker), which raises the entry the
-// re-admission cleared the task of. No implementer has merged the children's work forward yet, so
-// the promoted task asks for the merge, once, and the record still owes it.
-func TestAReadmittedTreesPromotedImplementerStillAsksForTheForwardMerge(t *testing.T) {
-	const root, member, grandchild = "LEGION-208", "LEGION-209", "LEGION-210"
-	pool := migratedPool(t)
-	admission := pnAdmission(t, pool, 2)
-	spWaiting(t, pool, root, phase.Implementing, "Continue "+root+". Issue: "+root+". Phase: implementing.",
-		"a review asked for changes, while these Dispatch children of "+root+" were open: "+member+" (in_progress)", nil)
-	parent, waited := root, fixedNow.Add(-2*time.Hour)
-	held := record.ChildrenWait{Start: phase.Implementing, Task: "Continue " + member + ". Issue: " + member + ". Phase: implementing.",
-		Reason: "a review asked for changes, while these Dispatch children of " + member + " were open: " + grandchild + " (todo)", Since: waited}
-	putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-		Title: member, Tree: root, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
-		DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, ChildrenWait: &held, ForwardMergeOwed: true, ChildrenWaitedAt: &waited})
-	pwPullRequest(t, pool, member, record.PullRequestOpen)
-	seedMirrorChild(t, pool, member, "in_progress", root)
-	seedMirrorChild(t, pool, grandchild, "todo", member)
-	putWorkerClaim(t, pool, root, member, claim.RoleImplementer, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
-
-	spMirror(t, pool, grandchild, "done", member, 2)
-	spPass(t, pool, admission)
-	if back := issue(t, pool, member); back.Phase != phase.Implementing {
-		t.Fatalf("%s after its child is done = phase %s, want implementing", member, back.Phase)
-	}
-	fmAsksOnce(t, "the return's implementer task", pnWorkerStart(t, pool, member, claim.RoleImplementer).Task)
-
-	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "backlog", Title: root, Rank: root, HandedOver: true}, pnLingering())
-	if got := issue(t, pool, root); got.Phase != phase.Done || !got.Lingers() {
-		t.Fatalf("the root on the backlog = phase %s, linger %v; want done, lingering", got.Phase, got.LingerUntil)
-	}
-	if starts := pwWorkerStarts(t, pool, member); len(starts) != 0 {
-		t.Fatalf("the starts of %s after the move to the backlog = %+v, want none: the pass finishes a start of a lingering tree undelivered", member, starts)
-	}
-
-	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
-		Status: "todo", Title: root, Rank: root, HandedOver: true}, pnLingering())
-
-	if got := issue(t, pool, root); got.Generation != 2 || got.Phase != phase.Admitted {
-		t.Fatalf("the re-admitted root = generation %d, phase %s; want generation 2 at admitted", got.Generation, got.Phase)
-	}
-	promoted := pnWorkerStart(t, pool, member, claim.RoleImplementer)
-	if !promoted.ResumeTask || promoted.Phase != phase.Implementing || !strings.Contains(promoted.Task, "Resume the existing phase work.") {
-		t.Fatalf("the newest implementer start of %s = %+v, want the promotion's, on implementing's resume task", member, promoted)
-	}
-	fmAsksOnce(t, "the promoted implementer's task", promoted.Task)
-	if got := issue(t, pool, member); got.Phase != phase.Implementing || !got.ForwardMergeOwed {
-		t.Fatalf("%s after the re-admission = phase %s, merge owed %t; want implementing, the merge still owed", member, got.Phase, got.ForwardMergeOwed)
 	}
 }
 

@@ -909,8 +909,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour}, quietLogger())
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	// The cancel names the roles it queued a resume for, which is the one place that set is
 	// read after the fact: a resume the lane has already run leaves no row behind.
 	logs := &syncBuffer{}

@@ -298,19 +298,6 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 			return nil
 		})
 	})
-	t.Run("QueuedRootsUnder", func(t *testing.T) {
-		read(t, func(tx pgx.Tx) error {
-			theirs, err := raw.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if err != nil || !slices.Contains(keysOf(theirs), "OTHERPROJECT-3") {
-				t.Fatalf("the raw store's queued roots under LEGION-1 = %v, %v; want OTHERPROJECT-3 among them", keysOf(theirs), err)
-			}
-			got, err := records.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if want := []string{"LEGION-3"}; err != nil || !reflect.DeepEqual(keysOf(got), want) {
-				t.Errorf("the project's queued roots under LEGION-1 = %v, %v; want %v, none of OTHERPROJECT's", keysOf(got), err, want)
-			}
-			return nil
-		})
-	})
 }
 
 // The project's records (projectRecords) write no outbox row keyed by another project's issue,
@@ -533,7 +520,6 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		clear       func(tx pgx.Tx, key string) error
 	}{
 		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) error { return records.ClearGeneration(ctx, tx, key, now) }},
-		{"ClearTreeGeneration", "OTHERPROJECT-9", "LEGION-9", func(tx pgx.Tx, key string) error { return records.ClearTreeGeneration(ctx, tx, key, now) }},
 	} {
 		t.Run(generation.name, func(t *testing.T) {
 			gated(t, "OTHERPROJECT", generation.theirs)
@@ -567,7 +553,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	raw := record.NewStore()
 	records := projectRecords{Store: raw, project: "LEGION"}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour, ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
+		ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
 	merging := func(project, key, repo string, number int) (record.Issue, record.PullRequest) {
 		return record.Issue{Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: project, Title: key,
 				Phase: phase.Merging, Generation: 1, Status: "retro", Rank: key},
