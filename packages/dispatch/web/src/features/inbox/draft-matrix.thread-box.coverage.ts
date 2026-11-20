@@ -249,11 +249,11 @@ export const coverage: readonly CoverageEntry[] = [
     "Inbox | ReadingPane | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
-  ...answers("Inbox | ReadingPane | conditional | if (shown.length === 0 && held === undefined)", {
+  ...answers("Inbox | ReadingPane | conditional | if (shown.length === 0 && held.length === 0)", {
     reason: REASONS[12],
   }),
   ...answers(
-    "Inbox | ReadingPane | early return | if (shown.length === 0 && held === undefined) return …",
+    "Inbox | ReadingPane | early return | if (shown.length === 0 && held.length === 0) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
@@ -282,12 +282,11 @@ export const coverage: readonly CoverageEntry[] = [
     "Inbox | ThreadCardRow | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
+  ...answers("Inbox | ThreadCardRow | conditional | if (shown.length === 0 && held.length === 0)", {
+    reason: REASONS[12],
+  }),
   ...answers(
-    "Inbox | ThreadCardRow | conditional | if (shown.length === 0 && held === undefined)",
-    { reason: REASONS[12] }
-  ),
-  ...answers(
-    "Inbox | ThreadCardRow | early return | if (shown.length === 0 && held === undefined) return …",
+    "Inbox | ThreadCardRow | early return | if (shown.length === 0 && held.length === 0) return …",
     { reason: REASONS[12] }
   ),
   ...answers("Inbox | ThreadCardRow | conditional | !(paneShown) ? …", { reason: REASONS[12] }),
