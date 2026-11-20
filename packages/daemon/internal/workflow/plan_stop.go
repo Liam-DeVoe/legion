@@ -259,7 +259,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil {
 		return nil, err
 	}
-	return nil, e.start(ctx, tx, issue, role, func(at Standing) string {
+	return nil, e.start(ctx, tx, issue, w, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
 	}, true)
 }

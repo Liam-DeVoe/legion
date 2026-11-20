@@ -167,11 +167,11 @@ func describeVersion(version record.PlanVersion) string {
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
 // walk, where the run's work starts: at the run's move out of admitted (transition's
-// TriggerGateOpened), after the first step has settled the plan (planFirstStep), and at a
-// hand-over's carry, which re-admits an orphan at a new generation in the phase it ran in
-// elsewhere (admit's readmit), so that run never leaves admitted, after the carry has written its
-// plan rows (record.Store.CarryPlan). A record key that is no issue key writes nothing
-// (recordsSteps).
+// TriggerGateOpened, which queues it on the walk it read, writePlanOn), after the first step has
+// settled the plan (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new
+// generation in the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted,
+// after the carry has written its plan rows (record.Store.CarryPlan). A record key that is no
+// issue key writes nothing (recordsSteps), and reads no walk.
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil
@@ -179,6 +179,14 @@ func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
+	}
+	return e.writePlanOn(ctx, tx, issue, w)
+}
+
+// writePlanOn is WritePlan on w, the walk of issue's run as its caller read it.
+func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
+	if !recordsSteps(issue) {
+		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, planNode(issue, w))
 }

@@ -435,8 +435,10 @@ const testerVerdictLabel = "Tester's verdict"
 //
 // told composes the start's task from where the work stands (standingPart), which start reads only
 // for a worker it starts: a phase that starts nobody is told no task, and done, which holds no
-// place in the line of an issue's plan, has no standing to name.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, movedBack bool) error {
+// place in the line of an issue's plan, has no standing to name. w is the walk of issue's run as
+// its caller read it, after any move of its task (moveTask), which the standing and the entry read
+// in place of a read of their own: a transition reads its walk once.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string, movedBack bool) error {
 	if role == "" {
 		return nil
 	}
@@ -446,11 +448,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if role == claim.RoleArchitect {
 		return nil
 	}
-	at, err := e.standingPart(ctx, tx, issue)
+	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, role, told(at), movedBack, false)
+	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err
 	}
@@ -559,7 +561,11 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	at, err := e.standingPart(ctx, tx, issue)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
@@ -627,7 +633,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask).
+// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -638,11 +644,15 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task, err := e.ResumeTask(ctx, tx, issue)
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
+	task, err := e.resumeTaskOn(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, false, false)
 	if err != nil {
 		return err
 	}
@@ -960,8 +970,9 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
 // the merger's, so the row's facts are the facts of that step's run. An issue with no plan rows
 // keeps no task and place 0, as it always did, and the architect's entry is no step of the issue's
-// task.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+// task. w is the walk of issue's run as the caller read it, which only a phase worker's raise
+// reads; EnterArchitect gives none.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, "", err
@@ -975,12 +986,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	raised.EntryTask = task
 	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	worker := role != claim.RoleArchitect
-	var w Walk
 	if worker {
-		if w, err = e.walk(ctx, tx, issue); err != nil {
-			return 0, "", err
-		}
-		if place, _, _, ok := placeOnWalk(w, record.StandsAt(issue)); w.Stored && ok {
+		if place, _, _, ok := placeOnWalk(*w, record.StandsAt(issue)); w.Stored && ok {
 			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 	}
@@ -990,7 +997,10 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
 	// entry is no step of the issue's task.
-	if step, ok := standingStep(w, issue); ok && worker {
+	if !worker {
+		return row.Entry, row.EntryTask, nil
+	}
+	if step, ok := standingStep(*w, issue); ok {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
 			return 0, "", err
@@ -1021,7 +1031,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
 // one reader is the completion route's entry fence, and the architect completes nothing there.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+	entry, _, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, false, verbatim)
 	return entry, err
 }
 
@@ -1127,16 +1137,25 @@ func resumeText(issue record.Issue, at Standing) string {
 // ResumeTask is the resume task of the worker of issue's phase, standing where the record holds
 // its work (standingPart): the working copy the runtime gives it (Config.WorkspaceDir) and, for an
 // issue with plan rows, its task and its step. It is the one place every resume the engine sends
-// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker), an owed entry
-// sent with no task (sendOwedEntry), the boot's resume by rule, the cutover's repair of a merger,
-// the catch-up's resume and the silence repair.
+// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker, through
+// resumeTaskOn), an owed entry sent with no task (sendOwedEntry), the boot's resume by rule, the
+// cutover's repair of a merger, the catch-up's resume and the silence repair.
 //
 // It is exported for the tests of other packages that hold a start's task to the resume task
 // (internal/admit's re-admission cases, internal/daemon's resume, silence and upgrade cases), as
 // StartOrOwe is for the rows they queue, so that what those cases expect is the text production
 // composes. Production code outside this package adds no caller.
 func (e *Engine) ResumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
-	at, err := e.standingPart(ctx, tx, issue)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return e.resumeTaskOn(ctx, tx, issue, w)
+}
+
+// resumeTaskOn is ResumeTask on w, the walk of issue's run as its caller read it.
+func (e *Engine) resumeTaskOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
 		return "", err
 	}

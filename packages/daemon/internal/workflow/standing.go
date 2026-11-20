@@ -84,15 +84,13 @@ func ownersText(text string) string {
 // their reports from Dispatch (`dispatch steps`), which keeps every run, the failed ones too.
 //
 // The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
-// before it composes the task. A run with plan rows whose line holds no place in that phase is
+// before it composes the task, and w is the walk of its run as the caller read it, after any move
+// of its task (moveTask). A run with plan rows whose line holds no place in that phase is
 // refused: no start of such a run names one, and a task that named none would read as an issue
 // with no plan rows.
-func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue) (Standing, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return Standing{}, err
-	}
+func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
 	var rows []record.PhaseRow
+	var err error
 	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
