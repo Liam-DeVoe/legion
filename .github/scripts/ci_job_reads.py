@@ -928,10 +928,10 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:871-872 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:904-917 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
+        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:911-912 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/testnats/nats_test.go:944-957 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :957 reads every .go file it finds, test files included (dockerDriverFiles, called at :871 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :861)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
@@ -1049,10 +1049,12 @@ exit $s"""
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
 # -json` stream - envoy-go's unit step, which writes the streams of eight of its nine calls,
 # envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, the
-# race lane's envoy-go-race and envoy-go-race-api, and the alone steps of envoy-go-race and
-# envoy-go-checks - since neither -json nor the redirect that keeps the stream is a form the check
-# reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines make a directory and
-# run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below).
+# race lane's envoy-go-race, and the alone steps of envoy-go-race and envoy-go-checks - since
+# neither -json nor the redirect that keeps the stream is a form the check reduces. Three are
+# pinned for a reason of their own: envoy-go-race-docs' two lines make a directory and run the
+# package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below), and envoy-go-race-api's
+# race step and envoy-go's database-skips step run their go test inside database-skips.sh, which
+# keeps each one's stream through --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()
@@ -1683,7 +1685,7 @@ NOTE_AND_SPEC_SCRIPT = json_stream_script(
 # listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
 # in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
 # (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
-# start that whole job, its database and its 20-minute unit step, for one type check. They need no
+# start that whole job, its database and its unit step of nine calls, for one type check. They need no
 # database. As with the architecture-note and spec-file packages, that step's package list and the
 # unit step's exclusion are built from this one list. The step writes a `go test -json` stream
 # (json_stream_script), as the architecture-note step does, and its -timeout is the call's own,

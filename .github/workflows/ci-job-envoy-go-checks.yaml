@@ -61,9 +61,9 @@ jobs:
     # (dispatch://INFRA-1075, check 6224bb0e). The job's bound is its larger time in the pair,
     # 909 s (run 44604887499, job 135864946828), 15.15 minutes, plus the largest -timeout of its
     # go test calls, the alone step's 2m, plus 6: 15.15 + 2 + 6 = 23.15, so 24. Its other go
-    # commands are builds and two `go run`s, which run no test binary and carry no -timeout. The
-    # step that tests the API's wall-clock measurements alone is in this pair too, and its comment
-    # gives its reading.
+    # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
+    # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
+    # and its comment gives its reading.
     timeout-minutes: 24
     # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
     # same settings on the server's own command line and the same health check. envoy-go's own
@@ -163,9 +163,11 @@ jobs:
       # past any bound. They are here rather than in envoy-go-race-api for this job's filter: the
       # API's plain test binary compiles its `//go:build !race` guard files whatever -run selects,
       # and what those read is every non-test file of packages/envoy, which this job's filter covers
-      # already and envoy-go-race-api's, the closure of the API's race build, does not. So no filter
-      # widens, and the tests are off envoy-go's critical path; they run on every push this job
-      # runs on, where envoy-go runs in the merge queue and with `full-ci`. The -run list is
+      # already and envoy-go-race-api's, the closure of the API's race build, does not. So this
+      # job's filter gains only two fixture paths the API's tests read, its live-feed fixtures and
+      # the ask reply's copies (ci.yaml's envoy_go_checks), and the tests are off envoy-go's
+      # critical path; they run on every push this job runs on, where envoy-go runs in the merge
+      # queue and with `full-ci`. The -run list is
       # derived in .github/scripts/ci_job_reads.py (ALONE_PREFIX and ALONE_STEPS) from the race
       # lane's packages and their source, so an xid window test added there that this step lacks
       # fails the ci-filters job naming it. The database is on the step rather than in the job's

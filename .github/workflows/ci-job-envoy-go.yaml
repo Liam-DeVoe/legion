@@ -438,7 +438,7 @@ jobs:
       # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
       # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
       # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
-      # packages starts no job with a database. The pattern is built in
+      # packages starts envoy-go-checks rather than this job. The pattern is built in
       # .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built from,
       # so what the list leaves out and what the other jobs run cannot drift apart. The
       # broker's packages, internal/broker and everything under it, and its command, cmd/broker,

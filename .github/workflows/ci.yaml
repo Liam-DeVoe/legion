@@ -3666,8 +3666,8 @@ jobs:
               # Its unit step tests every package of the envoy module its package list's `grep -Ev`
               # keeps, with the routes, events, pgmigrate and integration packages in calls of their
               # own beside it, and runs the tests the race detector makes impossible in two of the
-              # race lane's packages; internal/testnats/nats_test.go:741-754, which that step runs,
-              # opens every .go file under packages/envoy but infra's, test files included.
+              # race lane's packages; internal/testnats/nats_test.go's dockerDriverFiles, which that
+              # step runs, opens every .go file under packages/envoy but infra's, test files included.
               - 'packages/envoy/**'
               # pmdoc's tests run pmdoc/gen, which imports the editor
               # (internal/dispatch/pmdoc/update_test.go:316-320), whose src/block-pointers.ts
@@ -3714,7 +3714,7 @@ jobs:
               # alone must start both jobs, or the side it disagrees with stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
               - '.github/actions/pull-test-images/**'
-              # Its unit step's natslive call takes the test lists of its two go test commands
+              # Its unit step's natslive call takes the test lists of its three go test commands
               # from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -4274,7 +4274,7 @@ jobs:
               - '.github/scripts/postgres-service-settings.sh'
               - *go_workspace
               - 'packages/envoy/**'
-              # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the step compiles
+              # internal/dispatch/api/delivery_live_diff_test.go:1031,1053, which the step compiles
               # with the rest of that package.
               - 'packages/contracts/fixtures/live/**'
               # internal/dispatch/api/openapi_test.go:199-200, whose
