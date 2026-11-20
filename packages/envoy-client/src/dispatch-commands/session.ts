@@ -13,7 +13,7 @@ import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
 import type { DispatchToolResult, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
-import { minuteUTC } from "./issues";
+import { minuteUTC } from "./render-results";
 
 /**
  * `dispatch answers`: the answers this session's asks have been given since it last read them.
