@@ -555,6 +555,22 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		// directory-check reads both, trimmed: the signer is the account each signJwt names, and
+		// the delegated user the subject of each JWT it asks IAM to sign.
+		"DISPATCH_DIRECTORY_ACCOUNT": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ", "DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}) {
+				if sign.Principal != directoryCheckSigner || sign.Issuer != directoryCheckSigner {
+					t.Errorf("signJwt on %q with iss %q, want the trimmed DISPATCH_DIRECTORY_ACCOUNT", sign.Principal, sign.Issuer)
+				}
+			}
+		},
+		"DISPATCH_DIRECTORY_ADMIN": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner, "DISPATCH_DIRECTORY_ADMIN": " " + directoryCheckAdmin + " "}) {
+				if sign.Subject != directoryCheckAdmin {
+					t.Errorf("a JWT for %q, want the trimmed DISPATCH_DIRECTORY_ADMIN", sign.Subject)
+				}
+			}
+		},
 		"DISPATCH_SIGNIN_ISSUER": func(t *testing.T) {
 			pool := signInPool(t, "dispatch-client", "client-secret")
 			boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": " " + pool.URL() + " "})
