@@ -15,26 +15,50 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// mainClosureQuery is the closure statement main runs, held here letter for letter as the
-// oracle of the comparison below. It is a copy of the text this change replaced, not text built
-// from the package's own constants: a statement built from those would move with them, and the
-// two sides would agree however the reach of the walk changed.
+// mainClosureQuery is main's closure statement at commit d36289cb84b1, the text closureQuery
+// rendered there, held here letter for letter as the oracle of the comparisons below and as the
+// before text of TestStatementTimings' closure pair. Every fragment it was built from
+// (documentOfTarget, documentBlockHeld, documentTarget, askPartLinksFrom, askPartLinksCurrent)
+// is written out, so it names no identifier of the package: a statement built from those would
+// move with them, and the two sides would agree however the reach of the read changed.
 const mainClosureQuery = `
 		with recursive closure as (
 			select case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end as ref_key, 1 as depth, r.from_kind as via_kind, r.from_id as via_id
 			from refs r
-			where (r.to_kind = 'artifact' or (r.to_kind = 'block' and exists (select 1 from document_blocks d where d.node_id = r.to_id))) and (
+			left join lateral (
+				select 1 as held from document_blocks d
+				where r.to_kind = 'block' and d.node_id = r.to_id
+				limit 1
+			) block_target on true
+			where (r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.held is not null)) and (
 				  (r.from_kind = 'ask'      and r.from_id in (select id::text from asks      where issue_key = $1))
 				or (r.from_kind = 'comment'  and r.from_id in (select id::text from comments  where issue_key = $1))
 				or (r.from_kind = 'message'  and r.from_id in (select id::text from messages  where issue_key = $1))
 				or (r.from_kind = 'artifact' and r.from_id in (select id::text from artifacts where issue_key = $1))
 			)
 			union
+			select case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end, 1, 'ask', r.ask_id::text
+		from ask_block_refs r
+		join ask_blocks b on b.ask_id = r.ask_id and b.block_id = r.block_id
+			left join lateral (
+				select 1 as held from document_blocks d
+				where r.to_kind = 'block' and d.node_id = r.to_id
+				limit 1
+			) block_target on true
+		where b.position is not null
+			  and r.ask_id in (select id from asks where issue_key = $1)
+			  and (r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.held is not null))
+			union
 			select case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end, c.depth + 1, 'artifact', a.id::text
 			from closure c
 			join artifacts a on a.ref_key = c.ref_key
-			join refs r on r.from_kind = 'artifact' and r.from_id = a.id::text and (r.to_kind = 'artifact' or (r.to_kind = 'block' and exists (select 1 from document_blocks d where d.node_id = r.to_id)))
-			where c.depth < 9
+			join refs r on r.from_kind = 'artifact' and r.from_id = a.id::text
+			left join lateral (
+				select 1 as held from document_blocks d
+				where r.to_kind = 'block' and d.node_id = r.to_id
+				limit 1
+			) block_target on true
+			where c.depth < 9 and (r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.held is not null))
 		)
 		select distinct on (c.ref_key) c.ref_key, c.depth, c.via_kind, c.via_id
 		from closure c

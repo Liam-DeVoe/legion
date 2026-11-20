@@ -17,15 +17,11 @@ import (
 //
 // Which protocol each statement is under, and why:
 //
-//   - The closure is a protocol 1 pair. Its gain is its own text: documentBlockHeld replaced an
-//     `exists` probe that sat under an OR, which the planner could only run as a hashed subplan
-//     over all of document_blocks. Both texts read the same tables and the same indexes, so one
-//     schema holds both sides. The closure also gains from asks (issue_key) and
-//     messages (issue_key, created_at, id), the two indexes migrations 20261101182426 and
-//     20261101182433 add, and that part of its gain is not in this pair: both sides here are
-//     read with those indexes present, which only helps the before side, so the pair is the
-//     conservative reading of the text's own gain. Seam 7's two-commit run takes the whole gain
-//     under protocol 2.
+//   - The closure is a protocol 1 pair. Its before text is main's closure statement at commit
+//     d36289cb84b1, which closure_test.go holds letter for letter as mainClosureQuery, every
+//     fragment it was built from written out, so the before side stays main's text whatever
+//     closureQuery becomes. Both texts read the same tables and the same indexes, so one schema
+//     holds both sides.
 //
 //   - The two backlink counts are protocol 1 pairs. The release before this change counts over
 //     the whole graph_edges view (this package holds that read as backlinkCountOracle, with the
