@@ -601,8 +601,8 @@ envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 checks, the shell-script tests, the vet of the module as darwin compiles it,
 and the build and pack of the envoy commands,
 with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
-internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
-run this is (envoy-go's unit step leaves them out), the architecture-note check over
+internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and cmd/ci-report,
+whose one run this is (envoy-go's unit step leaves them out), the architecture-note check over
 this repository's own notes through the composite action
 .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
 through the composite action .github/actions/spec-check. gofmt -l . walks every .go
@@ -1706,8 +1706,8 @@ recheck a slow-suite failure on a pull request: the label picks the lane, while 
 envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
 tests, the vet of the module as darwin compiles it, and the build and pack of
 the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
-internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
-whose one run this is (envoy-go's unit step leaves
+internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and
+cmd/ci-report, whose one run this is (envoy-go's unit step leaves
 them out), the architecture-note check over this repository's own .dispatch/architecture
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which

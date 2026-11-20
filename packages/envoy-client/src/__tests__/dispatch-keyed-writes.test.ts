@@ -528,6 +528,35 @@ describe("DispatchClient's writes", () => {
     expect(echoed.sent).toHaveLength(4);
   });
 
+  // The yes is dated from the last answer that showed it, so each answer that names the key back
+  // moves it on. Here each call's gateway failure names no key back, and its keyed 201 after the
+  // 1 s pause does: the first yes is /healthz's, and each 201 that follows moves it on.
+  test("each answer that names the key back moves the remembered yes on", async () => {
+    const probed = scripted([
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+    ]);
+    const { retry, advance } = pacing();
+    const dispatch = () => client(probed.fetchImpl, retry);
+
+    // The probe answers at 0 s, before the 1 s pause; the 201 names the key back at 1 s.
+    await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
+    expect(probed.probes).toHaveLength(1);
+    // Five minutes and more after the probe, and less after the 201: the 201's yes holds.
+    advance(KEYED_LAYER_MEMORY_MS - 1);
+    await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
+    expect(probed.probes).toHaveLength(1);
+    // Five minutes after that call's own 201.
+    advance(KEYED_LAYER_MEMORY_MS);
+    await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
+    expect(probed.probes).toHaveLength(2);
+    expect(probed.sent).toHaveLength(6);
+  });
+
   // Only a yes is kept: a Dispatch upgraded to the layer is believed the next time a write fails.
   test("ask /healthz again for each failed write while it says no layer", async () => {
     const { fetchImpl, sent, probes } = scripted(

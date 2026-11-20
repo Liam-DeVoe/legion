@@ -102,7 +102,17 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   const installations = new Map(Object.entries(options.installations ?? {}));
   const runs = new Map<string, ActionsRun>();
   const checkRuns = new Map<string, ActionsRun>();
-  const installationToken = fixtureSecret("github");
+  // Each installation has a token of its own, as GitHub mints one per installation, so a read
+  // that presents another installation's token is refused.
+  const installationTokens = new Map<string, string>();
+  const installationToken = (id: string): string => {
+    let token = installationTokens.get(id);
+    if (token === undefined) {
+      token = fixtureSecret("github");
+      installationTokens.set(id, token);
+    }
+    return token;
+  };
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
   const trees = new Map<string, Map<string, string>>();
   const blobs = new Map<string, string>();
@@ -192,7 +202,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       if (request.method === "POST" && mint !== null) {
         return Response.json(
           {
-            token: installationToken,
+            token: installationToken(mint[1] ?? ""),
             expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
           },
           { status: 201 }
@@ -206,7 +216,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         const rest = repositoryRead[3] ?? "";
         const id = installations.get(repository);
         if (id === undefined) return notFound(repository);
-        if (request.headers.get("Authorization") !== `Bearer ${installationToken}`) {
+        if (request.headers.get("Authorization") !== `Bearer ${installationToken(String(id))}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
 
