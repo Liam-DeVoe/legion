@@ -119,7 +119,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 		kinds[i], names[i] = string(h.Kind), h.Name
 	}
 	var freed []supervise.Hold
-	var queued claimQueued
+	var queued ClaimQueued
 	if err := s.Tx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `delete from claim_sessions h
 			using unnest($3::text[], $4::text[]) as f(kind, name)
@@ -136,7 +136,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 	}); err != nil {
 		return nil, fmt.Errorf("release the names of %s: %w", c.Token, err)
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	slices.SortFunc(freed, supervise.CompareHolds)
 	return freed, nil
 }

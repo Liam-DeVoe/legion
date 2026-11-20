@@ -10,8 +10,8 @@
     "stateRun": "2d8f4b6a-9c1e-4e73-b5a0-7f3c1d9e6b28"
   },
   "contract": {
-    "daemon": 175,
-    "caller": 175
+    "daemon": 183,
+    "caller": 183
   },
   "admission": {
     "cap": 5,
@@ -662,6 +662,38 @@
     }
   ],
   "claimsToRefresh": 4,
+  "paused": {
+    "id": 7,
+    "since": "2026-09-22T09:09:00Z",
+    "by": {
+      "kind": "controller",
+      "session": "ses_controller"
+    },
+    "reason": "the model provider is refusing every turn",
+    "waitsOn": [
+      {
+        "claim": "legion-legion-legion-208-implementer",
+        "issue": "LEGION-208",
+        "role": "implementer",
+        "askedAt": "2026-09-22T09:09:00Z"
+      }
+    ],
+    "held": [
+      {
+        "id": 811,
+        "kind": "supervise",
+        "issue": "LEGION-211",
+        "claim": "legion-legion-legion-211-implementer",
+        "waitedSeconds": 412
+      },
+      {
+        "id": 814,
+        "kind": "notice",
+        "issue": "LEGION-209",
+        "waitedSeconds": 95
+      }
+    ]
+  },
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,
