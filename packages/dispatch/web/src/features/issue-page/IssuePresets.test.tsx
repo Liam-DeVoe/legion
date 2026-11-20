@@ -264,9 +264,10 @@ function missingReferences(within: HTMLElement): string[] {
 // The view row has no signals to give while the reads its counts come from are out
 // (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
 // the same, each control with its name alone, and no control points at a signal that is not
-// there.
+// there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
+// row of five.
 test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <IssuePresets active="spec" issueKey="CORE-1" />
@@ -298,10 +299,11 @@ test("with no signals the row of five draws every view's control with its name a
 });
 
 // The same below 1280 px, where the one control and each item of its menu are named by their
-// signal beside their name: with no signals, each is named by its name alone.
+// signal beside their name: with no signals, each is named by its name alone. The case draws it
+// at 390 px (`PHONE_WIDTH`), where the row is the one control.
 test("with no signals the one control and its menu draw every view named alone, and no name points at a missing element", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <IssuePresets active="spec" issueKey="CORE-1" />

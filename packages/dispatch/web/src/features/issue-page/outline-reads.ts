@@ -6,20 +6,15 @@ import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { refetchFailedOnFocus } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
-import { issueAsksQuery, standsFailed, treeDocumentIds, useIssueTree } from "./useIssueTree";
-
-/** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
- *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
- *  Events keep a read fresh and its age never does, so the outline's slot mounted again on a
- *  press of a view more than 30 s after the load reads none of them again, and window focus
- *  fetches again only a read in error. */
-const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
+import {
+  EVENT_FRESH,
+  issueAsksQuery,
+  standsFailed,
+  treeDocumentIds,
+  useIssueTree,
+} from "./useIssueTree";
 
 /** One read the outline's rows or their names come from that stands failed (`standsFailed`), as
  *  the outline draws it: one line over the tree (`FailedReadLine`), with a Retry that asks that
@@ -45,6 +40,10 @@ export interface FailedRead {
 /** What the tree's reads give (`useTreeReads`). Each field is one value for as long as the
  *  reads say the same; the object holding them is new on every render. */
 export interface TreeReads {
+  /** Whether the names the tree is built from are held (`IssueTreeView.namesHeld`): a plan
+   *  task's or a callout's words come from them alone, so what a words filter matches waits on
+   *  them, as well as on the reads the nodes come from (`readsHeld`). */
+  readonly namesHeld: boolean;
   /** The reads of the issue's conversation the tree's turns come from, each undefined until it
    *  has answered, and whether each of the six reads the tree's other nodes come from - the
    *  coverage, the decisions, the results, the asks, the comments and the messages - holds its
@@ -173,8 +172,8 @@ function blocksUnreadable(issue: IssueDetails, id: string): string {
 /**
  * The issue's tree and the reads it is built from, for whatever reads the tree and draws no
  * outline: the view row, which counts each view's nodes once every read holds its answer
- * (`readsHeld`). It builds no line of a read that stands failed, which the outline alone draws
- * (`useOutlineReads`).
+ * (`readsHeld`), and under a words filter once the names are held too (`namesHeld`). It builds
+ * no line of a read that stands failed, which the outline alone draws (`useOutlineReads`).
  */
 export function useTreeReads(issue: IssueDetails): TreeReads {
   return useReads(issue, false);
@@ -202,11 +201,12 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
  * read failed (`failed`). One whose refresh failed holds the answer it had, which its rows are
  * drawn from, and says nothing. The names' line says the tree's names reads that stand failed
  * (`IssueTreeView.namesFailure`) - the tree draws the names an older set's read gave meanwhile -
- * and its Retry asks those reads again and no other. The conversation's reads are kept too,
- * which tell a turn the outline leaves out (`useAddressFallback`).
+ * and its Retry asks those reads again and no other. Whether the names are held is the tree's
+ * own answer (`IssueTreeView.namesHeld`). The conversation's reads are kept too, which tell a
+ * turn the outline leaves out (`useAddressFallback`).
  */
 function useReads(issue: IssueDetails, lines: boolean): OutlineReads {
-  const { blocksHeld, namesFailure, root } = useIssueTree(issue);
+  const { blocksHeld, namesFailure, namesHeld, root } = useIssueTree(issue);
   const key = issue.key;
   const documentIds = treeDocumentIds(issue);
   const documents = useQueries({
@@ -270,6 +270,7 @@ function useReads(issue: IssueDetails, lines: boolean): OutlineReads {
   );
   return {
     failed,
+    namesHeld,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,
     readsSettled: own.settled && documents.settled,

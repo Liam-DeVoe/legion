@@ -40,11 +40,12 @@ import { inputMethodKey } from "./useNodeEditing";
  * reachable from the keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by
  * what it does, as it names every other.
  *
- * Every block of the focused row's words that scrolls its own content - each code block, table,
- * a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can scroll it
- * (`RowText.tsx`'s `useOutOfTabOrder`). On that block, or inside it, the keys the browser
- * scrolls by are the browser's: the tree moves, folds and says nothing for them
- * (`scrollsABlock`), and Escape gives the row back, as it does from any control inside a row.
+ * Every block of the focused row's words whose content runs past its box - a code block, a
+ * table, a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can
+ * scroll it; one whose content fits has nowhere to scroll and keeps none (`RowText.tsx`'s
+ * `useOutOfTabOrder`). On that block, or inside it, the keys the browser scrolls by are the
+ * browser's: the tree moves, folds and says nothing for them (`scrollsABlock`), and Escape gives
+ * the row back, as it does from any control inside a row.
  */
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */

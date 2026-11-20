@@ -25,7 +25,10 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
  * read still out or failed, or Conversation counts no thread as the reader's, and a count read
  * then - a `0`, or a number short of the real one - would read as the real count, so the
- * controls draw none.
+ * controls draw none. Under a words filter (`?q=`) they wait on the names too (`namesHeld`): a
+ * plan task's or a callout's words come from the names alone, so a count read before they are
+ * held finds none of those nodes. With no filter on a count reads no words, and does not wait
+ * on the names.
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -37,17 +40,17 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { readsHeld, root } = useTreeReads(issue);
+  const { namesHeld, readsHeld, root } = useTreeReads(issue);
   // Who the reader is, which Conversation's count is read for: a thread is counted where the
   // reader began it.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // What each control draws after its name: a view's count of its main kind and what of it asks
   // something of the reader, and for Conversation how many entries the Contents list holds, as
   // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the
-  // reader's login do not hold (above).
+  // reader's login do not hold, nor under `?q=` while the names do not (above).
   const signals = useMemo(
     () =>
-      readsHeld && viewer !== undefined
+      readsHeld && viewer !== undefined && (namesHeld || address.filter === "")
         ? {
             ...filterSignals(root, address.filter),
             conversation: {
@@ -55,7 +58,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
             },
           }
         : undefined,
-    [address.filter, readsHeld, root, viewer]
+    [address.filter, namesHeld, readsHeld, root, viewer]
   );
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);

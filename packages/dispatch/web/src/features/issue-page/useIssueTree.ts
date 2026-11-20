@@ -50,6 +50,19 @@ export interface IssueTreeView {
    *  while the tree keeps the last names. A read that runs again after it failed goes on
    *  standing failed until it answers. */
   readonly namesFailure: NamesFailure | undefined;
+  /** Whether the names the tree is built from are held: the batched names read has answered
+   *  (`useIssueTree`). That read is always made: the root's words write the issue's own key
+   *  (`issue-tree.ts`'s `assemble`), and a key written bare is an address the read names
+   *  (`row-references.ts`'s `citedReferences`). It alone gives a plan task's and a callout's
+   *  words, as what it answers for the block's own address, which it is given (`tree-drafts.ts`'s
+   *  `addDocumentBlocks`): until it answers such a node has none, and a view that reads the
+   *  nodes' words - a words filter's count, or its line that nothing holds the words - waits on
+   *  it. The one more read is no part of this: it names only what a block's words cite that the
+   *  batched read was not given, which is no node's own address, so it gives no node its words.
+   *  The batched read's last answer stands while its read of a new set of addresses is out or
+   *  has failed (`namesFailure`), so the names stay held then; where its very first read fails
+   *  it holds none, and this is false until it answers. */
+  readonly namesHeld: boolean;
   readonly root: TreeNode;
 }
 
@@ -381,6 +394,11 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ];
     return [...new Map(ordered.map((target) => [target.ref, target])).values()];
   }, [extra, first, moreAnswer]);
+  // Whether the names the tree is built from are held (`IssueTreeView.namesHeld`): the first
+  // read holds an answer. It is always made, since the root's words cite the issue's own key.
+  // The one more read is no part of it: it names only what a block's words cite, and gives no
+  // node its words.
+  const namesHeld = first !== undefined;
   // The reads that stand failed, which the names in hand stand through (above). The second read
   // fails only where something is left for it to name: where nothing is, its query is disabled.
   const targetsFailed = standsFailed(targets);
@@ -434,7 +452,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [first, firstTree, named, reads]
   );
   return useMemo(
-    () => ({ blocksHeld: documents.held, blocksRead: documents.read, namesFailure, root }),
-    [documents.held, documents.read, namesFailure, root]
+    () => ({
+      blocksHeld: documents.held,
+      blocksRead: documents.read,
+      namesFailure,
+      namesHeld,
+      root,
+    }),
+    [documents.held, documents.read, namesFailure, namesHeld, root]
   );
 }
