@@ -17,9 +17,9 @@
 //     call of a text-only library not read under a CallScope, and on a client or token source
 //     handed a library that the boundary did not make (boundary.go). The field census lists every
 //     field the library boundary sets, each a closed value or the rule's reading (fields.go). The
-//     answer census lists every use of another party's words a Go client of this repository
-//     reads, and fails on one that can print them with no record of the request they answer
-//     (answers.go);
+//     answer census fails on any read of an HTTP answer's body outside internal/redact but
+//     through redact.ReadAnswer or redact.StreamAnswer, and on another party's text held as the
+//     box with no record of the answer it came from (answers.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
 //     normal verification between stage 3 and this one);
