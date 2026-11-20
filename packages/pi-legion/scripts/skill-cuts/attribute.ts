@@ -526,7 +526,7 @@ export function viaUnits(via: string): string[] {
 
 const copyKey = (repository: string, dir: string) => `${repository}\t${dir}`;
 /** A copy as the report names it: `<repository> <path>`. */
-const shown = (key: string) => key.replace("\t", " ");
+const shown = (key: string) => key.replaceAll("\t", " ");
 
 function entry<K, V>(map: Map<K, V>, key: K, make: () => V): V {
   let value = map.get(key);
@@ -1012,8 +1012,10 @@ export function readCountTsv(attribution: Attribution): string {
 function code(text: string): string {
   return text.includes("`") ? `\`\` ${text} \`\`` : `\`${text}\``;
 }
-/** `text` as one Markdown table cell. */
-const cell = (text: string | number) => String(text).replace(/\|/g, "\\|");
+/** `text` as one Markdown table cell: each backslash escaped first, then each `|`, so a cell's
+ * own backslash never escapes the pipe after it. */
+const cell = (text: string | number) =>
+  String(text).replaceAll("\\", "\\\\").replaceAll("|", "\\|");
 const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
 /** `count` with `word`, or with `plural` unless the count is 1: `1 session`, `2 sessions`. */
 const counted = (count: number, word: string, plural = `${word}s`) =>
