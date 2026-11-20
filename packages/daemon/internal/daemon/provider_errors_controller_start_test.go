@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -289,6 +290,12 @@ const controllerAwayWindow = 15 * time.Second
 // replacement controller: a new session that registers with Envoy and with the daemon and claims
 // the role. The replacement is the project's controller, and it is told of the run once; the dead
 // session's consumer is stored nothing.
+//
+// While the registered session reads unresponsive the outbox makes no publish to the role: its
+// read of the holder (controllerHolds) waits for the registered session to hold the role live.
+// The listener would refuse such a publish too (404 holder_lapsed), and the row would wait the
+// same way, but each refused publish also reports a role wake to the daemon; the case counts those
+// reports, so a read that took a holder in any state is caught by name.
 func TestAProviderErrorsNoticeDueWhileTheControllerIsDeadReachesItsReplacement(t *testing.T) {
 	t.Setenv("ENVOY_SESSION_LIVE_WINDOW", controllerAwayWindow.String())
 	r := newErrorRunRig(t)
@@ -299,14 +306,19 @@ func TestAProviderErrorsNoticeDueWhileTheControllerIsDeadReachesItsReplacement(t
 	r.registerController()
 	runner.drain()
 	dead.awaitUnresponsive()
+	wakes := roleWakesOf(t, runner.natsURL, role)
 
 	for range 6 {
 		r.errorTurn()
 	}
 	r.wantOneNotice("after six turns with the dead controller registered,", 6)
 	runner.drain()
+	runner.drain()
 	if _, _, held := runner.providerErrorsRow(); !held {
 		t.Fatalf("the provider-errors row finished while the registered controller session %s read unresponsive, want it waiting", dead.session)
+	}
+	if n := wakes(); n != 0 {
+		t.Fatalf("the listener reported %d role wakes of %s while its registered controller %s read unresponsive, want none: the outbox publishes to the role only once the registered session holds it live", n, role, dead.session)
 	}
 
 	replacement := newControllerStandin(t, listener, runner.natsURL, controllerStartSession+"-replacement")
@@ -323,6 +335,39 @@ func TestAProviderErrorsNoticeDueWhileTheControllerIsDeadReachesItsReplacement(t
 	replacement.wantProviderErrorsOnce(runner, "after another admission pass,")
 	if n := dead.holding(noticeSummary(record.ProviderErrorsNotice, errorRunIssue)); n != 0 {
 		t.Fatalf("the dead controller session was delivered the notice %d times, want none", n)
+	}
+}
+
+// roleWakesOf counts the listener's role wake reports of role, the reports it publishes on
+// notifications.legion.wake when a message to the role finds no live holder (packages/envoy's
+// reportRoleWake), from now on. The answer reads the count once a flush of its own connection has
+// returned and the listener has had two seconds to publish a report it sends off its request's
+// path.
+func roleWakesOf(t *testing.T, natsURL string, role claim.Token) (count func() int) {
+	t.Helper()
+	conn := testnats.Connect(t, natsURL)
+	var mu sync.Mutex
+	n := 0
+	if _, err := conn.Subscribe("notifications.legion.wake", func(msg *nats.Msg) {
+		if data := string(msg.Data); strings.Contains(data, "role_message") && strings.Contains(data, string(role)) {
+			mu.Lock()
+			n++
+			mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatalf("subscribe to the listener's wake reports: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the wake report subscription: %v", err)
+	}
+	return func() int {
+		time.Sleep(2 * time.Second)
+		if err := conn.Flush(); err != nil {
+			t.Fatalf("flush the wake report subscription: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return n
 	}
 }
 
@@ -418,6 +463,53 @@ func (d diesAfterTheRead) RoleHolder(ctx context.Context, role string) (string, 
 		d.session.awaitUnresponsive()
 	}
 	return holder, state, err
+}
+
+// The role loses its live holder between the outbox's read and its publish: its claim was freed,
+// or its holder went gone, in that moment. The read names the registered session live, and the
+// listener, which resolves the role's holder again at the publish, answers it 404 with no holder:
+// the notice is stored for nobody. The row is the run's only keeper (the run is marked told), so
+// it waits, as it waits on a holder found unresponsive at the publish.
+func TestAProviderErrorsNoticeWhoseRoleHasNoHolderAtThePublishKeepsItsRow(t *testing.T) {
+	r := newErrorRunRig(t)
+	_, _, runner := r.controllerStart(t)
+	publisher := &noHolderAtThePublish{outboxNotices: runner.outbox.notices, session: controllerStartSession,
+		topic: notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))}
+	runner.outbox.notices = publisher
+	for range 6 {
+		r.errorTurn()
+	}
+	r.registerController()
+	r.wantOneNotice("after six turns and the controller's registration,", 6)
+	runner.drain()
+	if publisher.published != 1 {
+		t.Fatalf("precondition: the outbox published the provider-errors notice to the controller's role %d times, want once", publisher.published)
+	}
+	if _, _, held := runner.providerErrorsRow(); !held {
+		t.Fatal("the provider-errors row finished after the listener answered its publish with no live holder of the controller's role, want it waiting: the run is marked told and nobody holds the notice")
+	}
+}
+
+// noHolderAtThePublish is the listener as the outbox meets it when the controller's role loses
+// its live holder between the outbox's read and its publish: the read names session live, and
+// the publish to topic, the controller's role, is answered 404 with no holder.
+type noHolderAtThePublish struct {
+	outboxNotices
+	session   string
+	topic     string
+	published int
+}
+
+func (p *noHolderAtThePublish) RoleHolder(context.Context, string) (string, string, error) {
+	return p.session, notify.StateLive, nil
+}
+
+func (p *noHolderAtThePublish) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+	if topic == p.topic {
+		p.published++
+		return fmt.Errorf("listener answered 404: %w", notify.ErrNoHolder)
+	}
+	return p.outboxNotices.Publish(ctx, topic, message, payload, key)
 }
 
 // controllerKeptMessage is the message the listener keeps for the controller role while no
@@ -531,6 +623,15 @@ type controllerStandin struct {
 
 func newControllerStandin(t *testing.T, listener *idleRigListener, natsURL, session string) *controllerStandin {
 	t.Helper()
+	c, _ := newControllerStandinWithBus(t, listener, natsURL, session)
+	return c
+}
+
+// newControllerStandinWithBus is newControllerStandin with the session's NATS connection handed
+// back, so a case can end the session's process: once the connection is closed, nothing takes or
+// acknowledges a frame the listener relays to the session.
+func newControllerStandinWithBus(t *testing.T, listener *idleRigListener, natsURL, session string) (*controllerStandin, *nats.Conn) {
+	t.Helper()
 	c := &controllerStandin{t: t, listener: listener, session: session}
 	bus := testnats.Connect(t, natsURL)
 	relay := newIdleRigRelay(session, bus, func(item idleRigEnvelope) error {
@@ -547,7 +648,7 @@ func newControllerStandin(t *testing.T, listener *idleRigListener, natsURL, sess
 	if err := bus.Flush(); err != nil {
 		t.Fatalf("flush the relay subscription of %s: %v", session, err)
 	}
-	return c
+	return c, bus
 }
 
 // registration is the body the session registers with: topics beside its own subject, as the
