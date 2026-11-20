@@ -183,7 +183,7 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
 /** The number of versions the spec has, to wait for the one an answer writes. */
 export async function specVersions(issue: Tracked): Promise<number> {
   const api = await dispatchApi();
-  return (await api.getArtifact(issue.spec)).version_count;
+  return (await api.getArtifact(issue.spec)).versions?.length ?? 0;
 }
 
 /** Waits until the spec has more versions than `before`: an answer is written into its decision
@@ -192,7 +192,7 @@ export async function specVersions(issue: Tracked): Promise<number> {
 export async function specVersionAfter(issue: Tracked, before: number): Promise<void> {
   const api = await dispatchApi();
   await expect
-    .poll(async () => (await api.getArtifact(issue.spec)).version_count)
+    .poll(async () => (await api.getArtifact(issue.spec)).versions?.length ?? 0)
     .toBeGreaterThan(before);
 }
 

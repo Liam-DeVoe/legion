@@ -821,7 +821,7 @@ func (s *server) deliverMessageResuming(
 	err = takeover.retry(ctx,
 		func() string {
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
@@ -998,6 +998,20 @@ func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, i
 		s.writeHandlerError(w, r, followUpErr)
 		return
 	}
+	// The message's target and the session its attempt names are read before the transaction,
+	// so a reply from a session the attempt does not name, to a message sent for a route to a
+	// role, asks the listener whether that session holds the role now with nothing held
+	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
+	// answers that message or attempt as it always has. A read that fails is the route's 500.
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		select coalesce(m.target, ''), d.session_id
+		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
+		where m.id = $1
+	`, input.Attempt)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1048,8 +1062,11 @@ func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, i
 		writeError(w, r, apicode.MessageNotFound, "message delivery not found")
 		return
 	}
-	if attempt.SessionID != actor.ID {
-		writeError(w, r, apicode.ReplyForbidden, "session may reply only to its own delivery")
+	// The session the attempt names answers it, and so does the session that holds the role the
+	// message went to now, while it is live: a different session that took the role from the one
+	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
+		writeError(w, r, apicode.ReplyForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one
