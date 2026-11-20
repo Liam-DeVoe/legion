@@ -90,8 +90,12 @@ type Conn struct {
 
 	mu      sync.Mutex
 	pending map[string]chan shimwire.Frame
-	closed  bool
-	done    chan struct{}
+	// stateAsks is the id of every get_state this connection wrote whose request still waits
+	// (GetState): an answer is a TurnAnswered only for one of them (stateAnswered), and an id
+	// goes once it is answered or its request ends.
+	stateAsks map[string]struct{}
+	closed    bool
+	done      chan struct{}
 
 	// negotiation is a one-slot semaphore rather than a mutex so a request queued behind another
 	// goroutine's negotiation still answers to its own context.
@@ -108,6 +112,7 @@ func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog
 		log:         log,
 		events:      events,
 		pending:     map[string]chan shimwire.Frame{},
+		stateAsks:   map[string]struct{}{},
 		done:        make(chan struct{}),
 		negotiation: make(chan struct{}, 1),
 	}
@@ -138,12 +143,22 @@ func (c *Conn) Sequence() uint64 { return c.seq }
 
 // GetState asks OMP whether a turn is running. An answer that does not say is an error, never
 // "not streaming": a restart decides on it whether the turn it recorded is still running. An
-// answer that says reaches the event queue too (TurnAnswered, dispatch).
+// answer that says reaches the event queue too (TurnAnswered, dispatch), while this request still
+// waits for it: its id is one of the connection's asks (stateAsks) from before the frame is
+// written until it is answered or the request ends.
 func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err := c.Negotiate(ctx); err != nil {
 		return runtime.ConnState{}, err
 	}
 	id := rand.Text()
+	c.mu.Lock()
+	c.stateAsks[id] = struct{}{}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.stateAsks, id)
+		c.mu.Unlock()
+	}()
 	response, err := c.call(ctx, shimwire.GetState{ID: id}, id)
 	if err != nil {
 		return runtime.ConnState{}, err
@@ -457,11 +472,11 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // the first decodes to Raw and the second answers no request this connection is waiting on.
 //
 // A get_state answer that says whether a turn is running is pushed as TurnAnswered before it is
-// handed to the request waiting on it, whether one still waits or not: pushed here, in the order
-// the frames were read, it follows every event of a frame read before it — a shim's replay of what
-// it held while no daemon was attached among them — and precedes the connection's Closed, so the
-// decision that waits for it reads the claim with all of those applied (supervise's
-// turnAnswered).
+// handed to the request waiting on it, and only while a get_state this connection wrote still
+// waits on it (stateAnswered): pushed here, in the order the frames were read, it follows every
+// event of a frame read before it — a shim's replay of what it held while no daemon was attached
+// among them — and precedes the connection's Closed, so the decision that waits for it reads the
+// claim with all of those applied (supervise's turnAnswered).
 func (c *Conn) dispatch(frame shimwire.Frame) {
 	switch frame := frame.(type) {
 	case shimwire.AgentStart:
@@ -476,9 +491,7 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			End: true, ConnSequence: c.seq})
 	case shimwire.Response:
 		if frame.Command == shimwire.TypeGetState && frame.Success {
-			if streaming, err := c.streamingOf(frame); err == nil {
-				c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming})
-			}
+			c.stateAnswered(frame)
 		}
 		c.answerRequest(frame.ID, frame)
 	case shimwire.Raw:
@@ -506,6 +519,32 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.BundleWorkspaceResult:
 		c.answerRequest(frame.ID, frame)
 	}
+}
+
+// stateAnswered is a get_state answer that says whether a turn is running, read in its wire place
+// (dispatch). It is a TurnAnswered only where it answers a get_state this connection wrote and
+// still waits on (stateAsks), whose id it then spends, so the same answer read twice is one. Any
+// other answers no ask this connection is waiting on: an answer the shim replays from its backlog
+// after the connection that asked broke between the ask and the answer, a repeat, or the answer
+// to a request that ended first. It is logged and pushes nothing. A replayed answer of no turn
+// would otherwise decide a restored claim's stale-plugin relaunch ahead of the turn the replay
+// goes on to show, and cut that turn (supervise's turnAnswered); the supervisor asks again on the
+// current connection where its request ended unanswered (supervise's askRestoredTurn).
+func (c *Conn) stateAnswered(response shimwire.Response) {
+	streaming, err := c.streamingOf(response)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	_, asked := c.stateAsks[response.ID]
+	delete(c.stateAsks, response.ID)
+	c.mu.Unlock()
+	if !asked {
+		c.log.Info("worker-stream: a get_state answer to no ask this connection waits on; it decides nothing",
+			"claim", c.claim, "streaming", streaming)
+		return
+	}
+	c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming})
 }
 
 // stepArgsHash is the fingerprint of a call's arguments: the first eight bytes of their SHA-256,

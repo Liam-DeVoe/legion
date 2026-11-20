@@ -281,6 +281,52 @@ func TestTakeRouteAnswersAStaleClaimRefusedStalePluginRatherThan409(t *testing.T
 	}
 }
 
+// The report of a take's turn is not refused by the stale-contract 409 either: it is the only
+// thing that finishes the task of a worker whose plugin names its number (supervise's
+// reportedTask), so refused, it would leave the task to be taken back as a cut turn at the
+// stale-plugin relaunch and run again by the next process. The claim here is the shape every
+// contract raise leaves: idle, its take's turn ended on the worker stream before the report
+// arrived, and its plugin on a contract other than the daemon's that names the number (the
+// contract after this one stands in for the take contract once the next raise lands, since this
+// daemon's own contract is the take contract). The report naming the number finishes the task,
+// while the claim's ready, which the stale refusal covers, is still refused.
+func TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask(t *testing.T) {
+	h := newHarness(t)
+	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
+	value := h.deliverTask(supervise.RequestDeliver{Claim: c.token, Task: "the task"})
+	recorder, answer := h.postTake(takeOf(c, value))
+	wantAccepted(t, recorder, answer, "the task")
+	h.startAndEndTurn(c.token)
+	stale := DaemonAPIVersion + 1
+	if supervise.TakesNoTask(stale) {
+		t.Fatalf("contract %d takes no task: this test proves nothing, since the end frame finishes such a claim's task", stale)
+	}
+	h.makeStale(t, c.token, c.session, c.secret, stale)
+	if stored := h.stored(c.token); stored.State != supervise.StateIdle || stored.Pending == nil || stored.Pending.Number != value.Number || stored.TaskFinished != 0 {
+		t.Fatalf("the stale claim is %s holding %+v with task %d finished, want idle with task %d's turn over and unfinished",
+			stored.State, stored.Pending, stored.TaskFinished, value.Number)
+	}
+
+	// The control: the same claim, as the claim routes read it, is stale.
+	ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: c.generation,
+	}, nil)
+	wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+
+	outcome, _ := h.turnOutcome(claim.TurnOutcomeRequest{AgentCaller: c.agent(), Generation: c.generation, Sequence: 1,
+		Outcome: claim.TurnClean, Task: value.Number})
+	if outcome.Code != http.StatusOK {
+		t.Fatalf("the stale claim's turn outcome naming task %d = %d (body %s), want 200", value.Number, outcome.Code, outcome.Body)
+	}
+	if stored := h.stored(c.token); stored.TaskFinished != value.Number || (stored.Pending != nil && stored.Pending.Number == value.Number) {
+		t.Fatalf("after the report the claim records task %d finished, pending %+v; want task %d finished and no longer pending",
+			stored.TaskFinished, stored.Pending, value.Number)
+	}
+	if _, held := h.taskValues().Value(c.token); held {
+		t.Fatal("the bucket still holds the finished task's value")
+	}
+}
+
 // Every outcome a take has reaches the worker through the route, decided by a real machine: a
 // number the claim's record does not owe it is refused `not-owed` and records nothing (R3), and
 // the pending task of a phase its issue has left is dropped, its value deleted, so the read that

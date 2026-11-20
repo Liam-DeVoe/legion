@@ -281,6 +281,19 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // file its pane is told, which the daemon resolves to that launch's claim exactly as a
 // registration's is resolved. A body carrying both, or neither, is refused: each says who is
 // calling, and a caller that cannot say is not answered.
+//
+// It does not refuse a stale plugin with the stale-contract 409 (refuseIfStaleClaim), under
+// either caller, as the task routes do not (take.go). A worker whose plugin names its task's
+// number has that task finished by this report and by nothing else (supervise's reportedTask,
+// endFrameFinishes), and a contract raise can find such a worker stale with that report still to
+// come: the end of its take's turn on the worker stream can arrive first, and the stale-plugin
+// lane then holds the claim's relaunch until the task is finished (supervise's turnEnded,
+// afterTurn). Refused, the report would be lost, since the plugin sends no refused report again,
+// and the relaunch would take the task back as a cut turn, so the next process would run a task
+// already done. Served, the report finishes the task, and the relaunch follows that finish. A
+// body the route cannot decode is still answered with the stale-contract 409 where its identity
+// names a stale claim (readBody's identity check), as for the ready and the exit: such a body is
+// no report this route could apply.
 func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	var req claim.TurnOutcomeRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireGeneration(w, req.Generation) {
@@ -300,9 +313,6 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	token, m, refusal := s.claimCaller(r, "turn outcome", caller, req.Generation)
 	if refusal != nil {
 		writeJSON(w, refusal.status, errorBody(refusal.message))
-		return
-	}
-	if _, bySecret := caller.(claim.AgentCaller); bySecret && s.refuseIfStaleClaim(w, r, m.Claim()) {
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -362,8 +372,8 @@ func refusalCode(refusal claim.Refusal) string {
 // every claim route does, by its sentence, and the three task routes in the coded shape
 // (taskRefusal).
 //
-// A stale plugin is no part of the resolution: the turn outcome refuses a stale claim's secret
-// itself (refuseIfStaleClaim), and the task routes answer a stale claim as any other (take.go).
+// A stale plugin is no part of the resolution: the turn outcome and the task routes answer a stale
+// claim as any other (turnOutcome, take.go).
 func (s *server) claimCaller(r *http.Request, request string, caller claim.Caller, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
 	switch caller := caller.(type) {
 	case claim.BootCaller:

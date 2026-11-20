@@ -544,10 +544,13 @@ func pendingID(p *Delivery) string {
 // (operatorDelivery), neither thing accepted above can be true, so the refusal below is exactly
 // a claim that holds a pending delivery its worker has not finished with, that the record still
 // owes and that no newer task replaces. runParkedLaunchNow reads the same pending delivery before
-// it runs a parked launch for such a task, so nothing runs for one this refuses; a task that
-// replaces one runs that launch where it arrives, and retires the replaced delivery itself before
-// it does — the launch takes the ladder's wait with the claim's timers (letGo), so the claim
-// reaching here then holds no delivery at all.
+// it runs a parked launch for such a task, so nothing runs for one this refuses. A task that takes
+// the place of an untaken one — dropped as one the record no longer owes, or replaced
+// (replaceOwedTask) — runs that launch where it arrives, and drops or retires that delivery itself
+// before it does, by the same test and in the same order as here: the launch takes the ladder's
+// wait with the claim's timers (letGo), which is what makes the ladder's task replaceable, so the
+// claim reaching here then holds no delivery at all. A delivery whose take's turn has run is
+// retired below and runs no launch (runParkedLaunchNow says why).
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
 	queued := m.given(request)

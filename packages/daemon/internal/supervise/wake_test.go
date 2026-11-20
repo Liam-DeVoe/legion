@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -1905,6 +1906,67 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	sent := h.wantPrompts(2)
 	if sent[1].Message != task {
 		t.Fatalf("the prompts are %+v, want the operator's task at the process the launch started", sent)
+	}
+}
+
+// The same park, over a claim that holds an untaken task the record no longer owes: its issue
+// has left the phase the task was queued for. A newer task does not wait behind such a task: it
+// is dropped, its value deleted, and the newer task is queued in its place (queue, dropUnowed),
+// so the operator is answered as for a claim holding none. That task is one a person is waiting
+// on, so the launch parked above the process it would reach runs where it arrives, as for a task
+// that replaces the ladder's (runParkedLaunchNow), and the drop is made before that launch, by
+// the same test the queue makes.
+//
+// The negative control is the drop test removed from runParkedLaunchNow: the queue then drops the
+// task and queues the operator's, answered success, while the launch stays parked and the task
+// waits out the paced turn, which this test reads at the state and the runtime's starts.
+func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow(t *testing.T) {
+	const task = "look at the production check"
+	holds := true
+	h := pacedHarness(t, wakeRate, func(d *Deps) {
+		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+	})
+	h.manualTakes()
+	h.reach(StateReady)
+	replaced := h.locator()
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, ID: "outbox:7", Row: 7})
+	if p := h.pending(); p.ID != "outbox:7" || p.taken() {
+		t.Fatalf("the claim holds %+v, want the phase task pending untaken: this test proves nothing", p)
+	}
+
+	h.observe(runtime.StaleAddress)
+	h.wantWaitingWake(WakeLaunch)
+	holds = false
+
+	// The task arrives part of the way into the wait, as a person's does.
+	h.advance(wakePart)
+	h.must(RequestDeliver{Claim: h.token, Task: task})
+
+	h.wantState(StateLaunching)
+	h.wantStarts(h.token, 2)
+	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
+		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
+			resume.Previous, replaced)
+	}
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
+	}
+	if lines := h.logs.lines("the issue has left the phase this task was queued for; it is dropped rather than taken",
+		"task=1", "delivery=outbox:7"); len(lines) != 1 {
+		t.Fatalf("logged %v, want the take's drop line once for task 1", lines)
+	}
+	if lines := h.logs.lines(valueDeletedLine, "task=1", "cause="+valueDeletedDropped); len(lines) != 1 {
+		t.Fatalf("logged %v, want task 1's value deleted under the drop's cause", lines)
+	}
+	if p := h.pending(); p.Task != task || p.Number != 2 || p.taken() {
+		t.Fatalf("the task is %+v, want the operator's %q pending untaken as task 2 in place of the dropped one", p, task)
+	}
+	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
+
+	h.relaunched()
+
+	if text := h.mustTake(); text != task {
+		t.Fatalf("the take at the process the launch started was answered %q, want the operator's task", text)
 	}
 }
 

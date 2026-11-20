@@ -810,13 +810,16 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // queued as a task, the daemon's own delivery of a relaunch's record whose record no longer
 // tells, and a task whose issue has left the phase it was queued for (phaseHolds, a read of the
 // issue's record in a transaction of its own). The task is retired and its value deleted
-// (dropPending), under the line that says which of the three it was. Two places ask it, so the
-// record's answer is one: a take or a hold's end (takeable), once no hold of the claim's stands,
-// which then gives the claim the daemon's own delivery of a record that still tells
-// (queueRelaunch); and a newer task that arrives behind the task (queue), whatever holds stand
-// and before any other case of a held task, which then takes its place and carries that sentence
+// (dropPending), under the line that says which of the three it was. Every place that asks it
+// gets the record's one answer: a take or a hold's end (takeable), once no hold of the claim's
+// stands, which then gives the claim the daemon's own delivery of a record that still tells
+// (queueRelaunch); a newer task that arrives behind the task (queue), whatever holds stand and
+// before any other case of a held task, which then takes its place and carries that sentence
 // itself, and where nothing was dropped hands that answer to the hold's end its refusal makes
-// (offer), so one decision asks the record once. A read of the record that fails drops nothing.
+// (offer), so that decision asks the record once; and an operator's task over a launch the pacing
+// parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
+// so that the launch runs for the operator's task where queue would drop the task it arrived
+// behind. A read of the record that fails drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	round, asks := updateRoundOf(p.ID)

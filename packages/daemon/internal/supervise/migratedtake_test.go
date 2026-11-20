@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // migratedTake is a claim restored in state on a plugin below TaskTakeContract — the harness's
@@ -250,6 +251,12 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 //     working and the take's turn started, and the same follows.
 //   - A replayed start and end before an answer of no turn: the relaunch is made, and it finds
 //     the task's turn over, so the task is finished by its contract and nothing is taken back.
+//   - An answer of no turn to the ask of a connection that broke before the answer: the shim
+//     replays it on the next connection ahead of the take's agent_start, and the stream pushes it
+//     as no answer, since that connection never asked it (stream's Conn.stateAnswered). The next
+//     connection's hello asks again on that connection, the replayed start makes the claim
+//     working, and that connection's own answer of a turn holds the relaunch for the turn's end:
+//     the task is finished once.
 //   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
 //     reconnect deadline counted from the hello, by the lane, charged nothing.
 //   - No hello: relaunched at the reconnect deadline, as departure 7's never_reconnected.
@@ -257,7 +264,9 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 // The negative controls are the boot's relaunch made before the hello (refreshPlugin with no
 // askTurn guard) and made at the hello itself (askRestoredTurn deciding on the answer it is
 // returned): in both the relaunch reads the take as one no turn ran, and it runs before the hello
-// or before the replayed turn.
+// or before the replayed turn. The replayed answer's is that answer delivered as the stream
+// delivered it before it held an answer to its connection's own asks: the relaunch is then made
+// on it, before the replayed turn.
 func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 	t.Run("a replayed agent_start before an answer of a turn", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
@@ -297,6 +306,34 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		h.wantCalls("Resume", 0)
 		h.answer(false)
 
+		h.wantFinishedOnceAndRelaunchedEmpty()
+	})
+	t.Run("an answer of no turn to the ask of a connection that broke, replayed on the next ahead of the turn's start", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		// The first connection breaks between the hello's ask and the agent's answer, which
+		// stays in the shim's backlog with the take's agent_start behind it.
+		h.conn.FailGetState(errBoom)
+		h.connect()
+		h.must(StreamClosed{Claim: h.token})
+		h.conn = fake.NewConn()
+		h.conn.SetStreaming(true)
+		h.connect()
+		if unanswered := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(unanswered) != 1 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the first connection's alone", unanswered)
+		}
+		if answered := h.logs.lines("supervise: the agent of a claim the daemon's start restored said whether it is in a turn"); len(answered) != 1 {
+			t.Fatalf("the asks the agent answered are %q, want the next connection's", answered)
+		}
+		h.wantCalls("Resume", 0)
+		// The replay: the first connection's answer of no turn is no event of the next
+		// connection's, so the replayed agent_start is the first thing the machine reads.
+		h.must(StreamTurnStart{Claim: h.token})
+		h.answer(true)
+
+		h.wantState(StateWorking)
+		h.wantCalls("Resume", 0)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.advance(testRPC)
 		h.wantFinishedOnceAndRelaunchedEmpty()
 	})
 	t.Run("an unanswered ask", func(t *testing.T) {

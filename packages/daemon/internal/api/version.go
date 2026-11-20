@@ -2440,7 +2440,10 @@ package api
 // shape (`{code, error}`), so a worker that sends a take or a seen report again on a 502, 503 or
 // 504 naming no code never reads a refusal of the daemon's own as an outage; and none of them
 // refuses a stale plugin with the stale-contract 409: a stale claim's take is refused with the
-// hold `stale-plugin`, and its read and its seen report are answered as any claim's. A claim
+// hold `stale-plugin`, and its read and its seen report are answered as any claim's. Nor does
+// `claims/turn-outcome` refuse one: a report naming a take's number is the only thing that
+// finishes that task for a plugin at this contract or above it, so a stale claim's report is
+// applied, and the stale-plugin lane relaunches the claim behind the finish. A claim
 // whose plugin declared a contract below this one is refused the stale-contract 409 inside an
 // update round as outside one (supervise.StaleRefusesCalls): on its old contract it takes no
 // task, so the stale-plugin lane relaunches it onto the current plugin inside the round rather

@@ -43,7 +43,10 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // handled in the order they arrive. Streaming is what the agent said. It is the decision of its
 // own the stale-plugin relaunch of a claim a daemon start restored ready or idle waits for
 // (Machine.askTurn, turnAnswered), which so reads the claim with every replayed turn already
-// applied.
+// applied. It answers an ask made on the connection it arrives on whose request still waits for
+// it: an answer to an earlier connection's ask, which the shim replays from its backlog after
+// that connection broke, is delivered as none (stream's Conn.stateAnswered), and the next
+// connection's hello asks again on that connection (reconnected, askRestoredTurn).
 type StreamTurnAnswered struct {
 	Claim     claim.Token
 	Streaming bool
