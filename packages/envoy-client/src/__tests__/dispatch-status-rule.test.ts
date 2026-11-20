@@ -381,6 +381,26 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(requests).toEqual([]);
   });
 
+  // A refusal lists every problem of the call, so its caller fixes all of them and calls once
+  // (the dispatch skill). With no --reason the same call breaks two parts of the rule: done needs
+  // a reason, and include_children does not go with done. Adding the reason alone still leaves the
+  // second, so the first refusal names both.
+  test("--include-children with --status done and no --reason names both problems before anything is sent", async () => {
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--status",
+      "done",
+      "--include-children",
+    ]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("status done requires reason");
+    expect(stdout).toContain("include_children does not go with status done");
+    expect(requests).toEqual([]);
+  });
+
   test("issue-update --unlink-children sends the status change and no PATCH", async () => {
     // The fixture's call passed include_parent too: this one is answered its unlink alone.
     statusChange = entriesOf(changed, ["ACME-3", "ACME-2"]);
