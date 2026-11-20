@@ -9,6 +9,7 @@ import type {
   CheckBlock,
   CheckResult,
   Decision,
+  DecisionEntry,
   DisplayTree,
   IssueChild,
   IssueCoverage,
@@ -1031,6 +1032,12 @@ function addTurns(
  * decision's own content as the read answers it (`decisionContent`), whose references resolve
  * against the document the block stands in (`decisionDocumentId`).
  *
+ * Who decided an agent's decision is the decisions read's entry for it
+ * (`DecisionEntry.decided_by`), which the `decisions` member does not carry: the entry is drawn
+ * at the node its own address names (`addReadingParents`), the node the decision is drawn at
+ * (`decisionNodeId`). The draft's author is that decider (`deciderOf`), and a decision no entry
+ * names a decider for has none, so its row says nobody was recorded (R9).
+ *
  * A person's decision is the answered ask itself (`Decision.kind`): the read names it by the
  * ask's own address, and `addAsks` drew the ask with the person's answer on it. It is no
  * decision node of its own, so it neither restates the question under itself nor stands in the
@@ -1049,6 +1056,12 @@ function addDecisions(
   // (`Draft.statement`): a spec's `requirement` block that read does not hold - each one, before
   // it answers - is a statement on its row, and a tie to it puts no decision on the list.
   const isCoverageStatement = coverageStatements(reads.issue, reads.coverage);
+  const deciders = new Map<string, Actor>();
+  for (const entry of reads.decisions?.entries ?? []) {
+    const holder = entry.node.kind === "ask" ? undefined : context.nodeIdOf(entry.ref);
+    const decider = deciderOf(entry.decided_by);
+    if (holder !== undefined && decider !== undefined) deciders.set(holder, decider);
+  }
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = decisionNodeId(decision, context, asks);
     if (id === undefined) return;
@@ -1083,6 +1096,8 @@ function addDecisions(
       return parent === undefined ? [] : [parent];
     });
     if (decision.changed_at !== null) draft.at = decision.changed_at;
+    const decider = deciders.get(id);
+    if (decider !== undefined) draft.author = decider;
     draft.pointers = held?.pointers ?? {};
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
@@ -1120,6 +1135,24 @@ function decisionNodeId(
 ): string | undefined {
   const id = context.nodeIdOf(decision.ref);
   return id === undefined || decision.kind !== "person" ? id : asks.get(id);
+}
+
+/**
+ * Who decided, as the page names an author: the far end of an entry's `decided_by` tuple, a
+ * session for an agent (`session:<id>`) and a person by login (`person:<login>`), which every
+ * other read names as a `user` actor. A session carries the title it stamped on what it wrote
+ * (`decided_by.title`) as its origin's `session_title`, so a session the registry no longer lists
+ * is still named by it (`AgentName.tsx`'s `drawnSessionName`); one that stamped none carries no
+ * origin. Undefined where the entry names nobody, or a node of another kind.
+ */
+function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
+  if (node === null) return undefined;
+  if (node.kind === "session") {
+    return node.title === undefined
+      ? { id: node.id, kind: "session" }
+      : { id: node.id, kind: "session", origin: { session_title: node.title } };
+  }
+  return node.kind === "person" ? { id: node.id, kind: "user" } : undefined;
 }
 
 /**

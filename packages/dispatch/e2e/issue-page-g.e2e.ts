@@ -79,14 +79,9 @@ interface DrawnAuthor {
   readonly shape: string;
 }
 
-/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). */
-const AUTHORLESS: readonly string[] = [
-  "check",
-  "child_issue",
-  "decision",
-  "plan_task",
-  "requirement",
-];
+/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). A decision is
+ *  none of them: its row draws who decided it, as the decisions read's entry names them. */
+const AUTHORLESS: readonly string[] = ["check", "child_issue", "plan_task", "requirement"];
 
 /** Each row that draws an author other than the one `stored` gives its node, or that draws one
  *  where its kind has none. A row of neither, which the seed gave no known author, is left out. */
@@ -804,7 +799,16 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    // The planner, whom the registry does not list, by the title its session stamped on each
+    // write the seed made as it: its messages and asks, and the decisions it wrote, whose
+    // decider the decisions read names with that title (`DecisionEntry.decided_by.title`).
     const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+    // An agent the registry does not list and whose own record stamps no title: the recorder of
+    // the result, whom the page names by its own word for an agent nothing names.
+    const unnamedAgent = {
+      author: CONTROL_LABELS.unnamed_author,
+      shape: GLYPH_TOKENS.authors.agent,
+    };
     const stored = new Map<string, DrawnAuthor>([
       [seeded.comment, reader],
       [seeded.longComment, reader],
@@ -817,15 +821,19 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       [seeded.answeredLong, plannerAuthor],
       [seeded.waitingLong, plannerAuthor],
       [seeded.openQuestion, plannerAuthor],
-      [seeded.result, { author: CONTROL_LABELS.unnamed_author, shape: GLYPH_TOKENS.authors.agent }],
+      [seeded.result, unnamedAgent],
+      [seeded.shaping, plannerAuthor],
+      [seeded.changed, plannerAuthor],
+      [seeded.unsure, plannerAuthor],
+      [seeded.raw, plannerAuthor],
     ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await expectSeedDrawn(page, seeded);
       // A person by their login and an agent by its role's word, or by the page's word for one
-      // that names none, each by its kind's shape: people share one, agents another. A node the
-      // model holds no author for draws none.
+      // that names none, each by its kind's shape: people share one, agents another. A decision
+      // draws who decided it. A node the model holds no author for draws none.
       await expect
         .poll(async () => authorOffences(await drawnRows(page), stored), {
           message: "a row draws its author other than by the stored actor's name and kind",
