@@ -104,12 +104,13 @@ func readsAsRendering(stored, rendering string) bool {
 // either depends on a definition it was cut away from.
 //
 // It does not give a fragment back the container it was cut from, and a caller reads alone only a
-// fragment that stands in none. A block inside a list item, a quote, a footnote definition or a
-// typed block starts after its container's marker or line, and its later lines carry the
-// container's prefix, which its text read alone loses, so two trees can read as one. The inner
-// list of `- a\n  - b\n  - c` is `- b\n  - c`: c stands beside b, but the prefix of its line is
-// also the content indent of a `- ` item, so read alone c stands under b, as it does in the inner
-// list of `- a\n  - b\n    - c`, `- b\n    - c`, and the two slices read alone as one.
+// fragment that stands in none: a top-level block, or a decision no typed block holds. A block
+// inside a list item, a quote or a footnote definition starts after its container's marker, and
+// its later lines carry the container's prefix, which its text read alone loses, so two trees can
+// read as one. The inner list of `- a\n  - b\n  - c` is `- b\n  - c`: c stands beside b, but the
+// prefix of its line is also the content indent of a `- ` item, so read alone c stands under b, as
+// it does in the inner list of `- a\n  - b\n    - c`, `- b\n    - c`, and the two slices read
+// alone as one.
 func FragmentReadsAs(stored, rendering string) bool {
 	return !strings.Contains(stored, "[^") && !strings.Contains(rendering, "[^") && readsAsRendering(stored, rendering)
 }

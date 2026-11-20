@@ -297,7 +297,7 @@ function placeholder(info: FieldInfo): string {
   return "<text>";
 }
 
-/** The command's flags, each with its help text. `spec.dryRun` is the spec's own sentence for
+/** The command's flags, each with its help text. `spec.dryRunHelp` is the spec's own sentence for
  *  `--dry-run`, for a command whose dry run asks Dispatch something past the argument check. */
 function flagTable(
   spec: DispatchToolSpec,
@@ -376,7 +376,7 @@ function flagTable(
   add("--dry-run", {
     action: "dry-run",
     text:
-      spec.dryRun ??
+      spec.dryRunHelp ??
       "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
   return flags;

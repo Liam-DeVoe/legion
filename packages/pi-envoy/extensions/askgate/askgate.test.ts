@@ -2575,7 +2575,7 @@ console.log(JSON.stringify(args, null, 2));
     );
     expect(g.calls[4].user).toContain('"summary": "A live sync replaces the nightly export."');
   }, 30_000);
-  test("a command the agent already runs with --dry-run or --help sends nothing and is not reviewed", async () => {
+  test("a command the agent already runs with --dry-run or --help stores nothing and is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("a", "dispatch ask --dry-run --issue X-1 --question q");
     await g.bash("b", "dispatch message --help");

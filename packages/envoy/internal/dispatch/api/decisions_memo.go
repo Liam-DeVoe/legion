@@ -5,13 +5,13 @@ import (
 	"sync"
 )
 
-// storedCutsBytes bounds what the cuts of stored versions this process keeps hold (storedCuts):
-// 32 MiB. A cut's texts and headings are slices of its version's markdown, so an entry holds the
-// whole markdown however few decisions it cuts, and the bound is on bytes rather than on entries:
-// it holds the cuts of more than 600 stored versions of 25 to 43 KB each, at the overhead of 40
-// decisions apiece (storedCutOverheadBytes). It is half the bound the display trees
-// (pmdoc.DisplayCacheBytes) and the list answers (listAnswerCacheBytes) of the same process are
-// held to: a bound a server carries beside its pools, not a target to fill.
+// storedCutsBytes bounds what the cuts this process keeps hold (storedCuts): 32 MiB. A cut's
+// texts and headings are slices of its markdown, so an entry holds the whole markdown however few
+// decisions it cuts, and the bound is on bytes rather than on entries: it holds the cuts of more
+// than 600 markdowns of 25 to 43 KB each, at the overhead of 40 decisions apiece
+// (storedCutOverheadBytes). It is half the bound the display trees (pmdoc.DisplayCacheBytes) and
+// the list answers (listAnswerCacheBytes) of the same process are held to: a bound a server
+// carries beside its pools, not a target to fill.
 const storedCutsBytes = 32 << 20
 
 // storedCutOverheadBytes is what an entry costs beside its markdown, charged once for the entry
@@ -21,26 +21,16 @@ const storedCutsBytes = 32 << 20
 const storedCutOverheadBytes = 256
 
 // storedCuts is the cut of each stored version a decisions view has read (scanStoredDecisions),
-// by its document and its number, the parser's refusal included, so a version is parsed at most
-// once while its cut stays here, however many views read it. The bulk of an entry is the bytes of
-// its markdown (storedCutsBytes), so the memo holds the most recently used cuts within that bound
-// and drops the least recently used first.
-//
-// Nothing in this repository but its tests changes a stored version's markdown or its renderer
-// stamp. Of every `update artifact_versions` outside the tests, files/backfill.go sets `content`,
-// a file version's bytes, migration 0041 sets doc_update_version, and migration 0062 sets
-// markdown to itself, which leaves its text as it was, to fire the search trigger. No insert into
-// artifact_versions updates on conflict, and renderer_version is written only by the insert of
-// docs/mutation.go (docs.RenderStampColumns). The one delete, a document's removal
-// (artifactRemovalClears), takes the document with its versions, whose cuts no view reads again
-// and which leave as the least recently used. So a version's cut never goes stale, and the memo
-// keeps no stamp anyway: the stamp is read with each row. An entry is served only for the markdown
-// it was cut from all the same, which costs one comparison of two strings and no parse, so a row
-// rewritten past this server - as the tests store a version the way a build of another renderer
-// version did (respellVersion) - is cut again rather than read by another markdown's cut.
+// and of each document as it stood when a view last cut it (readDecisions), by its document and
+// its number, the parser's refusal included, so a markdown is parsed at most once while its cut
+// stays here, however many views read it. The bulk of an entry is the bytes of its markdown
+// (storedCutsBytes), so the memo holds the most recently used cuts within that bound and drops
+// the least recently used first. An entry is served only for the markdown it was cut from (get),
+// so a cut never goes stale.
 var storedCuts = newStoredCutMemo(storedCutsBytes)
 
-// storedVersionKey names one stored version: its document, and its number.
+// storedVersionKey names one stored version: its document, and its number. The number 0, which
+// no stored version has, names the document as it stands (readDecisions).
 type storedVersionKey struct {
 	artifactID string
 	number     int

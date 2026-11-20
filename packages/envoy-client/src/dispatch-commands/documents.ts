@@ -44,6 +44,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -817,7 +818,8 @@ function endedSentence(text: string): string {
  * the call's own refusal, and stores nothing. It reads nothing else the call reads: not whether
  * the owner holds the name, and none of the server's own refusals. A check that cannot run
  * passes, with a warning that says what the call then does. A dry run that failed there would
- * let an AskGate that runs the call after a failed dry run post this write unreviewed.
+ * let an AskGate older than DISPATCH_DRY_RUN_LOCAL, which runs the call after a failed dry run,
+ * post this write unreviewed; AskGate now sets that variable, under which this step does not run.
  */
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
   const { tool, args, deadline, deadlineMs } = context;
@@ -849,6 +851,14 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
         warning: `dispatch: warning: this Dispatch cannot say how it would store the text: ${endedSentence(roundTripFailure(stored.error))} The dry run did not check the spelling. The call uploads the text unchecked.`,
       };
     case "failed":
+      // Dispatch answered that the text is past what the check reads, so the call refuses it
+      // every time it is sent, not until Dispatch answers (storedTextCheckFailed).
+      if (dispatchAnswered(stored.error, 413)) {
+        return {
+          kind: "passed",
+          warning: `dispatch: warning: Dispatch refused to say how it would store the text: ${endedSentence(roundTripFailure(stored.error))} The text is longer than the check reads, so the call refuses the upload every time it is sent.`,
+        };
+      }
       // The deadline's end reads as what it is: the client's own words for it are a write's,
       // saying that the write may or may not have taken effect, and the round trip writes nothing.
       return unasked(

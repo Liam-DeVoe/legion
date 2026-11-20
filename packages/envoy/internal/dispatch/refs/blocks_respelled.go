@@ -20,14 +20,15 @@ type respellCandidate struct {
 }
 
 // topLevelCandidates keeps, of candidates, each block that no block of blocks encloses: a
-// top-level block of the version. A block inside a list item, a quote, a footnote definition or a
-// typed block starts after its container's marker or line, and its later lines carry the
-// container's prefix, which its text read alone loses (pmdoc.FragmentReadsAs), so such a block
-// takes the version whose sum moved. blocks are the version's rendered blocks in document order,
-// each parent before its children, and candidates are in that order too. The renderer writes a
-// blank line between two top-level blocks, so a block that starts at or before the end of the
-// last top-level block before it is inside that block: an empty block at the end of its container
-// starts where the container ends. It filters candidates in place.
+// top-level block of the version, since only a top-level block is a candidate. A block inside a
+// list item, a quote or a footnote definition starts after its container's marker, and its later
+// lines carry the container's prefix, which its text read alone loses (pmdoc.FragmentReadsAs); a
+// block inside a typed block is not top-level either, so each such block takes the version whose
+// sum moved. blocks are the version's rendered blocks in document order, each parent before its
+// children, and candidates are in that order too. The renderer writes a blank line between two
+// top-level blocks, so a block that starts at or before the end of the last top-level block before
+// it is inside that block: an empty block at the end of its container starts where the container
+// ends. It filters candidates in place.
 func topLevelCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate) []respellCandidate {
 	kept := candidates[:0]
 	end, next := -1, 0

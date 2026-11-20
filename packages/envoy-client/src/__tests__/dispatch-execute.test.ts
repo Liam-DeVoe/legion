@@ -8049,9 +8049,9 @@ describe("executeDispatchTool", () => {
     ).toEqual([]);
   });
 
-  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // Only a call whose command answers its dry run is run as one: any other command, a retraction
   // among them, would make its write.
-  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+  test("executeDispatchTool refuses a dry run of a call whose dry run runs no command", async () => {
     const asked: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       asked.push(new URL(String(url)).pathname);
@@ -8074,7 +8074,7 @@ describe("executeDispatchTool", () => {
           fetchImpl: fetchImpl as typeof fetch,
           dryRun: true,
         })
-      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+      ).rejects.toThrow(`dispatch ${tool}'s dry run runs no command`);
     }
     expect(asked).toEqual([]);
   });

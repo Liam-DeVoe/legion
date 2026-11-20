@@ -387,14 +387,7 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 		}
 		return true
 	})
-	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
-	if err != nil {
-		t.Fatalf("render version 2: %v", err)
-	}
-	blocks := make([]model.ArtifactBlock, len(offsets))
-	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
-	}
+	markdown, blocks := renderedBlocks(t, tree)
 	versionTwoAt := versionOneAt.Add(time.Hour)
 	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
 	moved, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
@@ -505,18 +498,10 @@ func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *tes
 		{Type: "footnote_reference", Attrs: pmdoc.Attrs{"label": "1"}},
 		{Type: "text", Text: " here."},
 	}
-	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
-	if err != nil {
-		t.Fatalf("render version 2: %v", err)
-	}
-	blocks := make([]model.ArtifactBlock, len(offsets))
-	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
-	}
+	markdown, blocks := renderedBlocks(t, tree)
 	body := markdown[blocks[0].From:blocks[0].To]
-	// The reference and the recorded literal read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
-	// which is the case FragmentReadsAs refuses. The guard calls no pmdoc function, so the test
-	// also compiles at a build without FragmentReadsAs, where it runs as its negative control.
+	// The reference and the recorded literal read alone as one
+	// (TestAStoredTextReadsAsAnotherSpellingOfTheSameTree), which is the case FragmentReadsAs refuses.
 	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." {
 		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference", blocks[0].ID, body, paragraph)
 	}
@@ -526,23 +511,10 @@ func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *tes
 		t.Fatalf("index version 2: %v", err)
 	}
 
-	var changedVersion int
-	var changedAt time.Time
-	var sum string
-	if err := tx.QueryRow(ctx, `
-		select changed_version, changed_at, text_sha256 from document_blocks where artifact_id = $1 and block_id = $2
-	`, artifact, paragraph).Scan(&changedVersion, &changedAt, &sum); err != nil {
-		t.Fatalf("read paragraph %s at version 2: %v", paragraph, err)
-	}
+	changedVersion, changedAt, sum, textsAtTwo := indexedChange(t, tx, artifact, paragraph, 2)
 	if changedVersion != 2 || !changedAt.Equal(versionTwoAt) || sum != BlockTextSum(body) {
 		t.Errorf("paragraph %s, recorded at version 1 as %q and written %q, changed at version %d (%s) with the sum %s, want version 2 (%s) with the sum of its text",
 			paragraph, recorded, body, changedVersion, changedAt.UTC(), sum, versionTwoAt)
-	}
-	var textsAtTwo []string
-	if err := tx.QueryRow(ctx, `
-		select coalesce(array_agg(text), '{}') from document_block_texts where artifact_id = $1 and block_id = $2 and version = 2
-	`, artifact, paragraph).Scan(&textsAtTwo); err != nil {
-		t.Fatalf("read the texts version 2 records for paragraph %s: %v", paragraph, err)
 	}
 	if !slices.Equal(textsAtTwo, []string{body}) {
 		t.Errorf("version 2 records paragraph %s as %q, want one text, %q", paragraph, textsAtTwo, body)
@@ -623,9 +595,7 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 	itemB.Children = itemB.Children[:1]
 	innerList.Children = append(innerList.Children, itemC)
 	markdown, blocks := renderedBlocks(t, tree)
-	// The two slices read alone as one tree, which is the case the top-level rule refuses. The
-	// guard calls no pmdoc function the base lacks, so the test also compiles at a build that
-	// reads such a slice alone, where it runs as its negative control.
+	// The two slices read alone as one tree, which is the case the top-level rule refuses.
 	if markdown != versionTwo || len(blocks) < 3 || blocks[2].ID != inner || markdown[blocks[2].From:blocks[2].To] != "- b\n  - c" {
 		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, inner, "- b\n  - c")
 	}
@@ -685,8 +655,7 @@ func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testin
 	pmdoc.EnsureBlockIDs(tree)
 	markdown, blocks := renderedBlocks(t, tree)
 	// The recorded text reads alone as X's text here, c under b, which is the case the
-	// line-start rule refuses. The guard calls no pmdoc function the base lacks, so the test
-	// also compiles at a build without that rule, where it runs as its negative control.
+	// line-start rule refuses.
 	if markdown != versionTwo || len(blocks) == 0 || blocks[0].ID != list || markdown[blocks[0].From:blocks[0].To] != "- b\n  - c" {
 		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, list, "- b\n  - c")
 	}

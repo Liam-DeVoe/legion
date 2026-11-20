@@ -55,7 +55,8 @@ export type DispatchToolName = (typeof dispatchToolSpecs)[number]["name"];
  * What a command's `--dry-run` asks Dispatch after the call's own argument check passed: the
  * question the call asks before it writes, whose answer can refuse the call. The dry run prints
  * the refusal the step returns, and otherwise the arguments; it stores nothing. A command with no
- * step asks Dispatch nothing in its dry run.
+ * step asks Dispatch nothing in its dry run, save a `dispatch result` record, whose dry run runs
+ * as the record does (`dryRunAsksDispatch`).
  */
 export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdict>;
 
@@ -77,11 +78,8 @@ export type DispatchCommand = (
 ) & { readonly dryRun?: DispatchDryRunStep };
 
 /** A command that acts for the session: it is handed the context whose origin was resolved. */
-function acting(
-  run: (context: CommandContext) => Promise<DispatchToolResult>,
-  dryRun?: DispatchDryRunStep
-): DispatchCommand {
-  return { origin: "resolved", run, ...(dryRun === undefined ? {} : { dryRun }) };
+function acting(run: (context: CommandContext) => Promise<DispatchToolResult>): DispatchCommand {
+  return { origin: "resolved", run };
 }
 
 /** A command that answers from the session alone, resolving no origin. */
@@ -118,7 +116,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
-  dispatch_artifact: acting(artifactCommand, artifactDryRun),
+  dispatch_artifact: { ...acting(artifactCommand), dryRun: artifactDryRun },
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
   dispatch_steps: acting(stepsCommand),

@@ -35,14 +35,9 @@ import (
 // Of the versions the keeps of decisions standing in no container name, those another renderer
 // version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a
 // version this renderer version stored is not read, so a decisions view pays nothing for a keep
-// whose version this renderer version wrote. Each version read is cut (decisionCuts) after the
-// query's rows are read and closed, never while the query holds a pool connection, and parsed
-// whole only where the process keeps no cut of it (storedCuts), so at most once a view and once a
-// process while its cut stays kept; a version whose markdown is the document's as it stands takes
-// that cut (documentCut). Only a keep whose text there has the keep's sum also pays the parse and
-// the render of pmdoc.FragmentReadsAs. It answers every version it read, a version whose markdown
-// the parser refuses among them (storedDecisions.refused), and the links' pass neither reads nor
-// cuts any of them again (markStaleLinks).
+// whose version this renderer version wrote. Each version read is cut by scanStoredDecisions, and
+// only a keep whose text there has the keep's sum also pays the parse and the render of
+// pmdoc.FragmentReadsAs. It answers every version it read, for the links' pass (markStaleLinks).
 func (s *server) markKeptAcrossRenderers(
 	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
 	current documentCut,
@@ -71,7 +66,7 @@ func (s *server) markKeptAcrossRenderers(
 			continue
 		}
 		version, read := versions[decision.Kept.ChangedVersion]
-		if !read || version.refused {
+		if !read {
 			continue
 		}
 		kept, held := version.decisions[keys[i]]
@@ -106,19 +101,24 @@ func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 	return ok && (stored.sum == now.sum || v.otherRenderer && stored.alone && now.alone && pmdoc.FragmentReadsAs(stored.text, now.text))
 }
 
+// storedDecisionsQuery reads the number, renderer version and markdown of the named versions of a
+// document, the columns scanStoredDecisions scans in that order.
+const storedDecisionsQuery = `
+	select number, renderer_version, coalesce(markdown, '') from artifact_versions
+	where artifact_id = $1::uuid and number = any($2::int[])`
+
 // storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
 // own stored markdown, cut by the same rule as the document as it stands, read beside the
-// renderer version that stored it. A version in read, which the keeps' pass read
-// (markKeptAcrossRenderers), is taken from there, a version whose markdown the parser refuses
-// among them, and only the others are read, in one query, and cut once its rows are closed
+// renderer version that stored it. A version in keepsRead, which the keeps' pass read
+// (markKeptAcrossRenderers), is taken from there, and only the others are read, in one query
 // (scanStoredDecisions).
 func (s *server) storedDecisionsAt(
-	ctx context.Context, artifactID string, numbers []int, current documentCut, read map[int]storedDecisions,
+	ctx context.Context, artifactID string, numbers []int, current documentCut, keepsRead map[int]storedDecisions,
 ) (map[int]storedDecisions, error) {
 	versions := make(map[int]storedDecisions, len(numbers))
 	var unread []int
 	for _, number := range numbers {
-		if version, ok := read[number]; ok {
+		if version, ok := keepsRead[number]; ok {
 			versions[number] = version
 		} else {
 			unread = append(unread, number)
@@ -127,10 +127,7 @@ func (s *server) storedDecisionsAt(
 	if len(unread) == 0 {
 		return versions, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, renderer_version, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, unread)
+	rows, err := s.deps.Store.Pool.Query(ctx, storedDecisionsQuery, artifactID, unread)
 	if err != nil {
 		return nil, err
 	}
@@ -147,10 +144,8 @@ func (s *server) storedDecisionsAt(
 func (s *server) otherRendererDecisionsAt(
 	ctx context.Context, artifactID string, numbers []int, current documentCut,
 ) (map[int]storedDecisions, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, renderer_version, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[]) and renderer_version is distinct from $3
-	`, artifactID, numbers, pmdoc.RendererVersion)
+	rows, err := s.deps.Store.Pool.Query(ctx, storedDecisionsQuery+`
+		and renderer_version is distinct from $3`, artifactID, numbers, pmdoc.RendererVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -161,17 +156,15 @@ func (s *server) otherRendererDecisionsAt(
 	return versions, nil
 }
 
-// scanStoredDecisions reads rows of versions' number, renderer_version and markdown, every row,
-// and closes them before it cuts any (pgx.CollectRows), so no parse runs while the query holds a
-// pool connection. It then puts each version's decisions into versions, its markdown cut by
-// decisionCuts: a version whose markdown is current's, the document's as it stands, takes
-// current's cut rather than a second parse of the same markdown, and every other takes the cut
-// the process keeps for that version of artifactID (storedCuts), which parses its markdown only
-// where none is kept. So a view parses each version it reads at most once, and none whose cut is
-// kept. A version whose markdown the parser refuses gives no cuts, and is marked refused
-// (storedDecisions.refused) rather than read as a version that holds no decision's text: a link
-// that names it stays as it is, as for a version the document does not hold (staleLink), and a
-// keep that names it waits for review (markKeptAcrossRenderers).
+// scanStoredDecisions reads rows of versions' number, renderer_version and markdown
+// (storedDecisionsQuery), every row, and closes them before it cuts any (pgx.CollectRows), so no
+// parse runs while the query holds a pool connection. It then puts each version's decisions into
+// versions, its markdown cut by decisionCuts: a version whose markdown is current's, the
+// document's as it stands, takes current's cut rather than a second parse of the same markdown,
+// and every other takes the cut the process keeps for that version of artifactID (storedCuts),
+// which parses its markdown only where none is kept. So a view parses each version it reads at
+// most once, and none whose cut is kept. A version whose markdown the parser refuses is marked
+// refused (storedDecisions.refused) rather than read as a version that holds no decision's text.
 func scanStoredDecisions(artifactID string, rows pgx.Rows, current documentCut, versions map[int]storedDecisions) error {
 	type storedVersion struct {
 		number   int

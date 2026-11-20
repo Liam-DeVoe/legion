@@ -611,7 +611,7 @@ func TestStoredOrderSettlementOverAnUnstoredEdit(t *testing.T) {
 	assertStoredOrder(t, service, artifactID)
 }
 
-// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsAuthorsAndCopyOnTheNextVersion:
+// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce:
 // Bob's edit reaches the room between the snapshot's authors and its copy, its observer held after
 // crediting it and before handing it to persistence (afterCaptureAuthorsTake, afterCreditUpdate).
 // The snapshot holds his edit at a doc_update_version without his update.

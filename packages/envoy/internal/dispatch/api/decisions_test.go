@@ -614,25 +614,15 @@ func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing
 	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
 
 	ctx := context.Background()
-	var stored string
-	if err := database.Pool.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, id, version.Number).Scan(&stored); err != nil {
-		t.Fatalf("read version %d: %v", version.Number, err)
-	}
+	stored := versionText(t, database, id, version.Number)
 	kept := strings.TrimSuffix(written.Text, reference) + literal
-	// That literal and the reference read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
-	// which is the case FragmentReadsAs refuses. The guard calls no pmdoc function, so the test
-	// also compiles at a build without FragmentReadsAs, where it runs as its negative control.
+	// That literal and the reference read alone as one
+	// (TestAStoredTextReadsAsAnotherSpellingOfTheSameTree), which is the case FragmentReadsAs refuses.
 	if !strings.Contains(stored, written.Text+"\n") {
 		t.Fatalf("version %d = %q; the test needs it to hold the decision as %q", version.Number, stored, written.Text)
 	}
 	another := pmdoc.RendererVersion - 1
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
-	`, id, version.Number, strings.Replace(stored, written.Text+"\n", kept+"\n", 1), another); err != nil {
-		t.Fatalf("store version %d as another renderer version stored footnote-shaped text: %v", version.Number, err)
-	}
+	storeVersionAs(t, database, id, version.Number, strings.Replace(stored, written.Text+"\n", kept+"\n", 1), &another)
 	if _, err := database.Pool.Exec(ctx, `
 		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
 	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
@@ -705,25 +695,14 @@ func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testi
 			keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
 
 			ctx := context.Background()
-			var stored string
-			if err := database.Pool.QueryRow(ctx, `
-				select markdown from artifact_versions where artifact_id = $1 and number = $2
-			`, id, version.Number).Scan(&stored); err != nil {
-				t.Fatalf("read version %d: %v", version.Number, err)
-			}
+			stored := versionText(t, database, id, version.Number)
 			// The kept text and the text now read alone as one, which is the case a cut inside a
-			// typed block refuses. The guard calls no pmdoc function the base lacks, so the test
-			// also compiles at a build that reads such a cut alone, where it runs as its negative
-			// control.
+			// typed block refuses.
 			if !strings.Contains(stored, now+"\n") {
 				t.Fatalf("version %d = %q; the test needs it to hold %q", version.Number, stored, now)
 			}
 			another := pmdoc.RendererVersion - 1
-			if _, err := database.Pool.Exec(ctx, `
-				update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
-			`, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), another); err != nil {
-				t.Fatalf("store version %d as another renderer version stored the decision across the callout: %v", version.Number, err)
-			}
+			storeVersionAs(t, database, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), &another)
 			if _, err := database.Pool.Exec(ctx, `
 				update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
 			`, id, written.BlockID, decisionTextSum(kept)); err != nil {
@@ -948,7 +927,6 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 		{"op": "replace", "find": "Replaced by the table above.", "with": "Replaced by the table above, in May."},
 	})
 
-	ctx := context.Background()
 	stored := versionText(t, database, id, 1)
 	refused := "[spec]: https://example.com/spec\n\n" + stored
 	if !strings.Contains(refused, table.Text+"\n") {
@@ -958,11 +936,7 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 		t.Fatalf("pmdoc reads %q; the test needs markdown it refuses", refused)
 	}
 	another := pmdoc.RendererVersion - 1
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
-	`, id, refused, another); err != nil {
-		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
-	}
+	storeVersionAs(t, database, id, 1, refused, &another)
 
 	decision := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
 	if decision.Text != table.Text || len(decision.Links) != 2 {
@@ -973,15 +947,16 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 	}
 }
 
-// A decisions view parses each stored version it reads once, and the next view parses none of
-// them again: the process keeps each version's cut, the parser's refusal included (storedCuts).
-// alice keeps listDecision at the version that wrote it and its link to hold-it, which a build of
-// another renderer version stored in its own spelling (respellVersion), so the keeps' pass and the
-// links' pass both name that version. She keeps tableDecision at version 1 under a sum its text
-// does not have, and its links were created at version 1, which a build of another renderer
-// version stored as markdown the parser refuses: both passes name that version too. Each view
-// parses the document as it stands once (readDecisions); the first parses each of the two
-// versions once, and the second parses neither. Both views read the decisions alike.
+// A decisions view parses each markdown it reads once, and the next view parses none of them
+// again: the process keeps each cut, the parser's refusal included (storedCuts). alice keeps
+// listDecision at the version that wrote it and its link to hold-it, which a build of another
+// renderer version stored in its own spelling (respellVersion), so the keeps' pass and the links'
+// pass both name that version. She keeps tableDecision at version 1 under a sum its text does not
+// have, and its links were created at version 1, which a build of another renderer version stored
+// as markdown the parser refuses: both passes name that version too. The first view parses the
+// document as it stands once, and no later view parses it again (readDecisions). Of the two views
+// after the keeps, the first parses each of the two versions once, and the second parses neither.
+// Both read the decisions alike.
 func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
@@ -990,7 +965,14 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 		"markdown": "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third",
 		"before":   "## Replaced",
 	}})
+	parsed := map[string]int{}
+	decisionCutsObserver = func(markdown string) { parsed[markdown]++ }
+	t.Cleanup(func() { decisionCutsObserver = nil })
+	live := versionText(t, database, id, version.Number)
 	written := readIssueDecisions(t, handler, key)
+	if parsed[live] != 1 {
+		t.Fatalf("the first view parsed the document as it stands %d times, want 1", parsed[live])
+	}
 	steps, table := decisionNamed(t, written, listDecision), decisionNamed(t, written, tableDecision)
 	if steps.ChangedVersion != version.Number || len(steps.Links) != 1 || steps.Links[0].CreatedVersion != version.Number {
 		t.Fatalf("the decision = %#v, want it changed at version %d and linking one spec block since then", steps, version.Number)
@@ -1014,11 +996,7 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 	if _, read := decisionCuts(refused); read {
 		t.Fatalf("the parser reads %q; the test needs markdown it refuses", refused)
 	}
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
-	`, id, refused, another); err != nil {
-		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
-	}
+	storeVersionAs(t, database, id, 1, refused, &another)
 	kept := strings.Replace(steps.Text, "- first\n\n- second", "- first\n- second", 1)
 	for blockID, sum := range map[string]string{steps.BlockID: decisionTextSum(kept), table.BlockID: decisionTextSum(table.Text + " Unread.")} {
 		if _, err := database.Pool.Exec(ctx, `
@@ -1028,9 +1006,6 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 		}
 	}
 
-	parsed := map[string]int{}
-	decisionCutsObserver = func(markdown string) { parsed[markdown]++ }
-	t.Cleanup(func() { decisionCutsObserver = nil })
 	for _, view := range []struct {
 		name string
 		want int
@@ -1046,15 +1021,15 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 			t.Errorf("the %s view reads %q as %#v, want it waiting for review and both its links as they are",
 				view.name, tableDecision, table)
 		}
-		document := 0
+		other := 0
 		for markdown, times := range parsed {
 			if markdown != respelled && markdown != refused {
-				document += times
+				other += times
 			}
 		}
-		if parsed[respelled] != view.want || parsed[refused] != view.want || document != 1 {
-			t.Errorf("the %s view parsed version %d %d times, version 1 (refused) %d times and the document as it stands %d times, want %d, %d and 1",
-				view.name, version.Number, parsed[respelled], parsed[refused], document, view.want, view.want)
+		if parsed[respelled] != view.want || parsed[refused] != view.want || other != 0 {
+			t.Errorf("the %s view parsed version %d %d times, version 1 (refused) %d times and any other markdown, the document as it stands among them, %d times, want %d, %d and 0",
+				view.name, version.Number, parsed[respelled], parsed[refused], other, view.want, view.want)
 		}
 	}
 }
@@ -1083,12 +1058,7 @@ func TestADecisionKeptBeforeItMovedIntoAListItemWaitsBesideADecisionOfItsName(t 
 	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
 
 	ctx := context.Background()
-	var stored string
-	if err := database.Pool.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, id, version.Number).Scan(&stored); err != nil {
-		t.Fatalf("read version %d: %v", version.Number, err)
-	}
+	stored := versionText(t, database, id, version.Number)
 	if !strings.Contains(stored, now+"\n") {
 		t.Fatalf("version %d = %q; the test needs it to hold %q", version.Number, stored, now)
 	}
@@ -1100,11 +1070,7 @@ func TestADecisionKeptBeforeItMovedIntoAListItemWaitsBesideADecisionOfItsName(t 
 	}
 	then := "- Intro.\n\n" + kept + "\n\n" + other
 	another := pmdoc.RendererVersion - 1
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
-	`, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), another); err != nil {
-		t.Fatalf("store version %d as another renderer version stored the decision at the document's level: %v", version.Number, err)
-	}
+	storeVersionAs(t, database, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), &another)
 	if _, err := database.Pool.Exec(ctx, `
 		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
 	`, id, written.BlockID, decisionTextSum(kept)); err != nil {

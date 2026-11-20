@@ -1162,6 +1162,13 @@ describe("the dispatch CLI", () => {
         answer: { code: "INTERNAL", error: "the document service is down" },
         stderr: unasked(`POST ${ROUND_TRIP} failed with INTERNAL: the document service is down`),
       },
+      // Dispatch's own answer that the text is past what the check reads, which the call then
+      // refuses every time it is sent.
+      {
+        status: 413,
+        answer: { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" },
+        stderr: `dispatch: warning: Dispatch refused to say how it would store the text: POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes. The text is longer than the check reads, so the call refuses the upload every time it is sent.\n`,
+      },
     ];
     for (const { status, answer, stderr } of cases) {
       roundTrip = () => Response.json(answer, { status });

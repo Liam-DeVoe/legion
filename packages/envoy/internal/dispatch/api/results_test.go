@@ -3303,11 +3303,8 @@ func respellVerification(t *testing.T, database *store.Store, artifactID string,
 	if written == respelledCheckBlock {
 		t.Fatalf("this build writes check k1 as %q; the test needs a spelling no build writes", written)
 	}
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
-	`, artifactID, number, respelledCheck, pmdoc.RendererVersion-1); err != nil {
-		t.Fatalf("store version %d in another renderer's spelling: %v", number, err)
-	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, artifactID, number, respelledCheck, &another)
 	for id, body := range map[string]string{"k1": respelledCheckBlock, paragraph: respelledCheckParagraph} {
 		indexed, err := database.Pool.Exec(ctx, `
 			update document_blocks set text_sha256 = $3, excerpt = $4

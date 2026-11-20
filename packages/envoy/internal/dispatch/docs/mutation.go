@@ -1487,7 +1487,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	// no update since changed the content (contentChangedSinceVersion), as settlement's test has
 	// it, and its markdown reads as this rendering too, since an edit the room holds that its
 	// persistence has not stored yet is in no update row. Either way the line feeds the two end in
-	// no longer count (pmdoc.SameRendering).
+	// do not count (pmdoc.SameRendering).
 	if !pmdoc.OtherRenderer(latest.rendererVersion) {
 		changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
 		if err != nil {
@@ -2360,14 +2360,12 @@ func (v latestVersionRow) holds(rendering string) bool {
 // version carries the renderer version its row stores, nil where its write stored no render stamp
 // (queueVersionInsert), so it reads as that row will once written.
 func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {
-	var version latestVersionRow
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		if pending, queued := ledger.latest[artifactID]; queued {
-			version.Version, version.markdown, version.docUpdateVersion = pending.version, pending.markdown, pending.docUpdateVersion
-			version.rendererVersion = pending.rendererVersion
-			return version, nil
+			return pending, nil
 		}
 	}
+	var version latestVersionRow
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
 		select v.number, v.named, v.summary, v.authors, v.created_at, `+model.VersionSize+`, v.markdown, v.doc_update_version, v.renderer_version
@@ -2556,7 +2554,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer})
+		ledger.queuedVersion(artifactID, latestVersionRow{Version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer})
 	}
 	return version, nil
 }

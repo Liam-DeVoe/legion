@@ -284,7 +284,7 @@ func documentAdding(doc, block *Node) *Node {
 // another spelling among them, except where either side holds `[^`: literal text shaped like a
 // footnote reference, escaped because its document defines the label, and a reference to that
 // label read alone as one, though the two documents that hold them read as two trees.
-func TestReadsAsReadsAnotherSpellingOfTheSameTree(t *testing.T) {
+func TestAStoredTextReadsAsAnotherSpellingOfTheSameTree(t *testing.T) {
 	const unclosed = ":::callout{#b7 kind=\"note\" title=\"T\"}\nBody.\n"
 	const unknown = ":::future_block{#b1}\nBody.\n:::\n"
 	for _, test := range []struct {

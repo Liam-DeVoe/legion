@@ -137,16 +137,17 @@ type BlockIndexing struct {
 // versions and decides. Each block it keeps has its row take this text's sha256 and excerpt, and
 // no text is recorded for it at this version: a pin to an earlier version still reads unchanged,
 // and the block's recorded text keeps the earlier spelling until its text next changes. Such a
-// block counts as unchanged in Moved and Cited. Every block inside a list item, a quote, a
-// footnote definition or a typed block takes this version when its text moved, and so does a
-// top-level block that stood inside a list item, a quote or a footnote definition at its changed
-// version: a block's text read alone loses its container's prefix, so two trees can read as one
-// (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`, which reads alone as c under b, as
-// the inner list of `- a\n  - b\n    - c` does). A top-level block that stood inside a top-level
-// typed block at its changed version can keep it: a typed block writes its blocks with no prefix,
-// so the text recorded for such a block reads alone as it stood. A block whose recorded text or
-// text here holds `[^` takes this version too, since that text reads as a footnote reference or
-// as text by the labels the rest of its document defines.
+// block counts as unchanged in Moved and Cited. Every block inside a list item, a quote or a
+// footnote definition takes this version when its text moved, and so does a top-level block that
+// stood inside one at its changed version: a block's text read alone loses its container's prefix,
+// so two trees can read as one (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`, which
+// reads alone as c under b, as the inner list of `- a\n  - b\n    - c` does). Every block inside a
+// typed block takes this version too when its text moved, since only a top-level block is a
+// candidate. A top-level block that stood inside a top-level typed block at its changed version
+// can keep it: a typed block writes its blocks with no prefix, so the text recorded for such a
+// block reads alone as it stood. A block whose recorded text or text here holds `[^` takes this
+// version too, since that text reads as a footnote reference or as text by the labels the rest of
+// its document defines.
 func PlanBlocks(
 	index BlockIndex,
 	artifactID string,

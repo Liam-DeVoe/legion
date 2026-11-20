@@ -8,6 +8,8 @@ body: |-
   Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry run
   passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry run
   sends no second attempt after a failed one, and names the failure Dispatch answers, such as a
-  500; where Dispatch says the token is no longer live, it presents a fresh token once.
-  `DISPATCH_DRY_RUN_LOCAL=1` keeps a dry run local: it then checks the arguments alone, as every
-  dry run did before.
+  500; where Dispatch says the token is no longer live, it presents a fresh token once. A text
+  longer than the check reads (Dispatch's 413) passes too, saying the call refuses that upload
+  every time it is sent. `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then
+  checks the arguments alone, as it did before. It leaves a `dispatch result` record's dry run
+  as it was, asking Dispatch for the pull-request body line, as it did before too.

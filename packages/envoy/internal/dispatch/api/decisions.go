@@ -228,18 +228,18 @@ func (s *server) specOpenQuestions(
 // names where its sum is not the decision's (markKeptAcrossRenderers). specID is "" when the
 // issue has no spec, and every decision then has no links.
 //
-// The document is cut into its decisions once a view (decisionCuts), and that cut is the one
-// reader of the document as it stands for both the keeps and the links (markStaleLinks): each
+// The document is cut into its decisions at most once a view (decisionCuts), and that cut is the
+// one reader of the document as it stands for both the keeps and the links (markStaleLinks): each
 // decision is its cut that starts where its heading block does, named by that cut's key, the same
 // key a stored version's cut gives it. A decision whose heading stands in a list item, a quote or
 // a footnote definition has no cut, since the cut reads only the headings the parser places
 // outside every container but a typed block (pmdoc.RenderingOutline); its key names no cut of any
 // version (noCut), so it is never read as another decision of its heading. The cut parses the
 // whole document, so it is made only where a mark can change a decision - some decision links the
-// spec, or waits for review under a keep - and neither mark changes any other decision. It is the
-// live document's, so each view makes it again. Each stored version the marks read is parsed
-// after its rows are closed, at most once a view however many of both passes name it, and not at
-// all while the process keeps its cut (scanStoredDecisions, storedCuts).
+// spec, or waits for review under a keep - and neither mark changes any other decision. It is
+// taken from the cuts the process keeps (storedCuts) under the number 0, which no stored version
+// has, so a view of a markdown an earlier view cut parses none of it again. Each stored version
+// the marks read is cut by scanStoredDecisions.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
@@ -247,8 +247,8 @@ func (s *server) specOpenQuestions(
 // filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
 // sum and answers none of them, so it passes no reader and no tree is read for it. It passes mark
 // false too, since it reads no field either mark sets: neither the cut nor the marks are made for
-// it, so a Keep parses no markdown and makes no read of the versions its keeps name
-// (markKeptAcrossRenderers), and a failure of that read no longer fails a Keep.
+// it, and a Keep parses no markdown and makes no read of the versions its keeps name
+// (markKeptAcrossRenderers), so no failure of that read fails a Keep.
 func (s *server) readDecisions(
 	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
@@ -328,16 +328,15 @@ func (s *server) readDecisions(
 	if !mark || !markable {
 		return decisions, nil
 	}
-	cuts, read := decisionCuts(markdown)
-	current := documentCut{markdown: markdown, cuts: cuts, read: read}
-	keyAt := make(map[int]sectionKey, len(cuts))
-	for key, cut := range cuts {
+	current := storedCuts.cut(storedVersionKey{artifactID: document.ID, number: 0}, markdown)
+	keyAt := make(map[int]sectionKey, len(current.cuts))
+	for key, cut := range current.cuts {
 		keyAt[cut.start] = key
 	}
 	keys := make([]sectionKey, len(sections))
 	for i, section := range sections {
-		key, cut := keyAt[section.start]
-		if !cut {
+		key, found := keyAt[section.start]
+		if !found {
 			key = sectionKey{heading: section.heading, occurrence: noCut}
 		}
 		keys[i] = key
@@ -373,12 +372,11 @@ func (s *server) readDecisions(
 // text of the decision, alone, as the text now (storedDecisions.holds), so a renderer change,
 // which leaves every version stored before it in its renderer's spelling, marks no link. A text
 // that holds `[^`, and a text cut from inside a typed block then or now (decisionCut.alone), are
-// compared by their sums alone (pmdoc.FragmentReadsAs). read is the versions the keeps' pass
-// already read (markKeptAcrossRenderers), a version the parser refuses among them
-// (storedDecisions.refused), none of which is read or parsed again.
+// compared by their sums alone (pmdoc.FragmentReadsAs). keepsRead is the versions the keeps' pass
+// read (markKeptAcrossRenderers), which storedDecisionsAt takes rather than reading them again.
 func (s *server) markStaleLinks(
 	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
-	current documentCut, read map[int]storedDecisions,
+	current documentCut, keepsRead map[int]storedDecisions,
 ) error {
 	times := map[int64]time.Time{}
 	numbers := map[int]bool{}
@@ -400,7 +398,7 @@ func (s *server) markStaleLinks(
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current, read)
+	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current, keepsRead)
 	if err != nil {
 		return err
 	}
@@ -539,16 +537,13 @@ type decisionCut struct {
 // typed block holds its heading and it does not end strictly inside one; it ends at the line of
 // the heading that closes it, or at the markdown's end.
 //
-// A document the parser refuses gives no cuts, and read false. As the document that stands, every
-// decision then has no cut, so no keep across a renderer change is read as kept and no link is
-// marked out of date: its links stay as they are. As a stored version, it is one the view could
-// not read (storedDecisions.refused), as a version the document does not hold is: a keep that
-// names it waits for review, and a link that names it stays as it is.
+// A document the parser refuses gives no cuts, and read false: as the document that stands, every
+// decision then has no cut, and as a stored version, it is one the view could not read
+// (storedDecisions.refused).
 //
 // Each call parses the whole markdown, 8.5 to 13.4 ms for a document of 25 to 43 KB, so a view
-// makes one for the document as it stands (readDecisions) and one for each stored version it reads
-// whose cut the process does not keep (storedCuts), each after its query's rows are closed
-// (scanStoredDecisions).
+// cuts a markdown only where the process keeps no cut of it (storedCuts): the document as it
+// stands (readDecisions) and each stored version it reads (scanStoredDecisions).
 func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) {
 	if decisionCutsObserver != nil {
 		decisionCutsObserver(markdown)
@@ -616,11 +611,9 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 var decisionCutsObserver func(markdown string)
 
 // documentCut is a markdown cut into its decisions (decisionCuts): its cuts, and whether the
-// parser read it. The document as it stands is cut once a view (readDecisions), and a stored
-// version whose markdown is that same markdown takes its cut, refusal included, rather than
-// another parse of it (scanStoredDecisions). Every other stored version's cut is a documentCut the
-// process keeps by its version (storedCuts), shared by every view that reads it, so nothing writes
-// to one once it is cut.
+// parser read it. The process keeps each one, the document's as it stands and each stored
+// version's, by its version (storedCuts), shared by every view that reads it, so nothing writes to
+// one once it is cut.
 type documentCut struct {
 	markdown string
 	cuts     map[sectionKey]decisionCut

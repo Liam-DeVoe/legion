@@ -16,11 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import {
-  defined,
-  type ExecuteDispatchToolInput,
-  sessionContext,
-} from "./dispatch-commands/context";
+import { defined } from "./dispatch-commands/context";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -30,7 +26,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchWriteLandedError } from "./dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -151,8 +147,9 @@ export function cliRefusals(text: string): CliRefusal[] {
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
 
 /** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
- *  inside the 20 s AskGate gives a dry run, so a slow Dispatch passes the dry run with a warning
- *  rather than failing it. */
+ *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
+ *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
+ *  variable, under which no step runs. */
 const DRY_RUN_DEADLINE_MS = 5_000;
 
 /** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
@@ -406,25 +403,17 @@ export async function runDispatchCli(
           if (!settings.enabled) {
             throw new Error(file.path === null ? file.error : dispatchOffText(settings));
           }
-          const input: ExecuteDispatchToolInput = {
-            tool: parsed.tool,
-            args: checked.args,
-            cwd: io.cwd,
-            host,
-            sessionId,
-            config: settings,
-            env,
-            ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
-            signal: deadline,
-            // The waits before asking a route again, and before sending the round trip again
-            // after a failed attempt, would outlast the deadline: the step sends no second attempt
-            // after a failed one (it still presents a fresh token once where Dispatch says the
-            // token is no longer live), says what Dispatch answered, and has an answer of its own
-            // to a Dispatch that holds no such route.
+          // The client's own deadline is the dry run's, so a credential is given that budget less
+          // the request's reserve. The waits before asking a route again, and before sending the
+          // round trip again after a failed attempt, would outlast the deadline: the step sends no
+          // second attempt after a failed one (it still presents a fresh token once where Dispatch
+          // says the token is no longer live), says what Dispatch answered, and has an answer of
+          // its own to a Dispatch that holds no such route.
+          return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+            deadlineMs,
             retryNoRoute: false,
             writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
-          };
-          return sessionContext(input, checked).newClient();
+          });
         },
       });
       if (verdict.kind === "refused") {

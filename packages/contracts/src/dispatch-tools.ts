@@ -29,7 +29,7 @@ export interface DispatchToolSpec {
   /** What the command's `--dry-run` flag does, as its help says, for a command whose dry run asks
    *  Dispatch something past the argument check every dry run runs. A command without one says
    *  that its dry run checks the arguments, prints them and sends nothing. */
-  readonly dryRun?: string;
+  readonly dryRunHelp?: string;
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -1763,7 +1763,7 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_result",
-    dryRun:
+    dryRunHelp:
       "Checks the arguments as the call would and prints them as JSON. A record's dry run then asks Dispatch for the pull-request body line the record would print, and prints it; Dispatch records nothing. A retraction's dry run sends nothing.",
     example: {
       issue: "DSP-1",
@@ -1946,7 +1946,7 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
-    dryRun:
+    dryRunHelp:
       "Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses a text that Dispatch would store under another spelling with the call's own refusal. Otherwise it prints the arguments as JSON. It stores nothing. When Dispatch cannot answer, it says so on stderr and passes.",
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +

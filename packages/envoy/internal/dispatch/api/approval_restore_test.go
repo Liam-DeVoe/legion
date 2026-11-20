@@ -218,19 +218,22 @@ func respellVersion(t *testing.T, database *store.Store, artifactID string, numb
 		t.Fatalf("version %d = %q, want a list whose first two items are first and second", number, written)
 	}
 	respelled := written[:first] + "- first\n" + written[second:]
-	tree, err := pmdoc.ParseRendering(respelled)
-	if err != nil {
-		t.Fatalf("read the respelled version %d %q: %v", number, respelled, err)
-	}
-	if again, err := pmdoc.Render(tree); err != nil || again != written || respelled == written {
+	if again, _, err := pmdoc.RenderingOf(respelled); err != nil || again != written || respelled == written {
 		t.Fatalf("the respelled version %d %q renders %q (%v), want another spelling of %q", number, respelled, again, err, written)
 	}
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
-	`, artifactID, number, respelled, stamp); err != nil {
-		t.Fatalf("store version %d in another renderer version's spelling: %v", number, err)
-	}
+	storeVersionAs(t, database, artifactID, number, respelled, stamp)
 	return respelled
+}
+
+// storeVersionAs stores markdown as version number of artifactID, stamped stamp
+// (renderer_version, nil for none), as a build of that renderer version could have stored it.
+func storeVersionAs(t *testing.T, database *store.Store, artifactID string, number int, markdown string, stamp *int) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
+	`, artifactID, number, markdown, stamp); err != nil {
+		t.Fatalf("store version %d's markdown and renderer version: %v", number, err)
+	}
 }
 
 // A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its

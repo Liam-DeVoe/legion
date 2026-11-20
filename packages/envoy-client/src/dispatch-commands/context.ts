@@ -70,10 +70,6 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
-  /** Whether a request Dispatch answered with no route is asked again (`DispatchClient`'s
-   *  `retryNoRoute`, true unless set). A dry run sets false: it has an answer of its own to a
-   *  missing route, and the waits would outlast its deadline. */
-  readonly retryNoRoute?: boolean;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -111,12 +107,14 @@ export interface DryRunContext {
   /** The arguments as the call's check parsed them. */
   readonly args: ToolArguments;
   /**
-   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
-   * `deadline` and asks no request again that Dispatch answered with no route. It prints each
-   * warning of the session's configuration on stderr, and throws, naming why, when the session
-   * has no Dispatch. A step calls it only for arguments it asks Dispatch about, so every other dry
-   * run builds no client and prints no configuration warning, and no dry run but a step's sends a
-   * request.
+   * The client the call builds, from the session's Dispatch as the call resolves it. Its own
+   * deadline is the dry run's (`deadlineMs`), so a credential is given that budget less the
+   * request's reserve, and it asks no request again that Dispatch answered with no route. It
+   * prints each warning of the session's configuration on stderr, and throws, naming why, when
+   * the session has no Dispatch. A step calls it only for arguments it asks Dispatch about, so a
+   * dry run of any other arguments builds no client here and prints no configuration warning. The
+   * one other dry run that sends a request is a `dispatch result` record's, which runs as the
+   * record does (`dryRunAsksDispatch`).
    */
   readonly client: () => DispatchClient;
   /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
@@ -362,7 +360,6 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
-        retryNoRoute: input.retryNoRoute,
       }),
   };
 }

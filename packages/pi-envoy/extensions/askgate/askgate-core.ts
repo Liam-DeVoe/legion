@@ -1804,13 +1804,15 @@ export interface UnreadableCommand {
 /**
  * Runs `script` under bash in a process group of its own, which is killed at the limit or on the
  * signal. The script gets `env` with DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run
- * checks the arguments alone and asks Dispatch nothing, where `dispatch artifact --dry-run`
- * otherwise asks how Dispatch would store inline text (POST /api/v1/markdown/round-trip). The
- * gate reads arguments, and the call makes that round trip itself and refuses a text Dispatch
- * would store under another spelling, so the read needs none. The `cd`'s `pwd -P` probe, the
- * other script the gate runs here, ignores the variable. The call never gets it: Oh My Pi runs
- * the call in its own environment, and `env` is copied here, not changed. A `dispatch` older
- * than the variable ignores it and asks nothing either way.
+ * of an upload (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch
+ * nothing, where it otherwise asks how Dispatch would store inline text (POST
+ * /api/v1/markdown/round-trip). The variable leaves a `dispatch result` record's dry run asking
+ * Dispatch, as it did before, and the gate reviews no `result`. The gate reads arguments, and the
+ * call makes that round trip itself and refuses a text Dispatch would store under another
+ * spelling, so the read needs none. The `cd`'s `pwd -P` probe, the other script the gate runs
+ * here, ignores the variable. The call never gets it: Oh My Pi runs the call in its own
+ * environment, and `env` is copied here, not changed. A `dispatch` older than the variable ignores
+ * it and asks nothing either way.
  */
 export async function spawnDryRun(
   script: string,
