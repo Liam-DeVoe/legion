@@ -163,8 +163,9 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("create JSON artifact: status=%d body=%s", first.Code, first.Body.String())
 	}
-	second := dispatchRequest(t, handler, http.MethodPost, path, map[string]string{
+	second := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
 		"name": "architect-spec.md", "content": "# Revised\n", "summary": "Revision",
+		"precondition": uploadBaseNamed(t, handler, path, "architect-spec.md"),
 	}, "alice")
 	if second.Code != http.StatusCreated {
 		t.Fatalf("create JSON artifact version: status=%d body=%s", second.Code, second.Body.String())
@@ -218,10 +219,13 @@ func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 // An upload with create_only makes a new document and nothing else. Under a name the owner
 // already holds - the name a person renamed another document to, which keeps that document's own
 // slug, or that slug - it is refused with 409 ARTIFACT_NAME_TAKEN, naming the document, and the
-// document keeps its one version and its text. A create_only upload under a new name makes the
-// document; the same create again is refused, and an upload without create_only under that name
-// still writes its next version. A project's upload refuses a create_only upload under a name the
-// project holds as an issue's does.
+// document keeps its one version and its text. A create names no version it replaces, so it names
+// no token, and that refusal comes ahead of the 400 PRECONDITION_REQUIRED of a replacement naming
+// no token. A create_only upload under a new name makes the document with no token; the same
+// create again is refused, and an upload without create_only under that name is refused 400
+// PRECONDITION_REQUIRED until it names the token of the version it replaces, which writes its
+// version 2. A project's upload refuses a create_only upload under a name the project holds as an
+// issue's does.
 func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
@@ -266,11 +270,16 @@ func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t
 	if body := decodeBody[uploaded](t, created); created.Code != http.StatusCreated || body.Artifact.Slug != "fresh-list" || body.Version.Number != 1 {
 		t.Fatalf("create_only upload under a new name: status=%d body=%s, want fresh-list at version 1", created.Code, created.Body.String())
 	}
+	fresh := decodeBody[uploaded](t, created).Artifact
 	if again := upload(map[string]any{"name": "fresh-list", "content": "# The full list\n", "create_only": true}); again.Code != http.StatusConflict || decodeBody[refused](t, again).Code != "ARTIFACT_NAME_TAKEN" {
 		t.Fatalf("the same create_only upload again: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN", again.Code, again.Body.String())
 	}
-	if next := upload(map[string]any{"name": "fresh-list", "content": "# Revised\n"}); next.Code != http.StatusCreated || decodeBody[uploaded](t, next).Version.Number != 2 {
-		t.Fatalf("an upload without create_only under fresh-list: status=%d body=%s, want its version 2", next.Code, next.Body.String())
+	if bare := upload(map[string]any{"name": "fresh-list", "content": "# Revised\n"}); bare.Code != http.StatusBadRequest || decodeBody[refused](t, bare).Code != "PRECONDITION_REQUIRED" {
+		t.Fatalf("an upload without create_only or a token under fresh-list: status=%d body=%s, want 400 PRECONDITION_REQUIRED", bare.Code, bare.Body.String())
+	}
+	token := readDocumentPrecondition(t, handler, fresh.ID).Token
+	if next := upload(map[string]any{"name": "fresh-list", "content": "# Revised\n", "precondition": map[string]string{"document": token}}); next.Code != http.StatusCreated || decodeBody[uploaded](t, next).Version.Number != 2 {
+		t.Fatalf("an upload without create_only naming fresh-list's token: status=%d body=%s, want its version 2", next.Code, next.Body.String())
 	}
 
 	project := "/api/v1/projects/TEST/artifacts"
@@ -1075,7 +1084,7 @@ func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 		Artifact model.Artifact `json:"artifact"`
 		Version  model.Version  `json:"version"`
 	}
-	upload := func(path string, body map[string]string) answer {
+	upload := func(path string, body map[string]any) answer {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodPost, path, body, "alice")
 		if response.Code != http.StatusCreated {
@@ -1102,20 +1111,20 @@ func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 			name:  "issue",
 			owner: issue.Key,
 			create: func() answer {
-				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan.md", "content": "# Plan\n"})
+				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "plan.md", "content": "# Plan\n"})
 			},
 			again: func() answer {
-				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan-md", "content": "# Plan, again\n"})
+				return upload("/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "plan-md", "content": "# Plan, again\n", "precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "plan-md")})
 			},
 		},
 		{
 			name:  "project",
 			owner: "TEST",
 			create: func() answer {
-				return upload("/api/v1/projects/TEST/artifacts", map[string]string{"name": "plan.md", "content": "# Plan\n"})
+				return upload("/api/v1/projects/TEST/artifacts", map[string]any{"name": "plan.md", "content": "# Plan\n"})
 			},
 			again: func() answer {
-				return upload("/api/v1/projects/TEST/artifacts", map[string]string{"name": "plan-md", "content": "# Plan, again\n"})
+				return upload("/api/v1/projects/TEST/artifacts", map[string]any{"name": "plan-md", "content": "# Plan, again\n", "precondition": uploadBaseNamed(t, handler, "/api/v1/projects/TEST/artifacts", "plan-md")})
 			},
 		},
 		{
@@ -1253,11 +1262,14 @@ func TestARefusedFileUploadLeavesNoObjectInTheFileStore(t *testing.T) {
 }
 
 // Uploads at once to one owner that holds no plan yet, some named `plan.md` and the rest `plan-md`,
-// are all stored, and leave no reference, a name or a slug, that names two artifacts. Which name
+// leave no reference, a name or a slug, that names two artifacts. Which name
 // lands first decides whether they make one artifact or two: `plan-md` first holds that name and
 // slug, and `plan.md` then gets `plan-md-2`. Neither upload may look its artifact up while the
 // other is still creating one, which a project's upload, with no row to lock as an issue's has,
-// needs its own lock for.
+// needs its own lock for. Only the first upload of each name creates: one that reaches an owner
+// already holding the name is a replacement, and names no token here, so it is refused
+// `400 PRECONDITION_REQUIRED` and writes nothing, which leaves what this test measures - the
+// artifact rows - as a taken upload does.
 func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *testing.T) {
 	for _, owner := range []string{"issue", "project"} {
 		t.Run(owner, func(t *testing.T) {
@@ -1281,8 +1293,10 @@ func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *tes
 			}
 			close(start)
 			for range uploads {
-				if response := awaitResponse(t, responses); response.Code != http.StatusCreated {
-					t.Fatalf("concurrent upload: status=%d body=%s, want 201", response.Code, response.Body.String())
+				response := awaitResponse(t, responses)
+				code, _ := refusalOf(t, response)
+				if response.Code != http.StatusCreated && !(response.Code == http.StatusBadRequest && code == "PRECONDITION_REQUIRED") {
+					t.Fatalf("concurrent upload: status=%d body=%s, want 201 or the 400 of a replacement naming no token", response.Code, response.Body.String())
 				}
 			}
 

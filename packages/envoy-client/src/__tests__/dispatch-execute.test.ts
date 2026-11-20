@@ -8001,6 +8001,84 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A Dispatch older than a result's dry run answers its path no route. The dry run says so and
+  // never falls back to the record's own path: an older build would drop what it does not know
+  // and record the result there.
+  test("a dispatch_result dry run that Dispatch answers no route records nothing and says why", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      asked.push(`${init?.method ?? "GET"} ${pathname}`);
+      return response(
+        {
+          code: "NOT_FOUND",
+          error: `no route for ${init?.method ?? "GET"} ${pathname}`,
+          hint: "GET /api/v1 lists every route",
+        },
+        404
+      );
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_result",
+        args: {
+          issue: "DSP-42",
+          check: "k1",
+          role: "implementer",
+          verdict: "pass",
+          commit: "1".repeat(40),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+        dryRun: true,
+        // The route no build answers is asked again before the message: no real wait.
+        sleep: async () => {},
+      })
+    ).rejects.toThrow(
+      "answered no route for POST /api/v1/issues/DSP-42/results/dry-run each time the dry run was sent: this build is older than a result's dry run, so it cannot show the pull-request body line before the record. Nothing was recorded."
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked.filter((request) => request !== "POST /api/v1/issues/DSP-42/results/dry-run")
+    ).toEqual([]);
+  });
+
+  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // among them, would make its write.
+  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      asked.push(new URL(String(url)).pathname);
+      return response({}, 500);
+    };
+    for (const [tool, args] of [
+      ["dispatch_message", { issue: "DSP-42", body: "hi" }],
+      ["dispatch_result", { retract: "res-2", reason: "The run was wrong." }],
+    ] as const) {
+      await expect(
+        executeDispatchTool({
+          tool,
+          args,
+          cwd: "/workspace",
+          host: "omp",
+          config,
+          env: {},
+          sessionId: "session-one",
+          exec: repoExec("owner/repo"),
+          fetchImpl: fetchImpl as typeof fetch,
+          dryRun: true,
+        })
+      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+    }
+    expect(asked).toEqual([]);
+  });
+
   // One check with the three shapes a reader must tell apart: a result that stands at the head
   // the check compared with, a result retracted after it was recorded, and a result at a commit
   // that head is not. Every result prints, in the order the API served them, because the gate is
@@ -11077,6 +11155,105 @@ describe("executeDispatchTool", () => {
     expect(body).not.toHaveProperty("primary");
   });
 
+  // The base a replacement names travels in both encodings: the JSON body's `precondition`, and
+  // the multipart form field `precondition` holding that same object's JSON text, which is what
+  // the upload route reads (`packages/envoy/internal/dispatch/api/artifacts.go`). A replacement
+  // carries `force`, which is how the command is asked for a document's next version, so the
+  // command's own read of the owner's documents is not what answers it.
+  test("sends the base a replacement names, as JSON and as a multipart form field", async () => {
+    const precondition = { document: "sha256:live-spec" };
+    const sent = async (args: Record<string, unknown>, cwd: string): Promise<RequestInit> => {
+      const requests: RequestInit[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const preflight = uploadPreflight(url, init);
+        if (preflight !== undefined) return preflight;
+        requests.push(init ?? {});
+        return response({
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
+          version: { number: 2 },
+        });
+      };
+      await executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name: "spec.md", force: true, precondition, ...args },
+        cwd,
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(requests).toHaveLength(1);
+      return requests[0] ?? {};
+    };
+
+    const json = await sent({ content: "# Spec\n" }, "/workspace");
+    expect(JSON.parse(json.body as string)).toMatchObject({ precondition });
+
+    const cwd = makeDirectory();
+    writeFileSync(path.join(cwd, "spec.md"), "# Spec\n");
+    const multipart = await sent({ path: "spec.md" }, cwd);
+    const form = await new Response(multipart.body, {
+      headers: multipart.headers as Record<string, string>,
+    }).formData();
+    expect(form.get("precondition")).toBe(JSON.stringify(precondition));
+  });
+
+  // A base behind the live document is Dispatch's own refusal, and the reader gets the words it
+  // sent: which document moved on, and that the next upload names the token `dispatch doc-read`
+  // prints. Nothing is swallowed into a bare status. Only the upload is refused here: the
+  // command's own reads before it are answered, so the refusal the reader gets is the upload's.
+  test("hands the reader the words a stale base was refused with", async () => {
+    const error =
+      "document edit precondition failed: the document changed; read the document with `dispatch doc-read`, " +
+      "which prints `Document token: sha256:…`, and upload again naming that token as " +
+      '`--precondition-json \'{"document":"sha256:…"}\'`';
+    const uploads: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
+      uploads.push(String(url));
+      return new Response(
+        JSON.stringify({
+          code: "PRECONDITION_FAILED",
+          error,
+          current: { document: "sha256:live-spec", blocks: [], version: 7 },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } }
+      );
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: {
+          issue: "DSP-42",
+          name: "spec.md",
+          content: "# Spec\n",
+          force: true,
+          precondition: { document: "sha256:behind" },
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code: "PRECONDITION_FAILED",
+        status: 409,
+        message: error,
+        current: { document: "sha256:live-spec", blocks: [], version: 7 },
+      })
+    );
+    expect(uploads).toEqual([expect.stringMatching(/\/api\/v1\/issues\/DSP-42\/artifacts$/)]);
+  });
+
   test("reports the artifact slug and dispatch:// reference in the upload result text", async () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
       uploadPreflight(url, init) ??
@@ -11301,6 +11478,10 @@ describe("executeDispatchTool", () => {
       "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 2, which user alice wrote. " +
         ARTIFACT_NAME_EXISTS_RULE,
     ]);
+    // A writer who follows it is not refused a second time for the token: it names both of the
+    // things a replacement takes, --force and the token of the version it replaces.
+    expect(failure.problems[0]).toContain("--force");
+    expect(failure.problems[0]).toContain("--precondition-json");
     // The document's own slug names it too, as the upload itself resolves a name.
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
@@ -11312,9 +11493,12 @@ describe("executeDispatchTool", () => {
   // A document another writer makes between the command's read of what the issue holds and its
   // upload is one that read cannot see. The upload asks for a create alone (create_only), so
   // Dispatch refuses it and writes nothing, and the command names that document as its own read
-  // does. With --force the upload asks for no create alone and writes the next version. The fake
-  // answers as Dispatch's upload does (storeArtifact): create_only under a held name is 409
-  // ARTIFACT_NAME_TAKEN, and any other upload under that name writes the next version.
+  // does. A create names no version it replaces, so it names no token. With --force the upload
+  // asks for no create alone: it is refused 400 PRECONDITION_REQUIRED while it names no token, and
+  // writes the next version once it names the token of the version it replaces. The fake answers
+  // as Dispatch's upload does (storeArtifact): create_only under a held name is 409
+  // ARTIFACT_NAME_TAKEN, read ahead of the token rule, and any other upload of a document under
+  // that name writes the next version only with a token.
   test.each([
     ["inline content, sent as JSON", { content: "# Plan\n" }],
     ["a file by its path, sent as multipart", { path: "plan.md" }],
@@ -11331,7 +11515,11 @@ describe("executeDispatchTool", () => {
       versions: [{ number: 1, authors: [{ kind: "session", id: "session-other" }] }],
     };
     let landed = false;
-    const uploads: Array<{ createOnly: string | undefined; wrote: number | undefined }> = [];
+    const uploads: Array<{
+      createOnly: string | undefined;
+      token: string | undefined;
+      wrote: number | undefined;
+    }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/markdown/round-trip") {
@@ -11347,11 +11535,20 @@ describe("executeDispatchTool", () => {
         return response(held);
       }
       const sent = new Response(init?.body, { headers: init?.headers });
-      const createOnly = (sent.headers.get("Content-Type") ?? "").startsWith("multipart/")
-        ? (await sent.formData()).get("create_only")?.toString()
-        : JSON.parse(await sent.text()).create_only?.toString();
+      let createOnly: string | undefined;
+      let token: string | undefined;
+      if ((sent.headers.get("Content-Type") ?? "").startsWith("multipart/")) {
+        const form = await sent.formData();
+        createOnly = form.get("create_only")?.toString();
+        const base = form.get("precondition")?.toString();
+        token = base === undefined ? undefined : JSON.parse(base).document;
+      } else {
+        const body = JSON.parse(await sent.text());
+        createOnly = body.create_only?.toString();
+        token = body.precondition?.document;
+      }
       if (landed && createOnly === "true") {
-        uploads.push({ createOnly, wrote: undefined });
+        uploads.push({ createOnly, token, wrote: undefined });
         return response(
           {
             code: "ARTIFACT_NAME_TAKEN",
@@ -11360,15 +11557,25 @@ describe("executeDispatchTool", () => {
           409
         );
       }
+      if (landed && token === undefined) {
+        uploads.push({ createOnly, token, wrote: undefined });
+        return response(
+          {
+            code: "PRECONDITION_REQUIRED",
+            error: `an upload replacing document "plan.md" must name the token of the version it replaces`,
+          },
+          400
+        );
+      }
       const number = made.versions.length + 1;
       made.versions.push({ number, authors: [{ kind: "session", id: "session-42" }] });
-      uploads.push({ createOnly, wrote: number });
+      uploads.push({ createOnly, token, wrote: number });
       return response({ artifact: made, version: { number } });
     };
-    const upload = (force: boolean) =>
+    const upload = (replace: Record<string, unknown>) =>
       executeDispatchTool({
         tool: "dispatch_artifact",
-        args: { issue: "DSP-42", name: "plan.md", ...source, ...(force ? { force: true } : {}) },
+        args: { issue: "DSP-42", name: "plan.md", ...source, ...replace },
         cwd,
         host: "omp",
         sessionId: "session-42",
@@ -11378,11 +11585,12 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-    const failure = await upload(false).then(
+    const failure = await upload({}).then(
       () => undefined,
       (error: unknown) => error
     );
-    expect(uploads).toEqual([{ createOnly: "true", wrote: undefined }]);
+    // The create alone names no token, and Dispatch's 409 is what the command reads.
+    expect(uploads).toEqual([{ createOnly: "true", token: undefined, wrote: undefined }]);
     expect(made.versions).toHaveLength(1);
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
@@ -11392,10 +11600,23 @@ describe("executeDispatchTool", () => {
     );
     expect(failure.problems[0]).toEndWith(ARTIFACT_NAME_EXISTS_RULE);
 
-    // The control: --force asks for the version, so the same upload writes it.
-    const forced = await upload(true);
+    // --force alone asks for the version but names no token: the token rule refuses it.
+    const untokened = await upload({ force: true }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(untokened).toMatchObject({
+      name: "DispatchServiceError",
+      code: "PRECONDITION_REQUIRED",
+      status: 400,
+    });
+    expect(uploads[1]).toEqual({ createOnly: undefined, token: undefined, wrote: undefined });
+    expect(made.versions).toHaveLength(1);
+
+    // The control: --force with the token of the version it replaces writes it.
+    const forced = await upload({ force: true, precondition: { document: "sha256:plan-v1" } });
     expect(forced.text).toContain("Uploaded plan.md as version 2");
-    expect(uploads[1]).toEqual({ createOnly: undefined, wrote: 2 });
+    expect(uploads[2]).toEqual({ createOnly: undefined, token: "sha256:plan-v1", wrote: 2 });
   });
 
   // A Dispatch before legion-envoy-v30.21.0 refuses every member its JSON upload does not declare,
@@ -11537,6 +11758,10 @@ describe("executeDispatchTool", () => {
     expect(failure).not.toBeInstanceOf(ToolInputError);
     expect(String(failure)).toContain(refusal);
     expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
+    // Nothing the writer reads names a remedy the server would refuse: a blank write over a held
+    // name is refused whatever --force says and whatever token it names, so neither is offered.
+    expect(String(failure)).not.toContain("--force");
+    expect(String(failure)).not.toContain("--precondition-json");
   });
 
   // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above

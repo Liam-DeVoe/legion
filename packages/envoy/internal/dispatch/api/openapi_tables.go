@@ -263,6 +263,11 @@ var openAPIMultipartSchema = map[string]any{
 			"description": "the JSON body's `create_only`: true refuses the upload with 409 " +
 				"ARTIFACT_NAME_TAKEN where the name is the name or the slug of an artifact the owner holds",
 		},
+		"precondition": map[string]any{
+			"type": "string",
+			"description": "the base this upload replaces as one JSON object, as the JSON body's " +
+				"`precondition` field",
+		},
 	},
 	"required": []any{"file"},
 }

@@ -307,9 +307,14 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), and asks for a create alone
 // (create_only): where the issue already holds an artifact of that name or slug, whoever made it
 // or renamed another to it, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN and writes no
-// version, where a plain upload would write that document's next version. The daemon needs
-// Dispatch legion-envoy-v30.21.0 or later. A release from that one on that predates create_only
-// ignores the member and writes that version, as every upload did; a release before it refuses
+// version. A create names no version it replaces, so the body names no token, and Dispatch reads
+// create_only ahead of its token rule, which refuses a replacement naming no token 400
+// PRECONDITION_REQUIRED. The outbox uploads only a name the issue lists no document under
+// (messageArtifact); create_only refuses a document made or renamed to that name after that read.
+// The daemon needs Dispatch legion-envoy-v30.21.0 or later. A release from that one on that
+// predates create_only ignores the member: one that predates the token rule too writes that
+// document's next version, as every upload did, and one that holds the rule refuses the upload
+// 400 PRECONDITION_REQUIRED and writes nothing. A release before legion-envoy-v30.21.0 refuses
 // every member its JSON upload does not declare, so it answers 400 INVALID_JSON
 // (OlderDispatchRefusesCreateOnly).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
