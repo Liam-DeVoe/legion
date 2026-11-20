@@ -22,11 +22,13 @@ body: |-
   silent cut of NATS, and nor does an envoy-listener's `/healthz` for its role lane's client. A
   standby that takes the hold over from a process that stopped renewing without releasing it now
   ends every database session of that process before it begins to publish, within what the six
-  seconds leave after the old row lapsed (1 s) less the half second its first batch's status read
-  and reads are bounded to (250 ms each), so a write a frozen process had begun no longer holds
-  that issue's other writes until the freeze ends. When the take comes after that, or the ending
-  does not answer within it or fails, or the first batch's reads run past their bound, the
-  standby logs `late take-over of the publisher hold` at WARN with its `cause`,
+  seconds leave after the old row lapsed (1 s) less the half second it keeps for its first batch:
+  the status read, bounded to 250 ms, and the reads before its first send, which run until the
+  take-over is due and so always have at least the other 250 ms. So a write a frozen process had
+  begun no longer holds that issue's other writes until the freeze ends. When the take comes after
+  that, or the ending does not answer within it or fails, or no first batch has its reads answered
+  by the time the take-over is due, the standby logs `late take-over of the publisher hold` at WARN
+  with its `cause`,
   begins to publish at once, and ends those sessions once more beside its first batch, which
   waits for none of it. That second ending logs its end, stops as soon as the standby no longer
   holds the hold, and is never made under a hold that is no longer its own. A standby stopped
