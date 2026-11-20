@@ -962,3 +962,33 @@ test("pending() holds a take refused in-turn during the run going now, and no ot
   await other.advance(0);
   expect(other.take.pending()).toBe(false);
 });
+
+// The running task's own number can reach the take at a newer revision during its own turn: the
+// daemon writes a value again wherever the bucket holds anything but its own last write (a repair
+// read or a boot read after the bucket lost the value, `valueRead` in
+// packages/daemon/internal/supervise/taskvalue.go). Nothing is taken for it: the run's end holds
+// the number finished. So no task's turn is still to come, which `noteFor` already says, and
+// `pending` must say it too (R6), or the settle withholds the run's continuation and a stall abort
+// withholds its restart for a take that never comes.
+test("pending() is false for a newer revision of the task whose turn is running, as noteFor() is", async () => {
+  const { take, takes, routed, ran, advance } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.pending()).toBe(false);
+
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(take.noteFor()).toBeUndefined();
+  expect(take.pending()).toBe(false);
+
+  // The run's end asks nothing and runs nothing: the run's report finishes the number.
+  expect(take.runEnded(false)).toBe(4);
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([TEXT]);
+  expect(take.pending()).toBe(false);
+});
