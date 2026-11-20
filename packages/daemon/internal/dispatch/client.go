@@ -28,7 +28,7 @@ type HTTPClient struct {
 
 // New creates a client for one Dispatch server whose every request goes through transport, which
 // presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
-// under dispatch_token_broker, the daemon's own broker token (brokerclient.NewTokenTransport). The
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
 // client sets no Authorization of its own.
 func New(baseURL string, transport http.RoundTripper) *HTTPClient {
 	return &HTTPClient{

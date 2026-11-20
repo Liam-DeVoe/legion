@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -415,12 +415,12 @@ func (r *renewals) fireAll() {
 // clientRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as the
 // daemon's adapter wires it (internal/daemon/registrations.go), on the test's renewals.
 type clientRegistrar struct {
-	client   *agentsecrets.Client
+	client   *cipher.Client
 	renewals *renewals
 }
 
 func (c clientRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
-	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+	return c.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.renewals.after, Bound: s.Bound,
 	})
 }
@@ -448,7 +448,7 @@ func TestEachRegistrationCarriesItsRolesThumbprint(t *testing.T) {
 	}
 	timers := &renewals{}
 	h := newRegistrationHarness(t, clientRegistrar{
-		client:   &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile},
+		client:   &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile},
 		renewals: timers,
 	})
 	runRole(h, nil, claim.RoleTester, pod, "ses_tester", kA)

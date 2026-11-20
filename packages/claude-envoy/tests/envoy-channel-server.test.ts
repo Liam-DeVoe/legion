@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { BROKER_VARIABLES } from "@legion/broker-client/environment"
-import { METADATA_HOST_VAR } from "@legion/broker-client/metadata-identity"
+import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
+import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -824,7 +824,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
 /** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`
  *  leaves alone: each test that sets one restores the process's own value after it. They are
- *  broker-client's own list, less the home directories every process keeps. */
+ *  cipher-client's own list, less the home directories every process keeps. */
 const brokerVariables = [
   "DISPATCH_TOKEN_BROKER",
   ...BROKER_VARIABLES.filter((name) => name !== "HOME" && name !== "XDG_STATE_HOME"),

@@ -1,5 +1,5 @@
 // broker_test.go drives the client under dispatch_token_broker against the real secrets broker
-// (packages/envoy's own httptest server, mounted through brokertest.NewRig) and a stand-in for
+// (packages/envoy's own httptest server, mounted through ciphertest.NewRig) and a stand-in for
 // Dispatch that records what reaches it. It skips without BROKER_TEST_DATABASE_URL (the rig's own
 // skip), except on GitHub Actions, where the daemon's test job sets it and a skip would hide that
 // it stopped (newBrokerRig).
@@ -24,20 +24,20 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/brokeraddr"
-	"github.com/sjawhar/envoy/brokerclient"
-	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
+	"github.com/sjawhar/envoy/ciphertest"
 )
 
-// newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when
+// newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
 // BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service there, and
 // a silent skip would let this test stop running unnoticed.
-func newBrokerRig(t *testing.T) *brokertest.Rig {
+func newBrokerRig(t *testing.T) *ciphertest.Rig {
 	t.Helper()
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
 	}
-	return brokertest.NewRig(t)
+	return ciphertest.NewRig(t)
 }
 
 // wireRequest is one request as the stand-in for Dispatch received it: everything the daemon's
@@ -101,28 +101,28 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 	wantBody := `{"body":"Pull request checks are blocked.","actor":{"kind":"session","id":"legion-daemon:EXAMPLE"}}`
 
 	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte(rig.MintSubjectToken(t, brokertest.DaemonExchangeAccount, "daemon-pod-uid")), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	environment := map[string]string{brokerclient.IdentityVar: brokerclient.IdentityKubernetes, brokerclient.MachineTokenFileVar: tokenFile}
+	environment := map[string]string{cipherclient.IdentityVar: cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar: tokenFile}
 	getenv := func(name string) string { return environment[name] }
-	identity, err := brokerclient.MachineIdentity(getenv)
+	identity, err := cipherclient.MachineIdentity(getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proved, err := brokerclient.MachineKey(getenv)
+	proved, err := cipherclient.MachineKey(getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: brokeraddr.New(rig.URL), Key: proved, Subject: identity, Session: DaemonSession(key),
-		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
+	client, err := cipherclient.New(cipherclient.Config{
+		BrokerURL: cipheraddr.New(rig.URL), Key: proved, Subject: identity, Session: DaemonSession(key),
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := New(server.URL, brokerclient.NewTokenTransport(client, http.DefaultTransport)).PostMessage(context.Background(), key, notice); err != nil {
+	if err := New(server.URL, cipherclient.NewTokenTransport(client, http.DefaultTransport)).PostMessage(context.Background(), key, notice); err != nil {
 		t.Fatalf("post the notice under the broker's token: %v", err)
 	}
 	brokered := server.last(t)

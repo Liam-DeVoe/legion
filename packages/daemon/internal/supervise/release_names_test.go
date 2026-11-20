@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -276,7 +276,7 @@ func TestARefusedClaimWriteFreesNoNameOfARelease(t *testing.T) {
 	}
 }
 
-// unlistedAnswer is the broker client's answer that was too long to read whole (agentsecrets'
+// unlistedAnswer is the broker client's answer that was too long to read whole (cipher's
 // CarriedAnswerTooLargeError), as the machine sees it (UnlistedCarryError).
 type unlistedAnswer struct{}
 
@@ -390,9 +390,9 @@ func TestAReleaseKeepsTheSessionALaunchChoseAndRegistered(t *testing.T) {
 // The control (the pull request records the run): releaseSessions reading every permanent refusal
 // as one for good fails the 404 row, which answers ErrReleaseRefused.
 func TestAReleaseFreesNoNameTheBrokerHasNotReleased(t *testing.T) {
-	unavailable := &agentsecrets.APIError{Status: http.StatusServiceUnavailable, Code: "UNKNOWN", Message: "no healthy upstream"}
-	unserved := &agentsecrets.APIError{Status: http.StatusNotFound, Code: "UNKNOWN", Message: "404 page not found"}
-	unlisted := &agentsecrets.APIError{Status: http.StatusForbidden, Code: "ACCOUNT_NOT_LISTED", Message: "the account is not listed"}
+	unavailable := &cipher.APIError{Status: http.StatusServiceUnavailable, Code: "UNKNOWN", Message: "no healthy upstream"}
+	unserved := &cipher.APIError{Status: http.StatusNotFound, Code: "UNKNOWN", Message: "404 page not found"}
+	unlisted := &cipher.APIError{Status: http.StatusForbidden, Code: "ACCOUNT_NOT_LISTED", Message: "the account is not listed"}
 	for _, tc := range []struct {
 		name      string
 		answers   []error

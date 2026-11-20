@@ -24,9 +24,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -588,22 +588,22 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		route     = "/api/v1/whoami"
 		token     = "a-session-token-the-broker-issued"
 	)
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
-	broker.Says(token, brokertoken.Introspection{
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
 		Active:       true,
 		Session:      "ses_proof_origins",
 		Person:       "alice",
-		ProjectScope: brokertoken.ProjectScopeNamed,
+		ProjectScope: ciphertoken.ProjectScopeNamed,
 		Projects:     []string{"INFRA"},
 		Scope:        "dispatch.write",
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
-		ClientID:     brokertoken.ExchangeClientID,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   caller.JKT(),
 	})
 	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
 	// start is what main does with values: the boot config, the server URL, the verifier.
-	start := func(t *testing.T, values map[string]string) ([]string, *brokertoken.Verifier) {
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
 		t.Helper()
 		values["DISPATCH_SERVER_URL"] = public
 		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
@@ -624,7 +624,7 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		}
 		return proofOrigins(serverURL, boot.ProofOrigins), verifier
 	}
-	verify := func(t *testing.T, verifier *brokertoken.Verifier, origin string) error {
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
 		t.Helper()
 		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
 		return err
@@ -640,7 +640,7 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 				t.Errorf("a proof for %s was refused: %v", origin, err)
 			}
 		}
-		if err := verify(t, verifier, elsewhere); !errors.Is(err, brokertoken.ErrProofInvalid) {
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
 			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
 		}
 	})
@@ -653,7 +653,7 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		if err := verify(t, verifier, public); err != nil {
 			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
 		}
-		if err := verify(t, verifier, inCluster); !errors.Is(err, brokertoken.ErrProofInvalid) {
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
 			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
 		}
 	})
