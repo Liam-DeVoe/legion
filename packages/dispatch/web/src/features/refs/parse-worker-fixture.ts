@@ -107,7 +107,11 @@ export interface InstalledParseWorker {
   /** Fires `error` on the worker holding the `index`th body, as a worker that crashed mid-parse
    *  does, and answers nothing for it. */
   crash(index: number): Promise<void>;
-  /** Resolves once the engine has sent `count` bodies, and throws naming what it sent instead. */
+  /** Resolves on the post that brings the bodies the engine has sent to `count`, however long the
+   *  engine takes to load and send them: it waits for the post itself, not for a number of tasks,
+   *  so a lazy load that a slow or loaded machine, or the cold-load lane, holds back still ends in
+   *  the body. Nothing here bounds it: a body that never comes is ended by the row's own deadline,
+   *  which names the row. */
   waitForRequests(count: number): Promise<void>;
 }
 
@@ -120,6 +124,9 @@ export function installFakeParseWorker({
 } = {}): InstalledParseWorker {
   const workers: FakeParseWorker[] = [];
   const taken: { request: ParseRequest; worker: FakeParseWorker }[] = [];
+  /** The rows' waits for a count of bodies still to come, each resolved by the post that reaches
+   *  its count. */
+  const waits: { count: number; resolve: () => void }[] = [];
   let asked = 0;
 
   setParseWorkerFactory(() => {
@@ -129,21 +136,22 @@ export function installFakeParseWorker({
     }
     const worker = new FakeParseWorker((request, from) => {
       taken.push({ request, worker: from });
+      for (const wait of waits.filter(({ count }) => count <= taken.length)) {
+        waits.splice(waits.indexOf(wait), 1);
+        wait.resolve();
+      }
     });
     workers.push(worker);
     return worker as unknown as Worker;
   });
 
-  async function waitForRequests(count: number): Promise<void> {
-    for (let tries = 0; taken.length < count && tries < 500; tries += 1) {
-      await tick();
+  function waitForRequests(count: number): Promise<void> {
+    if (taken.length >= count) {
+      return Promise.resolve();
     }
-    if (taken.length < count) {
-      throw new Error(
-        `The engine sent the parse worker ${taken.length} bodies, not ${count}: a body longer ` +
-          "than markdownWorkerThreshold is still parsed on the page's own thread."
-      );
-    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waits.push({ count, resolve });
+    return promise;
   }
 
   async function sent(index: number): Promise<{ request: ParseRequest; worker: FakeParseWorker }> {
@@ -190,7 +198,11 @@ export function restoreParseWorker(): void {
 }
 
 /** Lets the tasks already queued run, so a body the engine was about to send has been sent by the
- *  time a row counts what it sent. */
+ *  time a row counts what it sent. A row calls it to prove a body was not sent, which no post can
+ *  resolve, and only once the engine has loaded: a loaded engine sends a body in the call that asks
+ *  for it, or on the one zero-delay task a new worker's ready handshake takes (`FakeParseWorker`),
+ *  and zero-delay tasks run in the order they were queued, so the five here run after it however
+ *  slow the machine. It counts tasks and races no load; a wait for a body is `waitForRequests`. */
 export async function flushTasks(): Promise<void> {
   for (let tries = 0; tries < 5; tries += 1) {
     await tick();
