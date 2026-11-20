@@ -35,7 +35,9 @@ import (
 //
 // Every call here to the server but one has a deadline, each derived from what the call waits for:
 // answerWait for a call that waits for no lock, holdWait for HoldOn's lock and queueWait for
-// Queue's read of its waiter. A call past its deadline fails the test naming what it waited for,
+// Queue's read of its waiter. Each is taken from the test's context but closeWithin's, which runs
+// in the test's cleanups after that context has ended and so starts from a context of its own.
+// A call past its deadline fails the test naming what it waited for,
 // and HoldOn's failure names the lock's holders, so a server that stopped answering or a lock that
 // never frees is a named failure rather than a test binary that hangs until go test's own timeout.
 // One wait has no deadline, by design: Queue's waiter asks for its lock until it is cancelled, by
