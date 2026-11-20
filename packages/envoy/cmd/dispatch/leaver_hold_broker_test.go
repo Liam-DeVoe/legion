@@ -24,6 +24,10 @@ func TestLeaverHoldBrokerCredentials(t *testing.T) {
 	r.refuse(adaEmail)
 	r.ageConfirmation(t, adaEmail, confirmationAge)
 	r.ageConfirmation(t, bobEmail, confirmationAge)
+	// The broker asked Dispatch about ada and bob as the rig gave them their machine logins and
+	// sessions, and keeps each not-held answer 30 seconds. They must lapse, or ada's rows below read
+	// the answer from before Google refused her rather than ask Dispatch, which now holds her.
+	r.pastBrokerCache(t)
 
 	for _, row := range []struct {
 		what   string
@@ -72,6 +76,10 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	r.refuse(adaEmail)
 	r.ageConfirmation(t, adaEmail, confirmationAge)
+	// The broker asked Dispatch about ada at her sign-in trade above and keeps that not-held answer
+	// 30 seconds. It must lapse for her enrollment below to ask Dispatch, which holds her once her
+	// personal token's request has had Google refuse her refresh.
+	r.pastBrokerCache(t)
 	expectAnswer(t, "ada@example.com's personal token, the first request after Google refuses her", http.StatusUnauthorized, "MEMBERSHIP_HELD").got(r.personalToken(t, ada.dsp))
 	expectAnswer(t, "ada@example.com's new enrollment before she signs in again", http.StatusForbidden, "MEMBERSHIP_HELD").got(r.enrol(t, ada))
 	if t.Failed() {
@@ -80,18 +88,26 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	ageSignInCredential(t, r, ada)
 	r.signInAgain(t, adaEmail)
+	// The broker answered ada held at her enrollment above and keeps that answer 30 seconds. It must
+	// lapse for her sign-in trade below, made at once, to ask Dispatch, which this sign-in released.
+	r.pastBrokerCache(t)
 	r.personSignIn(t, ada)
 	waitForLeaverCredentials(t, r, ada, 40*time.Second)
 	expectLeaverSnapshot(t, before, snapshotLeaverCredentials(t, r))
 
-	r.refuse(adaEmail)
-	r.ageConfirmation(t, adaEmail, confirmationAge)
+	// A 25-hour outage (c-release): Google answers none of ada's refreshes, so Dispatch holds her by
+	// the 24-hour rule. An outage is no refusal: it ends no sign-in and drops no refresh token, so the
+	// hold ends with no sign-in once Google answers a refresh again.
+	r.google.FailRefreshFor(adaEmail, http.StatusServiceUnavailable)
+	r.ageConfirmation(t, adaEmail, 25*time.Hour)
+	// The release wait above had the broker ask Dispatch about ada seconds ago, while she was served
+	// again, and the broker keeps that answer 30 seconds. It must lapse for the enrollment below to
+	// ask Dispatch, which holds her once its refresh finds Google out of reach.
+	r.pastBrokerCache(t)
 	expectAnswer(t, "ada@example.com's new enrollment while held for the 25-hour release", http.StatusForbidden, "MEMBERSHIP_HELD").got(r.enrol(t, ada))
 	if t.Failed() {
 		return
 	}
-	r.ageConfirmation(t, adaEmail, 25*time.Hour)
-	r.refuse(adaEmail)
 	waitForOutageRelease(t, r, ada, 40*time.Second)
 }
 
@@ -215,7 +231,9 @@ func waitForLeaverCredentials(t *testing.T, r *leaverRig, p *leaverPerson, bound
 	}
 }
 
-func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) string {
+// leaverCredentialFailures is each of p's credentials that is not served, by name and answer:
+// none when every one is.
+func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) []string {
 	t.Helper()
 	var failures []string
 	for _, row := range []struct {
@@ -238,27 +256,63 @@ func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) strin
 			failures = append(failures, fmt.Sprintf("%s answered %d %q", row.name, status, code))
 		}
 	}
-	return fmt.Sprint(failures)
+	return failures
 }
 
+// outageRefreshWait bounds how long waitForOutageRelease waits for Google to be asked a refresh of
+// a person once an outage ends. That refresh waits out Standing's pause after the outage's last
+// failed refresh (60 seconds), then a request that asks Dispatch, which the broker makes once its
+// 30-second cache of Dispatch's answer lapses.
+const outageRefreshWait = 2 * time.Minute
+
+// waitForOutageRelease ends Google's outage for p and requires p's hold by the 24-hour rule to end,
+// with no sign-in, within bound of the first refresh Google answers after the outage (c-release),
+// polling p's enrollment through the broker each second on the wall clock. The bound runs from that
+// refresh, which the fake Google's refresh count marks, all of whose refreshes it answers once the
+// outage ends; not from the outage's end, because Standing's pause after the outage's last failed
+// refresh delays it.
 func waitForOutageRelease(t *testing.T, r *leaverRig, p *leaverPerson, bound time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(bound)
-	for {
-		status, code := r.enrol(t, p)
-		if status == http.StatusCreated && code == "" {
-			t.Logf("%s's 25-hour hold released within %s of Google's first successful refresh", p.email, bound)
+	before := r.google.Refreshes()
+	ended := time.Now()
+	r.google.FailRefreshFor(p.email, 0)
+	var answered time.Time
+	noteAnswered := func() {
+		if answered.IsZero() && r.google.Refreshes() > before {
+			answered = time.Now()
+			t.Logf("Google answered its first refresh of %s %s after the outage ended", p.email, answered.Sub(ended).Round(100*time.Millisecond))
+		}
+	}
+	for enrolled := (time.Time{}); ; time.Sleep(100 * time.Millisecond) {
+		noteAnswered()
+		if time.Since(enrolled) >= time.Second {
+			enrolled = time.Now()
+			status, code := r.enrol(t, p)
+			noteAnswered()
+			switch {
+			case status == http.StatusCreated && code == "" && answered.IsZero():
+				t.Errorf("%s's 25-hour hold ended before Google answered any refresh after the outage", p.email)
+				return
+			case status == http.StatusCreated && code == "":
+				t.Logf("%s's 25-hour hold ended, with no sign-in, %s after Google's first answered refresh", p.email, time.Since(answered).Round(100*time.Millisecond))
+				return
+			case status != http.StatusForbidden || code != "MEMBERSHIP_HELD":
+				t.Errorf("%s's 25-hour hold answered %d %q, want 201 after release or 403 MEMBERSHIP_HELD while it waits", p.email, status, code)
+				return
+			}
+		}
+		switch {
+		case answered.IsZero() && time.Since(ended) > outageRefreshWait:
+			t.Errorf("Google was asked no refresh of %s within %s of the outage's end, so the release was never measured", p.email, outageRefreshWait)
+			return
+		case !answered.IsZero() && time.Since(answered) > bound:
+			var confirmed bool
+			if err := r.outside.database.Pool.QueryRow(t.Context(), `select coalesce(confirmed_at > $2, false) from people where email = $1`, p.email, ended).Scan(&confirmed); err != nil {
+				t.Fatalf("read %s's confirmation: %v", p.email, err)
+			}
+			t.Errorf("%s's 25-hour hold did not end within %s of Google's first answered refresh after the outage (Dispatch recorded a confirmation since the outage ended: %t)", p.email, bound, confirmed)
 			return
 		}
-		if status != http.StatusForbidden || code != "MEMBERSHIP_HELD" {
-			t.Errorf("%s's 25-hour hold answered %d %q, want 201 after release or 403 MEMBERSHIP_HELD while it waits", p.email, status, code)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Errorf("%s's 25-hour hold did not release within %s", p.email, bound)
-			return
-		}
-		time.Sleep(time.Second)
 	}
 }
 

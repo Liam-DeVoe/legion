@@ -153,7 +153,10 @@ type rigConfig struct {
 	maxConns      int
 	minters       map[string]requests.Minter
 	projectAccess *projectaccess.Client
-	personSignIns *personSignInConfig
+	// projectAccessNow is the clock WithProjectAccess gives the client and the gate; nil is the
+	// wall clock.
+	projectAccessNow func() time.Time
+	personSignIns    *personSignInConfig
 }
 
 // ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
@@ -167,6 +170,9 @@ type providerConfig struct {
 	machineAccount      string
 	machineCredentials  oauth.MachineCredentials
 	personSignInRecords oauth.PersonSignIns
+	// exchange is the token exchange's entries NewRig built and gives the API too; nil has
+	// NewOAuthProvider build its own (newExchangeSet).
+	exchange *exchange.Set
 }
 
 type personSignInConfig struct {
@@ -195,10 +201,17 @@ func WithMinters(minters map[string]requests.Minter) Option {
 
 // WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/broker wires one whose
 // BROKER_PROJECT_ACCESS_URL is set: the token exchange's Dispatch client, and the hold gate built
-// on that client and the rig's store, given to every field of the broker that takes it.
-func WithProjectAccess(baseURL string, account brokertoken.Account) Option {
+// on that client and the rig's store, given to every field of the broker that takes it. now is the
+// clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
+// are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
+// wall clock, as main runs.
+func WithProjectAccess(baseURL string, account brokertoken.Account, now func() time.Time) Option {
 	return func(c *rigConfig) {
 		c.projectAccess = projectaccess.New(baseURL, account, nil)
+		if now != nil {
+			c.projectAccess.UseClock(now)
+		}
+		c.projectAccessNow = now
 	}
 }
 
@@ -271,13 +284,20 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	// The token exchange's entries, built once and given to both the OAuth provider and the API
+	// (Deps.Exchange, which GET /v1/person-access counts), as main gives both the one set.
+	google, machineAccount := config.personSignIns != nil, ""
+	if google {
+		machineAccount = config.personSignIns.machineAccount
+	}
+	entries := newExchangeSet(t, google, machineAccount)
+	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
 	// own Dispatch client, this rig's store and its registry. Without WithProjectAccess there is
 	// none, and every field that takes one is nil, which holds nobody.
 	var gate *hold.Gate
-	providerOptions := []ProviderOption{}
 	if config.projectAccess != nil {
-		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry})
+		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow})
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.projectAccess = config.projectAccess
 			c.hold = gate
@@ -314,6 +334,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
 		Hold:     gate,
+		Exchange: entries,
 	})
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
@@ -360,6 +381,34 @@ const (
 
 const personSignInDomain = "example.com"
 
+// newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/broker
+// builds from its exchange settings: the two accounts and the one workflow the Rig's constants
+// name, and, for a rig that accepts Google person trades (google), the Google entry for
+// machineAccount on the sign-in domain.
+func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.Set {
+	t.Helper()
+	var machines []exchange.GoogleEntry
+	signInDomain := ""
+	if google {
+		machines = []exchange.GoogleEntry{{Account: machineAccount, Service: "leaver-machine"}}
+		signInDomain = personSignInDomain
+	}
+	set, err := exchange.NewSet(
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+		},
+		nil,
+		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+		machines,
+		signInDomain,
+	)
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	return set
+}
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -379,24 +428,9 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	if err != nil {
 		t.Fatalf("OAuth secret: %v", err)
 	}
-	var machines []exchange.GoogleEntry
-	signInDomain := ""
-	if config.google != nil {
-		machines = []exchange.GoogleEntry{{Account: config.machineAccount, Service: "leaver-machine"}}
-		signInDomain = personSignInDomain
-	}
-	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{
-			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
-			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
-		},
-		nil,
-		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		machines,
-		signInDomain,
-	)
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
+	policy := config.exchange
+	if policy == nil {
+		policy = newExchangeSet(t, config.google != nil, config.machineAccount)
 	}
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {

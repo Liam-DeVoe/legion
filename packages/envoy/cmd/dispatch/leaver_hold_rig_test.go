@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -99,6 +100,9 @@ type leaverRig struct {
 	// brokerDispatch is the server the broker's project-access client reaches when the fixture
 	// enables that client. It has a URL before the broker starts and its handler once Dispatch does.
 	brokerDispatch *httptest.Server
+	// brokerAhead is how far, in nanoseconds, the clock of the broker's project-access client and
+	// hold gate runs ahead of the wall clock (brokerNow): pastBrokerCache moves it on.
+	brokerAhead atomic.Int64
 	// outside holds Dispatch's database, its people store and the boot the router serves, with
 	// PRIV and its access list, as newOutsideSignIn builds them.
 	outside *outsideSignIn
@@ -153,7 +157,7 @@ func withBrokerGate() leaverOption {
 			if err := os.WriteFile(accountFile, []byte(r.brokerAccountToken(t)+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			return []brokertest.Option{brokertest.WithProjectAccess(server.URL, brokertoken.NewAccountToken(accountFile))}
+			return []brokertest.Option{brokertest.WithProjectAccess(server.URL, brokertoken.NewAccountToken(accountFile), r.brokerNow)}
 		})
 		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
 			if r.brokerDispatch == nil {
@@ -162,6 +166,25 @@ func withBrokerGate() leaverOption {
 			dispatchHandler.Store(&r.handler)
 		})
 	}
+}
+
+// brokerNow is the clock the broker's project-access client and hold gate read: the wall clock,
+// ahead by what pastBrokerCache has moved it.
+func (r *leaverRig) brokerNow() time.Time { return time.Now().Add(time.Duration(r.brokerAhead.Load())) }
+
+// pastBrokerCache moves the clock of the broker's project-access client and hold gate past the
+// 30 seconds the client keeps Dispatch's answer about a person (projectaccess.CacheTTL), so the
+// broker's next check of each person asks Dispatch rather than reading an answer it was given
+// before. A test calls it where the answer the broker keeps predates a hold or a release whose
+// effect it measures at once; a test that measures that cache, as TestLeaverHoldBound does, never
+// calls it and keeps the wall clock. It fails t on a rig built without withBrokerGate, whose broker
+// asks Dispatch nothing.
+func (r *leaverRig) pastBrokerCache(t *testing.T) {
+	t.Helper()
+	if r.brokerDispatch == nil {
+		t.Fatal("pastBrokerCache needs a rig built withBrokerGate: its broker asks Dispatch nothing")
+	}
+	r.brokerAhead.Add(int64(projectaccess.CacheTTL + time.Second))
 }
 
 // withPersonSignIns configures the broker to accept a person's Google trade with the machine's
@@ -531,10 +554,14 @@ func (r *leaverRig) brokerCredentials(t *testing.T, p *leaverPerson) {
 
 // personSignIn trades p's Google identity on the fixture's metadata machine through the real
 // token endpoint. The broker must record the sign-in and mint its launcher credential in one
-// transaction; otherwise the release snapshot below catches the missing row.
+// transaction; otherwise the release snapshot below catches the missing row. Every trade of p's
+// signs with the one box key the first made, as a machine's agent-secrets login keeps its key, so
+// a later trade renews the launcher credential the first minted rather than mint a second.
 func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
 	t.Helper()
-	p.signInKey = brokertest.NewSigningKey(t)
+	if p.signInKey == nil {
+		p.signInKey = brokertest.NewSigningKey(t)
+	}
 	machineToken, err := googleidentity.Token(t.Context(), brokertest.GoogleMachineAudience)
 	if err != nil {
 		t.Fatalf("read %s's metadata identity: %v", leaverMachineAccount, err)
