@@ -162,6 +162,9 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
+# $projects and $lane_grep are split on purpose: the first is one --project= argument
+# per project, the second one --grep= argument or none, and neither holds a glob.
+# shellcheck disable=SC2086
 { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
