@@ -611,10 +611,8 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 // role's resumes above wake, the mark's wake_row, and the starts of that role above last, the
 // release's last row, that have a wake's shape (resumeStartRow). retell answers the task a start
 // carries from now on, from the kind of the role's newest such resume and the task the start
-// carries now (ReleaseCancelPause.WakeTask). Only the task changes: the start keeps its role,
-// generation, wake kind, pause and the rest of its payload. A start of a role with no such resume
-// is no wake's, and keeps its task. A start whose task retell answers unchanged is not written,
-// and a nil retell writes nothing.
+// carries now (ReleaseCancelPause.WakeTask). A start of a role with no such resume is no wake's,
+// and keeps its task. retellStarts writes the new tasks, and a nil retell writes nothing.
 func retellWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, last int64,
 	retell func(kind, task string) string) error {
 	if retell == nil || len(roles) == 0 {
@@ -624,11 +622,21 @@ func retellWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string
 	for _, r := range roles {
 		names = append(names, string(r.role))
 	}
-	rows, err := tx.Query(ctx, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind from outbox
+	return retellStarts(ctx, tx, issue, retell, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind from outbox
 		join lateral (select r.kind from pod_resumes r where r.project = $1 and r.issue = $2 and r.id > $3
 			and r.role = outbox.payload->>'role' order by r.id desc limit 1) woken on true
 		where outbox.issue = $2 and outbox.id > $5 and `+resumeStartRow+` and outbox.payload->>'role' = any($4)
 		order by outbox.id`, project, issue, wake, names, last)
+}
+
+// retellStarts rewrites, through tx, the task of each start that query reads of the wakes taken
+// while the release of issue stood: a paused cancel's (retellWakesUnderPause) and the release's
+// record's (retellWakesUnderRelease). query reads, for each start, its outbox id, its task ("" for
+// none) and the kind of the wake whose start it is, and retell answers the task the start carries
+// from now on. Only the task changes: the start keeps its role, generation, wake kind, pause and
+// the rest of its payload. A start whose task retell answers unchanged is not written.
+func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind, task string) string, query string, args ...any) error {
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
 	}
@@ -655,7 +663,7 @@ func retellWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string
 	for _, w := range writes {
 		if _, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{task}', to_jsonb($2::text)) where id = $1`,
 			w.id, w.task); err != nil {
-			return fmt.Errorf("rewrite the task of outbox row %d, the start of a wake the cancel of %s's release keeps: %w", w.id, issue, err)
+			return fmt.Errorf("rewrite the task of outbox row %d, the start of a wake taken while the release of %s stood: %w", w.id, issue, err)
 		}
 	}
 	return nil

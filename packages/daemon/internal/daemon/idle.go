@@ -389,6 +389,11 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
+// The record also retells the start of each wake taken under the release's mark that a
+// project's pause told in its words: that start's task becomes the task of the same wake in the
+// release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
+// the pod.
+//
 // A record that cannot be written is logged: the pod is already released, and nothing undoes
 // that for want of a row.
 func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) {
@@ -402,7 +407,7 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 	slices.Sort(roles)
 	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), BundleBytes: bundleBytes,
+		At: time.Now().UTC(), BundleBytes: bundleBytes, WakeTask: workflow.ReleasedWakeTask,
 	}); err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
 	}

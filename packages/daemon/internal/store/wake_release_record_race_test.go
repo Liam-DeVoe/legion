@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -397,5 +399,110 @@ func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *t
 		t.Errorf("the held wake's resume = release %d, seen release %d, pause %d, time %s, stuck clock %s; want release 0, seen release %d, pause %d and the release's time %s for both",
 			resumed, seen, held, when.UTC().Format(time.RFC3339Nano), clock.UTC().Format(time.RFC3339Nano),
 			release, pause.ID, at.Format(time.RFC3339Nano))
+	}
+}
+
+// A release's record of a held wake's start (dispatch://INFRA-3589, R3). A wake of a role that a
+// project's pause stopped, taken while a release that recorded the role on its mark still stands,
+// reads that pause as what stopped the role (PauseOfWake). So its start carries the pause's
+// words, which say that the pod was kept. The record is the moment the release takes that pod, so
+// it rewrites the task of that start through the workflow's rule (PodRelease.WakeTask), told the
+// kind of the wake's resume. Only that task changes: the start keeps the rest of its payload, and
+// the wake stays held by its pause at release 0. A start below the release's last row, a phase's
+// start, and the start of a role whose one wake came before the mark (below its wake_row) are no
+// such start, and keep their task. The store does not import the workflow, so the rule here is a
+// stand-in, as in TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps. The daemon's
+// TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod holds the workflow's own words.
+func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, store)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	reviewer, err := claim.NewToken("legion", rootIssue, claim.RoleReviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A wake of the reviewer before the mark: the mark's wake_row is its resume's id.
+	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, reviewer, pods.WakeChecks, at.Add(-time.Hour), 0); err != nil || !taken {
+		t.Fatalf("take the reviewer's wake before the mark = %t, %v; want it taken", taken, err)
+	}
+	before, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleReviewer)
+	if err != nil || !found {
+		t.Fatalf("the reviewer's open resume = %t, %v; want the one its wake recorded", found, err)
+	}
+	queueStart(t, store, claim.RoleImplementer, "")
+	last := int64(pauseCount(t, store, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
+	markRelease(t, store, last, last, last, 0, claim.RoleImplementer, claim.RoleReviewer)
+	if _, err := store.Pool().Exec(ctx, `update issue_releases set wake_row = $2 where project = 'legion' and issue = $1`,
+		rootIssue, before); err != nil {
+		t.Fatalf("set the mark's newest wake: %v", err)
+	}
+	pause, _ := pauseLegion(t, store, at.Add(-time.Minute))
+	records := podRecords(t, store)
+	inTx(t, store, func(tx pgx.Tx) error {
+		held, _, err := records.PauseOfWake(ctx, tx, rootIssue, releasedToken, 0)
+		if err != nil || held != pause.ID {
+			t.Fatalf("the pause of the implementer's wake = %d, %v; want pause %d", held, err, pause.ID)
+		}
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
+		}
+		return nil
+	})
+	// The held wake's start, as the workflow's wake queues it (wakeRow), in the pause's words.
+	const paused = "the pause's words for the settlement"
+	wake, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, Pause: pause.ID}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("encode the held wake's start: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '')`, string(wake.Kind), rootIssue, string(wake.Payload)); err != nil {
+		t.Fatalf("queue the held wake's start: %v", err)
+	}
+	queueStart(t, store, claim.RoleImplementer, "implementing")
+	queueStart(t, store, claim.RoleReviewer, "")
+	retell := func(kind, task string) string { return "the release's " + kind + " wake: " + task }
+
+	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer", "reviewer"}, At: at, WakeTask: retell})
+	if err != nil {
+		t.Fatalf("record the release under the held wake: %v", err)
+	}
+	rows, err := store.Pool().Query(ctx, `select payload->>'role', coalesce(payload->>'phase', ''), coalesce(payload->>'task', ''),
+		coalesce(payload->>'wakeKind', ''), coalesce(payload->>'pause', '') from outbox
+		where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []string
+	for rows.Next() {
+		var role, named, task, kind, held string
+		if err := rows.Scan(&role, &named, &task, &kind, &held); err != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, role+"|"+named+"|"+task+"|"+kind+"|"+held)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	want := []string{
+		"implementer||the wake's task||",
+		"implementer||the release's " + pods.WakeChecks + " wake: " + paused + "|" + pods.WakeChecks + "|" + strconv.FormatInt(pause.ID, 10),
+		"implementer|implementing|the phase's task||",
+		"reviewer||the wake's task||",
+	}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("queued starts after the record = %q, want %q: only the held wake's start is told again", starts, want)
+	}
+	var resumed, seen, held int64
+	if err := store.Pool().QueryRow(ctx, `select release_id, seen_release, coalesce(pause_id, 0) from pod_resumes
+		where project = 'legion' and issue = $1 and role = 'implementer'`, rootIssue).Scan(&resumed, &seen, &held); err != nil {
+		t.Fatalf("read the held wake's resume: %v", err)
+	}
+	if resumed != 0 || seen != release || held != pause.ID {
+		t.Errorf("the held wake's resume = release %d, seen release %d, pause %d; want release 0, seen release %d, pause %d",
+			resumed, seen, held, release, pause.ID)
 	}
 }

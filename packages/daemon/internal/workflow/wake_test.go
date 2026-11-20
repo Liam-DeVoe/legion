@@ -666,6 +666,82 @@ func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
 	}
 }
 
+// A woken role's wake text is true (dispatch://INFRA-3589, R3): a wake of a role that a project's
+// pause stopped, taken while a release that recorded the role still stood, is told the pause's
+// words, and the release's record then takes the pod. The record retells that wake's start as
+// the task WakeTask writes for a session the release stopped: the same wake and detail under the
+// release's words, with the sentences the queue appended after it, such as a reviewer's review
+// round. ReleasedWakeTask is the inverse of PausedWakeTask both ways. A task that does not begin
+// with the pause's preamble is left as it is.
+func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			paused := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := ReleasedWakeTask(tc.kind, paused); got != released {
+				t.Errorf("ReleasedWakeTask(%s, %q) = %q, want %q", tc.kind, paused, got, released)
+			}
+			if got := ReleasedWakeTask(tc.kind, PausedWakeTask(tc.kind, released)); got != released {
+				t.Errorf("ReleasedWakeTask(%s, PausedWakeTask(%s, %q)) = %q, want the task as it was", tc.kind, tc.kind, released, got)
+			}
+			if got := PausedWakeTask(tc.kind, ReleasedWakeTask(tc.kind, paused)); got != paused {
+				t.Errorf("PausedWakeTask(%s, ReleasedWakeTask(%s, %q)) = %q, want the task as it was", tc.kind, tc.kind, paused, got)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByRelease)} {
+		if got := ReleasedWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("ReleasedWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a pause", pods.WakeChecks, task, got)
+		}
+	}
+}
+
+// R2 of dispatch://INFRA-3589: a wake that comes during a release is applied again, never dropped
+// in silence. A CI settlement and a backstop reach the woken role only through the wake's task,
+// so a cancel that drops such a wake hands its task to the role's resume. A wake of a role that a
+// project's pause stopped, taken while the release stood, is told the pause's words, which say
+// that the pod was kept. The cancel kept the pod, so the resume carries that task as it is, with
+// the sentences the queue appended after it. A message wake still answers "": its message reaches
+// the session anyway.
+func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			paused := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := CancelledWakeTask(tc.kind, paused); got != paused {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want the task as it is: the cancel kept the pod the pause kept", tc.kind, paused, got)
+			}
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			if got, want := CancelledWakeTask(tc.kind, released), cancelledWakePreamble+strings.TrimPrefix(released, wakePreamble); got != want {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want %q", tc.kind, released, got, want)
+			}
+		}
+	}
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+	} {
+		for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
+			if task := WakeTask(tc.kind, tc.detail, stop); CancelledWakeTask(tc.kind, task) != "" {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want none: the message reaches the session anyway", tc.kind, task, CancelledWakeTask(tc.kind, task))
+			}
+		}
+	}
+	if got := CancelledWakeTask(pods.WakeChecks, "Implement LEGION-208."); got != "" {
+		t.Errorf("CancelledWakeTask(%s, a task no wake wrote) = %q, want none", pods.WakeChecks, got)
+	}
+}
+
 // seedWakePause opens a pause of project LEGION at at, as the pause's own transaction writes it,
 // and answers its id.
 func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {

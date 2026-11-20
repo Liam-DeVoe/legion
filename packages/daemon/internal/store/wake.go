@@ -839,10 +839,13 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 //
 // StoppingPauseTx reads the issue's newest release, so this locks the issue's release mark `for
 // share` first (lockReleaseMark), before the pause's row, as the take does (TakePodWake gives the
-// lock order). A release recorded while the wake is open then comes before this read or after
-// the wake commits. Without the lock, a wake of a role that a pause stopped before the release
-// would read the pause as what stopped the role, and its task would say that its pod was kept,
-// while the release takes that pod.
+// lock order). The lock sets the order of the wake and a release's record: the record comes
+// before this read, or after the wake commits. It does not choose the words. A wake of a role
+// that a pause stopped, taken while a release that recorded the role on its mark still stands,
+// reads the pause as what stopped the role, and its task says that its pod was kept. The
+// release's record then takes that pod, and it retells that wake's start in the release's words
+// (Store.RecordPodRelease, PodRelease.WakeTask). The record reads that start because it waits for
+// the wake to commit.
 func (p *PodRecords) PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error) {
 	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
 		return 0, 0, err

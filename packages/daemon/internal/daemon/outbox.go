@@ -3338,11 +3338,12 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 //
 // A cancel that dropped a wake of the role, taken after the release recorded it, hands this the
 // kind and the task of that wake (store.ReleaseWokenRow). A CI settlement and the backstop reach
-// the role only through that task, so the resume carries it under a preamble that says the
-// release did not finish (workflow.CancelledWakeTask), and every other wake leaves the resume no
-// task. A reviewer's wake task ends with the daemon's two sentences of its review round, as every
-// task the workflow queues for the reviewer does (workflow's queuedRow), so a reviewer's resume
-// that carries one says so (RoundNamed), and its send adds no second pair.
+// the role only through that task, so the resume carries it (workflow.CancelledWakeTask). A task
+// in the release's words goes under a preamble that says the release did not finish. A task in a
+// pause's words goes as it is, since the cancel kept the pod those words name. Every other wake
+// leaves the resume no task. A reviewer's wake task ends with the daemon's two sentences of its
+// review round, as every task the workflow queues for the reviewer does (workflow's queuedRow), so
+// a reviewer's resume that carries one says so (RoundNamed), and its send adds no second pair.
 func (r *outbox) releaseResume(issue, tree string) store.ReleaseWokenRow {
 	return func(role claim.Role, generation uint64, wakeKind, wakeTask string) (store.IdleReleaseRow, error) {
 		task := workflow.CancelledWakeTask(wakeKind, wakeTask)

@@ -1431,8 +1431,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         return registering
       },
       // A registration the listener refused, for any of the reasons `ErrorWireSchema.reason`
-      // lists, leaves the session with no consumer at all, as every other failed registration
-      // does: the session is told once and the heartbeat asks again.
+      // lists, leaves the session with no consumer at all: the session is told once, at once, and
+      // the heartbeat asks again. A registration the bus-outage 503 answered (`isBusUnanswered`)
+      // was not recorded, but its consumer may still deliver. That failure is held for the bound
+      // first (`INBOUND_FIRST_OPEN_BOUND_MS`): the session is told once only when such a failure
+      // comes at or after the bound's end, and an accepted registration inside the bound ends the
+      // hold with nothing said.
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
