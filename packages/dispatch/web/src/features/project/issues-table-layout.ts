@@ -15,13 +15,13 @@ import { readLayout, type StoredColumns, writeLayout } from "./issues-table-stor
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
  *  box it is drawn in. */
 export interface LayoutPins {
-  /** In a box 640 px wide or wider: these columns, left to right, within `share` of the box.
-   *  Where they would cover more, `flexible` narrows first, down to its minimum, and then the
-   *  rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
+  /** In a desktop's box (`PHONE_BOX_BELOW`): these columns, left to right, within `share` of the
+   *  box. Where they would cover more, `flexible` narrows first, down to its minimum, and then
+   *  the rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
   readonly wide: { readonly columns: readonly string[]; readonly share: number };
-  /** In a narrower box, a phone's: these columns, left to right, within `share` of it. Each
-   *  column of `widths` is drawn at that width whatever the reader dragged, and `flexible` takes
-   *  what the others leave, between `flexibleMin` and its own width. */
+  /** In a phone's box: these columns, left to right, within `share` of it. Each column of
+   *  `widths` is drawn at that width whatever the reader dragged, and `flexible` takes what the
+   *  others leave, between `flexibleMin` and its own width. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
@@ -37,6 +37,12 @@ export interface LayoutPins {
  *  no sideways scrollbar beside it. */
 const EDGE_ROOM = 20;
 
+/** A box narrower than this is a phone's, unless the table fills it (`fills`) and fits it with
+ *  the filling column at its minimum: that is a desktop's box a page has narrowed, as a
+ *  priority's page narrows its work table beside the margin (606 px in a 1280 px window), and the
+ *  table keeps a desktop's widths and headers there. */
+const PHONE_BOX_BELOW = 640;
+
 /** Every rule a table's layout follows, from its caller: `useTableLayout` reads no other.
  *  Held in a module constant, since the stored layout is read again whenever it changes. */
 export interface LayoutColumns extends StoredColumns {
@@ -47,10 +53,10 @@ export interface LayoutColumns extends StoredColumns {
   readonly minimums?: Readonly<Partial<Record<string, number>>>;
   /** The columns pinned at the left. A table without it pins nothing. */
   readonly pins?: LayoutPins;
-  /** The column that fills the box: in a box 640 px wide or wider it takes the width the other
-   *  shown columns, `trailing` and the box's edge leave, never below its minimum, so nothing
-   *  scrolls sideways while the columns fit. A width the reader dragged it to stays theirs, and
-   *  a phone's box keeps the widths the pins give it. A table without it fills nothing. */
+  /** The column that fills the box: in a desktop's box (`PHONE_BOX_BELOW`) it takes the width the
+   *  other shown columns, `trailing` and the box's edge leave, never below its minimum, so nothing
+   *  scrolls sideways while the columns fit. A width the reader dragged it to stays theirs, and a
+   *  phone's box keeps the widths the pins give it. A table without it fills nothing. */
   readonly fills?: string;
   /** The width the table draws after its columns - a row's actions - which `fills` leaves. */
   readonly trailing?: number;
@@ -67,8 +73,14 @@ export interface TableLayoutModel {
   readonly boxWidth: number;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
-  /** The widths the window allows and the columns pinned at its left. */
-  readonly responsive: { readonly sizing: ColumnSizingState; readonly pinned: string[] };
+  /** The widths the window allows, the columns pinned at its left, and whether the box is a
+   *  phone's (`compact`): there the title's header stacks its controls and a column takes its
+   *  phone minimum. */
+  readonly responsive: {
+    readonly sizing: ColumnSizingState;
+    readonly pinned: string[];
+    readonly compact: boolean;
+  };
   readonly scrollRef: RefObject<HTMLDivElement | null>;
   readonly setOrder: Dispatch<SetStateAction<ColumnOrderState>>;
   readonly setSizing: Dispatch<SetStateAction<ColumnSizingState>>;
@@ -125,24 +137,32 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
         return width === undefined ? [] : [[id, Math.max(minimums[id] ?? 0, width)]];
       })
     );
-    // On a desktop, the column that fills the box takes what the others leave (`fills`).
-    const fill = () => {
-      if (fills === undefined || sizing[fills] !== undefined) return;
-      const others = ids.reduce(
+    // What every shown column but the one that fills the box takes, with what the table draws
+    // after its columns.
+    const others = () =>
+      ids.reduce(
         (sum, id) => (id === fills || visibility[id] === false ? sum : sum + (widths[id] ?? 0)),
         trailing
       );
-      widths[fills] = Math.max(minimums[fills] ?? 0, boxWidth - others - EDGE_ROOM);
+    // A desktop's box: one 640 px wide or wider, or a narrower one the table fits with the
+    // column that fills it at its minimum (`PHONE_BOX_BELOW`).
+    const desktop =
+      boxWidth >= PHONE_BOX_BELOW ||
+      (fills !== undefined && others() + (minimums[fills] ?? 0) + EDGE_ROOM <= boxWidth);
+    // On a desktop, the column that fills the box takes what the others leave (`fills`).
+    const fill = () => {
+      if (fills === undefined || sizing[fills] !== undefined) return;
+      widths[fills] = Math.max(minimums[fills] ?? 0, boxWidth - others() - EDGE_ROOM);
     };
     if (pins === undefined) {
-      if (boxWidth >= 640) fill();
-      return { sizing: widths, pinned: [] };
+      if (desktop) fill();
+      return { sizing: widths, pinned: [], compact: !desktop };
     }
     const { flexible, phone, wide } = pins;
     const covered = (pinned: readonly string[]) =>
       pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
     const flexibleWidth = widths[flexible];
-    if (boxWidth < 640) {
+    if (!desktop) {
       Object.assign(widths, phone.widths);
       if (flexibleWidth !== undefined)
         widths[flexible] = Math.max(
@@ -152,7 +172,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
             boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
           )
         );
-      return { sizing: widths, pinned: [...phone.columns] };
+      return { sizing: widths, pinned: [...phone.columns], compact: true };
     }
     const budget = boxWidth * wide.share;
     const pinned = [...wide.columns];
@@ -164,7 +184,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
     fill();
-    return { sizing: widths, pinned };
+    return { sizing: widths, pinned, compact: false };
   }, [boxWidth, columns, sizing, visibility]);
 
   const measure = useCallback(() => {

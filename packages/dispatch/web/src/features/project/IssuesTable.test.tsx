@@ -2446,3 +2446,56 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   expect(full.result.current.responsive.sizing.title).toBe(116);
   full.unmount();
 });
+
+/** A layout of four columns that fits a box 606 px wide, the box a priority's page leaves its
+ *  work table beside the margin at 1280 px: select 44, key 96, status 150, project 72 and the
+ *  row's actions 104 leave Title 120 of it, past its 116 px minimum, with the box's 20 px edge. */
+const FITS_NARROW = {
+  key: "fits-narrow",
+  opens: ["key", "title", "status", "project"],
+  widths: {
+    key: { min: 96, size: 96 },
+    project: { min: 72, size: 72 },
+    status: { min: 150, size: 150 },
+  },
+} as const;
+
+/** Each header cell of a table of `FITS_NARROW` drawn in a box `width` pixels wide, left to
+ *  right, as `<its column's words> <width>`, and whether Title's header stacks its name over its
+ *  filter. */
+async function narrowHeaders(width: number): Promise<{ cells: string[]; stacked: boolean }> {
+  stubScrollBoxWidth(width);
+  table([issue("CORE-1", { advances: [{ id: "p", inherited: false }] })], "", undefined, {
+    layout: FITS_NARROW,
+    listing: { advances: "p" },
+  });
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const head = screen.getByRole("table", { name: "Priority issues table" }).querySelector("thead");
+  const cells = [...(head?.querySelectorAll("th") ?? [])];
+  const title = cells.find((cell) => cell.textContent?.startsWith("Title"));
+  return {
+    cells: cells.map(
+      (cell) =>
+        `${(cell.textContent ?? "").replace(/[▲▼]|Filter$/g, "") || "-"} ${cell.style.width}`
+    ),
+    stacked: title?.firstElementChild?.classList.contains("flex-col") ?? true,
+  };
+}
+
+// A box narrower than 640 px is a desktop's where a layout that fills it fits it with Title at
+// its minimum: every column keeps its desktop width, Title takes what they leave, and its header
+// reads its name and its filter on one line, as every header does. A phone's box, which those
+// columns cannot fit, keeps the phone's widths, and there Title's header stacks.
+test("a filling layout that fits a 606 px box lays it out as a desktop's", async () => {
+  expect(await narrowHeaders(606)).toEqual({
+    cells: ["- 44px", "Key 96px", "Title 120px", "Project 72px", "Status 150px", "- 104px"],
+    stacked: false,
+  });
+});
+
+test("the same layout in a 390 px phone's box keeps the phone's widths and stacks Title's header", async () => {
+  expect(await narrowHeaders(390)).toEqual({
+    cells: ["- 44px", "Key 88px", "Title 199.5px", "Project 72px", "Status 150px", "- 104px"],
+    stacked: true,
+  });
+});

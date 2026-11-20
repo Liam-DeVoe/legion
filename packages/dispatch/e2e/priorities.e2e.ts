@@ -209,6 +209,14 @@ async function priorityPage(page: Page): Promise<void> {
 /** The phone the page is measured on (390 by 844 px, INFRA-2947 R7). */
 const PHONE = { height: 844, width: 390 } as const;
 
+/** The desktop the visual review reads the pages at (1280 by 800 px), from which up no table of
+ *  the priorities page's three tabs or of a priority's page scrolls sideways. */
+const DESKTOP = { height: 800, width: 1280 } as const;
+
+/** The widest the parked list's Advances column stands at 1280 px: the chip and the priority's
+ *  title wrapping after it, while Title takes the room every other column leaves. */
+const PARKED_ADVANCES_CAP = 180;
+
 const section = (page: Page, label: string): Locator =>
   page.locator(`section[aria-label="${label}"]`);
 
@@ -277,6 +285,27 @@ function tablesOverflow(page: Page): Promise<Record<string, number>> {
  *  not scroll sideways. */
 function documentOverflow(page: Page): Promise<number> {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+}
+
+/** The headers of a table whose words its column cuts: a header's sort control that holds more
+ *  than its box shows. A header whose words wrap onto a second line shows them whole. */
+function cutHeaders(table: Locator): Promise<string[]> {
+  return table
+    .locator('thead th button[title^="Sort"]')
+    .evaluateAll((buttons) =>
+      buttons
+        .filter((button) => button.scrollWidth > button.clientWidth)
+        .map((button) => button.textContent ?? "")
+    );
+}
+
+/** Where the text an element holds ends at the right, whatever box the element itself takes. */
+function textRight(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range.getBoundingClientRect().right;
+  });
 }
 
 /** That the page as drawn says no date anything is wanted by, no portion of it done and no word
@@ -496,23 +525,17 @@ test("the priorities page opens on the order, and each fault list is a tab of it
 
     // At 1440 by 900 every header's words show whole, Closed's among them: none is cut at its
     // column's edge. A count is no value a reader filters by, so a count's header is its words
-    // and its sort arrow alone, and its numbers start where its words do.
-    const cutHeaders = await prioritiesTable
-      .locator('thead th button[title^="Sort"]')
-      .evaluateAll((buttons) =>
-        buttons
-          .filter((button) => button.scrollWidth > button.clientWidth)
-          .map((button) => button.textContent ?? "")
-      );
-    expect(cutHeaders).toEqual([]);
+    // and its sort arrow alone, and its numbers stand at its right edge, ending where its words
+    // do.
+    expect(await cutHeaders(prioritiesTable)).toEqual([]);
     for (const header of ["Active", "Triage, Todo", "Backlog, icebox", "Closed, 7 days"]) {
       const column = prioritiesTable.getByRole("columnheader", { name: new RegExp(`^${header}`) });
       await expect(column.getByRole("button", { name: /^Filter/ })).toHaveCount(0);
-      const words = await column.locator('button[title^="Sort"]').boundingBox();
-      const count = await (await cellUnder(prioritiesTable, firstRow, header))
-        .locator("span")
-        .boundingBox();
-      expect(Math.abs((words?.x ?? Number.NaN) - (count?.x ?? Number.NaN)), header).toBeLessThan(1);
+      const words = await textRight(column.locator('button[title^="Sort"]'));
+      const count = await textRight(
+        (await cellUnder(prioritiesTable, firstRow, header)).locator("span")
+      );
+      expect(Math.abs(words - count), header).toBeLessThan(1);
     }
 
     // Three rows are fewer than the window holds, so the box ends with its last row, its bottom
@@ -526,6 +549,23 @@ test("the priorities page opens on the order, and each fault list is a tab of it
         })
       )
       .toBeLessThanOrEqual(2);
+
+    // At 1280 by 800 the table fits its box as well, every header's words whole, two lines of
+    // them at most where a count's column is as narrow as its numbers; the Priority column takes
+    // what the others leave. The first line of a closed row's description reads whole under its
+    // title, wrapped as the title is, where it once ended in an ellipsis at the column's edge.
+    await page.setViewportSize(DESKTOP);
+    await expect.poll(() => tablesOverflow(page)).toEqual({ "Priorities table": 0 });
+    expect(await cutHeaders(prioritiesTable)).toEqual([]);
+    expect(
+      await firstRow
+        .getByTitle("Every machine of the fleet runs the daemon, or the rollout is not done.")
+        .evaluate((line) => ({
+          cut: line.scrollWidth > line.clientWidth,
+          overflow: getComputedStyle(line).textOverflow,
+        }))
+    ).toEqual({ cut: false, overflow: "clip" });
+    await priorityPage(page);
 
     // Opened, the row holds the whole description, every paragraph of the seed's.
     await priorities.getByRole("button", { name: `Open #1 ${seed.titles[0]}` }).click();
@@ -566,6 +606,10 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => tablesOverflow(page)).toEqual({ [NO_PRIORITY_TABLE]: 0 });
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
+    // And at 1280 by 800.
+    await page.setViewportSize(DESKTOP);
+    await expect.poll(() => tablesOverflow(page)).toEqual({ [NO_PRIORITY_TABLE]: 0 });
+    await priorityPage(page);
     // Every status pill is whole, "Needs review" the longest: no pill runs past its own box, and
     // none past the edge of its cell, which clips what passes it.
     const statusAt = await columnIndex(unplacedTable, "Status");
@@ -629,6 +673,16 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     );
     await expect.poll(() => tablesOverflow(page)).toEqual({ [PARKED_TABLE]: 0 });
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
+    // At 1280 by 800 too, where Title takes the room the others leave and Advances stands at its
+    // cap: the chip, and the title wrapping whole after it.
+    await page.setViewportSize(DESKTOP);
+    await expect.poll(() => tablesOverflow(page)).toEqual({ [PARKED_TABLE]: 0 });
+    expect(
+      await parkedTable
+        .getByRole("columnheader", { exact: true, name: "Advances" })
+        .evaluate((header) => header.getBoundingClientRect().width)
+    ).toBeLessThanOrEqual(PARKED_ADVANCES_CAP);
+    await priorityPage(page);
     // The one parked row is the archive, whose own row names #3: the child that inherits #3 and
     // stands in the backlog beside it is no parked work.
     const childRow = parkedTable.getByRole("row", {
@@ -1336,6 +1390,29 @@ test("a priority's own page writes its title and description and lists only its 
     await description.getByRole("button", { exact: true, name: "Description, closed" }).click();
     await expect(editor.getByRole("listitem").last()).toHaveText(line);
     await expect.poll(() => topOf(work)).toBe(open);
+
+    // At 1280 by 800 the margin leaves the work table a box 606 px wide, which is a desktop's:
+    // the table fits it, Title taking what the issue, its status and its project leave, and
+    // Title's header reads its name and its filter on one line from the cell's left edge, as
+    // every other header does.
+    await page.setViewportSize(DESKTOP);
+    await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
+    expect(
+      await work.getByRole("columnheader", { name: /^Title/ }).evaluate((header) => {
+        const name = header.querySelector('button[title^="Sort"]')?.getBoundingClientRect();
+        const filter = header.querySelector('[aria-label="Filter Title"]')?.getBoundingClientRect();
+        const cell = header.getBoundingClientRect();
+        const padding = Number.parseFloat(getComputedStyle(header).paddingLeft);
+        return {
+          left: name !== undefined && Math.abs(name.left - cell.left - padding) < 1,
+          oneLine:
+            name !== undefined &&
+            filter !== undefined &&
+            filter.top < name.bottom &&
+            name.top < filter.bottom,
+        };
+      })
+    ).toEqual({ left: true, oneLine: true });
   } finally {
     await context.close();
   }

@@ -28,7 +28,12 @@ import {
   useIssueTableColumns,
 } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
+import {
+  answeredWhole,
+  type IssueListing,
+  listsQueued,
+  useIssueTableItems,
+} from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import {
   clearPicked,
@@ -99,12 +104,16 @@ export function IssuesTable({
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
+  // The width drawn after the columns for a row's Start next, where the listing can hold a row it
+  // acts on (`listsQueued`); a fault list of the priorities page holds none, and draws none.
+  const actions = listsQueued(listing) ? ROW_ACTIONS_WIDTH : 0;
   // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
   // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
     listingColumns(listing, priorityTitles !== undefined),
     ownLayout?.opens,
-    ownLayout?.widths
+    ownLayout?.widths,
+    actions
   );
   // One stored layout per project, one per layout a caller names, and one for every other scoped
   // table: the work advancing any priority is one table, so a reader who drags a column on it
@@ -113,7 +122,7 @@ export function IssuesTable({
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
     columnsLayout
   );
-  const { attachAbove, boxWidth } = layout;
+  const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
@@ -166,7 +175,7 @@ export function IssuesTable({
 
   const columns = useIssueTableColumns(
     userState.data,
-    boxWidth < 640,
+    responsive.compact,
     columnsLayout,
     priorityTitles
   );
@@ -295,7 +304,7 @@ export function IssuesTable({
       </p>
     );
 
-  const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  const visibleColumns = table.getVisibleLeafColumns().length + (actions === 0 ? 0 : 1);
 
   return (
     <section aria-label={name} className="space-y-3 sm:pb-24">
@@ -442,12 +451,12 @@ export function IssuesTable({
             index={index}
             measure={measure}
             moved={moved}
-            onStartNext={(key) => startNext([key])}
+            onStartNext={actions === 0 ? undefined : (key) => startNext([key])}
             row={row}
           />
         )}
         scrollTestId="issues-table-scroll"
-        trailingWidth={ROW_ACTIONS_WIDTH}
+        trailingWidth={actions}
       />
 
       <IssueTableSelection

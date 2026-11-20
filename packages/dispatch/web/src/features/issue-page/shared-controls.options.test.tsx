@@ -1428,8 +1428,10 @@ test("the priorities' trigger has the height of its siblings in Details", async 
         expect(classOf(trigger).filter((token) => token.startsWith("md:min-h-"))).toEqual(siblings);
         expect(classOf(trigger)).toEqual(expect.arrayContaining(["min-h-11", "py-2", "md:py-1"]));
       } else {
+        // Outside, the trigger is a hit area that draws nothing, 44 px tall and 32 px from `md`
+        // as the P0-P3 tag's beside it is, around the bordered square it draws.
         expect(trigger.getAttribute("class")).toBe(
-          "inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
+          "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
     } finally {
@@ -2054,8 +2056,10 @@ test("the default shapes keep main's class strings", async () => {
 
     // INFRA-2947's features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line in
     // the issue header's state row, each priority's link and the chip it holds
-    // (`PriorityChip.tsx`), an inherited one's, and the picker's trigger; then the refusal of the
-    // priorities' read and that of a save, which wrap within the line, as the row wraps.
+    // (`PriorityChip.tsx`), an inherited one's, the picker's trigger, a hit area that draws
+    // nothing, and the "+" it draws, a square as tall as the chips, bordered as the labels'
+    // trigger is; then the refusal of the priorities' read and that of a save, which wrap within
+    // the line, as the row wraps.
     "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1",
     "IssuePriorityLine link": "group inline-flex shrink-0 items-center",
     "IssuePriorityLine chip":
@@ -2063,7 +2067,9 @@ test("the default shapes keep main's class strings", async () => {
     "IssuePriorityLine inherited chip":
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
     "IssuePriorityLine trigger":
-      "inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "IssuePriorityLine trigger square":
+      "inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
     "IssuePriorityLine priorities unread":
       "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
     "IssuePriorityLine not saved":
@@ -2566,10 +2572,9 @@ test("the default shapes keep main's class strings", async () => {
       "IssuePriorityLine inherited chip",
       advances.getByRole("link", { name: /, inherited$/ }).firstElementChild
     );
-    classAt(
-      "IssuePriorityLine trigger",
-      advances.getByRole("button", { name: CONTROL_LABELS.edit_priorities })
-    );
+    const priorityTrigger = advances.getByRole("button", { name: CONTROL_LABELS.edit_priorities });
+    classAt("IssuePriorityLine trigger", priorityTrigger);
+    classAt("IssuePriorityLine trigger square", priorityTrigger.firstElementChild);
 
     classAt("AgentName link", caseOf(view, "running").querySelector("a"));
     classAt("AgentName inline link", caseOf(view, "inline").querySelector("a"));

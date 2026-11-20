@@ -93,14 +93,17 @@ export const ownerOf = (item: PriorityItem): string =>
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. Each header reads in 16 characters or fewer, in the
  *  words a status is named by (INFRA-3221, R13). What closed in the last 7 days opens hidden, one
- *  tick away under Columns, so the table fits a 1440 px window beside the sidebar with the work
+ *  tick away under Columns, so the table fits a 1280 px window beside the sidebar with the work
  *  as it stands now - who owns each priority, what is active, in triage or todo, and in backlog
  *  or icebox - and when anything under it last moved.
  *
  *  Every column but the title is as wide as its header's words, its sort arrow and its filter
- *  control need, so the title takes the rest of a desktop box (`PRIORITY_LAYOUT`). A count is a
- *  number no reader picks rows by, so the four counts have no filter, and their headers no
- *  filter control. */
+ *  control need, so the title takes the rest of a desktop box (`PRIORITY_LAYOUT`): at 1280 px a
+ *  title of 90 characters reads in two lines. A count is a number no reader picks rows by, so
+ *  the four counts have no filter, and their headers no filter control; a count's column is as
+ *  narrow as its numbers, which stand at its right edge under its header's words, two lines of
+ *  them where they need it (`numeric`). The newest event's words take two lines as well, beside
+ *  its filter, over a time that takes one (`wrap`). */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {
@@ -119,15 +122,16 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "Active", size: 72, min: 72 },
-  { id: "waiting", header: "Triage, Todo", size: 112, min: 112 },
-  { id: "parked", header: "Backlog, icebox", size: 136, min: 136 },
-  { id: "closed", header: "Closed, 7 days", size: 128, min: 128, hidden: true },
+  { id: "in-flight", header: "Active", size: 76, min: 76, numeric: true },
+  { id: "waiting", header: "Triage, Todo", size: 76, min: 76, numeric: true },
+  { id: "parked", header: "Backlog, icebox", size: 76, min: 76, numeric: true },
+  { id: "closed", header: "Closed, 7 days", size: 76, min: 76, numeric: true, hidden: true },
   {
     id: "newest",
     header: "Newest event",
-    size: 160,
-    min: 160,
+    size: 104,
+    min: 104,
+    wrap: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,

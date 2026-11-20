@@ -18,6 +18,7 @@ import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/s
 import { api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
@@ -447,6 +448,10 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     "2026-11-09T12:00:00Z"
   );
   expect(moved("Moved there").textContent).toContain("bob");
+  // Advances stands at 160 px, under its 180 px cap, and Title takes what the rest leave. No row
+  // of the list stands in Legion's queue, so no cell for a row's Start next follows its columns.
+  expect(within(parked).getByRole("columnheader", { name: /^Advances/ }).style.width).toBe("160px");
+  expect(within(parked).getAllByRole("columnheader").at(-1)?.textContent).not.toBe("");
   const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
   // Each priority is a chip that reads its place and then its title, drawn whole after it in the
   // same link, its title in its name and its tooltip.
@@ -519,6 +524,32 @@ test("a row counts the work in flight, waiting and parked, shows its newest even
   ]);
   expect(texts(row).slice(3, 6)).toEqual(["7", "12", "0"]);
   expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+  // Each count's column is as narrow as its numbers, 76 px; its numbers stand at its right edge,
+  // under its header's words, which stand there too and wrap rather than be cut. The newest
+  // event's words wrap beside its filter, in a column as narrow as its time.
+  for (const [at, name] of ["Active", "Triage, Todo", "Backlog, icebox"].entries()) {
+    const header = screen.getByRole("columnheader", { name: new RegExp(`^${name}`) });
+    const words = within(header).getByRole("button", { name });
+    const cell = within(row).getAllByRole("cell")[3 + at]?.firstElementChild;
+    expect({
+      cell: cell?.className.split(" ").slice(0, 2),
+      edge: words.parentElement?.className.split(" ").includes("justify-end"),
+      name,
+      width: header.style.width,
+      words: words.className,
+    }).toEqual({
+      cell: ["block", "text-right"],
+      edge: true,
+      name,
+      width: "76px",
+      words: "flex min-w-0 items-center gap-1 text-right",
+    });
+  }
+  const newest = screen.getByRole("columnheader", { name: /^Newest event/ });
+  expect([
+    newest.style.width,
+    within(newest).getByRole("button", { name: "Newest event" }).className,
+  ]).toEqual(["104px", "flex min-w-0 items-center gap-1 text-left"]);
 
   // Shown under Columns, the fourth count is what the read says closed in 7 days.
   await user.click(
@@ -614,7 +645,8 @@ test("a title is a link to the priority's own page, where it is renamed, and no 
 
 // Production's titles run to 94 characters, and a reader reads each one whole: the title wraps
 // in its column as a link to the priority's page, and nothing clamps or cuts it. The first line
-// of the description under it is what takes one line, cut, with the whole line its tooltip.
+// of the description under it reads whole too, wrapped in the small muted type, with the whole
+// line its tooltip.
 test("a 94-character title shows whole on its row, with no clamp and no cut", async () => {
   const long =
     "Every Legion phase worker reaches a merged pull request without a person's hands in between it";
@@ -642,7 +674,12 @@ test("a 94-character title shows whole on its row, with no clamp and no cut", as
       cut: false,
     });
   }
-  expect(within(row).getByTitle(summary).className).toContain("truncate");
+  const line = within(row).getByTitle(summary);
+  expect(line.textContent).toBe(summary);
+  expect({
+    classes: line.className,
+    cut: /line-clamp|truncate|text-ellipsis|whitespace-nowrap/.test(line.className),
+  }).toEqual({ classes: `break-words text-xs ${textMutedOnCanvas}`, cut: false });
 });
 
 test("the reader's description kept beside a row outlives the row leaving the table, and is written when they use it", async () => {

@@ -36,7 +36,9 @@ export function IssueRow({
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
   moved: ReadonlySet<string>;
-  onStartNext: (key: string) => void;
+  /** Starts the row's issue next: absent on a table whose listing holds no issue in Legion's
+   *  queue (`listsQueued`), which draws no cell for it. */
+  onStartNext: ((key: string) => void) | undefined;
   row: Row<Item>;
 }): ReactNode {
   const { issue, queue } = row.original;
@@ -67,18 +69,20 @@ export function IssueRow({
           </td>
         );
       })}
-      <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {queue !== undefined && queue > 1 ? (
-          <button
-            className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onClick={() => onStartNext(issue.key)}
-            type="button"
-          >
-            Start next
-          </button>
-        ) : null}
-      </td>
+      {onStartNext === undefined ? null : (
+        <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
+          {queue !== undefined && queue > 1 ? (
+            <button
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              disabled={busy}
+              onClick={() => onStartNext(issue.key)}
+              type="button"
+            >
+              Start next
+            </button>
+          ) : null}
+        </td>
+      )}
     </tr>
   );
 }

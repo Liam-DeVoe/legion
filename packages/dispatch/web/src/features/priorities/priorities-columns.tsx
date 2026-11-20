@@ -149,9 +149,9 @@ function TitleCell({ item }: { item: PriorityItem }) {
             onSave={(next) => actions.onDescribe(item, next)}
           />
         ) : item.summary === "" ? null : (
-          // A closed row shows the description's first line, muted, on one line, cut where
-          // the column ends; the whole line is its tooltip, and the open row shows it all.
-          <p className={`truncate text-xs ${textMutedOnCanvas}`} title={item.summary}>
+          // A closed row shows the description's first line, whole, muted and wrapped like the
+          // title above it; the line is its tooltip too, and the open row shows the rest.
+          <p className={`break-words text-xs ${textMutedOnCanvas}`} title={item.summary}>
             {item.summary}
           </p>
         )}
@@ -173,8 +173,11 @@ function OwnerCell({ owner }: { owner: string }) {
   );
 }
 
+/** A count, at its column's right edge under its header's words (`numeric`). */
 const countCell = (value: number): ReactNode => (
-  <span className={`tabular-nums ${value === 0 ? textMutedOnCanvas : ""}`}>{value}</span>
+  <span className={`block text-right tabular-nums ${value === 0 ? textMutedOnCanvas : ""}`}>
+    {value}
+  </span>
 );
 
 /** How each column of the priorities table draws. Everything else about a column — its width,

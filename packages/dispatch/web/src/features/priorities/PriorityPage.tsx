@@ -29,15 +29,22 @@ import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 const WORK_PREFIX = "w";
 
 /** The work table's own stored layout (`IssuesTable`): the issue, its title, its status and its
- *  project, so Title, which takes what they leave, reads in two lines in the box a 1440 px window
- *  leaves beside the margin. Every other column is one tick away under Columns, who holds the
- *  issue and when it last changed among them; a project's own table keeps its own layout. Its key
- *  is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose stored
- *  layouts were written for a project's opening set and would show that set again here. */
+ *  project. Every other column is one tick away under Columns, who holds the issue and when it
+ *  last changed among them; a project's own table keeps its own layout. The widths fit the box a
+ *  1280 px window leaves beside the margin, 606 px, as a desktop's box (`useTableLayout`): the
+ *  key, the project's key, and the status with its longest pill, "Needs review", whole inside
+ *  the cell's padding; Title takes what they and the row's actions leave, and wraps in its two
+ *  lines. Its key is its own, not the one a scoped table without a layout keeps (`IssuesTable`),
+ *  whose stored layouts were written for a project's opening set and would show that set again
+ *  here. */
 const WORK_LAYOUT = {
   key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
-  widths: { project: { min: 72, size: 72 } },
+  widths: {
+    key: { min: 96, size: 96 },
+    project: { min: 72, size: 72 },
+    status: { min: 150, size: 150 },
+  },
 } as const;
 
 /** The way back to the priorities page, above the page's header as above an empty page. */

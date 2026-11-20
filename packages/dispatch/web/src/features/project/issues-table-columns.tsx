@@ -51,6 +51,12 @@ declare module "@tanstack/react-table" {
     always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
+    /** A column of counts: its header's words stand at its right edge, over its numbers, and
+     *  wrap rather than be cut (`DataTable`'s header). */
+    numeric?: boolean;
+    /** A header whose words wrap onto a second line rather than be cut, in a column narrower
+     *  than its words on one line. */
+    wrap?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -410,7 +416,8 @@ export interface IssueTableColumnWidth {
  *  column's own. */
 export type IssueTableWidths = Readonly<Partial<Record<IssueTableColumnId, IssueTableColumnWidth>>>;
 
-/** The width every issues table draws after its columns, for a row's actions. */
+/** The width an issues table draws after its columns, for a row's actions, where its listing can
+ *  hold a row they act on (`listsQueued`). */
 export const ROW_ACTIONS_WIDTH = 104;
 
 /** The one column no reader can hide or show (`enableHiding: false`): the row's checkbox, which
@@ -418,7 +425,7 @@ export const ROW_ACTIONS_WIDTH = 104;
 const ALWAYS_SHOWN: ColumnId = "select";
 
 /** Each layout `issueTableLayout` built, by its listing columns, the columns it opens with (or
- *  none, for a project's opening set) and the widths it names. */
+ *  none, for a project's opening set), the widths it names and the row's actions' width. */
 const layouts = new Map<string, LayoutColumns>();
 
 /**
@@ -429,17 +436,19 @@ const layouts = new Map<string, LayoutColumns>();
  * those columns shown, registry and listing columns alike, and every other one hidden until the
  * reader shows it from the column control; the row's checkbox stays (`ALWAYS_SHOWN`), and Title
  * fills a desktop box (`fills`, `useTableLayout`): it takes the width the other shown columns
- * and the row's actions leave. `widths` puts a column's starting width and minimum in place of
- * the registry's or the listing column's. A project's table names neither; each fault list of
- * the priorities page names its own. Built once for each set and kept, since the stored layout
- * is read again whenever this object changes (`useTableLayout`).
+ * and the row's actions (`actions`, none where the listing holds no row they act on) leave.
+ * `widths` puts a column's starting width and minimum in place of the registry's or the listing
+ * column's. A project's table names neither; each fault list of the priorities page names its
+ * own. Built once for each set and kept, since the stored layout is read again whenever this
+ * object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
   opens?: readonly IssueTableColumnId[],
-  widths: IssueTableWidths = {}
+  widths: IssueTableWidths = {},
+  actions = ROW_ACTIONS_WIDTH
 ): LayoutColumns {
-  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}`;
+  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}|${actions}`;
   const built = layouts.get(name);
   if (built !== undefined) return built;
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
@@ -470,7 +479,7 @@ export function issueTableLayout(
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
       ...Object.fromEntries(named.map(([id, { min }]) => [id, min])),
     },
-    ...(opens === undefined ? {} : { fills: "title", trailing: ROW_ACTIONS_WIDTH }),
+    ...(opens === undefined ? {} : { fills: "title", trailing: actions }),
   };
   layouts.set(name, layout);
   return layout;

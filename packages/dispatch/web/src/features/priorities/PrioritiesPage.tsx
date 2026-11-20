@@ -42,9 +42,11 @@ const PARKED: IssueListing = {
 const FAULT_OPENS = ["key", "title", "status", "claim", "updated", "project"] as const;
 
 /** The widths each fault list gives the columns it opens with, in place of the Issues table's
- *  own, so its columns and the row's actions fit the 1070 px box a 1440 px window gives it with
- *  every header whole, and Title, which takes the rest, as wide as they leave it. */
+ *  own, so its columns fit the box a 1280 px window gives it, 910 px, with every header whole, and
+ *  Title, which takes the rest, as wide as they leave it. Neither list holds an issue in Legion's
+ *  queue, so neither draws the row's actions after its columns (`listsQueued`). */
 const FAULT_WIDTHS = {
+  key: { min: 96, size: 96 },
   project: { min: 72, size: 72 },
   claim: { min: 132, size: 132 },
   updated: { min: 116, size: 116 },
@@ -69,12 +71,13 @@ const PARKED_LAYOUT = {
   // it leaves is Title's.
   opens: [...FAULT_OPENS.filter((id) => id !== "updated"), "advances", "moved"],
   // Its statuses are backlog and icebox alone, whose pills are narrower than the in-flight
-  // statuses', and a move is a time and a name, which wrap. The Advances column is sized by its
-  // own declaration for its chips and the titles after them, which wrap whole: at 1440 px every
-  // other column here stands at what its header or its widest value needs, so Title, which
-  // takes the rest, gives that room.
+  // statuses', and a move is a time and a name, which wrap onto two lines, the time over the
+  // name. The Advances column holds each priority's chip and its title after it, which wraps
+  // whole, at no more than 160 px: Title, which takes the rest, is the column a reader reads a
+  // row by.
   widths: {
     ...FAULT_WIDTHS,
+    advances: { min: 160, size: 160 },
     status: { min: 112, size: 112 },
     moved: { min: 112, size: 112 },
   },

@@ -23,6 +23,11 @@ export interface TableColumn<Row> {
   /** Opens hidden, until the reader shows it under Columns. */
   readonly hidden?: boolean;
   readonly sortable?: boolean;
+  /** A count: its numbers and its header's words stand at the column's right edge, and the
+   *  words wrap onto a second line in a column as narrow as its numbers. */
+  readonly numeric?: boolean;
+  /** A header whose words wrap onto a second line in a column narrower than they are. */
+  readonly wrap?: boolean;
   /** The text a typed filter matches, where this column filters by typing. */
   readonly text?: (row: Row) => string;
   /** The values a picked filter offers, where this column filters by picking. */
@@ -170,6 +175,8 @@ export function columnDefs<Row>(
       matchesFilters(row.original, byId, [{ id, value }] as ColumnFiltersState),
     meta: {
       ...(column.text === undefined ? {} : { text: true }),
+      ...(column.numeric === true ? { numeric: true } : {}),
+      ...(column.wrap === true ? { wrap: true } : {}),
       ...(column.order === undefined ? {} : { order: column.order }),
       ...(column.show === undefined ? {} : { show: column.show }),
       ...(column.always === undefined ? {} : { always: column.always }),

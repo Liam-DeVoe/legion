@@ -372,7 +372,7 @@ export function DataTable<Row>({
                 <tr key={group.id}>
                   {group.headers.map((header) => (
                     <TableHeaderCell
-                      compact={layout.boxWidth < 640}
+                      compact={layout.responsive.compact}
                       counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
                       dragColumn={dragColumn}
                       header={header}
@@ -440,7 +440,8 @@ function TableHeaderCell<TData>({
   setOrder,
   unloaded,
 }: {
-  /** A phone, where the title's header stacks its controls. */
+  /** A phone's box (`useTableLayout`'s `compact`), where the title's header stacks its
+   *  controls. */
   compact: boolean;
   counts: ReadonlyMap<string, number>;
   dragColumn: string | undefined;
@@ -458,6 +459,16 @@ function TableHeaderCell<TData>({
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  // A column of counts is as narrow as its numbers: its words stand at its right edge, over the
+  // numbers, after the sort arrow. Its words, and those of a header that wraps (`wrap`), take a
+  // second line rather than be cut, and such a header draws no sort arrow's place while it is
+  // not sorted: in a column that narrow its gap is width the longest word needs.
+  const { numeric = false, wrap = numeric } = column.columnDef.meta ?? {};
+  const sorted = column.getIsSorted();
+  const mark =
+    wrap && sorted === false ? null : (
+      <span className={textMutedOnCanvas}>{{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}</span>
+    );
   return (
     <th
       aria-sort={
@@ -482,11 +493,11 @@ function TableHeaderCell<TData>({
       }}
     >
       <span
-        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+        className={`flex ${numeric ? "justify-end" : "justify-between"} ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
           <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
@@ -498,10 +509,9 @@ function TableHeaderCell<TData>({
             }
             type="button"
           >
+            {numeric ? mark : null}
             {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
-              {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
-            </span>
+            {numeric ? null : mark}
           </button>
         ) : (
           flexRender(column.columnDef.header, header.getContext())

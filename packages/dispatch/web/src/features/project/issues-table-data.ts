@@ -52,6 +52,18 @@ export function answeredWhole(listing: IssueListing): boolean {
   );
 }
 
+/**
+ * Whether a listing can hold an issue in Legion's queue, the one row a row's Start next acts on:
+ * an issue is queued only while it stands in `todo` (`isQueued`), so a listing that names its
+ * statuses without `todo` - each fault list of the priorities page - never holds one, and its
+ * table draws no column for that action, which would stand empty on every row.
+ */
+export function listsQueued(listing: IssueListing): boolean {
+  return (
+    !("advances" in listing) || listing.statuses === undefined || listing.statuses.includes("todo")
+  );
+}
+
 /** The name what a table keeps of its listing is held under: the ancestry it walked and the
  *  action a reload interrupted. Two listings of different rows never share one. */
 export const listingName = (listing: IssueListing): string =>
