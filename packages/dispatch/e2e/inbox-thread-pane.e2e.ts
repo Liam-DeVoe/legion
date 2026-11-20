@@ -27,7 +27,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -176,9 +176,16 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Replay budget" });
-  const root = await createComment(issue.key, { body: "How far back does a replay go?" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose thread lists hold
+  // this row's one thread and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
+  const root = await createComment(
+    issue.key,
+    { body: "How far back does a replay go?" },
+    { login: me }
+  );
   for (let index = 1; index <= 6; index += 1) {
     await createComment(
       issue.key,
@@ -186,15 +193,15 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
       asSession()
     );
   }
-  const listed = await listMyReplies({ state: "unread" });
+  const listed = await listMyReplies({ state: "unread" }, { login: me });
   const row = (listed.rows ?? []).find((candidate) => candidate.thread_id === root.id);
   expect(row?.unread).toBe(true);
   // Every reply read: the thread leaves the unread list and stays in the Inbox, drawn as read.
-  await markThreadRead(root.id, row?.reply.created_at ?? "");
-  expect((await listMyReplies({ state: "unread" })).total).toBe(0);
-  expect((await listMyReplies({ state: "inbox" })).total).toBe(1);
+  await markThreadRead(root.id, row?.reply.created_at ?? "", { login: me });
+  expect((await listMyReplies({ state: "unread" }, { login: me })).total).toBe(0);
+  expect((await listMyReplies({ state: "inbox" }, { login: me })).total).toBe(1);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await holdReadMarks(page);

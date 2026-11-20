@@ -24,7 +24,7 @@ import {
 } from "./editor";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -1156,7 +1156,9 @@ test("an item link the SPA cannot resolve names what is missing, inside the shel
   browser,
 }) => {
   const { issue } = await seedIssue();
-  const context = await asUser(browser, "alice");
+  // The shell's Inbox link is named `Inbox` alone while nothing waits on the reader: a person of
+  // the row's own (`rowPerson`, e2e/test.ts), whom no other row's question reaches.
+  const context = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await context.newPage();

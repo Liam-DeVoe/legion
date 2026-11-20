@@ -28,7 +28,7 @@ import {
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -633,13 +633,15 @@ test("margin ask composer sends option choices that the inbox records as a selec
   browser,
 }, testInfo) => {
   const askKey = rowKey("ASK");
-  await createProject({ key: askKey, name: "Ask options" });
-  const issue = await createIssue({
-    project: askKey,
-    spec: initialMarkdown,
-    title: "Choose a direction",
-  });
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the Inbox the row
+  // answers in shows this row's question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: askKey, name: "Ask options" }, { login: me });
+  const issue = await createIssue(
+    { project: askKey, spec: initialMarkdown, title: "Choose a direction" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -693,7 +695,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
-        ask: { answer: { selected: ["Ship"], user: "alice" }, state: "answered" },
+        ask: { answer: { selected: ["Ship"], user: me }, state: "answered" },
       });
   } finally {
     await alice.close();

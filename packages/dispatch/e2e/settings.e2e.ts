@@ -12,7 +12,7 @@ import {
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
@@ -203,7 +203,7 @@ test("a human creates a project from Settings and immediately creates an issue u
     await expect(
       page.locator("main").getByRole("heading", { exact: true, name: "Projects" })
     ).toBeVisible();
-    await page.getByLabel("Key", { exact: true }).fill("qa");
+    await page.getByLabel("Key", { exact: true }).fill(qa.toLowerCase());
     await page.getByLabel("Name", { exact: true }).fill("Quality");
     // The form asks for the person the new project names, and starts on the one the server would
     // take anyway: the person creating it. The control is read by its role, as every other
@@ -573,7 +573,8 @@ test("default assignee picks made when Settings is left and reopened supersede t
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
   await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
-  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: "carol" });
+  const carol = rowPerson("carol");
+  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: carol });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -600,13 +601,13 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await expect(core).toBeEnabled();
     await expect(core).toHaveValue("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol]);
 
     await core.selectOption("bob");
     await expect(core).toHaveValue("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    await core.selectOption("carol");
-    await expect(core).toHaveValue("carol");
+    await core.selectOption(carol);
+    await expect(core).toHaveValue(carol);
 
     // Away and back inside the app: Settings unmounts and mounts again, the app stays loaded.
     const navigation = page.getByRole("navigation", { name: "Navigation" });
@@ -615,7 +616,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await navigation.getByRole("link", { name: "Settings" }).click();
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol]);
     await core.selectOption("alice");
     await expect(core).toHaveValue("alice");
 
@@ -646,8 +647,12 @@ test("default assignee picks made while a save is out are superseded by the newe
   const coreKey = rowKey("CORE");
   await createProject({ key: coreKey, name: "Core" });
   await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
-  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: "carol" });
-  await createProject({ key: rowKey("ENG"), name: "Engineering" }, { login: "dave" });
+  // carol and dave are people of the row's own (`rowPerson`, e2e/test.ts), off the people list
+  // again once the row ends.
+  const carol = rowPerson("carol");
+  const dave = rowPerson("dave");
+  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: carol });
+  await createProject({ key: rowKey("ENG"), name: "Engineering" }, { login: dave });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -671,11 +676,11 @@ test("default assignee picks made while a save is out are superseded by the newe
     });
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol", "dave"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol, dave]);
 
     await core.selectOption("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    for (const pick of ["carol", "dave", "alice"]) {
+    for (const pick of [carol, dave, "alice"]) {
       await core.selectOption(pick);
       await expect(core).toHaveValue(pick);
     }

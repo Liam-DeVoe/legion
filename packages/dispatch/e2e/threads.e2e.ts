@@ -13,7 +13,7 @@ import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // "bob" names the session that opened the ask - authenticated over the API with
@@ -431,12 +431,14 @@ test("a session retraction leaves its reason on the card and removes the human's
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: "Ship the change to production",
-    title: "Retracted decision",
-  });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox and count
+  // hold this row's one question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, spec: "Ship the change to production", title: "Retracted decision" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     {
@@ -447,7 +449,7 @@ test("a session retraction leaves its reason on the card and removes the human's
     bobSession
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   await expect(inboxRow(inboxPage, ask.id)).toBeVisible();

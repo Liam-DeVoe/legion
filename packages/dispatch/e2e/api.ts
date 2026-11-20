@@ -551,9 +551,11 @@ export function getPriorityHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
 }
 
-/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
-export function getInbox(options: ApiOptions = {}) {
-  return get("/api/v1/inbox", {}, options);
+/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them: every open question
+ *  of the stack, unless `query` narrows them (`assignee: "me"` is the viewer's own list, the one
+ *  the page opens on). */
+export function getInbox(options: ApiOptions = {}, query: Query<"/api/v1/inbox", "get"> = {}) {
+  return get("/api/v1/inbox", { query }, options);
 }
 
 /** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader

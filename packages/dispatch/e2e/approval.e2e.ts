@@ -29,7 +29,7 @@ import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -501,12 +501,14 @@ test("an unchanged hand-back after a human comment and a progress note returns t
   browser,
 }) => {
   const same = rowKey("SAME");
-  await createProject({ key: same, name: "Unchanged hand-back" });
-  const issue = await createIssue({
-    project: same,
-    spec: "The plan.",
-    title: "Unchanged hand-back",
-  });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the banner's one item
+  // is this row's question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: same, name: "Unchanged hand-back" }, { login: me });
+  const issue = await createIssue(
+    { project: same, spec: "The plan.", title: "Unchanged hand-back" },
+    { login: me }
+  );
   const summary = "Names the existing proposal.";
   const requested = withOpenedAsk(
     await requestApproval(issue.primary_artifact_id, { summary }, session)
@@ -514,7 +516,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
   await createComment(
     issue.key,
     { ask_id: requested.ask.id, body: "Please clarify the rollout." },
-    { login: "alice" }
+    { login: me }
   );
   await createComment(
     issue.key,
@@ -522,7 +524,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
     session
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");

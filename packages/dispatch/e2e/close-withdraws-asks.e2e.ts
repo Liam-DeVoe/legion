@@ -13,15 +13,17 @@ import {
 } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { type Browser, expect, type Locator, type Page, rowKey, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // Closing an issue withdraws each of its open asks, naming the closer, and reopening it brings
 // back exactly those asks. Every row seeds an issue holding a plain ask, a decision block in its
 // spec and an approval request on the spec, opens the issue page and the Inbox, and only then
-// closes it, so what is checked is what a reader already looking at the issue sees.
+// closes it, so what is checked is what a reader already looking at the issue sees. The reader
+// is a person of the row's own (`rowPerson`, e2e/test.ts), so "Nothing needs you" after the
+// close is said of a list no other row's questions reach.
 
-/** The agent that asks: every seeded ask waits on a person, so each is in alice's Inbox. */
+/** The agent that asks: every seeded ask waits on a person, so each is in the reader's Inbox. */
 const asker = { actor: { id: "e2e-seed", kind: "session" } as Actor, as: "agent" as const };
 
 /** Every fact this file polls for lands in milliseconds: Playwright's default 100/250/500/1000
@@ -48,12 +50,12 @@ interface Seeded {
 }
 
 async function seedIssue(project: string): Promise<Seeded> {
-  await createProject({ key: project, name: project });
-  const issue = await createIssue({
-    project,
-    spec: "## Plan\n\nContext.\n",
-    title: "Close withdraws asks",
-  });
+  const reader = { login: rowPerson("alice") };
+  await createProject({ key: project, name: project }, reader);
+  const issue = await createIssue(
+    { project, spec: "## Plan\n\nContext.\n", title: "Close withdraws asks" },
+    reader
+  );
   await editArtifact(
     issue.primary_artifact_id,
     { ops: [{ after: "end", markdown: decisionBlock, op: "insert" }] },
@@ -94,15 +96,15 @@ interface Opened {
   sockets: () => number;
 }
 
-/** Opens alice's Inbox and the issue page, and waits until both show every ask open. The Inbox
- *  is read as the list it is: from 1280 px each question is a short row and only the selected
- *  one is a card, so the rows are what says the issue's three asks are listed. */
+/** Opens the reader's Inbox and the issue page, and waits until both show every ask open. The
+ *  Inbox is read as the list it is: from 1280 px each question is a short row and only the
+ *  selected one is a card, so the rows are what says the issue's three asks are listed. */
 async function openIssueAndInbox(
   browser: Browser,
   seeded: Seeded,
   { clock = false }: { clock?: boolean } = {}
 ): Promise<Opened> {
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   const inbox = await alice.newPage();
   const page = await alice.newPage();
   const sockets = countDocumentSockets(page, seeded.artifactId);
@@ -170,7 +172,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     // before it.
     const before = await newestVersion(seeded.artifactId);
     await page.getByRole("button", { name: "Close issue" }).click();
-    await expectWithdrawn(opened, seeded, "alice");
+    await expectWithdrawn(opened, seeded, rowPerson("alice"));
 
     // That version, opened from the history, still shows the decision as it was then, open, and
     // nothing of the withdrawal, whatever the closed issue's settlement has saved since.

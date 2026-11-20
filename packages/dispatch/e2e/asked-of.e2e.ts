@@ -18,7 +18,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -101,20 +101,28 @@ test("a person hands an ask to another person and it moves between the two Inbox
 }, testInfo) => {
   const core = rowKey("CORE");
   test.setTimeout(240_000);
+  // The three people are the row's own (`rowPerson`, e2e/test.ts): each list and count below
+  // holds this row's questions and no other row's.
+  const aliceLogin = rowPerson("alice");
+  const bobLogin = rowPerson("bob");
+  const carolLogin = rowPerson("carol");
   await setLiveSessions([{ session_id: asker.actor.id, title: "Planner" }]);
   // CORE names carol, a third person: every project names a default assignee, and making it
   // somebody other than these two readers keeps the two questions below out of both counts.
-  await createProject({ key: core, name: "Core" }, { login: "carol" });
+  await createProject({ key: core, name: "Core" }, { login: carolLogin });
 
   // A human's issue is assigned to its creator, so these two are alice's and bob's own. Two
   // questions sit on alice's and one on bob's, so every count below moves by one rather than
   // appearing and disappearing.
-  const hers = await createIssue({ project: core, title: "Alice's rollout" }, { login: "alice" });
-  expect(hers.assignee).toBe("alice");
+  const hers = await createIssue(
+    { project: core, title: "Alice's rollout" },
+    { login: aliceLogin }
+  );
+  expect(hers.assignee).toBe(aliceLogin);
   const moved = await createAsk(hers.key, { question: "Which rollout flag?" }, asker);
   await createAsk(hers.key, { question: "Which region goes first?" }, asker);
-  const his = await createIssue({ project: core, title: "Bob's migration" }, { login: "bob" });
-  expect(his.assignee).toBe("bob");
+  const his = await createIssue({ project: core, title: "Bob's migration" }, { login: bobLogin });
+  expect(his.assignee).toBe(bobLogin);
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
 
   // Two more open asks neither reader waits on - a project document's, and an `:::ask` block on
@@ -139,11 +147,11 @@ test("a person hands an ask to another person and it moves between the two Inbox
     },
     asker
   );
-  expect(blocked.assignee).toBe("carol");
+  expect(blocked.assignee).toBe(carolLogin);
   const blockAsk = await indexedBlockAsk(blocked.key, "rollout-decision");
 
-  const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  const alice = await asUser(browser, aliceLogin);
+  const bob = await asUser(browser, bobLogin);
   try {
     // Alice reads below the reading column's width, where every row draws its own card: that is
     // where she presses the control. Bob reads above it, where the card is the reading column's,
@@ -185,9 +193,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // it waits on until she does.
     const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
     await expect(rowControl).toHaveCount(1);
-    await expect(rowControl).toHaveValue("alice");
-    await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
-    await handTo(rowControl, "bob");
+    await expect(rowControl).toHaveValue(aliceLogin);
+    await expect(inboxRow(alicePage, moved.id)).toContainText(`Asked of ${aliceLogin}`);
+    await handTo(rowControl, bobLogin);
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count beside it
@@ -223,18 +231,18 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // 4. The issue page still lists the question for both people, and the card names who handed
     // it on and when - the moment the server stored, not one this spec invents.
     const handedOn = (await getAsk(moved.id, { login: "alice" })).ask;
-    expect(handedOn.asked_of).toBe("bob");
-    expect(handedOn.asked_of_by).toBe("alice");
-    expect(handedOn.waiting_on_person).toBe("bob");
+    expect(handedOn.asked_of).toBe(bobLogin);
+    expect(handedOn.asked_of_by).toBe(aliceLogin);
+    expect(handedOn.waiting_on_person).toBe(bobLogin);
     await expect(aliceCard).toBeVisible();
-    await expect(aliceCard).toContainText("Asked of bob");
-    await expect(aliceCard).toContainText("handed on by alice");
+    await expect(aliceCard).toContainText(`Asked of ${bobLogin}`);
+    await expect(aliceCard).toContainText(`handed on by ${aliceLogin}`);
     await expect(aliceCard.locator(`time[datetime="${handedOn.asked_of_at}"]`)).toHaveCount(1);
 
     const bobIssue = await bob.newPage();
     const bobIssueCard = await conversationCard(bobIssue, hers.key, moved.id);
     await expect(bobIssueCard).toBeVisible();
-    await expect(bobIssueCard).toContainText("Asked of bob");
+    await expect(bobIssueCard).toContainText(`Asked of ${bobLogin}`);
     await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
     await bobIssue.close();
 
@@ -244,7 +252,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
-    await expect(paneControl).toHaveValue("bob");
+    await expect(paneControl).toHaveValue(bobLogin);
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
 
     const docPage = await alice.newPage();
@@ -263,12 +271,16 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // Inbox already lists for a reader is not a Reply row of theirs, and the same thread is one
     // for the other reader. Both people write in this thread, and the agent writes last, so
     // each of them has a thread somebody else has written in since.
-    await createComment(hers.key, { ask_id: moved.id, body: "Which flag do you mean?" });
+    await createComment(
+      hers.key,
+      { ask_id: moved.id, body: "Which flag do you mean?" },
+      { login: aliceLogin }
+    );
     await createComment(hers.key, { ask_id: moved.id, body: "The rollout one." }, asker);
     await createComment(
       hers.key,
       { ask_id: moved.id, body: "I will take this one." },
-      { login: "bob" }
+      { login: bobLogin }
     );
     await createComment(hers.key, { ask_id: moved.id, body: "Over to you, then." }, asker);
 
@@ -284,12 +296,12 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // follows the same move, with no reload either: the hand-on event names the person it moved
     // from and the one it moved to in its `thread_logins`, which is what tells each of those two
     // readers their thread rows have moved (`movesInboxThreads`, `web/src/api/event-refresh.ts`).
-    await handTo(paneControl, "alice");
+    await handTo(paneControl, aliceLogin);
     await handsOff(bobPage);
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
       .toBeNull();
-    expect((await getAsk(moved.id, { login: "alice" })).ask.waiting_on_person).toBe("alice");
+    expect((await getAsk(moved.id, { login: "alice" })).ask.waiting_on_person).toBe(aliceLogin);
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(inboxRow(bobReplies, replyRowId(moved.id))).toBeVisible();
@@ -299,10 +311,10 @@ test("a person hands an ask to another person and it moves between the two Inbox
 
     // 8. The control on the issue page hands it on and hands it back the same way.
     const issueControl = handOnControl(aliceCard, moved.id);
-    await handTo(issueControl, "bob");
+    await handTo(issueControl, bobLogin);
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
-    await handTo(issueControl, "alice");
+    await handTo(issueControl, aliceLogin);
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
       .toBeNull();
@@ -311,7 +323,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
 
     // 9. Bob answers it, which a person who is not the issue's assignee may do, and the control
     // is gone from the card the moment the question is no longer open.
-    await handTo(issueControl, "bob");
+    await handTo(issueControl, bobLogin);
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await selectRow(bobPage, moved.id);
     const bobCard = inboxPane(bobPage).getByTestId(`ask-${moved.id}`);
@@ -321,7 +333,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "bob" })).ask.state)
       .toBe("answered");
-    await expect(aliceCard).toContainText("Answered by bob");
+    await expect(aliceCard).toContainText(`Answered by ${bobLogin}`);
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(0);
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
@@ -336,13 +348,15 @@ test("a person hands an ask to another person and it moves between the two Inbox
 test("an agent sets and clears the issue assignee from the command", async ({ browser }) => {
   const core = rowKey("CORE");
   test.setTimeout(240_000);
-  // CORE names carol, so neither reader below holds anything of it to start with.
-  await createProject({ key: core, name: "Core" }, { login: "carol" });
+  // CORE names carol, so neither reader below holds anything of it to start with. She is a
+  // person of the row's own, whom the row's end takes off the people list (`rowPerson`).
+  const carolLogin = rowPerson("carol");
+  await createProject({ key: core, name: "Core" }, { login: carolLogin });
   // The shared token holds nobody and names nobody, so this issue starts on CORE's default and
   // no Inbox of the two readers lists its question: the command is the only thing that can put
   // either on one of them.
   const issue = await createIssue({ project: core, title: "Rotate the agent token" }, asker);
-  expect(issue.assignee).toBe("carol");
+  expect(issue.assignee).toBe(carolLogin);
   const ask = await createAsk(issue.key, { question: "Rotate before the deploy?" }, asker);
   const closed = await createIssue({ project: core, title: "Already finished" }, asker);
   await patchIssue(closed.key, { status: "done" }, asker);

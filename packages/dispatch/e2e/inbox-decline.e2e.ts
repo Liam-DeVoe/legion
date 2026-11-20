@@ -14,7 +14,7 @@ import {
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, own, type Page, rowKey, rowPerson, test } from "./test";
 
 /**
  * A person declines to answer a question, and the agent that asked is told so
@@ -153,47 +153,60 @@ test("the Inbox's reading pane declines a question with no note at all", async (
   await expect(record).not.toContainText("declined to answer -");
 });
 
-test("an approval request beside a question in one Inbox draws no Decline to answer", async ({
-  page,
-}) => {
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const questionIssue = await createIssue({ project: core, title: "Rollout order" });
-  const question = await createAsk(
-    questionIssue.key,
-    { options: shipOrHold, question: "Which service moves first?" },
-    session
-  );
-  const approvalIssue = await createIssue({
-    project: core,
-    spec: "# Ledger rollout\n\nThe ledger moves first, and the mirror follows it.\n",
-    title: "Ledger rollout",
-  });
-  const approval = withOpenedAsk(
-    await requestApproval(
-      approvalIssue.primary_artifact_id,
-      { summary: "The ledger-first rollout." },
+// The row counts the Inbox whole, so its default context is a person of the row's own
+// (`rowPerson`, e2e/test.ts), whose Inbox holds these two questions and no other row's.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
+
+  test("an approval request beside a question in one Inbox draws no Decline to answer", async ({
+    page,
+  }) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const questionIssue = await createIssue(
+      { project: core, title: "Rollout order" },
+      { login: me }
+    );
+    const question = await createAsk(
+      questionIssue.key,
+      { options: shipOrHold, question: "Which service moves first?" },
       session
-    )
-  );
+    );
+    const approvalIssue = await createIssue(
+      {
+        project: core,
+        spec: "# Ledger rollout\n\nThe ledger moves first, and the mirror follows it.\n",
+        title: "Ledger rollout",
+      },
+      { login: me }
+    );
+    const approval = withOpenedAsk(
+      await requestApproval(
+        approvalIssue.primary_artifact_id,
+        { summary: "The ledger-first rollout." },
+        session
+      )
+    );
 
-  // Below the reading column's width every row draws its own card, so the question and the
-  // approval request stand as two cards in one list, which is what this row compares.
-  await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
-  await page.goto("/");
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
+    // Below the reading column's width every row draws its own card, so the question and the
+    // approval request stand as two cards in one list, which is what this row compares.
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
+    await page.goto("/");
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
 
-  const questionCard = await askCard(page, question.id);
-  await expect(declineControl(questionCard)).toHaveCount(1);
+    const questionCard = await askCard(page, question.id);
+    await expect(declineControl(questionCard)).toHaveCount(1);
 
-  // The approval request is answered with Approve or Request changes, and the server refuses a
-  // decline of one, so its card offers the person no such way out.
-  const approvalCard = await askCard(page, approval.ask.id);
-  await expect(approvalCard).toContainText("Approval requested");
-  const options = approvalCard.getByRole("group", { name: "Answer options" });
-  await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);
-  await expect(options.getByRole("radio", { name: /^Request changes/ })).toHaveCount(1);
-  await expect(declineControl(approvalCard)).toHaveCount(0);
+    // The approval request is answered with Approve or Request changes, and the server refuses a
+    // decline of one, so its card offers the person no such way out.
+    const approvalCard = await askCard(page, approval.ask.id);
+    await expect(approvalCard).toContainText("Approval requested");
+    const options = approvalCard.getByRole("group", { name: "Answer options" });
+    await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);
+    await expect(options.getByRole("radio", { name: /^Request changes/ })).toHaveCount(1);
+    await expect(declineControl(approvalCard)).toHaveCount(0);
+  });
 });
 
 // SLOW(>=2s): the spec's live document room is drawn before its block hosts a card, and the

@@ -28,7 +28,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { expect, type Page, rowKey, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -50,13 +50,16 @@ function snoozeRequest(page: Page, askId: string) {
 // The rows below are keyboard work on the Inbox list: marks, bulk snoozes, the refusals they
 // come back with, and where the focus lands after each. None of them reads a width, a box or a
 // touch target, so the phone viewport decides nothing they assert and the describe takes no tag.
+// The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose list holds this
+// row's asks and no other row's.
 test.describe("inbox selection", () => {
   test("x marks rows, h snoozes every marked ask into Later, and Escape clears the selection", async ({
     browser,
   }, testInfo) => {
     const core = rowKey("CORE");
-    await seedInbox(core);
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(core, me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -123,8 +126,9 @@ test.describe("inbox selection", () => {
   test("a refused bulk snooze names the count and keeps the refused rows marked @pr", async ({
     browser,
   }) => {
-    await seedInbox(rowKey("CORE"));
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -167,8 +171,9 @@ test.describe("inbox selection", () => {
   test("a late bulk-snooze refusal re-marks only its refused row after Clear", async ({
     browser,
   }) => {
-    await seedInbox(rowKey("CORE"));
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -218,15 +223,16 @@ test.describe("inbox selection", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const mine = await createIssue({ project: core, title: "Mine to answer" });
-    await patchIssue(mine.key, { assignee: "alice" });
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const mine = await createIssue({ project: core, title: "Mine to answer" }, { login: me });
+    await patchIssue(mine.key, { assignee: me });
     const refusedAsk = await createAsk(mine.key, { question: "Ship it?" }, session);
     const takenAsk = await createAsk(mine.key, { question: "Hold it?" }, session);
-    const theirs = await createIssue({ project: core, title: "Bob answers this" });
+    const theirs = await createIssue({ project: core, title: "Bob answers this" }, { login: me });
     await patchIssue(theirs.key, { assignee: "bob" });
     const hidden = await createAsk(theirs.key, { question: "Wait on it?" }, session);
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       const held = Promise.withResolvers<void>();
@@ -253,7 +259,7 @@ test.describe("inbox selection", () => {
       // row that column is showing: the reader moves on before the filter narrows, so the mark
       // is all that is left of it here.
       if (hasReadingPane(page)) await page.keyboard.press("j");
-      await pickAssignee(page, "alice");
+      await pickAssignee(page, me);
       await closeAssigneeFilter(page);
       await expect(rows).toHaveCount(2);
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -296,11 +302,12 @@ test.describe("inbox selection", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const issue = await createIssue({ project: core, title: "Needs you" });
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Needs you" }, { login: me });
     const refusedAsk = await createAsk(issue.key, { question: "First decision" }, session);
     await createAsk(issue.key, { question: "Second decision" }, session);
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       // Only the asks waiting on the reader, from this one agent: a snoozed row leaves this list
@@ -369,10 +376,11 @@ test.describe("inbox selection", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const issue = await createIssue({ project: core, title: "The only ask" });
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "The only ask" }, { login: me });
     await createAsk(issue.key, { question: "Ship it?" }, session);
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 1);
@@ -431,14 +439,15 @@ test.describe("inbox selection", () => {
   // set that row's moment by hand since marking it. A pick must not write it.
   test("a bulk pick leaves a folded row's own snooze alone", async ({ browser }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const first = await createIssue({ project: core, title: "Deferred by hand" });
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const first = await createIssue({ project: core, title: "Deferred by hand" }, { login: me });
     const deferred = await createAsk(first.key, { question: "Which release?" }, session);
-    const second = await createIssue({ project: core, title: "Still open" });
+    const second = await createIssue({ project: core, title: "Still open" }, { login: me });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
     const moment = async (askId: string) =>
       (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 2);
@@ -479,8 +488,9 @@ test.describe("inbox selection", () => {
   // One pick at a time: a second while the first is in the air re-sends every id and lets the
   // stale answer overwrite the live one's.
   test("the bulk picker is inert while its pick is in flight", async ({ browser }) => {
-    await seedInbox(rowKey("CORE"));
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -529,14 +539,19 @@ test.describe("inbox selection", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const issue = await createIssue({ project: core, title: "Two asks, two bands" });
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Two asks, two bands" }, { login: me });
     const deferred = await createAsk(issue.key, { question: "Alpha decision" }, session);
     const handedBack = await createAsk(issue.key, { question: "Beta decision" }, session);
     // A human reply hands Beta's turn to the agents, so the server lists Alpha - still the
     // reader's turn - first.
-    await createComment(issue.key, { ask_id: handedBack.id, body: "Looking into it." });
-    const context = await asUser(browser, "alice");
+    await createComment(
+      issue.key,
+      { ask_id: handedBack.id, body: "Looking into it." },
+      { login: me }
+    );
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 2);
@@ -548,7 +563,8 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(2);
 
       // The precondition this test exists for: the server's order is the opposite of the bands'.
-      const served = (await getInbox({ login: "alice" })).map((row) => row.id);
+      // The server's order of the reader's own list, which is the list the page reads.
+      const served = (await getInbox({ login: me }, { assignee: "me" })).map((row) => row.id);
       expect(served).toEqual([deferred.id, handedBack.id]);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", handedBack.id);
       await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", deferred.id);

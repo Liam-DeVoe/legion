@@ -18,7 +18,21 @@
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { withIssuePage } from "./issue-page-option";
-import { expect, type Locator, type Page, type Response, rowKey, test } from "./test";
+import {
+  expect,
+  type Locator,
+  own,
+  type Page,
+  type Response,
+  rowKey,
+  rowPerson,
+  test,
+} from "./test";
+
+// Both rows read the Inbox as "Nothing needs you", which is a claim about the reader's whole
+// list: the reader is a person of the row's own (`rowPerson`, e2e/test.ts), whom no question of
+// any row waits on.
+test.use({ signedIn: own("alice") });
 
 /** The family `web/src/styles.css` declares for the typeface the app ships and the new issue
  *  page draws in. */
@@ -202,7 +216,7 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "A page in the shipped typeface" });
-  await withIssuePage(context, "alice");
+  await withIssuePage(context, rowPerson("alice"));
   const fontRequests: string[] = [];
   const fontResponses: Promise<Response | null>[] = [];
   page.on("request", (request) => {

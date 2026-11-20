@@ -49,7 +49,7 @@ import {
 import { holdReadMarks } from "./inbox-threads";
 import { holdMermaidWorkers } from "./mermaid-helpers";
 import { serveWithoutDisplayTrees } from "./strip-trees";
-import { type Browser, expect, test } from "./test";
+import { type Browser, expect, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -74,7 +74,7 @@ import { asUser } from "./users";
 // SLOW(>=2s): four drives, each a committed event, a socket gap or a refocus the page must read.
 test("the approval pane keeps the place the reader scrolled to", async ({ browser }) => {
   const seed = await seedApprovalPlace();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -150,7 +150,7 @@ test("the approval pane keeps the place the reader scrolled to", async ({ browse
 async function keepsTheColumn(browser: Browser, run: QuestionRun): Promise<void> {
   const seed = await seedQuestionColumn(run);
   const { threadId } = seed;
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -370,7 +370,7 @@ test("a question far down its document opens with its section at the top of the 
   browser,
 }) => {
   const seed = await seedQuestions();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -397,7 +397,7 @@ test("a second question of the document the column shows opens at its own sectio
   browser,
 }) => {
   const seed = await seedQuestions();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -426,7 +426,7 @@ test("a second question with no heading above it opens at the start of the colum
   browser,
 }) => {
   const seed = await seedQuestions();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -454,7 +454,7 @@ test("a second thread anchored to the same block opens at that block's section",
   browser,
 }) => {
   const seed = await seedTwoThreads();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -485,7 +485,7 @@ test("a second thread anchored to the same block opens at that block's section",
 // SLOW(>=2s): two versions seeded and the marked one drawn before the step is read.
 test("Next change moves the column to the next changed block", async ({ browser }) => {
   const seed = await seedApprovalWithMarks();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -517,7 +517,7 @@ test("Skip to the answer pressed while the placement runs leaves the column at t
   browser,
 }) => {
   const seed = await seedQuestions();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -547,7 +547,7 @@ test("a thread whose replies are served after the placement opens at its anchore
   browser,
 }) => {
   const seed = await seedQuestionColumn("thread");
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -584,7 +584,7 @@ test("an approval whose answers carry no reading still marks what changed @pr", 
   browser,
 }) => {
   const seed = await seedApprovalWithMarks();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });

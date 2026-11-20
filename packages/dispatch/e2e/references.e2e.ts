@@ -16,7 +16,7 @@ import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
 import { settledState } from "./settled";
-import { expect, rowKey, test } from "./test";
+import { expect, own, rowKey, rowPerson, test } from "./test";
 
 // @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
 test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
@@ -417,48 +417,57 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   await expect(references).not.toContainText("Referenced by unavailable.");
 });
 
-test("an Inbox of twenty asks reads no backlinks until a card is opened", async ({ page }) => {
-  const core = rowKey("CORE");
-  const opsKey = rowKey("OPS");
-  await createProject({ key: core, name: "Core" });
-  await createProject({ key: opsKey, name: "Operations" });
-  const issue = await createIssue({ project: core, title: "Twenty decisions" });
-  const source = await createIssue({ project: opsKey, title: "Citing issue" });
-  // Twenty asks, not twenty round trips: the row needs the cards, never their creation order.
-  const asks = await Promise.all(
-    Array.from({ length: 20 }, (_, index) =>
-      createAsk(issue.key, { question: `Decision ${index + 1}?` })
-    )
-  );
-  const cited = asks[0];
-  if (cited === undefined) {
-    throw new Error("seeded no asks");
-  }
-  await createMessage(source.key, {
-    body: `The rollout waits on dispatch://${issue.key}/ask/${cited.id}.`,
-  });
+// The row counts the Inbox whole, so its default context is a person of the row's own
+// (`rowPerson`, e2e/test.ts), whose Inbox holds these twenty questions and no other row's.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  let referenceReads = 0;
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/v1/references") {
-      referenceReads += 1;
+  test("an Inbox of twenty asks reads no backlinks until a card is opened", async ({ page }) => {
+    const core = rowKey("CORE");
+    const opsKey = rowKey("OPS");
+    await createProject({ key: core, name: "Core" });
+    await createProject({ key: opsKey, name: "Operations" });
+    const issue = await createIssue(
+      { project: core, title: "Twenty decisions" },
+      { login: rowPerson("alice") }
+    );
+    const source = await createIssue({ project: opsKey, title: "Citing issue" });
+    // Twenty asks, not twenty round trips: the row needs the cards, never their creation order.
+    const asks = await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        createAsk(issue.key, { question: `Decision ${index + 1}?` })
+      )
+    );
+    const cited = asks[0];
+    if (cited === undefined) {
+      throw new Error("seeded no asks");
     }
+    await createMessage(source.key, {
+      body: `The rollout waits on dispatch://${issue.key}/ask/${cited.id}.`,
+    });
+
+    let referenceReads = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/v1/references") {
+        referenceReads += 1;
+      }
+    });
+
+    await page.goto("/");
+    // Twenty questions, twenty rows. From 1280 px one of them is also the card the reading pane
+    // draws (INFRA-575): that card is part of the Inbox's first paint and still reads no
+    // backlinks - it shows its count, which the Inbox response carried, behind a closed control.
+    await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(20);
+    await expect(inboxList(page).getByText("Decision 20?")).toBeVisible();
+    const citedCard = await askCard(page, cited.id);
+    const panelControl = citedCard.getByRole("button", { name: /^Referenced by \(1\)$/ });
+    await expect(panelControl).toBeVisible();
+    expect(referenceReads).toBe(0);
+
+    await panelControl.click();
+    await expect(citedCard.getByRole("region", { name: "Referenced by" })).toContainText(
+      `Message · ${source.key}`
+    );
+    expect(referenceReads).toBe(1);
   });
-
-  await page.goto("/");
-  // Twenty questions, twenty rows. From 1280 px one of them is also the card the reading pane
-  // draws (INFRA-575): that card is part of the Inbox's first paint and still reads no
-  // backlinks - it shows its count, which the Inbox response carried, behind a closed control.
-  await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(20);
-  await expect(inboxList(page).getByText("Decision 20?")).toBeVisible();
-  const citedCard = await askCard(page, cited.id);
-  const panelControl = citedCard.getByRole("button", { name: /^Referenced by \(1\)$/ });
-  await expect(panelControl).toBeVisible();
-  expect(referenceReads).toBe(0);
-
-  await panelControl.click();
-  await expect(citedCard.getByRole("region", { name: "Referenced by" })).toContainText(
-    `Message · ${source.key}`
-  );
-  expect(referenceReads).toBe(1);
 });

@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { expect, type Locator, rowKey, test, type WebSocket } from "./test";
+import { expect, type Locator, rowKey, rowPerson, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -127,16 +127,19 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const readingIssue = await createIssue({ project: core, title: "Reading" });
-  const targetIssue = await createIssue({ project: core, title: "Needs an answer" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox count is
+  // this row's one question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const readingIssue = await createIssue({ project: core, title: "Reading" }, { login: me });
+  const targetIssue = await createIssue({ project: core, title: "Needs an answer" }, { login: me });
   const ask = await createAsk(
     targetIssue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it?" },
     bob
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   // As the row above: the badges' refetch is held back by `MIN_REFETCH_INTERVAL_MS`.
@@ -390,7 +393,8 @@ test("live: the stream recovers after the connection drops @pr", async ({ browse
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Reconnect target" });
 
-  const alice = await asUser(browser, "alice");
+  // "Nothing needs you" is said of the reader's whole list: a person of the row's own.
+  const alice = await asUser(browser, rowPerson("alice"));
   const page = await alice.newPage();
   const socketOpened = page.waitForEvent(
     "websocket",

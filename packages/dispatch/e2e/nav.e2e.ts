@@ -1,5 +1,5 @@
 import { createAsk, createIssue, createProject } from "./api";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -16,16 +16,19 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
 }, testInfo) => {
   const core = rowKey("CORE");
   const ops = rowKey("OPS");
-  await createProject({ key: core, name: "Core" });
-  await createProject({ key: ops, name: "Operations" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the Inbox count and
+  // the badges are this row's questions and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  await createProject({ key: ops, name: "Operations" }, { login: me });
   const coreIssues = await Promise.all(
     Array.from({ length: 12 }, (_value, index) =>
-      createIssue({ project: core, title: `Core issue ${index + 1}` })
+      createIssue({ project: core, title: `Core issue ${index + 1}` }, { login: me })
     )
   );
   const opsIssues = await Promise.all(
     Array.from({ length: 8 }, (_value, index) =>
-      createIssue({ project: ops, title: `Operations issue ${index + 1}` })
+      createIssue({ project: ops, title: `Operations issue ${index + 1}` }, { login: me })
     )
   );
   await Promise.all([
@@ -37,7 +40,7 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
       .map((issue) => createAsk(issue.key, { question: "Operations ask" }, session)),
   ]);
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   // The sidebar must never fan out per issue. The one sanctioned per-issue request on the
   // Inbox is each ask card's `GET /issues/{key}/subscribers` (`AskRecipients`, for `Reaches N`),

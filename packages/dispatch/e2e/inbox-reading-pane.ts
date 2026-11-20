@@ -28,13 +28,25 @@ export const session = {
   as: "agent" as const,
 };
 
-/** The list the whole file reads: the cleared assignee filter, so the project document's own
- *  question - which nobody holds, a document having no assignee - is listed beside the rest. */
+/** The list the stubbed rows read: the cleared assignee filter, so the project document's own
+ *  question - which nobody holds, a document having no assignee - is listed beside the rest, as
+ *  it was when their recording was made. */
 export const INBOX = "/?assignee=everyone";
 
 /** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter). */
 export function inboxAt(askId: string): string {
   return `/?item=${askId}&assignee=everyone`;
+}
+
+/** The list the real-stack rows read: the reader's own, which holds every question `seedInbox`
+ *  makes - the reader made the project, so its document's question reaches them too - and no
+ *  question another row made. Their reader is a person of the row's own (`rowPerson`,
+ *  e2e/test.ts), and the cleared filter would list every open question of the stack. */
+export const OWN_INBOX = "/";
+
+/** The address the Inbox writes for a row selected in the reader's own list. */
+export function ownInboxAt(askId: string): string {
+  return `/?item=${askId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,12 +157,13 @@ export interface Seed {
  *  quarter-second after the row was already there, and every row of this file pays the seed. */
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** The Inbox row `match` names, once the server has indexed the block or opened the question. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
+/** The row `match` names in `login`'s own Inbox, once the server has indexed the block or opened
+ *  the question. */
+async function indexedRow(login: string, match: (row: InboxRow) => boolean): Promise<InboxRow> {
   let found: InboxRow | undefined;
   await expect
     .poll(async () => {
-      found = (await getInbox()).find(match);
+      found = (await getInbox({ login }, { assignee: "me" })).find(match);
       return found !== undefined;
     }, INDEX_PROBE)
     .toBe(true);
@@ -168,9 +181,11 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  *
  * `project` is the key of the project they are made in: `inbox-reading-pane.e2e.ts` passes its
  * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `PANE`.
+ * `login` is the reader every question waits on, alice unless a real-stack row names a person of
+ * its own (`rowPerson`).
  */
-export async function seedInbox(project = "PANE"): Promise<Seed> {
-  await createProject({ key: project, name: "Pane rollout" });
+export async function seedInbox(project = "PANE", login = "alice"): Promise<Seed> {
+  await createProject({ key: project, name: "Pane rollout" }, { login });
 
   // Every question is its own issue or document, and the Inbox orders them by the priorities set
   // here rather than by the order they were made, so each chain goes out beside the others
@@ -179,21 +194,19 @@ export async function seedInbox(project = "PANE"): Promise<Seed> {
   const [decision, approval, firstApproval, { anchored, plain }, documentDecision] =
     await Promise.all([
       (async () => {
-        const issue = await createIssue({
-          project,
-          spec: decisionSpec,
-          title: "Rollout order",
-        });
+        const issue = await createIssue(
+          { project, spec: decisionSpec, title: "Rollout order" },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 0 });
-        const row = await indexedRow((indexed) => indexed.block_id === DECISION_BLOCK);
+        const row = await indexedRow(login, (indexed) => indexed.block_id === DECISION_BLOCK);
         return { issueKey: issue.key, row };
       })(),
       (async () => {
-        const issue = await createIssue({
-          project,
-          spec: `# ${APPROVAL_HEADING}\n\n${PLACEHOLDER}\n`,
-          title: "Ledger rollout",
-        });
+        const issue = await createIssue(
+          { project, spec: `# ${APPROVAL_HEADING}\n\n${PLACEHOLDER}\n`, title: "Ledger rollout" },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 1 });
         const artifactId = issue.primary_artifact_id;
         await editArtifact(
@@ -216,7 +229,7 @@ export async function seedInbox(project = "PANE"): Promise<Seed> {
         await answerAsk(
           atThree.ask.id,
           { expected_edited_at: null, selected: ["Approve"] },
-          { login: "alice" }
+          { login }
         );
         await editArtifact(
           artifactId,
@@ -240,11 +253,14 @@ export async function seedInbox(project = "PANE"): Promise<Seed> {
         return { artifactId, askId: atFour.ask.id };
       })(),
       (async () => {
-        const issue = await createIssue({
-          project,
-          spec: "# Lease handover\n\nThe lease moves with the ledger, never with the mirror.\n",
-          title: "Lease handover",
-        });
+        const issue = await createIssue(
+          {
+            project,
+            spec: "# Lease handover\n\nThe lease moves with the ledger, never with the mirror.\n",
+            title: "Lease handover",
+          },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 2 });
         return withOpenedAsk(
           await requestApproval(
@@ -255,18 +271,21 @@ export async function seedInbox(project = "PANE"): Promise<Seed> {
         );
       })(),
       (async () => {
-        const anchoredIssue = await createIssue({
-          project,
-          spec: "The mirror replays the ledger on a cold start.\n",
-          title: "Cold start",
-        });
+        const anchoredIssue = await createIssue(
+          {
+            project,
+            spec: "The mirror replays the ledger on a cold start.\n",
+            title: "Cold start",
+          },
+          { login }
+        );
         await patchIssue(anchoredIssue.key, { priority: 3 });
         const anchored = await createAsk(
           anchoredIssue.key,
           { anchor: { artifact: "spec", quote: ANCHOR_QUOTE }, question: ANCHORED_QUESTION },
           session
         );
-        const plainIssue = await createIssue({ project, title: "Retry budget" });
+        const plainIssue = await createIssue({ project, title: "Retry budget" }, { login });
         await patchIssue(plainIssue.key, { priority: 3 });
         const plain = await createAsk(
           plainIssue.key,
@@ -280,7 +299,7 @@ export async function seedInbox(project = "PANE"): Promise<Seed> {
           content: documentContent,
           name: "mirror-runbook.md",
         });
-        return indexedRow((indexed) => indexed.block_id === DOCUMENT_BLOCK);
+        return indexedRow(login, (indexed) => indexed.block_id === DOCUMENT_BLOCK);
       })(),
     ]);
   expect(firstApproval.version).toBe(1);

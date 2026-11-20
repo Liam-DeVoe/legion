@@ -12,7 +12,7 @@ import {
   putProjectDefaultAssignee,
 } from "./api";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { expect, type Page, type Request, rowKey, test } from "./test";
+import { expect, type Page, type Request, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -386,14 +386,20 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
   browser,
 }, testInfo) => {
   const coreKey = rowKey("CORE");
-  await createProject({ key: coreKey, name: "Core" });
-  const strangers = await createIssue({ project: coreKey, title: "Somebody else's thread" });
-  const own = await createIssue({ project: coreKey, title: "Alice's thread" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox count holds
+  // this row's one reply and nothing another row left.
+  const me = rowPerson("alice");
+  await createProject({ key: coreKey, name: "Core" }, { login: me });
+  const strangers = await createIssue(
+    { project: coreKey, title: "Somebody else's thread" },
+    { login: me }
+  );
+  const own = await createIssue({ project: coreKey, title: "Alice's thread" }, { login: me });
   const strangerRoot = await createComment(strangers.key, { body: "Bob asks." }, { login: "bob" });
-  const ownRoot = await createComment(own.key, { body: "Alice asks." });
+  const ownRoot = await createComment(own.key, { body: "Alice asks." }, { login: me });
   const session = { actor: { id: "e2e-replier", kind: "session" as const }, as: "agent" as const };
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -456,20 +462,25 @@ test("assignee write: an assignee moved between two other people sends no read f
   browser,
 }, testInfo) => {
   const coreKey = rowKey("CORE");
+  // The reader and carol are people of the row's own (`rowPerson`, e2e/test.ts): the reader's
+  // Inbox count holds this row's one question alone, and carol is off the people list again
+  // once the row ends.
+  const me = rowPerson("alice");
+  const carol = rowPerson("carol");
   // CORE names carol, so nothing the shared token makes here is ever alice's.
-  await createProject({ key: coreKey, name: "Core" }, { login: "carol" });
+  await createProject({ key: coreKey, name: "Core" }, { login: carol });
   // The page's own issue carries no question either, so no Inbox row names it: the barrier's
   // title writes on an issue her list holds would be a read she is owed as well, and would
   // count below as if the move had sent it.
-  const open = await createIssue({ project: coreKey, title: "Alice's open page" });
+  const open = await createIssue({ project: coreKey, title: "Alice's open page" }, { login: me });
   // Her one question, on an issue no write below touches: it is what the count reads, and what
   // makes the list this row watches a list with a row in it.
-  const hers = await createIssue({ project: coreKey, title: "Alice's own" });
+  const hers = await createIssue({ project: coreKey, title: "Alice's own" }, { login: me });
   await createAsk(hers.key, { question: "Alice's decision" }, bob);
   // The issue the write moves, which holds no question at all, for the reason above this test.
   const theirs = await createIssue({ project: coreKey, title: "Bob's issue" }, { login: "bob" });
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -492,7 +503,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     // The write: bob's issue goes to carol. The event names those two and nobody else
     // (`thread_logins`), and alice's page owes nothing for it - her Inbox read holds no row of
     // this issue, and her Reply rows hold no thread on it.
-    await patchIssue(theirs.key, { assignee: "carol" }, bob);
+    await patchIssue(theirs.key, { assignee: carol }, bob);
     // Events reach the page in order: once the barrier's write shows, the assignee write was
     // handled.
     await eventBarrier(page, traffic, open.key, title);
@@ -521,22 +532,27 @@ test("project default: a project's default moved between two other people reads 
 }, testInfo) => {
   const coreKey = rowKey("CORE");
   const opsKey = rowKey("OPS");
+  // The reader and carol are people of the row's own (`rowPerson`, e2e/test.ts): the reader's
+  // Inbox count holds this row's one question alone, and carol is off the people list again
+  // once the row ends.
+  const me = rowPerson("alice");
+  const carol = rowPerson("carol");
   // CORE names bob, and the first write moves it to carol: alice is neither, and the question on
   // the issue nobody holds, which her Inbox lists, is the one the move carries between their two
   // lists. OPS is carol's own project, which is how she is a person who has signed in and so a
   // person the route takes; it holds no question, and the second write moves it to bob.
   await createProject({ key: coreKey, name: "Core" }, { login: "bob" });
-  await createProject({ key: opsKey, name: "Ops" }, { login: "carol" });
+  await createProject({ key: opsKey, name: "Ops" }, { login: carol });
   // The page's own issue carries no question, for the reason the row above gives.
-  const open = await createIssue({ project: coreKey, title: "Alice's open page" });
-  const hers = await createIssue({ project: coreKey, title: "Alice's own" });
+  const open = await createIssue({ project: coreKey, title: "Alice's open page" }, { login: me });
+  const hers = await createIssue({ project: coreKey, title: "Alice's own" }, { login: me });
   await createAsk(hers.key, { question: "Alice's decision" }, bob);
   // A create always lands on a person, so the issue nobody holds is created and then cleared.
   const unheld = await createIssue({ project: coreKey, title: "Nobody holds this" }, bob);
   await patchIssue(unheld.key, { assignee: null }, bob);
   await createAsk(unheld.key, { question: "Anyone's decision" }, bob);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -576,7 +592,7 @@ test("project default: a project's default moved between two other people reads 
     // 1. Her list holds the question on CORE's issue nobody holds, whose person moves from bob
     // to carol: one read of it, and no more.
     const core = await counted(
-      () => putProjectDefaultAssignee(coreKey, { assignee: "carol" }, { as: "user", login: "bob" }),
+      () => putProjectDefaultAssignee(coreKey, { assignee: carol }, { as: "user", login: "bob" }),
       coreKey
     );
     expect(
@@ -590,7 +606,7 @@ test("project default: a project's default moved between two other people reads 
 
     // 2. Her list holds no question of OPS: nothing in it moves, and she reads nothing.
     const ops = await counted(
-      () => putProjectDefaultAssignee(opsKey, { assignee: "bob" }, { as: "user", login: "carol" }),
+      () => putProjectDefaultAssignee(opsKey, { assignee: "bob" }, { as: "user", login: carol }),
       opsKey
     );
     expect(

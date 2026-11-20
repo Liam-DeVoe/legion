@@ -18,7 +18,7 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearIssueCreator, resetDatabase } from "./seed";
-import { expect, type Locator, rowKey, test } from "./test";
+import { expect, type Locator, rowKey, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -541,13 +541,16 @@ test("closing an issue removes its asks from the inbox and pinning stays private
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "First decision" });
-  const otherIssue = await createIssue({ project: core, title: "Second decision" });
+  // The reader and bob are people of the row's own (`rowPerson`, e2e/test.ts): her Inbox holds
+  // this row's two questions alone, and his pins are none another row's bob made.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "First decision" }, { login: me });
+  const otherIssue = await createIssue({ project: core, title: "Second decision" }, { login: me });
   await createAsk(issue.key, { question: "First ask" }, session);
   await createAsk(otherIssue.key, { question: "Second ask" }, session);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   // The Inbox is a second tab of alice's own browser: it makes no write, so sharing the keyed
   // write registry and `navigator.locks` with the issue page costs this row nothing.
@@ -571,7 +574,7 @@ test("closing an issue removes its asks from the inbox and pinning stays private
     await expect(page.getByRole("button", { name: "Unpin issue" })).toBeEnabled();
     await page.reload();
     await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
-    const bob = await asUser(browser, "bob");
+    const bob = await asUser(browser, rowPerson("bob"));
     const bobPage = await bob.newPage();
     try {
       // Alice's issues are nobody else's own work; the closed one is gone from the cleared

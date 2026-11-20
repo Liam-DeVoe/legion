@@ -21,11 +21,13 @@ export const session = {
 
 /** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name.
  *  `project` is the key of the project the issues are made in: `keyboard-inbox.e2e.ts` passes its
- *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
-export async function seedInbox(project = "CORE"): Promise<void> {
-  await createProject({ key: project, name: "Core" });
+ *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
+ *  `login` is the reader the three wait on, alice unless a row names a person of its own
+ *  (`rowPerson`). */
+export async function seedInbox(project = "CORE", login = "alice"): Promise<void> {
+  await createProject({ key: project, name: "Core" }, { login });
   for (const title of ["First", "Second", "Third"]) {
-    const issue = await createIssue({ project, title });
+    const issue = await createIssue({ project, title }, { login });
     await createAsk(issue.key, { question: `${title} decision` }, session);
   }
 }

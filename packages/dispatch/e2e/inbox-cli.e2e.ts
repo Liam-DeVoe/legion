@@ -24,7 +24,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -214,20 +214,32 @@ interface SeededInbox {
  */
 async function seedInbox(): Promise<SeededInbox> {
   const core = rowKey("CORE");
+  const me = rowPerson("alice");
   await setLiveSessions([worker]);
-  await createProject({ key: core, name: "Core" });
+  await createProject({ key: core, name: "Core" }, { login: me });
 
-  // A human's issue is assigned to its creator, so each of these is alice's own.
-  const ordinary = await createIssue({ project: core, title: "Ship the inbox command" });
-  const flag = await createIssue({ project: core, title: "Name the rollout flag" });
-  const running = await createIssue({ project: core, title: "Migrate the ask snoozes" });
-  const deferred = await createIssue({ project: core, title: "Rotate the agent token" });
-  const gate = await createIssue({ project: core, spec: "The plan.", title: "Design gate" });
-  const reviewed = await createIssue({
-    project: core,
-    spec: "The rollout note.",
-    title: "Write the rollout note",
-  });
+  // A human's issue is assigned to its creator, so each of these is the reader's own.
+  const ordinary = await createIssue(
+    { project: core, title: "Ship the inbox command" },
+    { login: me }
+  );
+  const flag = await createIssue({ project: core, title: "Name the rollout flag" }, { login: me });
+  const running = await createIssue(
+    { project: core, title: "Migrate the ask snoozes" },
+    { login: me }
+  );
+  const deferred = await createIssue(
+    { project: core, title: "Rotate the agent token" },
+    { login: me }
+  );
+  const gate = await createIssue(
+    { project: core, spec: "The plan.", title: "Design gate" },
+    { login: me }
+  );
+  const reviewed = await createIssue(
+    { project: core, spec: "The rollout note.", title: "Write the rollout note" },
+    { login: me }
+  );
   const elsewhere = await createIssue(
     { project: core, title: "Bob's own issue" },
     { login: "bob" }
@@ -253,7 +265,7 @@ async function seedInbox(): Promise<SeededInbox> {
   );
   // A day out, far from the band's boundary either clock judges it by.
   await snoozeAsk(deferredAsk.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), {
-    login: "alice",
+    login: me,
   });
   const approval = withOpenedAsk(await requestApproval(gate.primary_artifact_id, {}, asker));
   await createAsk(elsewhere.key, { question: "Does this block bob's release?" }, asker);
@@ -277,7 +289,7 @@ async function seedInbox(): Promise<SeededInbox> {
   await setPendingCredentialRequests([
     {
       approve_url: "https://secrets.internal.example/approve/record-inbox-cli",
-      approver: "alice",
+      approver: me,
       identifiers: ["ROLLOUT_API_KEY"],
       kind: "agent_secret",
       record_id: "record-inbox-cli",
@@ -287,7 +299,7 @@ async function seedInbox(): Promise<SeededInbox> {
     expiredCredentialRequest(
       {
         approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
-        approver: "alice",
+        approver: me,
         identifiers: ["RETIRED_API_KEY"],
         kind: "agent_secret",
         record_id: "record-inbox-cli-expired",
@@ -299,7 +311,11 @@ async function seedInbox(): Promise<SeededInbox> {
   ]);
 
   // A thread of alice's that an agent has written in since she last read it.
-  const thread = await createComment(ordinary.key, { body: "Please draft the rollout note." });
+  const thread = await createComment(
+    ordinary.key,
+    { body: "Please draft the rollout note." },
+    { login: me }
+  );
   await createComment(
     ordinary.key,
     { body: "Drafted; it needs your flag name.", reply_to: thread.id },
@@ -310,7 +326,7 @@ async function seedInbox(): Promise<SeededInbox> {
   const message = await createAgentMessage(
     worker.session_id,
     { body: "How far is the backfill?", delivery: "aside" },
-    { login: "alice" }
+    { login: me }
   );
   // The session stamps its title on what it writes, as a live one does, so every reader names
   // the thread by the session's name rather than by its id (`delivery.ResolveSessionTitles`).
@@ -339,7 +355,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
   test.setTimeout(240_000);
   const seeded = await seedInbox();
   const home = mkdtempSync(join(tmpdir(), "dispatch-inbox-cli-"));
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -388,7 +405,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     expect(needsYou).toBe(section(sections, "Needs you").rows.length + pendingRequests.length);
     expect(unreadThreads).toBeGreaterThan(0);
     expect(unreadThreads).toBe(
-      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
+      (await listMyReplies({ kind: ["reply", "agent"] }, { login: me })).total
     );
     // An Inbox entry the rail has not drawn yet reads as no number, which the poll waits out.
     const inboxEntry = railEntry(page, /^Inbox/);
@@ -562,7 +579,8 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
   test.setTimeout(240_000);
   await seedInbox();
   const home = mkdtempSync(join(tmpdir(), "dispatch-inbox-cli-threads-"));
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -571,7 +589,7 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
 
     // The reader's own token, as the agent acting for her presents it; the row above mints one
     // on the Settings page, which is where a person makes theirs.
-    const token = await mintAgentToken("Thread reader", "alice");
+    const token = await mintAgentToken("Thread reader", me);
     const inbox = await runDispatch(["inbox"], home, token);
     expect(inbox.code, `${inbox.stdout}${inbox.stderr}`).toBe(0);
     const printed = section(printedSections(inbox.stdout), "Unread threads");
@@ -580,7 +598,7 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
 
     // The threads the server answers this reader, and no others: the comment thread of hers an
     // agent has written in, and the message she sent a session that it answered.
-    const listed = await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" });
+    const listed = await listMyReplies({ kind: ["reply", "agent"] }, { login: me });
     const listedRowsRead = listed.rows ?? [];
     expect(listed.total).toBe(2);
     expect(printedThreads(printed)).toEqual(listedRowsRead.map((row) => row.ref).sort());

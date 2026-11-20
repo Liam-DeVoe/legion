@@ -26,7 +26,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { replyRowId } from "./inbox-threads";
-import { rowKey } from "./test";
+import { rowKey, rowPerson } from "./test";
 
 /** The session that writes as somebody else: the author of every reply these rows read and of
  *  every edit a drive makes. */
@@ -41,11 +41,18 @@ function scrollProject(): { key: string; name: string } {
   return { key: rowKey("SCROLL"), name: "Scroll rollout" };
 }
 
-/** The address the Inbox writes for a selected row: the item, then the assignee filter cleared,
- *  so a project document's question - which nobody holds - is listed beside the rest. A thread
- *  row's item carries a colon, which the Inbox's own address escapes. */
+/** What a write of the reader's goes out as. The reader of every row of this file is a person of
+ *  the row's own (`rowPerson`, e2e/test.ts), who creates the project, so every question here -
+ *  a project document's included - reaches them and the list they open holds no other row's. */
+function asReader(): { login: string } {
+  return { login: rowPerson("alice") };
+}
+
+/** The address the Inbox writes for a selected row: the item, in the reader's own list, which
+ *  holds every question this file seeds. A thread row's item carries a colon, which the Inbox's
+ *  own address escapes. */
 export function inboxAt(item: string): string {
-  return `/?item=${encodeURIComponent(item)}&assignee=everyone`;
+  return `/?item=${encodeURIComponent(item)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
   let found: InboxRow | undefined;
   await expect
     .poll(async () => {
-      found = (await getInbox()).find(match);
+      found = (await getInbox(asReader(), { assignee: "me" })).find(match);
       return found !== undefined;
     }, INDEX_PROBE)
     .toBe(true);
@@ -133,11 +140,14 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
 
 /** The issue every row commits its own events on, which no row of this file opens. */
 async function otherIssue(): Promise<string> {
-  const issue = await createIssue({
-    force: true,
-    project: scrollProject().key,
-    title: "Lease handover",
-  });
+  const issue = await createIssue(
+    {
+      force: true,
+      project: scrollProject().key,
+      title: "Lease handover",
+    },
+    asReader()
+  );
   await patchIssue(issue.key, { priority: 3 });
   return issue.key;
 }
@@ -161,13 +171,16 @@ export interface ApprovalPlaceSeed {
 /** One approval request, on a document far longer than the column that shows it, with nothing
  *  approved before it: the column marks nothing and reads no baseline. */
 export async function seedApprovalPlace(): Promise<ApprovalPlaceSeed> {
-  await createProject(scrollProject());
-  const issue = await createIssue({
-    force: true,
-    project: scrollProject().key,
-    spec: approvalSpec,
-    title: APPROVAL_NAME,
-  });
+  await createProject(scrollProject(), asReader());
+  const issue = await createIssue(
+    {
+      force: true,
+      project: scrollProject().key,
+      spec: approvalSpec,
+      title: APPROVAL_NAME,
+    },
+    asReader()
+  );
   await patchIssue(issue.key, { priority: 2 });
   const other = await otherIssue();
   const requested = withOpenedAsk(
@@ -259,7 +272,7 @@ export interface QuestionColumnSeed {
 /** The document one run of the question rows opens, with the question or the thread it is
  *  opened at. */
 export async function seedQuestionColumn(run: QuestionRun): Promise<QuestionColumnSeed> {
-  await createProject(scrollProject());
+  await createProject(scrollProject(), asReader());
   const other = await otherIssue();
 
   if (run === "thread") {
@@ -267,10 +280,11 @@ export async function seedQuestionColumn(run: QuestionRun): Promise<QuestionColu
       content: threadDocument,
       name: "cold-start-runbook.md",
     });
-    const root = await createArtifactComment(created.artifact.id, {
-      anchor: { artifact: created.artifact.slug, quote: ANCHOR_QUOTE },
-      body: THREAD_ROOT,
-    });
+    const root = await createArtifactComment(
+      created.artifact.id,
+      { anchor: { artifact: created.artifact.slug, quote: ANCHOR_QUOTE }, body: THREAD_ROOT },
+      asReader()
+    );
     const blockId = root.anchor?.block_id;
     if (blockId === undefined || blockId === null) {
       throw new Error("the seeded thread was anchored to no block");
@@ -346,7 +360,7 @@ export interface QuestionsSeed {
 }
 
 export async function seedQuestions(): Promise<QuestionsSeed> {
-  await createProject(scrollProject());
+  await createProject(scrollProject(), asReader());
   await createProjectDocument(scrollProject().key, {
     content: questionsDocument,
     name: "mirror-runbook.md",
@@ -388,19 +402,21 @@ export interface TwoThreadsSeed {
 
 /** Two comment threads anchored to two quotes of one paragraph, so both carry one block id. */
 export async function seedTwoThreads(): Promise<TwoThreadsSeed> {
-  await createProject(scrollProject());
+  await createProject(scrollProject(), asReader());
   const created = await createProjectDocument(scrollProject().key, {
     content: twoThreadsDocument,
     name: "mirror-runbook.md",
   });
-  const first = await createArtifactComment(created.artifact.id, {
-    anchor: { artifact: created.artifact.slug, quote: ANCHOR_QUOTE },
-    body: THREAD_ROOT,
-  });
-  const second = await createArtifactComment(created.artifact.id, {
-    anchor: { artifact: created.artifact.slug, quote: SECOND_QUOTE },
-    body: SECOND_THREAD_ROOT,
-  });
+  const first = await createArtifactComment(
+    created.artifact.id,
+    { anchor: { artifact: created.artifact.slug, quote: ANCHOR_QUOTE }, body: THREAD_ROOT },
+    asReader()
+  );
+  const second = await createArtifactComment(
+    created.artifact.id,
+    { anchor: { artifact: created.artifact.slug, quote: SECOND_QUOTE }, body: SECOND_THREAD_ROOT },
+    asReader()
+  );
   const blockId = first.anchor?.block_id;
   expect(second.anchor?.block_id).toBe(blockId);
   if (blockId === undefined || blockId === null) {
@@ -447,24 +463,23 @@ export interface ApprovalMarksSeed {
 
 /** A document approved at version 1, whose version 2 changed six paragraphs far down it. */
 export async function seedApprovalWithMarks(): Promise<ApprovalMarksSeed> {
-  await createProject(scrollProject());
-  const issue = await createIssue({
-    force: true,
-    project: scrollProject().key,
-    spec: baselineSpec,
-    title: "Ledger rollout",
-  });
+  await createProject(scrollProject(), asReader());
+  const issue = await createIssue(
+    {
+      force: true,
+      project: scrollProject().key,
+      spec: baselineSpec,
+      title: "Ledger rollout",
+    },
+    asReader()
+  );
   await patchIssue(issue.key, { priority: 1 });
   const artifactId = issue.primary_artifact_id;
   const atOne = withOpenedAsk(
     await requestApproval(artifactId, { summary: "The ledger-first rollout." }, session)
   );
   expect(atOne.version).toBe(1);
-  await answerAsk(
-    atOne.ask.id,
-    { expected_edited_at: null, selected: ["Approve"] },
-    { login: "alice" }
-  );
+  await answerAsk(atOne.ask.id, { expected_edited_at: null, selected: ["Approve"] }, asReader());
   await editArtifact(
     artifactId,
     {
@@ -489,11 +504,14 @@ const ADDED_QUESTION = "Which service hands the lease over first?";
 /** A question on a new issue at the top priority, which the Inbox bands above every row these
  *  rows open. Answers the row's own id. */
 export async function addRowAbove(): Promise<string> {
-  const issue = await createIssue({
-    force: true,
-    project: scrollProject().key,
-    title: "Refused lease",
-  });
+  const issue = await createIssue(
+    {
+      force: true,
+      project: scrollProject().key,
+      title: "Refused lease",
+    },
+    asReader()
+  );
   await patchIssue(issue.key, { priority: 0 });
   const ask = await createAsk(
     issue.key,
