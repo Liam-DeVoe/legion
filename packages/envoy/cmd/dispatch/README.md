@@ -3622,7 +3622,8 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 - `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
 
 - A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came; a text the reviewer reads among them is reviewed once the text it waits on has posted.
-  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer. A person's write, a create among them, is the route's own, which finds no such text, as a person's read is.
+  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer.
+  A person's write, a create among them, is the route's own, which finds no such text, as a person's read is.
   The kept write marks itself posted in its own transaction, so it runs once, and it is kept inside the keyed layer, an upload to a held issue's included, so a repeat under its `Idempotency-Key` is answered the same `202` and keeps no second write.
   A second reply of a session to the same delivery, sent while its first is held, waits on the first, so the two post in the order the session wrote them; a reply the reviewer does not read (generated, typed by a person, or one no person reads) waits on it too, unreviewed.
   A reply sent again on the same attempt while the first is held (no follow-up, or a follow-up of the same text) is answered `200` with the first's held answer, under its id and marked `duplicate` on the message route, and nothing more is held.
@@ -3692,7 +3693,7 @@ order by started_at;
 
 ### The written rules' refusal
 
-With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the six phrases to stop).
+With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the five phrases to stop).
 The agent checks its text against them and runs the command again; that call sends the write.
 A command a person typed (`DISPATCH_PERSON_TYPED=1`) is never refused.
 The setting is read on the server, so one change applies to every session:
@@ -3750,7 +3751,8 @@ Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite a
 
 - `_KIND`: `azure`, a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in (`DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`) as an `azure` answerer is; or `anthropic`, an Anthropic Messages service such as the operator's model gateway.
 
-- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`; https for `anthropic`, or http to a host inside the cluster (localhost, a loopback address, or a Service name ending `.svc` or `.cluster.local`), since the model gateway serves plain HTTP inside the cluster and each call carries the group's key. http to any other host refuses the boot.
+- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`; https for `anthropic`, or http to a host inside the cluster (localhost, a loopback address, or a Service name ending `.svc` or `.cluster.local`), since the model gateway serves plain HTTP inside the cluster and each call carries the group's key.
+  http to any other host refuses the boot.
 
 - `_DEPLOYMENT`: the Azure deployment's name or the Anthropic model's id, which each request names as its model.
 
@@ -3864,7 +3866,8 @@ A daily sweep deletes the rows the counts' rows read (below) once they are older
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
 `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
 
-- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route. A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps for 366 days.
+- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
+  A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps for 366 days.
 
 - `items`: one page of the rows of each day, project and person with a count, in that order: `limit` rows (1 to 200, default 50) from `offset`, and `total` counts every row.
   From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.

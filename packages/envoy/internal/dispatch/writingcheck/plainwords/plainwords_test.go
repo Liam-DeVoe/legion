@@ -63,7 +63,7 @@ func TestTheCopyIsTheSkill(t *testing.T) {
 }
 
 func TestTheRulesAreTheSkillsBodyAndItsReferences(t *testing.T) {
-	if !strings.HasPrefix(Skill, "# Write without slop\n") {
+	if !strings.HasPrefix(Skill, "# Write so a reader understands it on the first read\n") {
 		t.Fatalf("Skill starts %q, want SKILL.md's first heading after its frontmatter", Skill[:min(len(Skill), 60)])
 	}
 	if strings.Contains(Skill, "name: plain-words") {

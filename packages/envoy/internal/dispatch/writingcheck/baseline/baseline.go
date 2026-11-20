@@ -1,11 +1,12 @@
 // Package baseline is the six regular expressions the writing check's detector is measured
-// against: one for each phrase row of skills/plain-words/SKILL.md. A sentence any of them
-// matches is a sentence the baseline calls vacuous.
+// against: one for each phrase row that skills/plain-words/SKILL.md held when the detector was
+// measured, before the skill deleted its "name" row. A sentence any of them matches is a sentence
+// the baseline calls vacuous.
 package baseline
 
 import "regexp"
 
-// Patterns are the six expressions, each case-insensitive, in the skill's row order: land,
+// Patterns are the six expressions, each case-insensitive, in the order of those rows: land,
 // unblock, name, pay, carry, show.
 var Patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bland(s|ed|ing)? the (change|PR|pull request|work)\b`),

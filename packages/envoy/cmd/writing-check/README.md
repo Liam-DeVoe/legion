@@ -958,10 +958,11 @@ makes the four groups of R1:
   about words is that question case. A link to his other text gives the answer case of its first
   agent reply. A link to an agent text marks that text's cases, or else makes it an answer case.
   Such a case has `named_by_owner`.
-- **phrase**: an agent text that the owner corrected for one of the six phrase shapes of
-  `skills/plain-words`. The owner's text has a verdict about words and names the shape inside
-  quotes, and the agent text holds the shape, by the expressions of INFRA-3231's decisions
-  document. Each labelled write of an R1 kind is also a phrase case.
+- **phrase**: an agent text that the owner corrected for one of the six phrase shapes that
+  `skills/plain-words` held when the dataset was measured; the skill has since deleted its "name"
+  row. The owner's text has a verdict about words and names the shape inside quotes, and the agent
+  text holds the shape, by the expressions of INFRA-3231's decisions document. Each labelled write
+  of an R1 kind is also a phrase case.
 - **plain**: agent texts that the owner answered by the reply chain or in their thread, or acted
   on (an ask he answered by options alone, a version he reviewed with no reason). No owner text
   that answers them has a verdict other than `none`, and they are in no other group. The seed's
@@ -2088,8 +2089,9 @@ holds each judgement's system prompt, user message and `input_sha256` to those o
 the flag (commit afdb071c), on a fixture written for the test, in the full and the final input
 modes; `answered` and `first_paragraph` to those of their calibrated prompts (see "Calibrating
 answered"); and `phrases` to that code's with the table of the phrases `skills/plain-words` tells
-agents to stop as the skill now holds it, whose "name a date" row is main's. Under each other
-variant, the test holds to them each judgement that the variant does not change.
+agents to stop as the skill now holds it: five rows, since the skill's code owner had its "name a
+date" row deleted. Under each other variant, the test holds to them each judgement that the variant
+does not change.
 
 - `inputs-first` changes the requests of `lost` and `added` alone. Their reply schema and the
   system prompt of `added` do not change. The system prompt of `lost` has one more line in its

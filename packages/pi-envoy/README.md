@@ -355,7 +355,7 @@ host packages (`@legion/pi-shared`, `@legion/contracts` and `@legion/envoy-clien
 `dist/THIRD_PARTY_NOTICES`, and the eleven skills it ships: the eight every session with Dispatch
 reads, `agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`,
 `envoy`, `outside-message` and `plain-words` (the rules agents write by: ce-noslop's tests, pattern
-catalog and terminology, and its table of six phrases to stop); `approval-review`, which only
+catalog and terminology, and its table of five phrases to stop); `approval-review`, which only
 a session judging an approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
 `thermonuclear-deep-review`, which ships here so one copy of each rubric reaches both harnesses.
 All eleven are staged from the repository's `skills/` at `dist/skills`. The manifest declares

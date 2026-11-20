@@ -123,9 +123,10 @@ final_test:
   reason: The final test is read once, by `writing-check score --final-test`, after the freeze.
 baseline:
   description: >-
-    Six regular expressions, one for each phrase row of the plain-words skill (land, unblock,
-    name, pay, carry, show); a write is refused when any sentence matches. The majority class
-    (refuse nothing) is the second baseline.
+    Six regular expressions, one for each phrase row that the plain-words skill held when they were
+    measured (land, unblock, name, pay, carry, show; the skill has since deleted its "name" row); a
+    write is refused when any sentence matches. The majority class (refuse nothing) is the second
+    baseline.
   code: internal/dispatch/writingcheck/baseline
 repeatability:
   pending: true

@@ -3,9 +3,9 @@ name: plain-words
 description: "Use when you are about to send or publish text a person reads (an ask, spec, comment, message, pull-request body, commit message, report or status update), answer a person's question, or hand a draft to a reviewer."
 ---
 
-# Write without slop
+# Write so a reader understands it on the first read
 
-Prose that carries no AI tells and that a reader understands on the first read, with every fact the source stated still there. Both goals hold at once: text that is free of tells but still dense has failed, and text that is plain but changes how certain a claim is has failed.
+Prose that a reader understands on the first read, with none of the patterns that the tests below and `references/patterns.md` name, and with every fact the source stated still there. Both goals hold at once: text that has none of those patterns but is still dense has failed, and text that is plain but changes how certain a claim is has failed.
 
 **Done:** the mode's output is returned, every fact, number, name, quote, and citation in the input survives, and nothing was added that the source or the caller did not supply.
 
@@ -49,7 +49,6 @@ Keep exact identifiers, paths, commands, and thresholds. For wording choices, re
 |---|---|
 | land the change, land the PR | merge it, release it, deploy it, apply it — whichever one it is |
 | unblock the work | X can start once Y merges |
-| name the problem, name the owner, name a date | say the problem; who owns it is X; Y is left, and at the measured rate it ends on <date> |
 | it pays for itself, that pays | it costs $16,306 and returns $60,379 a month |
 | carry it to X, carry the finding | tell X; send it to X; put it on the issue |
 | this shows the gap, the number shows | the gap is 12 of 30; the number is 1.17 |

@@ -67,7 +67,7 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 		t.Fatalf("a comment's rules are not the skill's text alone: %d characters, want %d", len(comment.Text), len(plainwords.Rules))
 	}
 	if !strings.Contains(comment.Text, "## The phrases to stop") || !strings.Contains(comment.Text, "# Pattern catalog") {
-		t.Fatal("the rules lack the six phrases or the pattern catalog")
+		t.Fatal("the rules lack the five phrases or the pattern catalog")
 	}
 
 	ask := rules("POST /api/v1/issues/"+key+"/asks", map[string]any{"question": "Which window?"})

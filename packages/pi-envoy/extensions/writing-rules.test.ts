@@ -51,7 +51,8 @@ restoreEnvironment([
 
 const RULES_TOKEN = fixtureSecret("dsp");
 const SESSION = "ses_writing_rules";
-const RULES = "# Write without slop\n\nThe rules the stand-in Dispatch sends.\n";
+const RULES =
+  "# Write so a reader understands it on the first read\n\nThe rules the stand-in Dispatch sends.\n";
 
 /** What the stand-in Dispatch says about the refusal, and every request it answered. */
 const dispatch = {

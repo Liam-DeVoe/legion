@@ -125,7 +125,8 @@ var dsCaseFamilies = map[string]string{
 	"version_summary": dsKindDocument,
 }
 
-// dsPhraseShapes is the six phrase shapes of skills/plain-words, each as the agent writes it
+// dsPhraseShapes is the six phrase shapes that skills/plain-words held when the dataset was
+// measured (the skill has since deleted its "name" row), each as the agent writes it
 // (the expressions of INFRA-3231's decisions document, "How the problem's numbers were measured")
 // and as the owner names it when he corrects it.
 var dsPhraseShapes = []struct {

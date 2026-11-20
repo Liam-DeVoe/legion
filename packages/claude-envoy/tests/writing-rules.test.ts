@@ -15,7 +15,8 @@ const RULES_TOKEN = fixtureSecret("dsp")
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 const dispatchEntry = resolve(import.meta.dir, "..", "..", "envoy-client", "bin", "dispatch.ts")
 const SESSION = "s-rules"
-const RULES = "# Write without slop\n\nThe rules the stand-in Dispatch sends.\n"
+const RULES =
+  "# Write so a reader understands it on the first read\n\nThe rules the stand-in Dispatch sends.\n"
 
 /** What the stand-in Dispatch says about the refusal, and every request it answered. */
 const dispatch = {

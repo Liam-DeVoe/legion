@@ -26,9 +26,9 @@ type RuleSet string
 // The rule sets.
 const (
 	// RuleNoslop is ce-noslop's tests, its pattern catalog and its terminology: skills/plain-words
-	// without the six phrases (plainwords).
+	// without the five phrases (plainwords).
 	RuleNoslop RuleSet = "noslop"
-	// RulePhrases is the six phrase shapes skills/plain-words tells agents to stop: the last
+	// RulePhrases is the five phrase shapes skills/plain-words tells agents to stop: the last
 	// section of that skill.
 	RulePhrases RuleSet = "phrases"
 	// RuleReaderWords is each use of a word the reader asked about before, unless the text
@@ -52,15 +52,15 @@ var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskPar
 // and the one cmd/writing-check's harness reads a local Dispatch to run where it sets none.
 var DefaultRules = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts}
 
-// phrasesHeading is the heading of skills/plain-words' section of the six phrases.
+// phrasesHeading is the heading of skills/plain-words' section of the five phrases.
 const phrasesHeading = "## The phrases to stop"
 
 // noslopText and phrasesText are skills/plain-words split into the two rule sets: ce-noslop's
-// SKILL.md body with its pattern catalog and its terminology, and the table of the six phrases.
+// SKILL.md body with its pattern catalog and its terminology, and the table of the five phrases.
 var noslopText, phrasesText = splitSkill(plainwords.Skill)
 
 // splitSkill is skill, SKILL.md after its frontmatter, as the noslop rule set's text, with
-// plainwords' two references after it, and the text of the six phrases' section. A skill with
+// plainwords' two references after it, and the text of the five phrases' section. A skill with
 // no such section is noslop's whole.
 func splitSkill(skill string) (noslop, phrases string) {
 	before, rest, found := strings.Cut(skill, "\n"+phrasesHeading+"\n")
