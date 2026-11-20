@@ -698,7 +698,9 @@ stored before that rule whose reason names more is still shown: its keys are not
 as naming no project, as every reader saw it when it was written, while its secrets' tags and its
 credential's projects are still asked, and the broker's log names its row, once every 30 seconds
 however often it is read. While Dispatch cannot answer, a request it must ask about is left out of
-the pending and grant lists, with a line in the broker's log naming its record; its page answers
+the pending list, and a grant it must ask about out of the grant list of everyone but that grant's
+approver and its session's operator, who still list it and may end it whatever project it
+touches, each with a line in the broker's log naming its record; its page answers
 503 and shows only its record id, and an approval of it decides nothing. Every other request is
 listed and decided as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
@@ -1054,7 +1056,7 @@ A request of a private Dispatch project, by a secret's project tag, a project a 
 had names, or an issue key its reason names, is read and cancelled, apart from the enrollment it
 hangs off, only by an enrollment whose own credential names that project for a person still on the
 project's list. Every other enrollment, of the same owner or not, is answered `404 NOT_FOUND`, as
-for an id no request has (`machine_read.go`, `HideRequestFromSession`), so `NOT_YOURS` never says
+for an id no request has (`hide.go`, `HideRequestFromSession`), so `NOT_YOURS` never says
 that a private project's request exists. A person reads such a request from another box only when
 that box's session named the project, and the next pod of a claim cancels it only when its account
 maps to the project.
