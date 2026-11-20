@@ -4,6 +4,7 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import pkg from "../../package.json";
 
 // The stand-in asks the daemon's own workflow for the phase its role works, which `go run`
 // compiles and runs, so a host with no go runs none of these rows.
@@ -19,13 +20,15 @@ afterEach(() => {
   for (const child of started.splice(0)) child.kill();
 });
 
-/** One stand-in for `role` of issue LWEVAL-1, and the base URL it listens on. */
-async function startStandin(role: string): Promise<string> {
+/** One stand-in for `role` of issue LWEVAL-1, and the base URL it listens on; with a world file,
+ * the world.json rig.sh hands it, it serves the state document and the issue's record. */
+async function startStandin(role: string, worldFile?: string): Promise<string> {
   const dir = path.join(rig, `${role}-${started.length}`);
   const boot = `${dir}-boot`;
   writeFileSync(boot, `${BOOT_TOKEN}\n`);
+  const world = worldFile === undefined ? [] : [worldFile];
   const child = Bun.spawn(
-    ["bun", standin, "0", `${dir}-daemon.log`, boot, "skillsrig", "LWEVAL-1", role],
+    ["bun", standin, "0", `${dir}-daemon.log`, boot, "skillsrig", "LWEVAL-1", role, ...world],
     { stdout: "pipe", stderr: "inherit" }
   );
   started.push(child);
@@ -101,6 +104,66 @@ test.skipIf(skip)(
       body: { code: "VERDICT_ROLE_FORBIDDEN", error: "only a tester may report a verdict" },
     });
     expect((await complete(base, "")).status).toBe(200);
+  },
+  600_000
+);
+
+/** A GET of `route` on the stand-in at `base`: its status and its body. */
+async function get(base: string, route: string): Promise<{ status: number; body: unknown }> {
+  const answer = await fetch(`${base}${route}`);
+  return { status: answer.status, body: await answer.json() };
+}
+
+/** `GET /healthz` on the stand-in at `base`: its status, the project its body names, and the
+ * contract its header states, which the tool's `read_build` reads. */
+async function health(base: string) {
+  const answer = await fetch(`${base}/healthz`);
+  const { project } = (await answer.json()) as { project?: unknown };
+  return {
+    status: answer.status,
+    project,
+    contract: answer.headers.get("Legion-Daemon-Contract"),
+  };
+}
+
+// Catches: a stand-in whose record or health route answers other than its state document does,
+// so the tool's `read_record` (the record route) or its `read_build` (the health route and its
+// contract header) reads an issue, a project or a contract the run's `/state` does not name; and
+// a stand-in with no world file, whose `/state` is refused, that still serves the issue's record.
+test.skipIf(skip)(
+  "the record and health routes answer what the state document names, and the record route refuses where the state does",
+  async () => {
+    const worldFile = path.join(rig, "world.json");
+    writeFileSync(worldFile, JSON.stringify({ repo: "example/widgets", base: "main" }));
+    const base = await startStandin("tester", worldFile);
+    const state = await get(base, "/legion/v1/state");
+    expect(state.status).toBe(200);
+    const { daemon, issues } = state.body as {
+      daemon: { project: string };
+      issues: Record<string, unknown>;
+    };
+    expect(Object.keys(issues)).toEqual(["LWEVAL-1"]);
+    expect(await get(base, "/legion/v1/issues/LWEVAL-1/record")).toEqual({
+      status: 200,
+      body: issues["LWEVAL-1"],
+    });
+    expect(await get(base, "/legion/v1/issues/LWEVAL-2/record")).toEqual({
+      status: 404,
+      body: { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LWEVAL-2" },
+    });
+    const contract = String(pkg.legion.daemonApiVersion);
+    expect(await health(base)).toEqual({ status: 200, project: daemon.project, contract });
+
+    // With no world file `/state` is refused, the route not there, and the record route with it;
+    // `/healthz` names only the project, so it serves still.
+    const worldless = await startStandin("tester");
+    for (const route of ["/legion/v1/state", "/legion/v1/issues/LWEVAL-1/record"]) {
+      expect(await get(worldless, route)).toEqual({
+        status: 404,
+        body: { error: `no route for GET ${route}` },
+      });
+    }
+    expect(await health(worldless)).toEqual({ status: 200, project: "skillsrig", contract });
   },
   600_000
 );
