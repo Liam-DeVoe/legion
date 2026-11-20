@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The live half of WithinProjects' tests: measurement M5 of dispatch://INFRA-3884's plan, rebuilt on
+// The live half of WithinProjects' tests: measurement M5 of the private projects plan, rebuilt on
 // the image the hub runs (testnats.HubImage) behind an auth callout, each daemon's grant arriving
 // in the user JWT of the callout's answer as the auth service sends it (natscallout's
 // encodeAnswer). A PUB daemon on today's grant (natsgrant.Daemon) is the control: it subscribes
