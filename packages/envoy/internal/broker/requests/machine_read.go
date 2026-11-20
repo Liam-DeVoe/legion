@@ -124,15 +124,22 @@ type grantRelease struct {
 // the grant before any refusal (recheckLiveGrant): a changed airlock entry (changedEntry), and,
 // when the policy has changed since the grant's request was decided, any granted name is a
 // service's (anyServiceOwned: the policy's version does not cover which service
-// BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag (anyListed: an
-// entry naming a service matches by those same accounts), whether the current policy still
-// allows the session every granted name under the login that decided it, or, for a grant the
-// model judge decided, under the judge the rules still give that name (stillAllowed), and
-// whether a granted name's max-grant is now shorter than the lifetime the grant's request signed
-// (overMaxGrant). recheckGranted reads every granted name before it answers, so one name's pause
-// never hides another's end. An end revokes the grant, with a failed chain still logged beside
-// it (endLiveGrant). Only then does the release re-verify the approval chain
-// (verifyChainForRelease) and answer a pause.
+// BROKER_SERVICES' accounts prove), any granted name carries a requesters tag (anyListed: an
+// entry naming a service matches by those same accounts), or the grant is a person's pod's
+// (personPodGrant: the policy's version does not cover which person BROKER_POD_OPERATORS maps the
+// pod's account to), whether the current policy still allows the session every granted name under
+// the login that decided it, or, for a grant the model judge decided, under the judge the rules
+// still give that name (stillAllowed), and whether a granted name's max-grant is now shorter than
+// the lifetime the grant's request signed (overMaxGrant). recheckGranted reads every granted name
+// before it answers, so one name's pause never hides another's end. An end revokes the grant,
+// with a failed chain still logged beside it (endLiveGrant). Only then does the release re-verify
+// the approval chain (verifyChainForRelease) and answer a pause.
+//
+// For a person's pod, the session is the pod as requester reads it now. When the setting no
+// longer maps the pod's account to its person, an automatic grant the pod got as that person is
+// refused (ErrGrantNotLive) but not ended, so it releases again when the entry comes back. A
+// grant a person approved still releases. A grant whose requesters tag names the person ends for
+// good (errRequesterNotListed).
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
@@ -659,7 +666,7 @@ func (m *Machine) recheckLiveGrant(ctx context.Context, enr enrollmentRow, decid
 	if name, changed := changedEntry(decidedVersion, set, granted); changed {
 		return entryChanged(name), nil, nil
 	}
-	if decidedVersion == set.Version && !anyServiceOwned(set, granted) && !anyListed(set, granted) {
+	if decidedVersion == set.Version && !anyServiceOwned(set, granted) && !anyListed(set, granted) && !personPodGrant(enr) {
 		return nil, nil, nil
 	}
 	requester, err := m.requester(ctx, m.Store.Pool, enr)
@@ -908,34 +915,59 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 }
 
 // OwnerAndState reads whose request requestID is, its state, and whether the model judge holds it
-// (pending with judge_until ahead), in one statement. The owner is the one the enrollment it hangs
-// off now records (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment
-// that records none, which no other enrollment's owner can spell. A caller may read and cancel the
-// request when its own enrollment answers the same (EnrollmentOwner), so a request is any
-// enrollment's of the person, the Legion claim or the machine that made it, and an enrollment with
-// no owner's alone. It reads the request's enrollment as it stands, which an adoption rewrites, so
-// a request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
+// (pending with judge_until ahead), in one statement. The owner is the owner of the enrollment
+// the request hangs off now (Machine.owner). A caller may read and cancel the request when its own
+// enrollment has the same owner (EnrollmentOwner). So a request is any enrollment's of the
+// person, the Legion claim or the machine that made it, and an enrollment with no owner's alone.
+// A person's pod shares its person's owner only while BROKER_POD_OPERATORS maps its account to
+// that person. It reads the request's enrollment as it stands, which an adoption rewrites, so a
+// request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
 // checks it before it answers, and its held read reads it again at each step while the request is
 // pending. A request with no row is pgx.ErrNoRows.
 func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, judging bool, err error) {
-	err = m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
-		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner, &state, &judging)
+	owner, err = m.scanOwner(m.Store.Pool.QueryRow(ctx, `select `+ownerColumns("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
+		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID), &state, &judging)
 	return owner, state, judging, err
 }
 
-// EnrollmentOwner is OwnerAndState's owner for an enrollment: the owner it records, or
-// 'enrollment:<id>'. A caller's proof names a live enrollment, so pgx.ErrNoRows means it ended
-// under the call.
+// EnrollmentOwner is OwnerAndState's owner for an enrollment (Machine.owner). A caller's proof
+// names a live enrollment, so pgx.ErrNoRows means it ended under the call.
 func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (string, error) {
-	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&owner)
-	return owner, err
+	return m.scanOwner(m.Store.Pool.QueryRow(ctx, `select `+ownerColumns("e")+` from enrollments e where e.id=$1`, enrollmentID))
 }
 
-// ownerOf is the one SQL text for whose requests the enrollment aliased alias makes are, which
-// OwnerAndState, EnrollmentOwner and Cancel compare.
-func ownerOf(alias string) string {
-	return `coalesce(` + alias + `.owner, 'enrollment:' || ` + alias + `.id::text)`
+// ownerColumns is the one SQL text of the columns of the enrollment aliased alias that
+// Machine.owner reads: the owner it records, its id, kind, operator and subject. OwnerAndState,
+// EnrollmentOwner and Cancel select these columns first, and scanOwner reads them.
+func ownerColumns(alias string) string {
+	return alias + `.owner, ` + alias + `.id::text, ` + alias + `.kind, ` + alias + `.operator, ` + alias + `.subject`
+}
+
+// scanOwner scans row, whose first columns are ownerColumns, and answers the owner that
+// Machine.owner computes from them. It scans the columns after them into rest.
+func (m *Machine) scanOwner(row pgx.Row, rest ...any) (string, error) {
+	var recorded *string
+	var enr enrollmentRow
+	if err := row.Scan(append([]any{&recorded, &enr.ID, &enr.Kind, &enr.Operator, &enr.Subject}, rest...)...); err != nil {
+		return "", err
+	}
+	return m.owner(recorded, enr), nil
+}
+
+// owner is whose requests enrollment enr makes, which OwnerAndState, EnrollmentOwner and Cancel
+// compare. It is the owner that the enrollment records (recorded: enrollments.owner, enroll's
+// ownerKey), or 'enrollment:<id>' for an enrollment that records none. No other enrollment's
+// owner can spell that text. A person's pod records its person's owner, but it has that owner
+// only while BROKER_POD_OPERATORS maps its account to that person (unmappedPersonPod, the test
+// that requester reads too). After the setting drops the account, or maps it to another person,
+// the pod's owner is 'enrollment:<id>'. The pod then reads and cancels its own requests alone,
+// and its person reads none of them. The setting is in Go, so the owner is computed here and not
+// in SQL.
+func (m *Machine) owner(recorded *string, enr enrollmentRow) string {
+	if recorded == nil || m.unmappedPersonPod(enr) {
+		return "enrollment:" + enr.ID
+	}
+	return *recorded
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the
@@ -1247,15 +1279,17 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // under this enrollment is returned as-is, with no new request row and no new record, as long as
 // the policy it was decided under is still current, no granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
-// prove) and no granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts), or the current policy still allows it to the session
-// (stillAllowed and overMaxGrant over every name, the checks Values makes: recheckGranted, which
-// holds a judged grant to the judge the rules still give its names, over the lifetime this reuse
-// matched it on, the grant's own, and refuses one any of whose secrets the policy now tags as an
-// administrator's), and its whole approval chain still verifies (verifyChainForRelease, the same
-// check Values makes). A caller that already holds a live grant for these exact names never
-// re-asks a human who already approved it, a policy tightened since then is never bypassed by
-// reuse, and neither is a chain that no longer verifies.
+// prove), no granted name carries a requesters tag (anyListed: an entry naming a service
+// matches by those same accounts) and the grant is no person's pod's (personPodGrant: the
+// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to),
+// or the current policy still allows it to the session (stillAllowed and overMaxGrant over every
+// name, the checks Values makes: recheckGranted, which holds a judged grant to the judge the
+// rules still give its names, over the lifetime this reuse matched it on, the grant's own, and
+// refuses one any of whose secrets the policy now tags as an administrator's), and its whole
+// approval chain still verifies (verifyChainForRelease, the same check Values makes). A caller
+// that already holds a live grant for these exact names never re-asks a human who already
+// approved it, a policy tightened since then is never bypassed by reuse, and neither is a chain
+// that no longer verifies.
 // Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
 // candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
 // at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
@@ -1279,6 +1313,12 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // Values compares it, since an edit to a judged name's judge would otherwise have stillAllowed
 // pass the grant over and leave it live; a chain that fails as well is still logged, as Values
 // logs it.
+// An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
+// longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
+// which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
+// again when the entry comes back. The exception is a grant whose secret's requesters tag names
+// the person: the secret no longer lists the requester, so the grant is ended for good, as the
+// paragraph above says (errRequesterNotListed).
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
@@ -1849,7 +1889,7 @@ type ApproverGrant struct {
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
-// a pod acts for no person (requests.Machine.requester). Without this a pod could take a
+// that login enrolled its pod for no person (enrollments.operator). Without this a pod could take a
 // shared agent-tier secret and nobody would see it. Every signed-in person sees these, as every
 // signed-in person already lists and revokes the service login behind them, which no person
 // approved (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover
@@ -1860,10 +1900,16 @@ type ApproverGrant struct {
 // It lists, to every signed-in person in the same way, every live grant whose approver is the
 // sentinel record.AnyoneApprover: the model judge approved it in anyone's stead, so the grant
 // records anyone as its approver and names no person at all, and such a grant of a shared secret
-// sits on a pod, whose enrollment has no operator either. Without this nobody would see what the
-// judge had approved. That is the reasoning the paragraph above already gives — every signed-in
-// person sees these — over the grants anyone may approve in the first place, so the people who
-// see one are the people who could have approved it themselves.
+// can sit on a service's pod, whose enrollment has no operator either. Without this nobody would
+// see what the judge had approved. That is the reasoning the paragraph above already gives —
+// every signed-in person sees these — over the grants anyone may approve in the first place, so
+// the people who see one are the people who could have approved it themselves.
+//
+// A pod whose account BROKER_POD_OPERATORS maps to a person is that person's own session here:
+// its enrollment's operator is the person its login was made for, so its grants are listed to
+// that person alone. This list reads the enrollment row, not the live setting that
+// requests.Machine.requester reads. So the person still sees the pod's grants, and may revoke
+// them, after the setting drops the entry or maps it to another person.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
