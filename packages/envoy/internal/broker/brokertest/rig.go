@@ -158,7 +158,9 @@ type rigConfig struct {
 	// projectAccessNow is the clock WithProjectAccess gives the client and the gate; nil is the
 	// wall clock.
 	projectAccessNow func() time.Time
-	personSignIns    *personSignInConfig
+	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
+	holdRequiresDeadline bool
+	personSignIns        *personSignInConfig
 }
 
 // ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
@@ -217,6 +219,18 @@ func WithProjectAccess(baseURL string, account brokertoken.Account, now func() t
 	}
 }
 
+// WithHoldRequiresDeadline sets the hold gate's deadline rule (hold.Config.RequireDeadline), as
+// cmd/broker sets it where BROKER_HOLD_REQUIRES_DEADLINE is true, which an IAP deployment's broker
+// sets: Dispatch's answer that a person is not held then serves only with the deadline such a
+// Dispatch puts on it (not_held_until), a person of whom the broker keeps no answer is not served
+// while Dispatch cannot be asked, and every refusal of a held person says the Workspace Directory
+// ends the hold (hold.Gate.HeldWords). NewRig fails t when it is given without WithProjectAccess,
+// as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL: that broker builds
+// no gate, so the rule would rule nothing and hold nobody.
+func WithHoldRequiresDeadline() Option {
+	return func(c *rigConfig) { c.holdRequiresDeadline = true }
+}
+
 // WithPersonSignIns lets the rig accept Google person trades from machineAccount. NewRig binds
 // the option to its real enrollment and store functions once those exist, so a successful trade
 // creates the same launcher credential and person-sign-in rows as the broker command.
@@ -240,6 +254,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	config := rigConfig{lease: time.Hour}
 	for _, option := range options {
 		option(&config)
+	}
+	if config.holdRequiresDeadline && config.projectAccess == nil {
+		t.Fatal("brokertest: WithHoldRequiresDeadline needs WithProjectAccess: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, as the broker's boot refuses BROKER_HOLD_REQUIRES_DEADLINE without BROKER_PROJECT_ACCESS_URL")
 	}
 	var params []string
 	if config.maxConns > 0 {
@@ -311,11 +328,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	entries := newExchangeSet(t, google, machineAccount)
 	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
-	// own Dispatch client, this rig's store and its registry. Without WithProjectAccess there is
-	// none, and every field that takes one is nil, which holds nobody.
+	// own Dispatch client, this rig's store and its registry, with the deadline rule where
+	// WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE does. Without
+	// WithProjectAccess there is none, and every field that takes one is nil, which holds nobody.
 	var gate *hold.Gate
 	if config.projectAccess != nil {
-		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow})
+		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.projectAccess = config.projectAccess
 			c.hold = gate

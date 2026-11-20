@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -32,10 +33,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -46,7 +49,8 @@ import (
 // database (store.PgSessionStore), relays machine-login decisions to the broker and checks
 // broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL), and answers the broker's own
 // service account on its person route (DISPATCH_ACCESS_ACCOUNTS). A person the rig signs in holds
-// the credentials of the measurement table a leaver's hold is read on (person).
+// the credentials of the measurement table a leaver's hold is read on (person). A rig built
+// withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it instead (R9).
 
 const (
 	// leaverDomain is the Workspace domain DISPATCH_SIGNIN_DOMAIN names: an address on it signs in
@@ -116,6 +120,14 @@ type leaverRig struct {
 	membership *identity.Membership
 	// persons is each person the rig signed in, by email.
 	persons map[string]*leaverPerson
+	// On a rig built withIAP, iapKeys is the key set served in Identity-Aware Proxy's place, which
+	// Dispatch verifies each browser's assertion against, iapKey the key it signs them with
+	// (iapAssertion), and directory the Google hosts Dispatch's Workspace Directory reader reaches
+	// (directorytest), which answer each person's account as the test sets it. All three are nil
+	// on any other rig.
+	iapKeys   *oidctest.Issuer
+	iapKey    *oidctest.Key
+	directory *directorytest.Google
 }
 
 // leaverOption changes how newLeaverRig builds its rig, by the hooks it adds to the config.
@@ -131,6 +143,26 @@ type leaverConfig struct {
 	toBroker []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
 	// built hooks run once the router is built and r.handler serves it.
 	built []func(t *testing.T, r *leaverRig)
+	// iap is withIAP: Dispatch runs under DISPATCH_IDENTITY=iap.
+	iap bool
+}
+
+// withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it (R9): under
+// DISPATCH_IDENTITY=iap for DISPATCH_SIGNIN_DOMAIN=example.com, with no sign-in of its own and no
+// refresh token kept, naming each browser's person from the assertion IAP signs for each request
+// (iapAssertion) against a key set the rig serves in IAP's place, and checking each full member's
+// Workspace account through the Directory reader the boot builds from DISPATCH_DIRECTORY_ACCOUNT
+// and DISPATCH_DIRECTORY_ADMIN, against Google hosts the rig serves (r.directory). The broker is an
+// IAP deployment's broker, whose BROKER_HOLD_REQUIRES_DEADLINE sets the gate's deadline rule
+// (brokertest.WithHoldRequiresDeadline), so it needs withBrokerGate, whose gate that rule rules:
+// without it the broker rig refuses to build.
+func withIAP() leaverOption {
+	return func(c *leaverConfig) {
+		c.iap = true
+		c.broker = append(c.broker, func(*testing.T, *leaverRig) []brokertest.Option {
+			return []brokertest.Option{brokertest.WithHoldRequiresDeadline()}
+		})
+	}
 }
 
 // withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
@@ -359,20 +391,34 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	if err := os.WriteFile(accountFile, []byte(r.broker.UIToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	boot := resolveWith(t, map[string]string{
-		"DISPATCH_SIGNIN_ISSUER":                    "https://accounts.google.com",
-		"DISPATCH_SIGNIN_GROUP":                     "",
-		"DISPATCH_SIGNIN_DOMAIN":                    leaverDomain,
-		"DISPATCH_SIGNIN_OUTSIDE":                   "1",
+	settings := map[string]string{
 		"DISPATCH_OIDC_ISSUER":                      r.accounts.URL(),
 		"DISPATCH_OIDC_AUDIENCE":                    leaverAccountAudience,
 		"DISPATCH_OIDC_ACCOUNTS":                    leaverBrokerAccount,
 		"DISPATCH_ACCESS_ACCOUNTS":                  leaverBrokerAccount,
 		"DISPATCH_AGENT_SECRETS_URL":                r.toBroker.URL,
 		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountFile,
-	})
-	// Resolved under Google's issuer, then pointed at the fake one, so no test calls Google.
-	boot.SignInIssuer = r.google.URL()
+	}
+	var boot bootConfig
+	if config.iap {
+		// IAP signs people in for leaverDomain (iapIdentityEnvironment's DISPATCH_SIGNIN_DOMAIN), and
+		// the boot reads IAP's keys and reaches Google's Directory hosts where no setting points it:
+		// here, the key set and the fake hosts the rig serves.
+		r.iapKeys, r.iapKey = iapKeySet(t)
+		r.directory = directorytest.ServeGoogle(t)
+		boot = iapBoot(t, r.iapKeys, settings)
+		boot.DirectoryOptions = r.directory.ClientOptions()
+	} else {
+		maps.Copy(settings, map[string]string{
+			"DISPATCH_SIGNIN_ISSUER":  "https://accounts.google.com",
+			"DISPATCH_SIGNIN_GROUP":   "",
+			"DISPATCH_SIGNIN_DOMAIN":  leaverDomain,
+			"DISPATCH_SIGNIN_OUTSIDE": "1",
+		})
+		boot = resolveWith(t, settings)
+		// Resolved under Google's issuer, then pointed at the fake one, so no test calls Google.
+		boot.SignInIssuer = r.google.URL()
+	}
 
 	database := storetest.Open(t)
 	r.outside = &outsideSignIn{pool: r.google, database: database, boot: boot}
@@ -436,7 +482,8 @@ func (r *leaverRig) brokerAccountToken(t *testing.T) string {
 	return r.accounts.Mint(t, r.accountKey, r.accounts.Claims(leaverBrokerAccount, leaverAccountAudience))
 }
 
-// person signs email in and gives them every credential of the measurement table: a cookie, a
+// person signs email in and gives them every credential of the measurement table: a browser
+// credential (a cookie, or on a rig built withIAP the assertion IAP signs for each request), a
 // dsp_ token, a machine login approved through Dispatch, a session enrolled under it, an
 // agent-tier grant and a human-tier grant, and a broker token minted from the machine login.
 func (r *leaverRig) person(t *testing.T, email string) *leaverPerson {
@@ -449,10 +496,18 @@ func (r *leaverRig) person(t *testing.T, email string) *leaverPerson {
 }
 
 // signIn signs email in to Dispatch through the fake Google as the Google account
-// "google-<email>", and records the person, whose browser then holds the callback's cookie.
+// "google-<email>", and records the person, whose browser then holds the callback's cookie. On a
+// rig built withIAP, Dispatch runs no sign-in of its own: the person's first request through IAP,
+// GET /auth/whoami carrying the assertion IAP signed for them, records them, as IAP's sign-in
+// does, and each later request of their browser carries a fresh assertion (browser).
 func (r *leaverRig) signIn(t *testing.T, email string) *leaverPerson {
 	t.Helper()
-	p := &leaverPerson{email: email, signedIn: r.signInAs(t, email, "google-"+email)}
+	p := &leaverPerson{email: email}
+	if r.iapKeys == nil {
+		p.signedIn = r.signInAs(t, email, "google-"+email)
+	} else if admitted := r.browser(t, p, http.MethodGet, "/auth/whoami", ""); admitted.Code != http.StatusOK {
+		t.Fatalf("GET /auth/whoami with the assertion IAP signed for %s answered %d %s, want 200: IAP admits them", email, admitted.Code, admitted.Body.String())
+	}
 	r.persons[email] = p
 	return p
 }
@@ -465,6 +520,9 @@ func (r *leaverRig) signInAgain(t *testing.T, email string) {
 	p := r.persons[email]
 	if p == nil {
 		t.Fatalf("the rig never signed %s in, so there is no sign-in to make again", email)
+	}
+	if r.iapKeys != nil {
+		t.Fatalf("a rig built withIAP runs no sign-in of its own for %s to make again: IAP signs people in, and only the Workspace Directory's active answer ends a hold", email)
 	}
 	p.signedIn = r.signInAs(t, email, "google-"+email)
 }
@@ -485,52 +543,82 @@ func (r *leaverRig) signInAs(t *testing.T, email, subject string) *httptest.Resp
 	return signedIn
 }
 
+// browser answers method path from Dispatch with body, sent from p's browser as the dashboard's
+// own script sends it (cookieRequest): carrying the session cookie of p's last sign-in, or, on a
+// rig built withIAP, the fresh assertion IAP signs for each request it lets through
+// (iapAssertion).
+func (r *leaverRig) browser(t *testing.T, p *leaverPerson, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	if r.iapKeys == nil {
+		return cookieRequest(r.handler, method, path, body, p.signedIn)
+	}
+	request := httptest.NewRequest(method, "http://dispatch.test"+path, strings.NewReader(body))
+	request.Header.Set("Origin", "http://dispatch.test")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(identity.IAPAssertionHeader, r.iapAssertion(t, p.email))
+	recorder := httptest.NewRecorder()
+	r.handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// iapAssertion is the assertion IAP signs, for the audience the IAP boot names (testIAPAudience),
+// for the Google account of leaverDomain's Workspace at email, "google-<email>" as signIn names
+// that account: the claims of main_test.go's iapAssertion, for the person the rig names.
+func (r *leaverRig) iapAssertion(t *testing.T, email string) string {
+	t.Helper()
+	now := time.Now()
+	return r.iapKeys.Mint(t, r.iapKey, map[string]any{
+		"iss": oidc.IAPIssuer, "aud": testIAPAudience, "sub": "accounts.google.com:google-" + email,
+		"email": email, "hd": leaverDomain, "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(),
+	})
+}
+
 // signOut signs p out of Dispatch with their cookie, as the dashboard's Sign out does.
 func (r *leaverRig) signOut(t *testing.T, p *leaverPerson) {
 	t.Helper()
-	if out := cookieRequest(r.handler, http.MethodPost, "/auth/logout", "", p.signedIn); out.Code != http.StatusOK {
+	if out := r.browser(t, p, http.MethodPost, "/auth/logout", ""); out.Code != http.StatusOK {
 		t.Fatalf("POST /auth/logout on %s's cookie answered %d %s, want 200", p.email, out.Code, out.Body.String())
 	}
 }
 
-// mintToken mints a dsp_ token named name on p's cookie, as the agent tokens page does.
+// mintToken mints a dsp_ token named name on p's browser, as the agent tokens page does.
 func (r *leaverRig) mintToken(t *testing.T, p *leaverPerson, name string) leaverToken {
 	t.Helper()
-	minted := cookieRequest(r.handler, http.MethodPost, "/api/v1/me/agent-tokens", leaverBody(t, map[string]string{"name": name}), p.signedIn)
+	minted := r.browser(t, p, http.MethodPost, "/api/v1/me/agent-tokens", leaverBody(t, map[string]string{"name": name}))
 	var token struct {
 		ID    string `json:"id"`
 		Token string `json:"token"`
 	}
 	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.ID == "" || !strings.HasPrefix(token.Token, "dsp_") {
-		t.Fatalf("POST /api/v1/me/agent-tokens on %s's cookie answered %d %s, want 201 with a token", p.email, minted.Code, minted.Body.String())
+		t.Fatalf("POST /api/v1/me/agent-tokens on %s's browser answered %d %s, want 201 with a token", p.email, minted.Code, minted.Body.String())
 	}
 	return leaverToken{id: token.ID, plaintext: token.Token}
 }
 
-// revokeToken revokes p's token on their cookie, as the agent tokens page does.
+// revokeToken revokes p's token on their browser, as the agent tokens page does.
 func (r *leaverRig) revokeToken(t *testing.T, p *leaverPerson, token leaverToken) {
 	t.Helper()
-	if revoked := cookieRequest(r.handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+token.id, "", p.signedIn); revoked.Code != http.StatusNoContent {
-		t.Fatalf("DELETE /api/v1/me/agent-tokens/%s on %s's cookie answered %d %s, want 204", token.id, p.email, revoked.Code, revoked.Body.String())
+	if revoked := r.browser(t, p, http.MethodDelete, "/api/v1/me/agent-tokens/"+token.id, ""); revoked.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/v1/me/agent-tokens/%s on %s's browser answered %d %s, want 204", token.id, p.email, revoked.Code, revoked.Body.String())
 	}
 }
 
 // machineLogin logs a machine of p's in at the broker as the helper's `machine login` does: p
-// approves it on Dispatch's machine-login page with their cookie, Dispatch relays the approval to
+// approves it on Dispatch's machine-login page in their browser, Dispatch relays the approval to
 // the broker, and the machine redeems its device code for its token pair.
 func (r *leaverRig) machineLogin(t *testing.T, p *leaverPerson) {
 	t.Helper()
 	p.machineKey = brokertest.NewSigningKey(t)
 	device := r.client.DeviceLogin(t, p.machineKey, p.email, localPart(p.email)+"-box")
 	code := leaverBody(t, map[string]string{"code": device.UserCode})
-	looked := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/machine-lookup", code, p.signedIn)
+	looked := r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/machine-lookup", code)
 	var lookup struct {
 		RecordID string `json:"record_id"`
 	}
 	if err := json.Unmarshal(looked.Body.Bytes(), &lookup); err != nil || lookup.RecordID == "" {
 		t.Fatalf("Dispatch's machine-lookup of %s's machine login answered %d %s, want its record", p.email, looked.Code, looked.Body.String())
 	}
-	approved := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/"+lookup.RecordID+"/approve", code, p.signedIn)
+	approved := r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/"+lookup.RecordID+"/approve", code)
 	var decided struct {
 		State        string `json:"state"`
 		CredentialID string `json:"credential_id"`
@@ -552,8 +640,8 @@ func (r *leaverRig) pendingMachineLogin(t *testing.T, p *leaverPerson) (recordID
 	t.Helper()
 	device := r.client.DeviceLogin(t, brokertest.NewSigningKey(t), p.email, localPart(p.email)+"-pending-box")
 	code = device.UserCode
-	looked := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/machine-lookup",
-		leaverBody(t, map[string]string{"code": code}), p.signedIn)
+	looked := r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/machine-lookup",
+		leaverBody(t, map[string]string{"code": code}))
 	var lookup struct {
 		RecordID string `json:"record_id"`
 	}
@@ -610,6 +698,18 @@ func (r *leaverRig) brokerCredentials(t *testing.T, p *leaverPerson) {
 // a later trade renews the launcher credential the first minted rather than mint a second.
 func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
 	t.Helper()
+	status, refusal, credential := r.signInTrade(t, p)
+	if status != http.StatusOK || credential == "" {
+		t.Fatalf("%s's Google sign-in trade answered %d %q with launcher credential %q, want 200 with a launcher credential", p.email, status, refusal, credential)
+	}
+	p.signInCredential = credential
+}
+
+// signInTrade is one trade of p's Google identity on the fixture's metadata machine (personSignIn),
+// answering its status, its OAuth error for a refusal, and the launcher credential the broker
+// minted or renewed for it.
+func (r *leaverRig) signInTrade(t *testing.T, p *leaverPerson) (status int, refusal, credential string) {
+	t.Helper()
 	if p.signInKey == nil {
 		p.signInKey = brokertest.NewSigningKey(t)
 	}
@@ -645,10 +745,10 @@ func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
 		CredentialID string `json:"credential_id"`
 		Error        string `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &answer); err != nil || response.StatusCode != http.StatusOK || answer.CredentialID == "" {
-		t.Fatalf("%s's Google sign-in trade answered %d %s, want 200 with a launcher credential", p.email, response.StatusCode, raw)
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		t.Fatalf("%s's Google sign-in trade answered %d %s, which does not decode: %v", p.email, response.StatusCode, raw, err)
 	}
-	p.signInCredential = answer.CredentialID
+	return response.StatusCode, answer.Error, answer.CredentialID
 }
 
 // delist takes email off PRIV's access list, as PRIV's owner does.
@@ -704,10 +804,11 @@ func (r *leaverRig) startBroker() { r.brokerStopped.Store(false) }
 // in and answers its status and, for a refusal, its code: the JSON code a Dispatch or broker
 // route refuses with, or the OAuth error a token endpoint answers. A success answers no code.
 
-// cookie is GET /api/v1/whoami on p's session cookie, as the dashboard's script sends it.
+// cookie is GET /api/v1/whoami from p's browser (browser): on their session cookie, as the
+// dashboard's script sends it, or on a rig built withIAP with the assertion IAP signs for it.
 func (r *leaverRig) cookie(t *testing.T, p *leaverPerson) (int, string) {
 	t.Helper()
-	return dispatchAnswer(cookieRequest(r.handler, http.MethodGet, "/api/v1/whoami", "", p.signedIn))
+	return dispatchAnswer(r.browser(t, p, http.MethodGet, "/api/v1/whoami", ""))
 }
 
 // personalToken is GET /api/v1/whoami with token as the bearer, as an agent sends it.
@@ -758,14 +859,29 @@ func (r *leaverRig) refreshGrant(t *testing.T, p *leaverPerson) (int, string) {
 // enrol asks the broker for a new session under p's machine login (POST /v1/enrollments).
 func (r *leaverRig) enrol(t *testing.T, p *leaverPerson) (int, string) {
 	t.Helper()
-	key := brokertest.NewSigningKey(t)
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	return brokerAnswer(r.enrolment(t, p, p.machineKey, p.credential))
+}
+
+// enrolUnderSignIn asks the broker for a new session under the launcher credential of p's sign-in
+// on the fixture's metadata machine (personSignIn), as a session launched under that sign-in
+// enrols (POST /v1/enrollments).
+func (r *leaverRig) enrolUnderSignIn(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	return brokerAnswer(r.enrolment(t, p, p.signInKey, p.signInCredential))
+}
+
+// enrolment is POST /v1/enrollments for a new session of p's, each naming a runtime of its own,
+// under the launcher credential credential, whose key is key: the status and the body it answers.
+func (r *leaverRig) enrolment(t *testing.T, p *leaverPerson, key *ecdsa.PrivateKey, credential string) (int, []byte) {
+	t.Helper()
+	session := brokertest.NewSigningKey(t)
+	thumbprint, err := proof.Thumbprint(&session.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.enrolments++
-	return brokerAnswer(r.client.Launcher(t, p.machineKey, p.credential, http.MethodPost, "/v1/enrollments",
-		map[string]any{"kind": "session", "runtime_id": fmt.Sprintf("%s-session-%d", p.email, p.enrolments), "thumbprint": thumbprint}))
+	return r.client.Launcher(t, key, credential, http.MethodPost, "/v1/enrollments",
+		map[string]any{"kind": "session", "runtime_id": fmt.Sprintf("%s-session-%d", p.email, p.enrolments), "thumbprint": thumbprint})
 }
 
 // renewLease renews the lease of the session enrolled at setup (POST /v1/enrollments/{id}/renew).
