@@ -163,12 +163,7 @@ func TestASettlementWhoseLiveFallbackWritesNothingVersionsItsReadWithTheBaseEmai
 		t.Errorf("the settlement's version stores %q, where its read with the base's links renders to %q", stored, rendering)
 	}
 	requireReadsBackAs(t, "the settlement's version", stored, want)
-	var token string
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select document_token from artifact_versions where artifact_id = $1 order by number desc limit 1
-	`, artifactID).Scan(&token); err != nil {
-		t.Fatalf("read the version's token: %v", err)
-	}
+	token := latestVersionToken(t, service, artifactID)
 	if wantToken, err := nodeToken(want); err != nil || token != wantToken {
 		t.Errorf("the version's token is %q, where its tree's is %q (%v)", token, wantToken, err)
 	}

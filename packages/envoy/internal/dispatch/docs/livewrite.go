@@ -139,15 +139,16 @@ type liveWrite struct {
 	// version write does not refresh the same tree's anchors a second time.
 	anchorsTree *pmdoc.Node
 	// emailLinksChecked says an operation of this transaction ran applyLiveWritten's repair check
-	// on fork, the fork the transaction holds now: as that check read the room's record, the room
-	// owed no settlement, or the fork holds the base's email links wherever the renderer cannot
-	// write its own so that they read back (owesSettlementLocked, fallBackEmailLinksLive). The
-	// transaction's later operations, and the answers it takes without one - a version, an edit
-	// with no operation - then run no check of their own (repairJoinedEmailLinks), since what an
-	// operation writes after it is checked by that operation (applyLiveWritten). It is cleared
-	// wherever the fork is let go (releaseFork) or taken again (forkLive), so it never stands for a
-	// fork the transaction no longer holds; a margin write (applyMargin) runs no check and leaves
-	// it as it was.
+	// on fork, the fork the transaction holds now, so the fork needs no repair of its email links
+	// before the next operation: the fork's text held no `@`, or the document owed no settlement as
+	// the gate read it (settlementOwed: this process's record, then the store's row), or the fork
+	// holds the base's email links wherever the renderer cannot write its own so that they read
+	// back (liveOperation.repairEmailLinks). The transaction's later operations, and the answers it
+	// takes without one - a version, an edit with no operation - then run no check of their own
+	// (repairJoinedEmailLinks), since what an operation writes after it is checked by that
+	// operation (applyLiveWritten). It is cleared with the fork (releaseFork), so it never stands
+	// for a fork the transaction no longer holds; a margin write (applyMargin) runs no check and
+	// leaves it as it was.
 	emailLinksChecked bool
 	// credits are the authors of the transaction's content changes no version the transaction
 	// wrote lists (Ledger.recordVersion takes out each author a version lists), and creditedBy the
@@ -426,10 +427,8 @@ func (s *Service) forkLive(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 		return nil, errForkReleased
 	case len(write.updates) == 0:
 		fork, err = s.readFork(ctx, write)
-		write.emailLinksChecked = false
 	default:
 		fork, err = s.rebuildFork(ctx, write)
-		write.emailLinksChecked = false
 	}
 	if err != nil {
 		return nil, err

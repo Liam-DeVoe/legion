@@ -370,12 +370,32 @@ func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, e
 	return fallen, changed, nil
 }
 
+// versionedEmailLinks is rendered, a tree a version is about to store with its rendering, as the
+// repair of its email links would leave it where no write gives the document that repair before
+// the version: where the renderer cannot write the tree's email links so that they read back, the
+// tree with the base's links (fallBackEmailLinks), rendered again, with rendered's head; rendered
+// itself otherwise. So the version's markdown, token and index name one tree. Its two callers are
+// a settlement whose versioned tree is not the one it judged and repaired - read again after its
+// writes, or one its live repair wrote nothing into (commitVersion) - and a version taken from the
+// stored document with no write of its transaction (captureLiveTextAndAuthors).
+func versionedEmailLinks(rendered renderedTree) (renderedTree, error) {
+	fallen, changed, err := fallBackEmailLinks(rendered.tree, rendered.markdown)
+	if err != nil || !changed {
+		return rendered, err
+	}
+	markdown, offsets, err := renderTreeWithOffsets(fallen)
+	if err != nil {
+		return renderedTree{}, err
+	}
+	return renderedTree{tree: fallen, markdown: markdown, offsets: offsets, head: rendered.head}, nil
+}
+
 // fallBackEmailLinksLive gives doc's tree as it stands the base's email links where its own do not
 // read back (fallBackEmailLinks), in one transaction tagged with origin (rewriteLive), and writes
-// nothing where the tree reads back or no fallback does. Its two callers - the settlement's repair
-// of the room (commitRepairs) and a live write's repair of its fork (applyLiveWritten) - decide
-// from a read of their own whether the tree needs it, so a document that does not opens no
-// transaction.
+// nothing where the tree reads back or no fallback does. Its caller, the settlement's repair of
+// the room (commitRepairs), decides from a read of its own whether the tree needs it, so a
+// document that does not opens no transaction. A live write repairs its own fork from the tree it
+// read already (liveOperation.repairEmailLinks).
 func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
 	var fallErr error
 	_, err := rewriteLive(doc, origin, func(live *pmdoc.Node) bool {

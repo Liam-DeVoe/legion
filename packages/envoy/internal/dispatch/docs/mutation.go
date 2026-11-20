@@ -255,7 +255,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 //   - applyLive stores no tree whose rendering does not read back because of its email links,
 //     which a person's typing or paste of an address the renderer cannot write as the email rule
 //     reads it leaves in the room until its settlement repairs it (R4 of INFRA-4224). Before
-//     mutate, a fork whose room owes a settlement takes that repair (fallBackEmailLinksLive), so
+//     mutate, a fork whose room owes a settlement takes that repair (repairOwedBeforeMutate), so
 //     the write starts from, checks its precondition against and answers the token of the tree
 //     the document stores; after mutate, what mutate wrote takes it too, where a textblock the
 //     write changed holds an `@` (changesTextHoldingAt): an inline replace, or a delete that joins
@@ -291,8 +291,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 // attributes, and both trees render through pmdoc.RenderWithBlockOffsets - so either is the very
 // string the render would make. A fork no rendering is known for is rendered here.
 func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.Actor, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
-	_, err := s.applyLiveWritten(ctx, artifactID, actor, nil, mutate)
-	return err
+	return s.applyLiveWritten(ctx, artifactID, actor, nil, nil, mutate)
 }
 
 // applyLiveWritten is applyLive for a write that renders the tree it is about to write before it
@@ -306,14 +305,17 @@ func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.
 // over - renders the fork here, as every other write does. written is nil for applyLive itself.
 //
 // It is the one function every live write but a margin record goes through, so it is where the
-// email links of what a write stores are repaired (applyLive's last rule). fellBack reports that
-// the repair after mutate wrote, so the tree the operation stored (liveWrite.tree) is not the one
-// mutate wrote: a caller that took a token from mutate's tree takes it again from the stored one
-// (ApplyOps).
-func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) (fellBack bool, err error) {
+// email links of what a write stores are repaired (applyLive's last rule). stored, where the
+// caller gives one, is handed the tree the operation stores and its rendering as soon as they are
+// known, and whether the repair after mutate wrote, so the tree stored is not the one mutate
+// wrote: a caller that took a token from mutate's tree takes it again from the stored one
+// (ApplyOps, restateOutcome). It is called before the tree the operation started from is let go,
+// so a caller holding that tree for it lets it go there, ahead of the record's decode check
+// (LEGION-504). Its error is the operation's.
+func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, stored func(fellBack bool, rendered renderedTree) error, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
 	op, err := s.openLiveOperation(ctx, artifactID)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer op.abandon()
 	fork, write := op.fork, op.write
@@ -330,7 +332,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	// path it took is counted once, when it is first needed (renderPathCounts).
 	before, startErr := s.readForkTree(fork)
 	if startErr != nil && !errors.Is(startErr, ErrDocOutsideSchema) {
-		return false, startErr
+		return startErr
 	}
 	// beforeKnown says beforeMarkdown is known without rendering the fork, and knownPath is the
 	// count of the path it was had by, bumped when it is first needed.
@@ -346,40 +348,28 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		}
 	}
 	write.forkMarkdown = nil
-	// Before mutate, the fork as the transaction's read found it takes the repair its room's
-	// settlement owes it, once for each fork (liveWrite.emailLinksChecked): where the fork's text
-	// holds an `@` and the document owes a settlement (settlementOwed: this process's record, or the
-	// store's row where the record knows nothing - a cold fork of a document no room here holds,
-	// one another process's room holds, or one this process has not loaded since a restart), the
-	// base's email links wherever its own do not read back (fallBackEmailLinksLive). So mutate
-	// starts from, an edit checks its precondition against, and the write answers the token of the
-	// tree the document stores, rather than a tree the settlement repairs after the write has
-	// answered. The repair is this operation's update (change), and the tree it leaves is read
+	// Before mutate, the fork takes the repair of its email links its room's settlement owes it,
+	// once for each fork (liveWrite.emailLinksChecked, repairOwedBeforeMutate), checked against
+	// the rendering known without rendering the fork, where one is. The tree it leaves is read
 	// again as the one the operation starts from: the rendering known before it no longer
 	// describes the fork.
 	repaired := false
-	if !write.emailLinksChecked && startErr == nil {
-		if textHoldsAt(before.Node()) {
-			owed := knownSettlementOwed(ctx)
-			if !owed {
-				if owed, err = s.settlementOwed(ctx, op.tx, artifactID, write.state); err != nil {
-					return false, err
-				}
-			}
-			if owed {
-				if _, err := op.change(func() error { return fallBackEmailLinksLive(fork, nil) }); err != nil {
-					return false, err
-				}
-				if repaired = len(op.updates) > 0; repaired {
-					before, startErr = s.readForkTree(fork)
-					if startErr != nil && !errors.Is(startErr, ErrDocOutsideSchema) {
-						return false, startErr
-					}
-					beforeKnown = false
-				}
-			}
+	if startErr == nil && !write.emailLinksChecked {
+		known := ""
+		if beforeKnown {
+			known = beforeMarkdown
+		}
+		if repaired, err = s.repairOwedBeforeMutate(ctx, &op, before.Node(), known); err != nil {
+			return err
 		}
 		write.emailLinksChecked = true
+		if repaired {
+			before, startErr = s.readForkTree(fork)
+			if startErr != nil && !errors.Is(startErr, ErrDocOutsideSchema) {
+				return startErr
+			}
+			beforeKnown = false
+		}
 	}
 	repairUpdates := len(op.updates)
 	rendered := startErr != nil
@@ -401,28 +391,24 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		return mutate(fork, before, func(inner func(*crdt.Transaction)) { fork.Transact(inner) })
 	})
 	if mutateErr != nil {
-		return false, joinedSchemaError(mutateErr, start)
+		return joinedSchemaError(mutateErr, start)
 	}
 	// A write whose transactions changed nothing made no update and writes nothing. Appended, an
 	// empty update would refresh the anchors and mark the document owing a settlement again
 	// (updateOwedStatement): a settlement with nothing to save, and a document the repair's next
 	// pass over a closed issue would sweep again while it still owed that settlement.
 	if len(op.updates) == 0 {
-		return false, websocket.ErrNoChanges
+		return websocket.ErrNoChanges
 	}
-	tree, err := s.readForkTree(fork)
-	// After mutate, what it wrote takes the base's email links too, where a textblock it changed
-	// holds an `@` (changesTextHoldingAt, every textblock of a tree written over one outside the
-	// schema): text an inline replace writes, or a delete joins, into an address the renderer
-	// cannot write as the rule reads it. Any other write costs that walk alone.
-	if err == nil && len(op.updates) > repairUpdates && writesTextHoldingAt(before.Node(), tree.Node()) {
-		wrote := len(op.updates)
-		if _, err := op.change(func() error { return fallBackEmailLinksLive(fork, nil) }); err != nil {
-			return false, err
-		}
-		if fellBack = len(op.updates) > wrote; fellBack {
-			tree, err = s.readForkTree(fork)
-		}
+	// The tree the operation leaves, and its rendering. Where mutate wrote nothing after the
+	// repair before it, the fork is the tree that repair left, read already (before), and the
+	// rendering of it start would make is this one: taken once, for both, and counted as start
+	// counts it.
+	mutated := len(op.updates) > repairUpdates
+	wroteNothing := !mutated && startErr == nil
+	tree := before
+	if !wroteNothing {
+		tree, err = s.readForkTree(fork)
 	}
 	var markdown string
 	var offsets []pmdoc.BlockOffset
@@ -431,8 +417,33 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	if err == nil {
 		markdown, offsets, layout, err = writtenRendering(written, op.read.warm, tree)
 	}
+	if err == nil && wroteNothing {
+		beforeMarkdown, rendered = markdown, true
+		s.renderPaths.beforeRendered.Add(1)
+	}
+	// After mutate, what it wrote takes the base's email links too, where a textblock it changed
+	// holds an `@` (changesTextHoldingAt, every textblock of a tree written over one outside the
+	// schema): text an inline replace writes, or a delete joins, into an address the renderer
+	// cannot write as the rule reads it. Any other write costs that walk alone. The check reads
+	// back the rendering just made; only a repair that wrote has the fork read and rendered again.
+	fellBack := false
+	if err == nil && mutated && writesTextHoldingAt(before.Node(), tree.Node()) {
+		if fellBack, err = op.repairEmailLinks(tree.Node(), markdown); err != nil {
+			return err
+		}
+		if fellBack {
+			if tree, err = s.readForkTree(fork); err == nil {
+				markdown, offsets, layout, err = writtenRendering(written, op.read.warm, tree)
+			}
+		}
+	}
 	if err != nil {
-		return false, joinedSchemaError(err, start)
+		return joinedSchemaError(err, start)
+	}
+	if stored != nil {
+		if err := stored(fellBack, renderedTree{tree: tree.Node(), markdown: markdown, offsets: offsets}); err != nil {
+			return err
+		}
 	}
 	// A write over a tree outside the Proof schema that leaves it readable is a repair, so it
 	// necessarily changes the content a version stores, and what it leaves is weighed as a new
@@ -444,7 +455,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	contentChanged, weighedFrom := true, (*pmdoc.Node)(nil)
 	err = start()
 	if err != nil && !errors.Is(err, ErrDocOutsideSchema) {
-		return false, err
+		return err
 	}
 	unchanged := beforeMarkdown == markdown
 	if unchanged {
@@ -468,17 +479,17 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	if err := refuseGrowth(growth{before: beforeMarkdown, after: markdown, unchanged: unchanged, margin: margin, anchors: anchorWatch{before: weighedFrom, after: tree.Node()}, serverState: func() bool {
 		return weighedFrom != nil && tree.Node().EqualOutsideServerState(weighedFrom)
 	}}); err != nil {
-		return false, err
+		return err
 	}
 	// An agent's or API write is refused when a block pointer it introduces names a block of a
 	// type its attribute does not allow, or a check block it introduces breaks a rule of a check
 	// CI proves, each compared with the tree before the write (nil when that tree was outside the
 	// schema: every pointer and every check block of a repair is introduced).
 	if err := refuseBlockPointers(ctx, op.tx, artifactID, tree.Node(), weighedFrom, offsets); err != nil {
-		return false, err
+		return err
 	}
 	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
-		return false, err
+		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
 	// decode check (LEGION-504).
@@ -493,7 +504,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		}
 	}
 	if err := s.recordLiveOperation(ctx, &op, actor, renderedTree{tree: tree.Node(), markdown: markdown, offsets: offsets}, appendedChange, rendering, weak.Pointer[crdt.Doc]{}); err != nil {
-		return false, err
+		return err
 	}
 	// A server lifecycle write (withLifecycleWrite) is no edit of the document: it credits no
 	// pending author and leaves the document's latest edit source as it was.
@@ -505,7 +516,53 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		})
 		mergeInto(&op.write.addedAskBlockIDs, added)
 	}
-	return fellBack, nil
+	return nil
+}
+
+// repairOwedBeforeMutate is applyLiveWritten's repair before mutate, on before, the fork's tree as
+// the transaction's read found it, whose rendering is rendering, or "" where none is known without
+// rendering the fork: where before's text holds an `@` and the document owes a settlement
+// (settlementOwed: this process's record, or the store's row where the record knows nothing - a
+// cold fork of a document no room here holds, one another process's room holds, or one this
+// process has not loaded since a restart; or the answer of a caller whose gate said so,
+// knownSettlementOwed), it gives the fork the base's email links wherever its own do not read back
+// (liveOperation.repairEmailLinks), and reports whether that wrote. So mutate starts from, an edit
+// checks its precondition against, and the write answers the token of the tree the document
+// stores, rather than a tree the settlement repairs after the write has answered. The repair is
+// the operation's own update.
+func (s *Service) repairOwedBeforeMutate(ctx context.Context, op *liveOperation, before *pmdoc.Node, rendering string) (bool, error) {
+	if !textHoldsAt(before) {
+		return false, nil
+	}
+	if !knownSettlementOwed(ctx) {
+		owed, err := s.settlementOwed(ctx, op.write.artifactID, op.write.state)
+		if err != nil || !owed {
+			return false, err
+		}
+	}
+	return op.repairEmailLinks(before, rendering)
+}
+
+// repairEmailLinks writes into op's fork, as a change of op's own (change), the base's email links
+// where those of tree - the fork's tree as it stands - do not read back (fallBackEmailLinks, given
+// rendering, tree's rendering, or "" where the caller knows none), and reports whether it wrote. It
+// is the repair a write makes before its mutate and after it (applyLiveWritten), computed from the
+// tree and the rendering the operation already holds rather than read and rendered from the fork
+// again: only the operation's own goroutine writes the fork, so that tree is the fork's. The check
+// runs inside the change, so a panic in it is the operation's error, as a panic in mutate is.
+func (op *liveOperation) repairEmailLinks(tree *pmdoc.Node, rendering string) (bool, error) {
+	wrote := len(op.updates)
+	_, err := op.change(func() error {
+		fallen, changed, err := fallBackEmailLinks(tree, rendering)
+		if err != nil || !changed {
+			return err
+		}
+		fragment := op.fork.GetXmlFragment(fragmentName)
+		return op.fork.TransactE(func(txn *crdt.Transaction) error {
+			return pmdoc.Update(txn, fragment, fallen)
+		})
+	})
+	return len(op.updates) > wrote, err
 }
 
 // writesTextHoldingAt reports whether after, the tree a write over before leaves, holds a
@@ -518,21 +575,21 @@ func writesTextHoldingAt(before, after *pmdoc.Node) bool {
 	return changesTextHoldingAt(before, after)
 }
 
-// settlementOwed is the gate of the repair a token's answer takes first (applyLiveWritten,
+// settlementOwed is the gate of the repair a token's answer takes first (repairOwedBeforeMutate,
 // settleBeforeAnswer, repairUnjoinedEmailLinks, repairJoinedEmailLinks): whether room's document
 // owes a settlement. It reads this process's record of the room first (owesSettlementLocked: state,
 // or room's current record where state is nil), and only where that says nothing the store's row
-// (settlementPending, on q: the caller's transaction inside one, the pool outside), which every
-// process's append and commit writes and its settlement deletes: a process holding no room of the
-// document, one whose room another process wrote past, or one restarted before its settlement's
-// resumption, has no record of a settlement the store owes. Its callers walk the tree for an `@`
-// first (textHoldsAt), with no query, wherever they hold one, so a document whose text holds none
-// pays nothing for the repair, and one that does pays the record's read and at most one indexed
-// query, where the record says nothing; only then is the tree rendered and parsed
+// (settlementPending, through queryFrom: the caller's transaction inside one, the pool outside),
+// which every process's append and commit writes and its settlement deletes: a process holding no
+// room of the document, one whose room another process wrote past, or one restarted before its
+// settlement's resumption, has no record of a settlement the store owes. Its callers walk the tree
+// for an `@` first (textHoldsAt), with no query, wherever they hold one, so a document whose text
+// holds none pays nothing for the repair, and one that does pays the record's read and at most one
+// indexed query, where the record says nothing; only then is the tree rendered and parsed
 // (fallBackEmailLinks). A version or an edit with no operation over a document no room here holds
 // has no tree to walk before it opens the write that reads one (repairUnjoinedEmailLinks), and
 // pays the query alone.
-func (s *Service) settlementOwed(ctx context.Context, q Queryer, room string, state *roomState) (bool, error) {
+func (s *Service) settlementOwed(ctx context.Context, room string, state *roomState) (bool, error) {
 	if state != nil {
 		if s.owesSettlementOn(state) {
 			return true, nil
@@ -540,7 +597,7 @@ func (s *Service) settlementOwed(ctx context.Context, q Queryer, room string, st
 	} else if s.owesSettlement(room) {
 		return true, nil
 	}
-	return settlementPending(ctx, q, room)
+	return settlementPending(ctx, s.queryFrom(ctx), room)
 }
 
 // owesSettlementOn is whether the document of state, a room's record, owes a settlement as that
@@ -854,7 +911,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// its layout, which a warm operation hands the room's update observer with it
 	// (replicaRendering), so taking it costs the observer no render either.
 	var written renderedTree
-	_, err = s.applyLiveWritten(ctx, artifactID, actor, &written, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	err = s.applyLiveWritten(ctx, artifactID, actor, &written, nil, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		valid, err := startTree(start, doc)
 		current := valid.Node()
@@ -1238,7 +1295,7 @@ func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
 // settlement first, and is read again (settleBeforeAnswer), so the token it answers names the
 // tree the document stores.
 func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
-	settled := readSettlements{outside: !ledgerFrom(ctx).inTransaction()}
+	var settled readSettlements
 	for {
 		markdown, token, served, err := s.storedText(ctx, artifactID)
 		if err != nil || served {
@@ -1274,11 +1331,9 @@ const (
 )
 
 // readSettlements is what one read of a document's token has spent of its settlements
-// (settleBeforeAnswer): whether it runs outside every transaction, where alone a settlement can
-// run, the settlements it has run, the deadline of their waits, from the first, and the last one's
-// error.
+// (settleBeforeAnswer): the settlements it has run, the deadline of their waits, from the first,
+// and the last one's error.
 type readSettlements struct {
-	outside  bool
 	attempts int
 	deadline time.Time
 	err      error
@@ -1300,13 +1355,13 @@ type readSettlements struct {
 // transaction reads its fork, which the transaction's writes repaired (applyLiveWritten): the
 // settlement's own transaction takes the owner lock the caller's may hold, so none runs there.
 func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmdoc.Node, rendering string, settled *readSettlements) bool {
-	if !settled.outside {
+	if ledgerFrom(ctx).inTransaction() {
 		return false
 	}
 	if tree != nil && !textHoldsAt(tree) || tree == nil && strings.IndexByte(rendering, '@') < 0 {
 		return false
 	}
-	owed, err := s.settlementOwed(ctx, s.store.Pool, room, nil)
+	owed, err := s.settlementOwed(ctx, room, nil)
 	if err != nil {
 		slog.Warn("dispatch: a read could not tell whether its document owes a settlement", "room", room, "error", err)
 		return false
@@ -1472,7 +1527,7 @@ func (s *Service) TextWithBlocks(ctx context.Context, artifactID string) (string
 // first, and is read again, as TextWithToken's is (settleBeforeAnswer), so the document's token
 // and each block's name the tree the document stores.
 func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error) {
-	settled := readSettlements{outside: !ledgerFrom(ctx).inTransaction()}
+	var settled readSettlements
 	for {
 		read, tree, err := s.readDocument(ctx, artifactID)
 		var rendered renderedDocument
@@ -1480,7 +1535,7 @@ func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string)
 		case err != nil:
 			return "", "", nil, err
 		case read != nil:
-			rendered = renderedDocument{markdown: read.markdown, token: read.token, blocks: read.blocks}
+			rendered = renderedDocument{markdown: read.markdown, token: read.token}
 		case tree == nil:
 			return "", "", nil, nil
 		default:
@@ -1975,14 +2030,14 @@ func (s *Service) repairUnjoinedEmailLinks(ctx context.Context, artifactID strin
 func (s *Service) unjoinedRepairNeeded(ctx context.Context, artifactID string) (bool, error) {
 	live := s.srv.GetDoc(artifactID)
 	if live == nil {
-		return s.settlementOwed(ctx, s.queryFrom(ctx), artifactID, nil)
+		return s.settlementOwed(ctx, artifactID, nil)
 	}
 	tree, err := s.liveTree(artifactID, live)
 	if err != nil || !textHoldsAt(tree) {
 		// A tree this read cannot read is the answer's own refusal, which it reads for itself.
 		return false, nil
 	}
-	owed, err := s.settlementOwed(ctx, s.queryFrom(ctx), artifactID, nil)
+	owed, err := s.settlementOwed(ctx, artifactID, nil)
 	if err != nil || !owed {
 		return false, err
 	}
@@ -2002,7 +2057,7 @@ func (s *Service) repairJoinedEmailLinks(ctx context.Context, artifactID string,
 	if write == nil || write.emailLinksChecked || !textHoldsAt(tree) {
 		return false, nil
 	}
-	owed, err := s.settlementOwed(ctx, s.queryFrom(ctx), artifactID, write.state)
+	owed, err := s.settlementOwed(ctx, artifactID, write.state)
 	if err != nil || !owed {
 		return false, err
 	}
@@ -2022,7 +2077,7 @@ func (s *Service) repairJoinedEmailLinks(ctx context.Context, artifactID string,
 // room is owner-verified too; every other write is refused on a closed issue, as the version or
 // the edit it comes before is.
 func (s *Service) writeOwedEmailLinks(ctx context.Context, artifactID string) (bool, error) {
-	_, err := s.applyLiveWritten(withSettlementOwed(ctx), artifactID, SettlementActor, nil, func(*crdt.Doc, pmdoc.ValidDocument, func(func(*crdt.Transaction))) error {
+	err := s.applyLiveWritten(withSettlementOwed(ctx), artifactID, SettlementActor, nil, nil, func(*crdt.Doc, pmdoc.ValidDocument, func(func(*crdt.Transaction))) error {
 		return nil
 	})
 	switch {
@@ -2050,21 +2105,52 @@ func knownSettlementOwed(ctx context.Context) bool {
 	return owed
 }
 
-// storedOutcome is outcome, the verdict batch took off the tree it wrote (editBatch.outcome), taken
-// again off the tree the edit's write stored, where that write gave what the batch wrote the base's
-// email links after it (applyLiveWritten's fellBack): the token, whether the batch changed the
-// document from the token it started from, and what it wrote, read back off the write's own
-// rendering of that tree (liveWrite.tree, markdown, offsets). So the token an edit answers is the
-// one the settlement after it leaves.
-func storedOutcome(ctx context.Context, artifactID string, outcome EditOutcome, batch editBatch) (EditOutcome, error) {
-	write := joinedLiveWrite(ctx, artifactID)
-	token, err := nodeToken(write.tree)
+// batchStart is what an edit keeps of where its batch started, for its outcome to be taken again
+// off the tree its write stores (storedOutcome): the token the batch started from (editBatch.before)
+// and the tree it started from, whose blocks the read-back compares with (readBackOf). An edit
+// keeps these rather than the batch, and only until its write hands it the tree stored
+// (restateOutcome).
+type batchStart struct {
+	token string
+	tree  *pmdoc.Node
+}
+
+// restateOutcome is the stored callback (applyLiveWritten) of an edit that answers *outcome, the
+// verdict its batch took off the tree it wrote (editBatch.outcome), from where that batch started,
+// *start: where the write gave what the batch wrote the base's email links after it (fellBack), the
+// outcome is taken again off the tree stored (storedOutcome). Either way *start is let go there, so
+// the tree the batch started from, often the operation's own tree before the write, is not held
+// through the record's decode check (LEGION-504).
+func restateOutcome(outcome *EditOutcome, start *batchStart) func(fellBack bool, stored renderedTree) error {
+	return func(fellBack bool, stored renderedTree) error {
+		from := *start
+		*start = batchStart{}
+		if !fellBack {
+			return nil
+		}
+		restated, err := storedOutcome(*outcome, from, stored)
+		if err != nil {
+			return err
+		}
+		*outcome = restated
+		return nil
+	}
+}
+
+// storedOutcome is outcome, the verdict a batch took off the tree it wrote (editBatch.outcome),
+// taken again off stored, the tree the edit's write stores and its rendering, where that write gave
+// what the batch wrote the base's email links after it (applyLiveWritten's fellBack): the token,
+// whether the batch changed the document from the token it started from (start), and what it
+// wrote, read back off that rendering (readBackOf). So the token an edit answers is the one the
+// settlement after it leaves.
+func storedOutcome(outcome EditOutcome, start batchStart, stored renderedTree) (EditOutcome, error) {
+	token, err := nodeToken(stored.tree)
 	if err != nil {
 		return EditOutcome{}, err
 	}
-	outcome.Token, outcome.Changed, outcome.Written = token, token != batch.before, ""
+	outcome.Token, outcome.Changed, outcome.Written = token, token != start.token, ""
 	if outcome.Changed {
-		outcome.Written = batch.readBackOf(write.tree, write.markdown, write.offsets)
+		outcome.Written = readBackOf(start.tree, stored.tree, stored.markdown, stored.offsets)
 	}
 	return outcome, nil
 }
@@ -2109,9 +2195,8 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	}
 	var (
 		err       error
-		fellBack  bool
 		outcome   EditOutcome
-		finished  editBatch
+		started   batchStart
 		snapshots []tableAnchorSnapshot
 	)
 	if hasTableAnchorMutation(ops) {
@@ -2123,7 +2208,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	if err := checkTableAnchorRows(ctx, tx, artifactID, snapshots); err != nil {
 		return EditOutcome{}, err
 	}
-	fellBack, err = s.applyLiveWritten(ctx, artifactID, actor, nil, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	err = s.applyLiveWritten(ctx, artifactID, actor, nil, restateOutcome(&outcome, &started), func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc)
@@ -2166,7 +2251,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); mutationErr != nil {
 				return
 			}
-			finished = batch
+			started = batchStart{token: batch.before, tree: batch.beforeTree}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 				if err := pmdoc.UpdateDocument(transaction, fragment, written); err != nil {
 					return err
@@ -2192,9 +2277,6 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 		}
 		return EditOutcome{}, fmt.Errorf("apply live document operations: %w", err)
 	}
-	if fellBack {
-		return storedOutcome(ctx, artifactID, outcome, finished)
-	}
 	return outcome, nil
 }
 
@@ -2205,7 +2287,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 // the document returned is the one the route writes. An address that write leaves whose email
 // links the renderer cannot write so that they read back takes the base's links once it is
 // written (applyLiveWritten), and the route then takes its outcome again off the tree stored
-// (storedOutcome).
+// (restateOutcome).
 func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, error) {
 	next := batch.tree
 	pmdoc.EnsureBlockIDs(next)
@@ -2247,8 +2329,8 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		return EditOutcome{Token: token}, nil
 	}
 	var outcome EditOutcome
-	var finished editBatch
-	fellBack, err := s.applyLiveWritten(ctx, artifactID, actor, nil, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	var started batchStart
+	err := s.applyLiveWritten(ctx, artifactID, actor, nil, restateOutcome(&outcome, &started), func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		since := authoredClock(ctx, artifactID, doc)
 		start, err := editTree(current, func() (*pmdoc.Node, error) { return treeOf(doc) })
@@ -2265,7 +2347,7 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); err != nil {
 			return err
 		}
-		finished = batch
+		started = batchStart{token: batch.before, tree: batch.beforeTree}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 			var updateErr error
 			transact(func(transaction *crdt.Transaction) {
@@ -2286,9 +2368,6 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 			return EditOutcome{}, err
 		}
 		return EditOutcome{}, fmt.Errorf("apply live document operations: %w", err)
-	}
-	if fellBack {
-		return storedOutcome(ctx, artifactID, outcome, finished)
 	}
 	return outcome, nil
 }
@@ -2506,7 +2585,7 @@ func (s *Service) registerStampedAskBlocks(ctx context.Context, room string, sta
 // document (repairUnjoinedEmailLinks), and after it, the capture taken again, where the capture
 // read the transaction's own fork and the repair wrote (repairJoinedEmailLinks). So the version
 // holds the tree the room holds once the transaction commits, and a read after it answers the
-// version's token. A capture that needs no repair is taken once, as before.
+// version's token. A capture that needs no repair is taken once.
 func (s *Service) captureRepairedTextAndAuthors(ctx context.Context, room string, actor *model.Actor) (renderedTree, authorCapture, error) {
 	if err := s.repairUnjoinedEmailLinks(ctx, room); err != nil {
 		return renderedTree{}, authorCapture{}, err
@@ -2651,32 +2730,25 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
+	rendered := renderedTree{tree: tree, markdown: markdown, offsets: offsets, head: &stored}
 	if fromStore {
 		// The stored document can hold an address the renderer cannot write as the email rule
 		// reads it, typed into a room of another process (or of this one before its room fell
 		// behind) whose settlement has not run, and no write of this transaction gave it the
 		// repair: this capture learned it reads the store only under the document's advisory
 		// lock, after which no write opens (repairUnjoinedEmailLinks decided from the room it
-		// found, which is behind). So the version holds the stored tree with the base's email
-		// links where its own do not read back (fallBackEmailLinks), rendered again, as the
-		// settlement versions a tree its repair could not write (commitVersion): its markdown,
-		// token and index name one tree. That is the tree every other answer leaves the document
-		// in - a later write's cold fork takes the same repair before it applies
-		// (applyLiveWritten), a read runs the settlement first (settleBeforeAnswer), and the
-		// settlement of the room that holds the address writes the same base links - so the
-		// version's token is the token those give.
-		fallen, changed, err := fallBackEmailLinks(tree, markdown)
-		if err != nil {
+		// found, which is behind). So the version holds the stored tree as the repair would leave
+		// it (versionedEmailLinks), as the settlement versions a tree its repair could not write
+		// (commitVersion): its markdown, token and index name one tree. That is the tree every
+		// other answer leaves the document in - a later write's cold fork takes the same repair
+		// before it applies (applyLiveWritten), a read runs the settlement first
+		// (settleBeforeAnswer), and the settlement of the room that holds the address writes the
+		// same base links - so the version's token is the token those give.
+		if rendered, err = versionedEmailLinks(rendered); err != nil {
 			return renderedTree{}, authorCapture{}, err
 		}
-		if changed {
-			if markdown, offsets, err = documentMarkdownWithOffsets(fallen); err != nil {
-				return renderedTree{}, authorCapture{}, err
-			}
-			tree = fallen
-		}
 	}
-	return renderedTree{tree: tree, markdown: markdown, offsets: offsets, head: &stored}, capture, nil
+	return rendered, capture, nil
 }
 
 // captureWrite is captureLiveTextAndAuthors for a transaction with a write of its own to room: the

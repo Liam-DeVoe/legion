@@ -693,7 +693,7 @@ export function commandsHelp(): string {
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
     "",
-    "Run dispatch <command> --help for its flags and an example. --dry-run checks a command's arguments as the call would and prints them as given. It stores nothing. A command whose call asks Dispatch something before it writes asks it in the dry run too, and its --help says so.",
+    "Run dispatch <command> --help for its flags and an example. --dry-run checks a command's arguments as the call would and prints them as given. It stores nothing. A command whose dry run asks Dispatch something past that check (dispatch artifact: how Dispatch would store its text; dispatch result: the pull-request body line the record would print) says so in its --help.",
     "",
   ].join("\n");
 }

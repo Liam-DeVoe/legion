@@ -111,17 +111,7 @@ func TestAnEditWithNoOperationBeforeTheSettlementAnswersTheTokenOfTheTreeWithThe
 			service, artifactID, _, _ := roomTypedByBrowser(t, "First.\n\n"+shape+"\n")
 			token := documentToken(t, service, artifactID)
 			requireBaseLink(t, "the room after the edit with no operation", liveTree(t, service, artifactID))
-			settleCurrentGeneration(t, service, artifactID)
-			if err := service.roomFailure(artifactID); err != nil {
-				t.Fatalf("the settlement failed the room: %v", err)
-			}
-			if settled := documentToken(t, service, artifactID); settled != token {
-				t.Errorf("the edit with no operation answered the token %s, and the document's token after the settlement is %s", token, settled)
-			}
-			later := []model.EditOp{{Op: "insert", After: "end", Markdown: "A later paragraph.\n"}}
-			if _, err := joinedApplyOps(service, artifactID, later, tokenBoundaryWriter, &model.EditPrecondition{Document: token}); err != nil {
-				t.Errorf("an edit under the token the edit with no operation answered was refused: %v", err)
-			}
+			requireTokenSurvivesSettlement(t, service, artifactID, "the edit with no operation", token)
 		})
 	}
 }
@@ -218,17 +208,9 @@ func TestAVersionBeforeTheSettlementGivesTheRoomTheBaseEmailLinks(t *testing.T) 
 		} {
 			t.Run(row.name+" of "+shape, func(t *testing.T) {
 				service, artifactID, _, _ := roomTypedByBrowser(t, "First.\n\n"+shape+"\n")
-				var version VersionResult
-				if err := joinedWrite(service, func(ctx context.Context) error {
-					var err error
-					version, err = row.version(ctx, service, artifactID)
-					return err
-				}); err != nil {
-					t.Fatalf("write the version: %v", err)
-				}
-				if !version.Wrote {
-					t.Fatal("the write stored no version")
-				}
+				version := writeVersion(t, service, func(ctx context.Context) (VersionResult, error) {
+					return row.version(ctx, service, artifactID)
+				})
 				room := liveTree(t, service, artifactID)
 				requireBaseLink(t, "the room after the version", room)
 				rendering, offsets, err := pmdoc.RenderWithBlockOffsets(room)
@@ -476,17 +458,9 @@ func TestAVersionOfARoomBehindTheHeadHoldsTheStoredTreeWithTheBaseEmailLinks(t *
 				if err != nil || !changed {
 					t.Fatalf("FallBackEmailLinks(the stored tree) = changed %t, %v; the test needs a tree whose email links do not read back", changed, err)
 				}
-				var version VersionResult
-				if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
-					var err error
-					version, err = row.version(ctx, pair.taskA, pair.artifactID)
-					return err
-				}); err != nil {
-					t.Fatalf("write the version on task A: %v", err)
-				}
-				if !version.Wrote {
-					t.Fatal("task A stored no version")
-				}
+				writeVersion(t, pair.taskA, func(ctx context.Context) (VersionResult, error) {
+					return row.version(ctx, pair.taskA, pair.artifactID)
+				})
 				requireReadsBackAs(t, "task A's version", latestVersionMarkdown(t, pair.taskA, pair.artifactID), want)
 				versionToken := latestVersionToken(t, pair.taskA, pair.artifactID)
 				if wantToken, err := nodeToken(want); err != nil || versionToken != wantToken {
@@ -517,10 +491,10 @@ func TestAVersionOfARoomBehindTheHeadHoldsTheStoredTreeWithTheBaseEmailLinks(t *
 	}
 }
 
-// versionOnTaskA writes the version write makes on service in a transaction of its own and fails
-// unless it wrote one whose markdown reads back as the tree the store then holds, whose token is
-// that tree's, and whose token a read on service then answers; it returns that token.
-func versionOnTaskA(t *testing.T, service *Service, artifactID string, write func(ctx context.Context) (VersionResult, error)) string {
+// writeVersion writes the version write makes on service in a joined transaction of its own
+// (joinedWrite) and fails unless that transaction committed and stored a version, which it
+// returns.
+func writeVersion(t *testing.T, service *Service, write func(ctx context.Context) (VersionResult, error)) VersionResult {
 	t.Helper()
 	var version VersionResult
 	if err := joinedWrite(service, func(ctx context.Context) error {
@@ -528,11 +502,20 @@ func versionOnTaskA(t *testing.T, service *Service, artifactID string, write fun
 		version, err = write(ctx)
 		return err
 	}); err != nil {
-		t.Fatalf("write the version on task A: %v", err)
+		t.Fatalf("write the version: %v", err)
 	}
 	if !version.Wrote {
-		t.Fatal("task A stored no version")
+		t.Fatal("the transaction stored no version")
 	}
+	return version
+}
+
+// versionOnTaskA writes the version write makes on service (writeVersion) and fails unless its
+// markdown reads back as the tree the store then holds, its token is that tree's, and a read on
+// service then answers that token; it returns that token.
+func versionOnTaskA(t *testing.T, service *Service, artifactID string, write func(ctx context.Context) (VersionResult, error)) string {
+	t.Helper()
+	writeVersion(t, service, write)
 	stored := persistedProofTree(t, service.store, artifactID)
 	requireReadsBackAs(t, "task A's version", latestVersionMarkdown(t, service, artifactID), pmdoc.StripAnchorMarks(stored))
 	versionToken := latestVersionToken(t, service, artifactID)

@@ -750,23 +750,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// planRepairs judged the reconciled tree's email links. A tree the settlement read again after
 	// its writes, or the judged tree where the live write of the base's links wrote nothing (a
 	// browser's edit made after the settlement's read and applied before its observer armed a
-	// newer settlement), is versioned as that repair would leave it: where the renderer cannot
-	// write its email links so that they read back, the tree with the base's links
-	// (fallBackEmailLinks), rendered again, so the version's markdown, token and index name one
-	// tree. The room keeps its own tree until its next settlement; the mark sweep below reads that
-	// tree.
+	// newer settlement), is versioned as that repair would leave it (versionedEmailLinks), so the
+	// version's markdown, token and index name one tree, as a version taken from the stored
+	// document's do. The room keeps its own tree until its next settlement; the mark sweep below
+	// reads that tree.
 	versionTree := st.versioned
 	if st.baseEmailLinks || st.versioned != st.reconciled {
-		fallen, changed, err := fallBackEmailLinks(st.versioned, markdown)
+		versioned, err := versionedEmailLinks(renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets})
 		if err != nil {
 			return settleDone, st.abandon(err)
 		}
-		if changed {
-			if markdown, offsets, err = renderTreeWithOffsets(fallen); err != nil {
-				return settleDone, st.abandon(err)
-			}
-			versionTree = fallen
-		}
+		versionTree, markdown, offsets = versioned.tree, versioned.markdown, versioned.offsets
 	}
 
 	// The second read of a refused update's second order (roomRefusedUpdate), beside the reads of

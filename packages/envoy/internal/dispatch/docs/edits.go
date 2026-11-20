@@ -799,20 +799,21 @@ func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
 	if err != nil {
 		return "", documentSchemaError(err)
 	}
-	return b.readBackOf(written.Node(), markdown, offsets), nil
+	return readBackOf(b.beforeTree, written.Node(), markdown, offsets), nil
 }
 
-// readBackOf is readBack of written, a tree the batch's write stored, whose rendering markdown and
-// block offsets its caller has already: the tree an edit's write stored where it gave what the batch
-// wrote the base's email links (ApplyOps, liveWrite.tree), rendered by that write.
-func (b editBatch) readBackOf(written *pmdoc.Node, markdown string, offsets []pmdoc.BlockOffset) string {
+// readBackOf is readBack of a batch that started from start and wrote written, whose rendering
+// markdown and block offsets its caller has already: readBack's own render, or the rendering an
+// edit's write made of the tree it stored where it gave what the batch wrote the base's email links
+// (storedOutcome).
+func readBackOf(start, written *pmdoc.Node, markdown string, offsets []pmdoc.BlockOffset) string {
 	spans := make(map[string]pmdoc.BlockOffset, len(offsets))
 	for _, offset := range offsets {
 		if _, held := spans[offset.ID]; !held {
 			spans[offset.ID] = offset
 		}
 	}
-	before, after := documentBlockNodes(b.beforeTree), documentBlockNodes(written)
+	before, after := documentBlockNodes(start), documentBlockNodes(written)
 	held := make(map[string]*pmdoc.Node, len(before))
 	order := make(map[string]int, len(before))
 	for index, block := range before {

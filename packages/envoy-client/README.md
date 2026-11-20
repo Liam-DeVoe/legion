@@ -1002,7 +1002,8 @@ names a local file. `dispatch --help` lists the commands, `dispatch <command> --
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
-them (an issue from LEGION_ISSUE or the ref). It stores nothing and reads no state of this session.
+them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no state of this session
+but what a `dispatch result` record's dry run reads (below).
 A command whose call asks Dispatch something before it writes asks it in its dry run too, through
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
 such step is `dispatch artifact`'s: for inline content that is not blank, it makes the call's own
@@ -1013,10 +1014,11 @@ Dispatch without the route), the dry run passes, and one `dispatch: warning:` li
 why and what the call does then, so the JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1`
 the dry run asks Dispatch nothing, for a caller that reads the arguments alone. A `dispatch result`
 record's dry run asks Dispatch through the call itself (`dryRunAsksDispatch`): it needs Dispatch on,
-as the record does, and after the arguments prints the pull-request body line Dispatch answers on
-`POST …/results/dry-run`, recording nothing. A retraction's dry run sends nothing. Every other dry
-run reads no Dispatch, so it runs with Dispatch off too. A call that a dry run passed can still stop
-on what Dispatch answers or on this session's state.
+as the record does, reads what the record reads (this session's title among it), and after the
+arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`,
+recording nothing. A retraction's dry run sends nothing. Every other dry run reads no Dispatch, so
+it runs with Dispatch off too. A call that a dry run passed can still stop on what Dispatch answers
+or on this session's state.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
