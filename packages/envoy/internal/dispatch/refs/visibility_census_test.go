@@ -206,9 +206,12 @@ var readsWithoutAViewer = map[string]string{
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PlanBlocks":     serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanItemIfOwed": serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanReplace":    serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"ProjectRepositories": "it answers the secrets broker alone: GET /api/v1/access/projects/{key}/repositories is read only by a service account " +
+		"DISPATCH_ACCESS_ACCOUNTS names (the read class accessAccount), and answers repository names, or the key of the one issue whose chain " +
+		"it could not resolve, to that account, never to a person or a session",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",

@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 
@@ -139,11 +140,20 @@ func resolveFixtureIssues(t *testing.T, database *store.Store) []fixtureIssue {
 // TestEveryIssueResolvesIntoItsProjectsRepositories (K-E5): for every issue of the fixture, the
 // repository the one-issue read resolves it to (IssueRepository), under its recorded rename, is in
 // its project's answer, and the union of them over a project's issues, open and done, is that
-// project's answer, no more: no repository the project only maps. Its row "the GitHub proxy" holds
-// the proxy's own check (RepositoryClause) to the same answer for every issue's repository: a
-// person who sees only PRIV is shown exactly the ones in PRIV's answer, and an open viewer who does
-// not see PRIV, private, is shown exactly the others. Control: answer a project from its open
-// issues alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails naming it.
+// project's answer, no more: no repository the project only maps. Control: answer a project from
+// its open issues alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails
+// naming it.
+//
+// Its row "the GitHub proxy" holds the proxy's rule to the same resolution, on what the two reads
+// must agree on: for every fixture issue's repository, the projects that ProjectRepositoriesSQL,
+// the ownership the proxy's RepositoryClause reads, counts as its owners are exactly the projects
+// whose answer lists it; and a restricted member who sees only PRIV is shown exactly the
+// repositories in PRIV's answer, which is the spec's rule for a viewer that is not open (a
+// repository an issue the viewer sees resolves to). It compares no open viewer's view: the proxy
+// hides a repository that a private project the viewer cannot see shares with a project the
+// viewer sees, and that is the proxy's own rule, not this answer's. Control: the proxy's ownership
+// read with each issue's own repository alone, no parent walk, and PRIV no longer owns acme/two
+// there, and the row fails naming it.
 func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 	database := seedProjectRepositories(t)
 	issues := resolveFixtureIssues(t, database)
@@ -175,16 +185,27 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 	}
 
 	t.Run("the GitHub proxy", func(t *testing.T) {
-		member := model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}
-		open := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"OTHER"}, AnyPrivate: true}}
+		repositories := make([]string, 0, len(issues))
 		for _, issue := range issues {
+			repositories = append(repositories, issue.resolved)
+		}
+		owners := projectOwners(t, database, "true", repositories)
+		projects := slices.Sorted(maps.Keys(answers))
+		member := model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}
+		for _, issue := range issues {
+			listed := []string{}
+			for _, project := range projects {
+				if slices.Contains(answers[project], issue.canonical) {
+					listed = append(listed, project)
+				}
+			}
+			if got := owners[issue.resolved]; !slices.Equal(got, listed) {
+				t.Errorf("the proxy's rule counts %q as the owners of %s, %s's repository, and the answers of %q list it: the two must name the same projects",
+					got, issue.resolved, issue.key, listed)
+			}
 			inPRIV := slices.Contains(answers["PRIV"], issue.canonical)
 			if shown := repositoryPasses(t, database, member, issue.resolved); shown != inPRIV {
 				t.Errorf("the proxy shows %s, %s's repository, to a person who sees only PRIV: %t; PRIV's answer holds it: %t",
-					issue.resolved, issue.key, shown, inPRIV)
-			}
-			if shown := repositoryPasses(t, database, open, issue.resolved); shown == inPRIV {
-				t.Errorf("the proxy shows %s, %s's repository, to an open viewer who does not see PRIV: %t; PRIV's answer holds it: %t",
 					issue.resolved, issue.key, shown, inPRIV)
 			}
 		}
