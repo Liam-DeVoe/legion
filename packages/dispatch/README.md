@@ -868,39 +868,59 @@ zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job in
 `e2e/acceptance/restricted-sweep.sh` is the driver of the check `c-restricted-sweep`: a read sweep
 of a deployment as a restricted member, for the objects of one project whose access list does not
 name that member. A full member's token looks the project's objects up first: an issue whose spec
-has blocks, a comment, an ask, a message, a handoff, a document of the project itself and a
-near-copy check, with a person, a session and a repository that worked in it. Then every GET row
-of the route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the
-member, its wildcards filled with those objects, and each list once more for each of its query
-parameters that names a project's object (read from the API document). Each answer must be 404,
-403, what a missing object is answered, or one that holds no row of the project. It also holds both
-sockets: the member is not admitted to the room of the project's document, while the same probe
-admits them to a document of their own, and the member's event feed is sent no event of the
-project for `SWEEP_LIVE_SECONDS` (60 by default) while the full member comments on
-`SWEEP_WRITE_ISSUE`, the one write it makes, which the full member's own feed must be sent. Its
-inputs are `SWEEP_ORIGIN` (`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`,
-`SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`) and
-`SWEEP_WRITE_ISSUE`. It needs bash 3.2 or later, curl 7.55 or later, jq, and bun with this
-checkout's dependencies installed, which runs the socket probe `e2e/acceptance/socket-access.ts`.
-No token or cookie reaches a command line or the output.
+has blocks, a comment, an ask, a message, a handoff, a document of the project itself, a
+near-copy check, a priority, a broadcast and a delivery run, with a person, a session and a
+repository that worked in it. It also asks one question of the project as the full member
+(`POST /api/v1/going/requests`), since no route lists a question's run, and reads the conversation
+file `SWEEP_CONVERSATION_FILE` names, since no route lists those either. Then every GET row of the
+route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the member,
+its wildcards filled with those objects, and each list once more for each of its query parameters
+that names a project's object (read from the API document). Each answer must be 404, 403, what a
+missing object is answered, or one that holds no row of the project; a 2xx for the project's
+object where a missing one is refused is a row of it too, since it says the object exists. It also
+holds both sockets: the member is not admitted to the room of the project's document, while the
+same probe admits them to a document of their own, and the member's event feed, open for the
+whole of `SWEEP_LIVE_SECONDS` (60 by default), is sent no event of the project while the full
+member comments on `SWEEP_WRITE_ISSUE`, which the full member's own feed must be sent. The
+comment and the question are the two writes it makes. Its inputs are `SWEEP_ORIGIN` (`https://`,
+or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE`
+(the `Cookie` header's `<name>=<value>`), `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE`
+(`<session id>/<slug>`, a file in the conversation of a session that worked in the project alone).
+It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or later, and bun with this checkout's
+dependencies installed (`bun install`), which runs the socket probe
+`e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
 
 ```bash
-SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=CORE SWEEP_WRITE_ISSUE=CORE-12 \
-  SWEEP_FULL_TOKEN=... SWEEP_RESTRICTED_COOKIE=... bash e2e/acceptance/restricted-sweep.sh
+SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 \
+  SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FULL_TOKEN=... SWEEP_RESTRICTED_COOKIE=... \
+  bash e2e/acceptance/restricted-sweep.sh
 ```
 
 Every row's line says whether it can fail (the full member is answered the project's object
-otherwise than a missing one, or a row of it) or is `blind`. `PASS` (exit 0) needs every kind of
-object found, at least one row that can fail and both sockets' controls held; `FAIL` (exit 1)
-names each answer that gave the member a row of the project and, in its verdict, the first;
-everything that proved nothing, a project the full member finds nothing of among them, is
-`UNKNOWN` (exit 2). `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request, which keeps a
-run far under an edge's per-address request limit.
+otherwise than a missing one, or a row of it) or is `blind`. `PASS` (exit 0) needs every GET row
+filled and called, every kind of object found, at least one row that can fail and both sockets'
+controls held; `FAIL` (exit 1) names each answer that gave the member a row of the project and,
+in its verdict, the first; everything that proved nothing, a project the full member finds nothing
+of among them, is `UNKNOWN` (exit 2). `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each
+request, which keeps a run far under an edge's per-address request limit.
+`bun run test:harness e2e/__tests__/restricted-sweep-judging.test.ts` holds each judging rule
+alone, against a fake Dispatch that keeps every route from the member but the one a row plants a
+leak in, and holds the sweep to calling every GET row, read from what the fake was sent.
 `bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs and the kinds it
 fills wildcards with, and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against
 two stacks of the local harness: this checkout's server, where it passes, and the build of the
-newest commit with no read check (`DISPATCH_E2E_SWEEP_BASE`, by default the merge base of #4177),
-where it fails naming the route and both sockets.
+newest commit with no read check, where it fails naming the route and both sockets. That commit is
+read from git, never written down: the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH`
+(`origin/main` by default; while the read check's pull request is open, the branch it targets), or,
+once a squash merge has put the read check on that branch, the commit just before it.
+`DISPATCH_E2E_SWEEP_BASE` names the commit outright. A commit that holds the read check, or no
+restricted members, is refused by name.
+
+```bash
+DISPATCH_E2E_PG_BIN=<a directory holding initdb and pg_ctl, PostgreSQL with vector> \
+  DISPATCH_E2E_SWEEP_BASE_BRANCH=origin/<the branch the read check's pull request targets> \
+  bun run test:harness e2e/__tests__/restricted-sweep.test.ts
+```
 
 ## Acceptance run against the deployed image
 

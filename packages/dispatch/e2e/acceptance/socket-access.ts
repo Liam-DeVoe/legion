@@ -49,6 +49,8 @@ const answerWithinMs = 10_000;
 const quietMs = 1_500;
 /** How long `watch` waits for its driver's written file once its feed has started. */
 const writtenWithinMs = 60_000;
+/** The longest delay a timer holds: Bun fires a longer one at once. */
+const longestTimerMs = 2 ** 31 - 1;
 
 function usage(): never {
   console.error(
@@ -63,17 +65,22 @@ const [mode, server, headerFile, third, fourth, fifth] = Bun.argv.slice(2);
 if (server === undefined || headerFile === undefined) usage();
 if (mode !== "doc" && mode !== "live" && mode !== "watch") usage();
 if (third === undefined || fourth === undefined) usage();
-const [documentId, schemaVersion] = mode === "doc" ? [third, fourth] : [undefined, undefined];
-const [readyFile, writtenFile] = mode === "doc" ? [undefined, undefined] : [third, fourth];
-/** `watch`'s window, in milliseconds: a whole number of seconds, at least one. */
+/** `watch`'s window, in milliseconds: a whole number of seconds, at least one, and short enough
+ *  that its answer's bound, which adds it, still fits a timer. */
 const watchMs = mode === "watch" ? Number(fifth) * 1000 : 0;
-if (mode === "watch" && !(/^[1-9][0-9]*$/.test(fifth ?? "") && Number.isSafeInteger(watchMs))) {
+if (
+  mode === "watch" &&
+  !(
+    /^[1-9][0-9]*$/.test(fifth ?? "") &&
+    answerWithinMs + writtenWithinMs + watchMs <= longestTimerMs
+  )
+) {
   usage();
 }
-const protocol = new URL(server).protocol;
-if (protocol !== "http:" && protocol !== "https:") usage();
+const url = new URL(server);
+if (url.protocol !== "http:" && url.protocol !== "https:") usage();
 
-const origin = new URL(server).origin;
+const origin = url.origin;
 const credential = (await Bun.file(headerFile).text()).trim();
 const separator = credential.indexOf(":");
 if (separator < 1) {
@@ -86,23 +93,24 @@ const headers: Record<string, string> = {
 };
 const path =
   mode === "doc"
-    ? `/ws/doc/${encodeURIComponent(documentId ?? "")}?schema_version=${encodeURIComponent(schemaVersion ?? "")}`
+    ? `/ws/doc/${encodeURIComponent(third)}?schema_version=${encodeURIComponent(fourth)}`
     : "/ws/live";
 
-/** A chunked body's bytes, once the last chunk has come, and otherwise undefined. */
-function dechunked(body: string): string | undefined {
+/** A chunked body's text, once its last chunk has come, and otherwise undefined. A chunk's size
+ *  counts bytes, so the body is read as bytes and decoded whole. */
+function dechunked(body: Buffer): string | undefined {
   let rest = body;
-  let whole = "";
+  const chunks: Buffer[] = [];
   for (;;) {
     const line = rest.indexOf("\r\n");
     if (line < 0) return undefined;
-    const size = Number.parseInt(rest.slice(0, line), 16);
+    const size = Number.parseInt(rest.subarray(0, line).toString(), 16);
     if (Number.isNaN(size)) return undefined;
-    if (size === 0) return whole;
+    if (size === 0) return Buffer.concat(chunks).toString();
     const end = line + 2 + size;
     if (rest.length < end + 2) return undefined;
-    whole += rest.slice(line + 2, end);
-    rest = rest.slice(end + 2);
+    chunks.push(rest.subarray(line + 2, end));
+    rest = rest.subarray(end + 2);
   }
 }
 
@@ -111,7 +119,6 @@ function dechunked(body: string): string | undefined {
  *  the response sees a refusal. A refusal's body is read to its length, to its last chunk, or to
  *  the connection's close. */
 async function upgradeAnswer(): Promise<{ status: number; body: string }> {
-  const url = new URL(server ?? "");
   const secure = url.protocol === "https:";
   const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
   const request = [
@@ -126,26 +133,27 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
     "",
   ].join("\r\n");
   const received = Promise.withResolvers<{ status: number; body: string }>();
-  let raw = "";
+  // Bytes, not text: a chunk's size and a Content-Length count bytes, and a character a read
+  // splits in two decodes whole only once both halves have come.
+  let raw = Buffer.alloc(0);
   const settle = (connection: { end(): void }) => {
     const head = raw.indexOf("\r\n\r\n");
     if (head < 0) return;
-    const status = Number(raw.slice(9, 12));
+    const status = Number(raw.subarray(9, 12).toString());
     if (status === 101) {
       received.resolve({ status, body: "" });
       connection.end();
       return;
     }
-    const length = /\r\ncontent-length: *(\d+)/i.exec(raw.slice(0, head));
-    const body = raw.slice(head + 4);
-    if (length?.[1] !== undefined && Buffer.byteLength(body) >= Number(length[1])) {
-      received.resolve({ status, body });
+    const fields = raw.subarray(0, head).toString();
+    const length = /\r\ncontent-length: *(\d+)/i.exec(fields);
+    const body = raw.subarray(head + 4);
+    if (length?.[1] !== undefined && body.length >= Number(length[1])) {
+      received.resolve({ status, body: body.toString() });
       connection.end();
       return;
     }
-    const chunks = /\r\ntransfer-encoding: *chunked/i.test(raw.slice(0, head))
-      ? dechunked(body)
-      : undefined;
+    const chunks = /\r\ntransfer-encoding: *chunked/i.test(fields) ? dechunked(body) : undefined;
     if (chunks !== undefined) {
       received.resolve({ status, body: chunks });
       connection.end();
@@ -158,13 +166,18 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
     tls: secure,
     socket: {
       data(socket, chunk) {
-        raw += chunk.toString();
+        raw = Buffer.concat([raw, chunk]);
         settle(socket);
       },
       close() {
         const head = raw.indexOf("\r\n\r\n");
         if (head < 0) received.reject(new Error(`the upgrade of ${path} closed with no answer`));
-        else received.resolve({ status: Number(raw.slice(9, 12)), body: raw.slice(head + 4) });
+        else {
+          received.resolve({
+            status: Number(raw.subarray(9, 12).toString()),
+            body: raw.subarray(head + 4).toString(),
+          });
+        }
       },
       error(_socket, error) {
         received.reject(error);
@@ -188,13 +201,17 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
 }
 
 /** The document socket's authentication answer. */
-function documentAnswer(socket: WebSocket): Promise<string> {
+function documentAnswer(
+  socket: WebSocket,
+  documentId: string,
+  schemaVersion: string
+): Promise<string> {
   const answer = Promise.withResolvers<string>();
   const token = createEncoder();
-  writeVarString(token, documentId ?? "");
+  writeVarString(token, documentId);
   writeVarUint(token, authMessage);
   writeVarUint(token, tokenSubtype);
-  writeVarString(token, schemaVersion ?? "");
+  writeVarString(token, schemaVersion);
   socket.addEventListener("open", () => socket.send(toUint8Array(token)));
   socket.addEventListener("message", (event) => {
     if (!(event.data instanceof ArrayBuffer)) return;
@@ -215,7 +232,7 @@ function documentAnswer(socket: WebSocket): Promise<string> {
 /** What the event feed sends this caller of the driver's writes, as the lines it printed: the
  *  feed starts with no resume, the ready file says it has, and the frames are read until the feed
  *  has been quiet for `quietMs` after the written file appeared. */
-function liveAnswer(socket: WebSocket): Promise<string> {
+function liveAnswer(socket: WebSocket, readyFile: string, writtenFile: string): Promise<string> {
   const answer = Promise.withResolvers<string>();
   const lines: string[] = [];
   let quiet: Timer | undefined;
@@ -243,8 +260,8 @@ function liveAnswer(socket: WebSocket): Promise<string> {
     lines.push(JSON.stringify(frame));
     if (frame.type === "events_start") {
       void (async () => {
-        await Bun.write(readyFile ?? "", "ready\n");
-        while (!(await Bun.file(writtenFile ?? "").exists())) await Bun.sleep(50);
+        await Bun.write(readyFile, "ready\n");
+        while (!(await Bun.file(writtenFile).exists())) await Bun.sleep(50);
         written = true;
         awaitQuiet();
       })();
@@ -258,37 +275,70 @@ function liveAnswer(socket: WebSocket): Promise<string> {
   return answer.promise;
 }
 
+/** The `type` of a feed frame the server wrote as `data`, or undefined for a frame that is no JSON
+ *  object, which `watch` keeps as the server wrote it, as it keeps every frame but a heartbeat. */
+function frameType(data: string): unknown {
+  let frame: unknown;
+  try {
+    frame = JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+  return typeof frame === "object" && frame !== null && "type" in frame ? frame.type : undefined;
+}
+
 /** What the event feed sends this caller in a window, as the frames it printed: the feed starts
  *  with no resume, the ready file says it has, and every frame but a heartbeat is kept as the
- *  server wrote it until `watchMs` after the written file appeared. A driver that makes no written
- *  file within `writtenWithinMs` gets no answer, which exits 1. */
-function watchAnswer(socket: WebSocket): Promise<string> {
+ *  server wrote it until `windowMs` after the written file appeared. A driver that makes no
+ *  written file within `writtenWithinMs`, or a ready file that cannot be written, rejects the
+ *  answer, which exits 1. A feed that closes first is answered at its close. */
+function watchAnswer(
+  socket: WebSocket,
+  readyFile: string,
+  writtenFile: string,
+  windowMs: number
+): Promise<string> {
   const answer = Promise.withResolvers<string>();
   const lines: string[] = [];
-  const settled = () => answer.resolve(lines.join("\n"));
+  // Once the answer is in, the wait for the written file and the window stop, so neither keeps
+  // this process running past it.
+  let done = false;
+  let windowTimer: Timer | undefined;
+  const settled = () => {
+    done = true;
+    clearTimeout(windowTimer);
+    answer.resolve(lines.join("\n"));
+  };
+  const failed = (error: unknown) => {
+    done = true;
+    clearTimeout(windowTimer);
+    answer.reject(error);
+  };
+  const awaitWritten = async () => {
+    await Bun.write(readyFile, "ready\n");
+    const deadline = Date.now() + writtenWithinMs;
+    while (!done && !(await Bun.file(writtenFile).exists())) {
+      if (Date.now() > deadline) {
+        throw new Error(`the written file did not appear within ${writtenWithinMs / 1000} s`);
+      }
+      await Bun.sleep(50);
+    }
+  };
+  let started = false;
   socket.addEventListener("open", () =>
     socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
   );
   socket.addEventListener("message", (event) => {
     if (typeof event.data !== "string") return;
-    const frame = JSON.parse(event.data) as { type?: string };
-    if (frame.type === "heartbeat") return;
+    const type = frameType(event.data);
+    if (type === "heartbeat") return;
     lines.push(event.data);
-    if (frame.type !== "events_start") return;
-    void (async () => {
-      await Bun.write(readyFile ?? "", "ready\n");
-      const deadline = Date.now() + writtenWithinMs;
-      while (!(await Bun.file(writtenFile ?? "").exists())) {
-        if (Date.now() > deadline) {
-          answer.reject(
-            new Error(`the written file did not appear within ${writtenWithinMs / 1000} s`)
-          );
-          return;
-        }
-        await Bun.sleep(50);
-      }
-      setTimeout(settled, watchMs);
-    })();
+    // The window follows the first `events_start` alone: a second one starts no second wait.
+    if (type !== "events_start" || started) return;
+    started = true;
+    void awaitWritten().then(() => {
+      if (!done) windowTimer = setTimeout(settled, windowMs);
+    }, failed);
   });
   socket.addEventListener("close", (event) => {
     lines.push(`closed ${event.code} ${event.reason}`);
@@ -310,14 +360,20 @@ try {
       console.error(`no answer on ${path} within ${answerMs / 1000} s`);
       process.exit(1);
     }, answerMs);
-    const answer = await (mode === "doc"
-      ? documentAnswer(socket)
-      : mode === "live"
-        ? liveAnswer(socket)
-        : watchAnswer(socket));
-    clearTimeout(timer);
-    console.log(answer);
-    socket.close();
+    // However the wait ends, `watch`'s rejection included, the bound and the socket stop with it:
+    // either would keep this process running, and the bound would print a second failure.
+    try {
+      console.log(
+        await (mode === "doc"
+          ? documentAnswer(socket, third, fourth)
+          : mode === "live"
+            ? liveAnswer(socket, third, fourth)
+            : watchAnswer(socket, third, fourth, watchMs))
+      );
+    } finally {
+      clearTimeout(timer);
+      socket.close();
+    }
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

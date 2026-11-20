@@ -2616,9 +2616,10 @@ jobs:
               # change to it is a change to a shape the recordings carry, and this job's test
               # step is where that test runs.
               - 'packages/contracts/schemas/dispatch-openapi.json'
-              # The route index, which e2e/__tests__/restricted-sweep.test.ts:33-41 reads (the new
-              # URL at :34) and holds e2e/acceptance/restricted-sweep.sh's kinds to, and which that
-              # script itself reads row by row.
+              # The route index, which e2e/__tests__/restricted-sweep.test.ts:40-48 (the new URL at
+              # :41) and restricted-sweep-judging.test.ts:32-40 (the new URL at :33) read, holding
+              # e2e/acceptance/restricted-sweep.sh's kinds and calls to it; that script reads it row
+              # by row.
               - 'packages/envoy/internal/dispatch/api/testdata/routes.txt'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112

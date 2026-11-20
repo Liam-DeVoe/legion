@@ -13,22 +13,27 @@
 #     its query parameters (read from packages/contracts/schemas/dispatch-openapi.json) that
 #     names an object of a project, filled with that project's object. A list may answer rows of
 #     the member's own projects, never one of SWEEP_PROJECT.
+# Two kinds of object no route lists are got another way: a question's run, which the full member
+# asks of the project (POST /api/v1/going/requests), and a file of an agent's conversation, which
+# SWEEP_CONVERSATION_FILE names. A GET row the sweep cannot fill leaves the run UNKNOWN.
 # Then the sockets:
 #   /ws/doc/{room}  the member is not admitted to the room of the project's document, while the
 #                   same probe admits the member to a document of their own project;
-#   /ws/live        the member's event feed is sent no event of the project for SWEEP_LIVE_SECONDS
-#                   while the full member writes a comment on SWEEP_WRITE_ISSUE, which the full
-#                   member's own feed, open over the same window, is sent.
+#   /ws/live        the member's event feed, open for the whole of SWEEP_LIVE_SECONDS, is sent no
+#                   event of the project while the full member writes a comment on
+#                   SWEEP_WRITE_ISSUE, which the full member's own feed, open over the same window,
+#                   is sent.
 #
-# "A row of the project" is a JSON member name or string value that is the project's key, an
-# issue key of the project, an id the lookup found, or the title of the issue the lookup filled
-# with; in a body that is not JSON, one of those ids or that title anywhere. A path filled with
-# the project's objects is also called filled with objects that do not exist, and an answer is
-# compared with that one once each fill is masked (and every RFC 3339 instant): an answer alike
-# is "as missing". Where any filled object belongs to the project, an answer the member gets
-# where a missing object is refused is a leak too, whatever its body names. A session, a person,
-# a repository, a priority, a broadcast and a delivery run belong to no project, so a row filled
-# only with them is held to the markers alone.
+# "A row of the project" is a JSON member name or string value that is the project's key or holds
+# an issue key of the project, an id the lookup found, or the title of the issue the lookup filled
+# with; a body that is not JSON is read for the same markers. Each answer is read for them once
+# the values the path was filled with are masked, since an answer may echo what it was asked, and
+# before it is compared with anything, so an answer alike for a missing object excuses no row.
+# Filled paths are also called with objects that do not exist: a 2xx for the project's object
+# where a missing one is refused says the object exists, and is a row of it too, whatever the
+# body holds. Every RFC 3339 instant and the durations a read measures are masked before two
+# answers are compared. A session, a person, a repository, a priority, a broadcast and a delivery
+# run belong to no project, so a row filled only with them is held to the markers alone.
 #
 # Each row also says whether it can fail: a filled row can when the full member is answered the
 # project's object otherwise than a missing one, a list when the full member's answer holds a row
@@ -42,8 +47,13 @@
 #   SWEEP_RESTRICTED_COOKIE  the restricted member's session cookie, as the `Cookie` header
 #                            carries it (`<name>=<value>`).
 #   SWEEP_WRITE_ISSUE        the issue of SWEEP_PROJECT the full member comments on while both
-#                            event feeds are open: that comment is the one write this sweep makes.
-#   SWEEP_LIVE_SECONDS       how long both feeds are read after the comment (default 60).
+#                            event feeds are open. The comment and the question are the sweep's
+#                            two writes, each in SWEEP_PROJECT and as the full member.
+#   SWEEP_CONVERSATION_FILE  `<session id>/<slug>`: a file of the conversation of a session that
+#                            worked in SWEEP_PROJECT alone, which no route lists. Left unset, the
+#                            two rows that read such a file are not filled, and the run is UNKNOWN.
+#   SWEEP_LIVE_SECONDS       how long both feeds are read after the comment (default 60, maximum
+#                            2147413, within the socket probe's timer range).
 #   SWEEP_CALL_SECONDS       how long one request waits (default 20).
 #   SWEEP_PACE_SECONDS       the pause before each request (default 0.1, so the run stays far
 #                            under the edge's per-address request limit); 0 for none.
@@ -54,29 +64,32 @@
 # each wildcard is filled with (`{key}=issue`), and exits 4, never PASS's 0: its test holds that
 # to the server's own route probes.
 #
-# It needs bash 3.2 or later, curl 7.55 or later, jq, and bun with this checkout's dependencies
-# installed (`bun install`), which runs the socket probe e2e/acceptance/socket-access.ts. No token
-# or cookie is printed or passed on a command line: curl and the probe read them from files of
-# mode 0600 in a directory of the run's own, which it removes.
+# It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or later, and bun with this checkout's
+# dependencies installed (`bun install`), which runs the socket probe
+# e2e/acceptance/socket-access.ts. No token or cookie is printed or passed on a command line:
+# curl and the probe read them from files of mode 0600 in a directory of the run's own, which it
+# removes.
 #
 # It prints a line per call and a verdict:
-#   PASS     exit 0: every route and both sockets kept the project from the member, every kind of
-#            object the project owns was found and filled, at least one row could fail, and the
-#            full member's own event feed was sent the comment.
+#   PASS     exit 0: every GET row filled and called, every route and both sockets kept the
+#            project from the member, every kind of object the project owns was found, at least
+#            one row could fail, and the full member's own event feed was sent the comment.
 #   FAIL     exit 1: the member was answered a row of the project, admitted to its document's
 #            room, or sent an event of it. The verdict names the first route that did.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
 #            tool missing, an identity that is not what it must be, a kind of object the lookup
-#            did not find, an answer no rule judges (401, 429, a 5xx, no answer), no row that
-#            could fail, or a socket control that did not hold.
+#            did not find, a row it could not fill, an answer no rule judges (401, 429, a 5xx, no
+#            answer), no row that could fail, or a socket control that did not hold.
 #
 # Usage, from packages/dispatch:
 #
-#   SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=CORE SWEEP_WRITE_ISSUE=CORE-12 \
-#     SWEEP_FULL_TOKEN=... SWEEP_RESTRICTED_COOKIE=... bash e2e/acceptance/restricted-sweep.sh
+#   SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 \
+#     SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FULL_TOKEN=... \
+#     SWEEP_RESTRICTED_COOKIE=... bash e2e/acceptance/restricted-sweep.sh
 #
-# Its test, e2e/__tests__/restricted-sweep.test.ts, runs it against the local stack
-# (e2e/harness-up.ts, which starts e2e/run-server.sh) and against a stack of a build with no read
+# Its tests: e2e/__tests__/restricted-sweep-judging.test.ts holds each judging rule alone against
+# a fake Dispatch; e2e/__tests__/restricted-sweep.test.ts runs it against the local stack
+# (e2e/harness-pool.ts, which starts e2e/run-server.sh) and against a stack of a build with no read
 # check, which it must FAIL.
 
 # A shell other than bash stops here, before it reads a line it would take another way.
@@ -84,6 +97,14 @@ if [ -z "${BASH_VERSION:-}" ]; then
   echo 'UNKNOWN: run this with bash: bash restricted-sweep.sh'
   exit 2
 fi
+# Credentials leave the inherited environment before any child is started, including tools used
+# to find this checkout. Tracing must stop before their values are expanded.
+set +x
+set +a
+full_token=${SWEEP_FULL_TOKEN:-}
+cookie=${SWEEP_RESTRICTED_COOKIE:-}
+unset SWEEP_FULL_TOKEN SWEEP_RESTRICTED_COOKIE
+export -n full_token cookie
 set -u
 # Every pattern below matches bytes, whatever locale the machine runs in.
 LC_ALL=C
@@ -103,6 +124,7 @@ watchers=''
 cleanup() {
   local pid
   for pid in $watchers; do kill "$pid" 2>/dev/null; done
+  for pid in $watchers; do wait "$pid" 2>/dev/null; done
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT
@@ -168,7 +190,7 @@ kind_of() {
 
 if [ "${SWEEP_LIST_KINDS:-}" = 1 ]; then
   [ -r "$routes" ] || unknown "the route index $routes cannot be read"
-  while read -r method pattern _; do
+  while read -r method pattern _ || [ -n "${method:-}" ]; do
     [ "$method" = GET ] || continue
     line=$pattern
     for wildcard in $(wildcards_of "$pattern"); do
@@ -204,21 +226,34 @@ case $project in
   *) unknown "SWEEP_PROJECT is no project key: $project" ;;
 esac
 [ "${#project}" -le 10 ] || unknown "SWEEP_PROJECT is no project key: $project"
-full_token=${SWEEP_FULL_TOKEN:-}
 [ -n "$full_token" ] || unknown "SWEEP_FULL_TOKEN is required: a full member's bearer token that sees $project"
 case $full_token in *[!A-Za-z0-9._~+/=-]*) unknown 'SWEEP_FULL_TOKEN holds a byte no bearer token holds' ;; esac
-cookie=${SWEEP_RESTRICTED_COOKIE:-}
 [ -n "$cookie" ] || unknown 'SWEEP_RESTRICTED_COOKIE is required: the restricted member'"'"'s session cookie, <name>=<value>'
 holds_line_break "$cookie" && unknown 'SWEEP_RESTRICTED_COOKIE holds a line break'
 case $cookie in *=*) ;; *) unknown 'SWEEP_RESTRICTED_COOKIE must be <name>=<value>, as the Cookie header carries it' ;; esac
+case $cookie in *[!\ -~]*) unknown 'SWEEP_RESTRICTED_COOKIE holds a non-printable header byte' ;; esac
 write_issue=${SWEEP_WRITE_ISSUE:-}
 case $write_issue in
   '') unknown "SWEEP_WRITE_ISSUE is required: the issue of $project the full member comments on" ;;
   "$project"-[1-9]*) is_count "${write_issue#"$project"-}" || unknown "SWEEP_WRITE_ISSUE is no issue of $project: $write_issue" ;;
   *) unknown "SWEEP_WRITE_ISSUE is no issue of $project: $write_issue" ;;
 esac
+# A file of a conversation: the session id, a "/", and the file's slug, neither holding a "/".
+conversation_file=${SWEEP_CONVERSATION_FILE:-}
+conversation_session='' conversation_slug=''
+conversation_why='SWEEP_CONVERSATION_FILE names no file of a conversation, and no route lists them'
+case $conversation_file in
+  '') ;;
+  */*/* | /* | */ | *[!A-Za-z0-9._/-]*)
+    unknown "SWEEP_CONVERSATION_FILE must be <session id>/<slug>: $conversation_file" ;;
+  */*) conversation_session=${conversation_file%/*} conversation_slug=${conversation_file#*/} ;;
+  *) unknown "SWEEP_CONVERSATION_FILE must be <session id>/<slug>: $conversation_file" ;;
+esac
 live_seconds=${SWEEP_LIVE_SECONDS:-60}
-is_count "$live_seconds" && [ "$live_seconds" -gt 0 ] || unknown "SWEEP_LIVE_SECONDS must be a whole number of seconds, at least 1: $live_seconds"
+is_count "$live_seconds" && [ "$live_seconds" -gt 0 ] && [ "$live_seconds" -le 2147413 ] ||
+  unknown "SWEEP_LIVE_SECONDS must be a whole number of seconds, at least 1 and at most 2147413: $live_seconds"
+# The probe accepts canonical decimal seconds, and its timers must fit a signed 32-bit millisecond delay.
+while [ "${live_seconds#0}" != "$live_seconds" ]; do live_seconds=${live_seconds#0}; done
 call_seconds=${SWEEP_CALL_SECONDS:-20}
 is_count "$call_seconds" && [ "$call_seconds" -gt 0 ] || unknown "SWEEP_CALL_SECONDS must be a whole number of seconds, at least 1: $call_seconds"
 pace=${SWEEP_PACE_SECONDS:-0.1}
@@ -243,41 +278,68 @@ fi
 
 umask 077
 work=$(mktemp -d "${TMPDIR:-/tmp}/restricted-sweep.XXXXXXXX") || unknown 'mktemp could not make the run directory'
-printf 'Authorization: Bearer %s\n' "$full_token" >"$work/full.h"
-printf 'Cookie: %s\n' "$cookie" >"$work/restricted.h"
+printf 'Authorization: Bearer %s\n' "$full_token" >"$work/full.h" || unknown 'could not write the full member header'
+printf 'Cookie: %s\n' "$cookie" >"$work/restricted.h" || unknown 'could not write the restricted member header'
+unset full_token cookie
 : >"$work/failed"
 : >"$work/unknown"
 
 calls=0
-# call WHO PATH OUT: GET PATH as WHO (full or restricted), the body in OUT and the status in
-# $status, or `curl failed: ...` when no answer came. The member sends its cookie with the
-# origin's Origin, as the dashboard does; curl reads no ~/.curlrc (-q), no proxy, and no URL
-# pattern (-g).
+# call WHO PATH OUT [JSON FILE]: GET PATH as WHO (full or restricted), or with JSON FILE a POST of
+# that file, the body in OUT and the status in $status, or `curl failed: ...` when no answer came.
+# The member sends its cookie with the origin's Origin, as the dashboard does; curl reads no
+# ~/.curlrc (-q), no proxy, and no URL pattern (-g).
 call() {
-  [ "$pace" = 0 ] || sleep "$pace"
+  local -a credential data
+  credential=(-H "@$work/full.h") data=()
+  [ "$1" = full ] || credential=(-H "@$work/restricted.h" -H "Origin: $origin")
+  [ -z "${4:-}" ] || data=(-X POST -H 'Content-Type: application/json' --data-binary "@$4")
+  [ "$pace" = 0 ] || sleep "$pace" || unknown 'SWEEP_PACE_SECONDS is not a duration sleep accepts'
+  : >"$3" || unknown 'could not create the response body file'
   calls=$((calls + 1))
-  if [ "$1" = restricted ]; then
-    status=$(curl -q -sS -g --noproxy '*' --max-time "$call_seconds" -o "$3" -w '%{http_code}' \
-      -H "@$work/restricted.h" -H "Origin: $origin" "$origin$2" </dev/null 2>"$work/curl.err") ||
-      status="curl failed: $(tr '\n' ' ' <"$work/curl.err" | cut -c1-200)"
-  else
-    status=$(curl -q -sS -g --noproxy '*' --max-time "$call_seconds" -o "$3" -w '%{http_code}' \
-      -H "@$work/full.h" "$origin$2" </dev/null 2>"$work/curl.err") ||
-      status="curl failed: $(tr '\n' ' ' <"$work/curl.err" | cut -c1-200)"
-  fi
+  status=$(curl -q -sS -g --noproxy '*' --max-time "$call_seconds" -o "$3" -w '%{http_code}' \
+    "${credential[@]}" ${data[@]+"${data[@]}"} "$origin$2" </dev/null 2>"$work/curl.err") ||
+    status="curl failed: $(tr '\n' ' ' <"$work/curl.err" | cut -c1-200)"
 }
 
 uri() { jq -rn --arg v "$1" '$v|@uri'; }
 # first_of FILE FILTER prints the first value jq's FILTER yields of FILE, or nothing.
 first_of() { jq -r "first($2) // empty" "$1" 2>/dev/null; }
-head_of() { tr '\n' ' ' <"$1" | cut -c1-"${2:-200}"; }
+# Redact credentials before shortening diagnostics, including individually reflected cookie values.
+redacted() {
+  local text=$1 header secret rest part
+  for header in full restricted; do
+    IFS= read -r secret <"$work/$header.h" || continue
+    secret=${secret#*: }
+    text=${text//"$secret"/<redacted>}
+    if [ "$header" = full ]; then
+      secret=${secret#Bearer }
+      [ -z "$secret" ] || text=${text//"$secret"/<redacted>}
+    else
+      rest=$secret
+      while [ -n "$rest" ]; do
+        part=${rest%%;*}
+        secret=${part#*=}
+        [ -z "$secret" ] || text=${text//"$secret"/<redacted>}
+        [ "$part" != "$rest" ] || break
+        rest=${rest#*;}
+      done
+    fi
+  done
+  printf '%s' "$text"
+}
+head_of() { redacted "$(cat "$1" 2>/dev/null)" | tr '\n' ' ' | cut -c1-"${2:-200}"; }
 fail() {
-  printf 'FAIL    %s\n' "$1"
-  printf '%s\n' "$1" >>"$work/failed"
+  local message
+  message=$(redacted "$1")
+  printf 'FAIL    %s\n' "$message"
+  printf '%s\n' "$message" >>"$work/failed" || unknown 'could not record a failed check'
 }
 unproven() {
-  printf 'UNKNOWN %s\n' "$1"
-  printf '%s\n' "$1" >>"$work/unknown"
+  local message
+  message=$(redacted "$1")
+  printf 'UNKNOWN %s\n' "$message"
+  printf '%s\n' "$message" >>"$work/unknown" || unknown 'could not record an unproven check'
 }
 
 printf 'restricted-sweep: %s, project %s, %s\n' "$origin" "$project" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -304,7 +366,8 @@ printf 'member  %s, a restricted member %s'"'"'s access list does not name\n' "$
 # and the lookup did not find is written to `missing`, which leaves the run UNKNOWN.
 issue='' issue_title='' doc='' doc_slug='' block='' pdoc='' pdoc_slug='' comment='' ask=''
 message='' message_issue='' handoff='' handoff_issue='' handoff_phase='' near_copy=''
-session='' person='' repo_owner='' repo_name='' priority='' broadcast='' delivery_run=''
+session='' person='' repo_owner='' repo_name='' priority='' broadcast='' delivery_run='' going_run=''
+ref_prefix='' going_why=''
 : >"$work/values"
 # found LABEL VALUE: a project object the lookup found, which marks a row of the project.
 found() {
@@ -384,6 +447,26 @@ call full /api/v1/broadcasts "$work/body"
 [ "$status" != 200 ] || broadcast=$(first_of "$work/body" '.[]? | .id')
 call full /api/v1/delivery/timeline "$work/body"
 [ "$status" != 200 ] || delivery_run=$(first_of "$work/body" '.runs[]? | .id | tostring')
+# How a reference to an object is spelled, as the server itself writes one: a comment's node
+# names its ref, which starts with the comment's issue key. Never spelled here, so a change of
+# spelling reaches the sweep from the server.
+if [ -n "$comment" ]; then
+  call full "/api/v1/comments/$(uri "$comment")/blocks" "$work/body"
+  if [ "$status" = 200 ]; then
+    ref=$(first_of "$work/body" '.item.ref | select(type == "string")')
+    ref_issue=$(first_of "$work/body" '.item.issue_key | select(type == "string")')
+    case $ref in ?*"$ref_issue"/*) [ -z "$ref_issue" ] || ref_prefix=${ref%%"$ref_issue"/*} ;; esac
+  fi
+fi
+# A question's run belongs to the credential that asked it, and no route lists one, so the full
+# member asks one of the project: the sweep's first write.
+jq -cn --arg p "$project" \
+  '{words: "restricted-sweep: which issues does this project hold?", project: $p}' >"$work/question.json" ||
+  unknown 'could not write the question'
+call full /api/v1/going/requests "$work/body" "$work/question.json"
+[ "$status" != 201 ] || going_run=$(first_of "$work/body" '.id | select(type == "string")')
+[ -z "$going_run" ] || found going-run "$going_run"
+[ -n "$going_run" ] || going_why="POST /api/v1/going/requests answered $status: $(head_of "$work/body")"
 
 : >"$work/missing"
 # need LABEL VALUE WHERE: a kind the project owns, found or written to `missing`.
@@ -415,33 +498,52 @@ printf 'found   person %s, session %s, repository %s, priority %s, broadcast %s,
 jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
   "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
 
-# marker_in FILE prints the first row of the project FILE holds: in JSON, a member name or a
-# string value that is the project's key, an issue key of it, or a value the lookup found; in
-# any other body, a value the lookup found anywhere in it.
+# marker_in FILE prints the first marker of the project, including references embedded in JSON
+# text. A JSON stream is read in full; false and null are JSON too. A body jq cannot read as JSON
+# is read with grep for the same markers. One jq a body: the sweep reads thousands.
 marker_in() {
-  if jq -e . "$1" >/dev/null 2>&1; then
-    jq -r --slurpfile m "$work/markers.json" '$m[0] as $m
-      | first(.. | ((objects | keys[]), strings)
-        | select(. == $m.key or test("^" + $m.key + "-[1-9][0-9]*$") or $m.values[.] != null)) // empty' "$1"
-  else
-    grep -F -o -f "$work/values" "$1" 2>/dev/null | head -n 1
-  fi
+  jq -r -s --slurpfile m "$work/markers.json" '$m[0] as $m
+      | ("(^|[^A-Za-z0-9])(?<issue>" + $m.key + "-[1-9][0-9]*)([^A-Za-z0-9]|$)") as $issue
+      | first(.[] | .. | ((objects | keys[]), strings) | . as $value
+        | if . == $m.key then $m.key
+          elif test($issue) then capture($issue).issue
+          else $m.values | keys[] | select(. as $marker | $value == $marker
+            or (($marker | length) >= 8 and ($value | contains($marker)))) end) // empty' "$1" 2>/dev/null ||
+    { grep -E -o "(^|[^A-Za-z0-9])$project-[1-9][0-9]*([^A-Za-z0-9]|$)" "$1"
+      grep -F -x "$project" "$1"
+      grep -F -o -f "$work/values" "$1"
+    } 2>/dev/null | head -n 1
 }
 
-# masked FILE VALUE... prints FILE with each VALUE written as <fill>, every RFC 3339 instant as
-# <time> and each duration a search or an open ask reports as <n>, so two answers read at two
-# moments for two fills compare alike when they say the same.
+# masked FILE VALUE... masks literal fills, their URL and JSON encodings, every RFC 3339 instant
+# and the durations a read measures, so two answers read at two moments for two fills compare
+# alike when they say the same: a read's own `as_of`, `computed_at` and window bounds differ at
+# every read, and a row's own times come with its ids, which the markers read.
 masked() {
-  local file=$1 content value
+  local file=$1
   shift
-  content=$(cat "$file" && printf x)
-  content=${content%x}
-  for value in "$@"; do
-    [ -z "$value" ] || content=${content//"$value"/<fill>}
-  done
-  printf '%s' "$content" | sed -E \
-    -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})/<time>/g' \
-    -e 's/"(took_ms|age_seconds)":[0-9.]+/"\1":<n>/g'
+  jq -nr --rawfile body "$file" --arg project "$project" '
+    reduce $ARGS.positional[] as $value ($body;
+      if $value == "" then .
+      elif $value == $project then
+        gsub("(?<![A-Za-z0-9-])" + $value + "(?![A-Za-z0-9-])"; "<fill>")
+      else
+        reduce ([$value, ($value | @uri), ($value | tojson | .[1:-1])] | unique[]) as $literal
+          (.; split($literal) | join("<fill>"))
+      end)
+    | gsub("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})";
+        "<time>")
+    | gsub("\"(?<key>took_ms|age_seconds)\"[[:space:]]*:[[:space:]]*[0-9.]+";
+        "\"\(.key)\":<n>")' --args "$@"
+}
+
+# masked_marker FILE VALUE...: the first row of the project FILE holds once each VALUE, a value
+# the request was filled with and which the answer may echo, is masked.
+masked_marker() {
+  local file=$1
+  shift
+  masked "$file" "$@" >"$work/masked" || unknown 'could not mask an answer'
+  marker_in "$work/masked"
 }
 
 is_2xx() { case $1 in 2??) return 0 ;; esac; return 1; }
@@ -469,60 +571,68 @@ counted() {
 # filled with, masked before two answers are compared. STRICT is 1 when an object of the
 # project fills the row, which then must answer the member as a missing one, or refuse.
 judge() {
-  local label=$1 target=$2 missing=$3 strict=$4 t_fills=$5 m_fills=$6 rt rm ft fm can=0 marker line
+  local label=$1 target=$2 missing=$3 strict=$4 t_fills=$5 m_fills=$6 rt rm ft fm can=0 marker line mt mm
   local -a t_list m_list
   t_list=() m_list=()
-  while IFS= read -r line; do [ -z "$line" ] || t_list[${#t_list[@]}]=$line; done <<EOF
+  while IFS= read -r line; do [ -z "$line" ] || t_list+=("$line"); done <<EOF
 $t_fills
 EOF
-  while IFS= read -r line; do [ -z "$line" ] || m_list[${#m_list[@]}]=$line; done <<EOF
+  while IFS= read -r line; do [ -z "$line" ] || m_list+=("$line"); done <<EOF
 $m_fills
 EOF
   # Whether the row can fail: the full member is answered the project's object otherwise than a
-  # missing one (a row the project's object fills), or is answered a row of it. A refusal other
-  # than 403 and 404 that names the object counts (400 ARTIFACT_LINKED names the issue a document
-  # is of); a 403 or a 404 that names the fill only echoes the path.
+  # missing one, or a row of it beyond what the request echoes. A failed missing-object request
+  # establishes nothing.
   call full "$target" "$work/ft"
   ft=$status
   if is_2xx "$ft" && [ "$strict" = 1 ]; then
     call full "$missing" "$work/fm"
     fm=$status
-    if [ "$fm" != "$ft" ] ||
-      [ "$(masked "$work/ft" ${t_list[@]+"${t_list[@]}"})" != "$(masked "$work/fm" ${m_list[@]+"${m_list[@]}"})" ]; then
+    mt=$(masked "$work/ft" ${t_list[@]+"${t_list[@]}"}) || unknown 'could not mask the full member answer'
+    mm=$(masked "$work/fm" ${m_list[@]+"${m_list[@]}"}) || unknown 'could not mask the missing-object control'
+    if is_judgeable "$fm" && { [ "$fm" != "$ft" ] || [ "$mt" != "$mm" ]; }; then
       can=1
     fi
-  elif is_judgeable "$ft" && ! is_refusal "$ft" && [ -n "$(marker_in "$work/ft")" ]; then
+  fi
+  if [ "$can" = 0 ] && is_judgeable "$ft" && ! is_refusal "$ft" &&
+    [ -n "$(masked_marker "$work/ft" ${t_list[@]+"${t_list[@]}"})" ]; then
     can=1
   fi
   counted "$can"
   call restricted "$target" "$work/rt"
   rt=$status
-  if is_refusal "$rt"; then
-    printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
-    return
-  fi
   if ! is_judgeable "$rt"; then
     unproven "$label: the member is answered $rt, which no rule judges: $(head_of "$work/rt")"
     return
   fi
-  call restricted "$missing" "$work/rm"
-  rm=$status
-  if [ "$rm" = "$rt" ] &&
-    [ "$(masked "$work/rt" ${t_list[@]+"${t_list[@]}"})" = "$(masked "$work/rm" ${m_list[@]+"${m_list[@]}"})" ]; then
-    printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
+  # The answer is read for rows before it is compared with anything, so an answer alike for a
+  # missing object, a filter the server ignored, excuses none.
+  marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
+  if [ -n "$marker" ]; then
+    if is_refusal "$rt"; then
+      fail "$label: the refusal $rt holds $marker, a row of $project: $(head_of "$work/rt")"
+    else
+      fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+    fi
     return
   fi
-  marker=$(marker_in "$work/rt")
-  if is_2xx "$rt"; then
-    if [ "$strict" = 1 ] && is_refusal "$rm"; then
-      fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm: $(head_of "$work/rt")"
-    elif [ -n "$marker" ]; then
-      fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
-    else
-      printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
-    fi
-  elif [ -n "$marker" ]; then
-    fail "$label: the member is answered $rt holding $marker, a row of $project, where a missing one is answered $rm: $(head_of "$work/rt")"
+  if is_refusal "$rt"; then
+    printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
+    return
+  fi
+  mt=$(masked "$work/rt" ${t_list[@]+"${t_list[@]}"}) || unknown 'could not mask the member answer'
+  call restricted "$missing" "$work/rm"
+  rm=$status
+  mm=$(masked "$work/rm" ${m_list[@]+"${m_list[@]}"}) || unknown 'could not mask the missing-object answer'
+  if [ "$rm" = "$rt" ] && [ "$mt" = "$mm" ]; then
+    printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
+  elif is_2xx "$rt" && [ "$strict" = 0 ]; then
+    printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
+  elif is_2xx "$rt" && is_refusal "$rm"; then
+    # The object exists for the member where a missing one does not, an empty answer included.
+    fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm: $(head_of "$work/rt")"
+  elif is_2xx "$rt" && is_judgeable "$rm"; then
+    fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm: $(head_of "$work/rt")"
   else
     unproven "$label: the member is answered $rt, where a missing one is answered $rm: $(head_of "$work/rt")"
   fi
@@ -539,15 +649,15 @@ judge_list() {
   counted "$can"
   call restricted "$path" "$work/rt"
   rt=$status
+  marker=$(marker_in "$work/rt")
+  if is_judgeable "$rt" && [ -n "$marker" ]; then
+    fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+    return
+  fi
   if is_refusal "$rt"; then
     printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
   elif is_2xx "$rt"; then
-    marker=$(marker_in "$work/rt")
-    if [ -n "$marker" ]; then
-      fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
-    else
-      printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
-    fi
+    printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
   elif is_judgeable "$rt" && [ "$rt" = "$ft" ]; then
     printf 'ok      %s: %s, as the full member is answered (%s)\n' "$label" "$rt" "$can_text"
   else
@@ -555,9 +665,11 @@ judge_list() {
   fi
 }
 
+# not_filled LABEL WHY: a row the sweep could not fill, which leaves the run UNKNOWN.
 not_filled() {
   unfilled=$((unfilled + 1))
   printf 'not filled %s: %s\n' "$1" "$2"
+  printf '%s is not filled: %s\n' "$1" "$2" >>"$work/unknown" || unknown 'could not record an unfilled row'
 }
 
 # The missing side of each kind: an id, a key or a name nothing holds.
@@ -593,7 +705,7 @@ fill() {
       case $2 in
         /api/v1/issues/*) fill_target=$doc_slug ;;
         /api/v1/projects/*) fill_target=$pdoc_slug fill_why="the lookup found no document of $project itself" ;;
-        *) fill_owned=0 fill_why='a file of an agent conversation belongs to no project, and no route lists them' ;;
+        *) fill_target=$conversation_slug fill_why=$conversation_why ;;
       esac
       ;;
     document-version) fill_target=1 fill_missing=1 ;;
@@ -604,12 +716,14 @@ fill() {
     handoff) fill_target=$handoff ;;
     handoff-phase) fill_target=$handoff_phase fill_missing=$handoff_phase ;;
     near-copy-check) fill_target=$near_copy ;;
-    going-run) fill_why='no route lists a going run, and each is read only by the caller that asked it' ;;
+    going-run) fill_target=$going_run fill_why="the full member's question was refused: $going_why" ;;
     session)
-      fill_owned=0 fill_missing=ses-nosuchsession
+      fill_missing=ses-nosuchsession
       case $2 in
-        /api/v1/agents/\{session_id\}/artifacts/*) fill_why='a file of an agent conversation belongs to no project, and no route lists them' ;;
-        *) fill_target=$session fill_why="no object of $project the lookup read names a session" ;;
+        # A file of the conversation of a session that worked in the project alone, which the
+        # member, no party to it, must be answered as missing.
+        /api/v1/agents/\{session_id\}/artifacts/*) fill_target=$conversation_session fill_why=$conversation_why ;;
+        *) fill_owned=0 fill_target=$session fill_why="no object of $project the lookup read names a session" ;;
       esac
       ;;
     person) fill_owned=0 fill_target=$person fill_missing=nobody@example.com fill_why="no object of $project the lookup read names a person" ;;
@@ -667,16 +781,19 @@ sweep_queries() {
         ;;
       project) target=$project missing=ZZNONE ;;
       issue) target=$issue missing=ZZNONE-1 ;;
-      issue-ref) [ -z "$issue" ] || target=dispatch://$issue missing=dispatch://ZZNONE-1 ;;
+      issue-ref) [ -z "$issue" ] || [ -z "$ref_prefix" ] || target=$ref_prefix$issue missing=${ref_prefix}ZZNONE-1 ;;
       document) target=$doc missing=$none_uuid ;;
       comment) target=$comment missing=00000000-0000-4000-8000-000000000002 ;;
       repository) target=$repo missing=$repo_owner/no-such-repo strict=0 ;;
       title) target=$issue_title missing='zz no such words zz' strict=0 ;;
       # Both ends of a block link must name a document: the issue's spec and the project's own.
-      document-refs) [ -z "$issue" ] || [ -z "$pdoc_slug" ] || target=$issue ;;
+      document-refs) [ -z "$issue" ] || [ -z "$pdoc_slug" ] || [ -z "$ref_prefix" ] || target=$issue ;;
     esac
     if [ -z "$target" ]; then
-      not_filled "GET $pattern?$param=" "the lookup found no $kind of $project"
+      case $kind in
+        issue-ref | document-refs) not_filled "GET $pattern?$param=" "no node the lookup read names its reference, so the sweep cannot spell one" ;;
+        *) not_filled "GET $pattern?$param=" "the lookup found no $kind of $project" ;;
+      esac
       continue
     fi
     # A refusal names a reference's issue by its bare key too, so the fills mask that as well.
@@ -684,8 +801,8 @@ sweep_queries() {
     case $kind in
       document-refs)
         judge "GET $pattern?from=&to=" \
-          "$pattern?from=$(uri "dispatch://$issue/spec")&to=$(uri "dispatch://$project/artifact/$pdoc_slug")" \
-          "$pattern?from=$(uri dispatch://ZZNONE-1/spec)&to=$(uri dispatch://ZZNONE/artifact/no-such-document)" \
+          "$pattern?from=$(uri "$ref_prefix$issue/spec")&to=$(uri "$ref_prefix$project/artifact/$pdoc_slug")" \
+          "$pattern?from=$(uri "${ref_prefix}ZZNONE-1/spec")&to=$(uri "${ref_prefix}ZZNONE/artifact/no-such-document")" \
           1 "$project/artifact/$pdoc_slug"$'\n'"$issue" "ZZNONE/artifact/no-such-document"$'\n'ZZNONE-1
         ;;
       comment)
@@ -720,9 +837,6 @@ sweep_filled() {
     fill "$kind" "$pattern"
     if [ -z "$fill_target" ]; then
       not_filled "GET $pattern" "{$wildcard}: $fill_why"
-      if [ "$fill_owned" = 1 ] && [ -z "$kind" ]; then
-        unproven "GET $pattern names {$wildcard}, which the sweep cannot fill"
-      fi
       return
     fi
     target=${target//"{$wildcard}"/$(uri "$fill_target")}
@@ -738,9 +852,10 @@ sweep_filled() {
 
 started=$SECONDS
 rows=0
-while read -r method pattern _; do
+while read -r method pattern _ || [ -n "${method:-}" ]; do
   [ "$method" = GET ] || continue
   rows=$((rows + 1))
+  [ -n "$pattern" ] || unknown 'the route index holds a GET row with no path'
   case $pattern in
     *'{'*) sweep_filled "$pattern" ;;
     *)
@@ -772,18 +887,32 @@ elif [ -z "$doc" ]; then
 elif [ -z "$own_doc" ]; then
   unproven "/ws/doc/{room}: the member sees no document of a project of theirs, so no control shows the probe admits them anywhere"
 else
-  own_answer=$(bun "$socket_probe" doc "$origin" "$work/restricted.h" "$own_doc" "$schema_version" 2>&1)
-  answer=$(bun "$socket_probe" doc "$origin" "$work/restricted.h" "$doc" "$schema_version" 2>&1)
-  answer=$(printf '%s' "$answer" | tr '\n' ' ' | cut -c1-200)
-  case $own_answer in
-    authenticated*)
-      case $answer in
-        authenticated*) fail "/ws/doc/{room}: the member is admitted to the room of $project's document: $answer" ;;
-        'denied '* | 'http 403'* | 'http 404'*) printf 'ok      /ws/doc/{room}: %s (control: admitted to their own document)\n' "$answer" ;;
-        *) unproven "/ws/doc/{room}: the member's answer for $project's document is no admission and no refusal: $answer" ;;
-      esac
+  bun "$socket_probe" doc "$origin" "$work/restricted.h" "$own_doc" "$schema_version" >"$work/doc-own" 2>&1
+  own_exit=$?
+  bun "$socket_probe" doc "$origin" "$work/restricted.h" "$doc" "$schema_version" >"$work/doc-target" 2>&1
+  answer_exit=$?
+  own_answer=$(head_of "$work/doc-own")
+  answer=$(head_of "$work/doc-target")
+  case $answer in
+    'authenticated '*) fail "/ws/doc/{room}: the member is admitted to the room of $project's document: $answer" ;;
+    *)
+      if [ "$own_exit" != 0 ] || [ "$answer_exit" != 0 ]; then
+        unproven "/ws/doc/{room}: a probe failed (control $own_exit, member $answer_exit): $own_answer; $answer"
+      elif [ "${own_answer#authenticated }" = "$own_answer" ]; then
+        unproven "/ws/doc/{room}: the control did not hold: the member is not admitted to their own document: $own_answer"
+      else
+        masked "$work/doc-target" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
+        marker=$(marker_in "$work/doc-refusal")
+        if [ -n "$marker" ]; then
+          fail "/ws/doc/{room}: the refusal holds $marker, a row of $project: $answer"
+        else
+          case $answer in
+            'denied '* | 'http 403 '* | 'http 404 '*) printf 'ok      /ws/doc/{room}: %s (control: admitted to their own document)\n' "$answer" ;;
+            *) unproven "/ws/doc/{room}: the member's answer for $project's document is no admission and no refusal: $answer" ;;
+          esac
+        fi
+      fi
       ;;
-    *) unproven "/ws/doc/{room}: the control did not hold: the member is not admitted to their own document: $(printf '%s' "$own_answer" | tr '\n' ' ' | cut -c1-200)" ;;
   esac
 fi
 
@@ -798,62 +927,93 @@ bun "$socket_probe" watch "$origin" "$work/full.h" "$work/ready-full" "$work/wri
   "$live_seconds" >"$work/live-full" 2>&1 &
 watcher_full=$!
 watchers="$watcher_restricted $watcher_full"
-waited=0
+ready_started=$SECONDS
 until { [ -e "$work/ready-restricted" ] || ! kill -0 "$watcher_restricted" 2>/dev/null; } &&
   { [ -e "$work/ready-full" ] || ! kill -0 "$watcher_full" 2>/dev/null; }; do
-  [ "$waited" -lt 150 ] || break
+  [ "$((SECONDS - ready_started))" -lt 30 ] || break
   sleep 0.2
-  waited=$((waited + 1))
 done
-if [ ! -e "$work/ready-full" ]; then
-  live_result="the full member's feed did not start: $(head_of "$work/live-full")"
+if [ ! -e "$work/ready-full" ] || ! kill -0 "$watcher_full" 2>/dev/null; then
+  live_result="the full member's feed did not stay subscribed: $(head_of "$work/live-full")"
 elif [ ! -e "$work/ready-restricted" ] && kill -0 "$watcher_restricted" 2>/dev/null; then
-  # A probe that ended before it was ready was answered already (an upgrade refused); one still
-  # running has not subscribed, and a write now could pass it by unseen.
   live_result="the member's feed did not start in 30 s"
+elif [ -e "$work/ready-restricted" ] && ! kill -0 "$watcher_restricted" 2>/dev/null; then
+  live_result="the member's feed ended before the comment"
+elif [ ! -e "$work/ready-restricted" ] && ! grep -E -q '^http (403|404) ' "$work/live-restricted"; then
+  live_result="the member's probe ended without subscribing or refusing the upgrade: $(head_of "$work/live-restricted")"
 else
+  # A failed write ends the check immediately instead of waiting out a potentially long window.
   jq -cn --arg b "restricted-sweep: a probe of who is sent this comment live, written $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
-    '{body: $b, actor: {kind: "session", id: "restricted-sweep"}}' >"$work/comment.json"
+    '{body: $b, actor: {kind: "session", id: "restricted-sweep"}}' >"$work/comment.json" ||
+    unknown 'could not write the live comment request'
+  : >"$work/body" || unknown 'could not create the comment response file'
+  [ "$pace" = 0 ] || sleep "$pace" || unknown 'SWEEP_PACE_SECONDS is not a duration sleep accepts'
   calls=$((calls + 1))
   status=$(curl -q -sS -g --noproxy '*' --max-time "$call_seconds" -o "$work/body" -w '%{http_code}' -X POST \
     -H "@$work/full.h" -H 'Content-Type: application/json' --data-binary "@$work/comment.json" \
     "$origin/api/v1/issues/$write_issue/comments" </dev/null 2>"$work/curl.err") || status="curl failed: $(head_of "$work/curl.err")"
-  written=$(first_of "$work/body" '.id')
+  if [ "$status" = 201 ]; then
+    written=$(first_of "$work/body" '.id | select(type == "string" and length > 0)')
+  fi
   [ "$status" = 201 ] && [ -n "$written" ] ||
     live_result="the full member's comment on $write_issue answered $status: $(head_of "$work/body")"
 fi
-: >"$work/written"
+observation_started=$SECONDS
+if [ -z "$live_result" ]; then
+  : >"$work/written" || unknown 'could not signal the socket observation window'
+  while kill -0 "$watcher_restricted" 2>/dev/null || kill -0 "$watcher_full" 2>/dev/null; do
+    elapsed=$((SECONDS - observation_started))
+    if [ "$elapsed" -lt "$live_seconds" ] &&
+      { ! kill -0 "$watcher_full" 2>/dev/null ||
+        { [ -e "$work/ready-restricted" ] && ! kill -0 "$watcher_restricted" 2>/dev/null; }; }; then
+      live_result='a subscribed feed ended before the observation window finished'
+      break
+    fi
+    if [ "$elapsed" -ge "$((live_seconds + 15))" ]; then
+      live_result='a socket probe did not finish after the observation window'
+      break
+    fi
+    sleep 0.2
+  done
+  if [ -z "$live_result" ] && [ "$((SECONDS - observation_started))" -lt "$live_seconds" ]; then
+    live_result='the feeds did not cover the observation window'
+  fi
+fi
+if [ -n "$live_result" ]; then
+  for pid in $watchers; do kill "$pid" 2>/dev/null; done
+fi
 wait "$watcher_restricted"
 restricted_exit=$?
 wait "$watcher_full"
 full_exit=$?
 watchers=''
-if [ -n "$live_result" ]; then
+[ -z "$written" ] || printf '%s\n' "$written" >>"$work/values"
+jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
+  "$work/values" >"$work/markers.json" || unknown 'could not update the live event markers'
+marker=$(marker_in "$work/live-restricted")
+if [ -n "$marker" ]; then
+  fail "/ws/live: the member is sent an event holding $marker, of $project: $(head_of "$work/live-restricted")"
+elif [ -n "$live_result" ]; then
   unproven "/ws/live: $live_result"
-elif [ "$full_exit" != 0 ] || [ -z "$(jq -R --arg c "$written" 'fromjson? | select(.type == "event" and ([.. | strings] | index($c)))' "$work/live-full")" ]; then
-  unproven "/ws/live: the control did not hold: the full member's feed was not sent the comment $written in $live_seconds s: $(head_of "$work/live-full")"
+elif [ "$full_exit" != 0 ] || ! jq -s -e --arg c "$written" '
+  length > 0 and .[0].type == "events_start"
+  and all(.[]; type == "object" and (.type | type == "string"))
+  and any(.[]; .type == "event" and any(.. | strings; . == $c))' "$work/live-full" >/dev/null 2>&1; then
+  unproven "/ws/live: the control did not hold: the full member's feed did not cover $live_seconds s and receive comment $written: $(head_of "$work/live-full")"
 elif [ "$restricted_exit" != 0 ]; then
   unproven "/ws/live: the member's feed gave no answer: $(head_of "$work/live-restricted")"
 else
-  printf '%s\n' "$written" >>"$work/values"
-  jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
-    "$work/values" >"$work/markers.json"
-  jq -c -R 'fromjson? | select(.type == "event")' "$work/live-restricted" >"$work/live-events"
-  frames=$(wc -l <"$work/live-events" | tr -d ' ')
-  marker=''
-  while IFS= read -r frame; do
-    printf '%s\n' "$frame" >"$work/frame"
-    marker=$(marker_in "$work/frame")
-    [ -z "$marker" ] || break
-  done <"$work/live-events"
   first_line=$(head -n 1 "$work/live-restricted")
   case $first_line in
-    'http 403'* | 'http 404'*) printf 'ok      /ws/live: the member'"'"'s upgrade is refused: %s\n' "$(head_of "$work/live-restricted")" ;;
+    'http 403 '* | 'http 404 '*) printf 'ok      /ws/live: the member'"'"'s upgrade is refused: %s\n' "$(head_of "$work/live-restricted")" ;;
     'http '*) unproven "/ws/live: the member's upgrade is answered $(head_of "$work/live-restricted")" ;;
     *)
-      if [ -n "$marker" ]; then
-        fail "/ws/live: the member is sent an event holding $marker, of $project: $(head_of "$work/frame")"
+      if [ ! -e "$work/ready-restricted" ] || ! jq -s -e '
+        length > 0 and .[0].type == "events_start"
+        and all(.[]; type == "object" and (.type | type == "string"))' "$work/live-restricted" >/dev/null 2>&1; then
+        unproven "/ws/live: the member's feed did not cover the observation window: $(head_of "$work/live-restricted")"
       else
+        frames=$(jq -s '[.[] | select(.type == "event")] | length' "$work/live-restricted")
         printf 'ok      /ws/live: the member is sent %s events in %s s, none of %s; the full member is sent the comment (control)\n' \
           "$frames" "$live_seconds" "$project"
       fi
@@ -868,6 +1028,7 @@ if [ -s "$work/failed" ]; then
   exit 1
 fi
 [ "$live" -gt 0 ] || printf 'no row could fail: the full member is answered no row of %s anywhere\n' "$project" >>"$work/unknown"
+[ "$judged" -gt 0 ] || printf 'no route was judged\n' >>"$work/unknown"
 if [ -s "$work/missing" ] || [ -s "$work/unknown" ]; then
   printf 'UNKNOWN: nothing reached the member, but this run did not prove it:\n'
   sed 's/^/  /' "$work/missing" "$work/unknown"
