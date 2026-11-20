@@ -37,6 +37,9 @@ type Proxy struct {
 	// freezes the proxy, and frozenAt where the moment of that freeze is sent.
 	freezeAfter []byte
 	frozenAt    chan time.Time
+	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
+	// It holds only server-to-client reads and writes.
+	serverGate chan struct{}
 }
 
 // ProxyOption configures a Proxy.
@@ -140,8 +143,19 @@ func (p *Proxy) wrote(data []byte) {
 	p.frozenAt <- time.Now()
 }
 
-// Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
-// freeze held move on.
+// FreezeServerReplies stops server replies while client writes still reach the server. Restore
+// releases the replies. A test uses it when it must prove a request stored before it loses the
+// request's acknowledgement.
+func (p *Proxy) FreezeServerReplies() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.serverGate == nil {
+		p.serverGate = make(chan struct{})
+	}
+}
+
+// Restore ends a Cut, a Freeze and a FreezeServerReplies: the proxy accepts and relays connections
+// again, the bytes a freeze held move on, and server replies resume.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -149,6 +163,10 @@ func (p *Proxy) Restore() {
 	if p.gate != nil {
 		close(p.gate)
 		p.gate = nil
+	}
+	if p.serverGate != nil {
+		close(p.serverGate)
+		p.serverGate = nil
 	}
 }
 
@@ -217,7 +235,7 @@ const proxyReadBuffer = 64 << 10
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
 // too.
-func (p *Proxy) relay(dst, src net.Conn, toClient bool) {
+func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 	defer p.untrack(dst, src)
 	type chunk struct {
 		data []byte
@@ -228,7 +246,7 @@ func (p *Proxy) relay(dst, src net.Conn, toClient bool) {
 		defer close(queue)
 		buffer := make([]byte, proxyReadBuffer)
 		for {
-			p.pass()
+			p.pass(serverToClient)
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
@@ -243,12 +261,12 @@ func (p *Proxy) relay(dst, src net.Conn, toClient bool) {
 	}()
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
-		p.pass()
+		p.pass(serverToClient)
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
 		}
-		if toClient {
+		if serverToClient {
 			p.wrote(c.data)
 		}
 	}
@@ -257,17 +275,24 @@ func (p *Proxy) relay(dst, src net.Conn, toClient bool) {
 	}
 }
 
-// pass waits while the proxy is frozen, and returns at once while it is not or once it closes.
-func (p *Proxy) pass() {
+// pass waits for any active gate before a relay read or write proceeds. serverToClient selects the
+// server-to-client gate in addition to the bidirectional one.
+func (p *Proxy) pass(serverToClient bool) {
 	p.mu.Lock()
 	gate := p.gate
+	serverGate := p.serverGate
 	p.mu.Unlock()
-	if gate == nil {
-		return
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-p.done:
+		}
 	}
-	select {
-	case <-gate:
-	case <-p.done:
+	if serverToClient && serverGate != nil {
+		select {
+		case <-serverGate:
+		case <-p.done:
+		}
 	}
 }
 
