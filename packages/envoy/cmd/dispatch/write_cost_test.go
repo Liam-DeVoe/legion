@@ -223,18 +223,20 @@ func writeCostDeliveryRecord(t *testing.T, corpus *writeCostCorpus, _ int) time.
 // this version moves, which is the edit a person makes: Dispatch carries a block's id across
 // versions, so the index sees one new block and the rest unchanged. -1 instead is the whole
 // document rewritten, every block new to the index, which a bulk action makes and a person
-// does not.
+// does not. The write replaces the document's version, so it names that version's token, read
+// before the write is timed.
 func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks, run, changedOnly int) time.Duration {
 	t.Helper()
+	artifacts := "/api/v1/issues/" + corpus.issue + "/artifacts"
 	body, err := json.Marshal(map[string]any{
-		"name":    name,
-		"content": costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
+		"name":         name,
+		"content":      costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
+		"precondition": corpus.arm.server.uploadBase(t, artifacts, name),
 	})
 	if err != nil {
 		t.Fatalf("encode the version: %v", err)
 	}
-	taken, _ := corpus.arm.timed(t, http.MethodPost, "/api/v1/issues/"+corpus.issue+"/artifacts",
-		string(body), http.StatusCreated)
+	taken, _ := corpus.arm.timed(t, http.MethodPost, artifacts, string(body), http.StatusCreated)
 	return taken
 }
 
@@ -252,11 +254,18 @@ func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks
 func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 	t.Helper()
 	arm := corpus.arm
+	// Each write replaces its tick document's version, so it names that version's token, read
+	// before the pass's lease is held.
+	bases := make([]map[string]string, len(corpus.tick))
+	for index, document := range corpus.tick {
+		bases[index] = map[string]string{"document": arm.server.documentToken(t, document)}
+	}
 	release := costHoldBlockIndex(t, arm)
 	for index := range corpus.tick {
 		body, err := json.Marshal(map[string]any{
-			"name":    writeCostTickName(index),
-			"content": costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
+			"name":         writeCostTickName(index),
+			"content":      costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
+			"precondition": bases[index],
 		})
 		if err != nil {
 			release()
@@ -950,14 +959,19 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 
 // costUploadDocument writes one version of a document by name and answers its artifact id. A
 // second write of the same name is the next version of that document, which is the document
-// version write path.
+// version write path, and names the token of the version it replaces.
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"name": name, "content": content})
+	artifacts := "/api/v1/issues/" + issue + "/artifacts"
+	upload := map[string]any{"name": name, "content": content}
+	if base := arm.server.uploadBase(t, artifacts, name); base != nil {
+		upload["precondition"] = base
+	}
+	body, err := json.Marshal(upload)
 	if err != nil {
 		t.Fatalf("encode %s: %v", name, err)
 	}
-	created := arm.server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(body), http.StatusCreated)
+	created := arm.server.call(t, http.MethodPost, artifacts, string(body), http.StatusCreated)
 	var answer struct {
 		Artifact struct {
 			ID string `json:"id"`

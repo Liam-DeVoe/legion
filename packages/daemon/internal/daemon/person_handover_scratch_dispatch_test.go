@@ -495,11 +495,14 @@ func (r *personHandoverRig) answerBlock(askID, selected string) {
 
 // addReading writes reading inside the answered ask block blockID of key's document
 // artifactID, after the block's own content, as a session's upload of the whole document - the
-// write that places a reading after a block's options - and answers the version it wrote.
+// write that places a reading after a block's options - and answers the version it wrote. The
+// upload replaces the version the session read, so it names that version's token, as every
+// replacement does.
 func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string) int {
 	r.t.Helper()
 	var text struct {
 		Markdown string `json:"markdown"`
+		Token    string `json:"token"`
 	}
 	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, &text, asSession)
 	opening := ":::ask{#" + blockID + " "
@@ -508,8 +511,8 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 	if start >= 0 {
 		end = strings.Index(text.Markdown[start:], "\n:::\n")
 	}
-	if start < 0 || end < 0 {
-		r.t.Fatalf("%s's document holds no ask block %s to write a reading in:\n%s", key, blockID, text.Markdown)
+	if start < 0 || end < 0 || text.Token == "" {
+		r.t.Fatalf("%s's document holds no ask block %s to write a reading in, or its read names no token (%q):\n%s", key, blockID, text.Token, text.Markdown)
 	}
 	end += start
 	markdown := text.Markdown[:start] + ":" + text.Markdown[start:end] +
@@ -520,7 +523,7 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 		} `json:"version"`
 	}
 	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
-		map[string]any{"name": "spec.md", "content": markdown}, &uploaded, asSession)
+		map[string]any{"name": "spec.md", "content": markdown, "precondition": map[string]string{"document": text.Token}}, &uploaded, asSession)
 	if uploaded.Version.Number == 0 {
 		r.t.Fatalf("the session's upload of %s's document with its reading wrote no version", key)
 	}

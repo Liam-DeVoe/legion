@@ -201,6 +201,20 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 	return response.Body.Bytes()
 }
 
+// uploadBase is the token an upload replacing the document artifactID names, as the upload's
+// `precondition` holds it: the one GET /api/v1/artifacts/{id}/text answers, which `dispatch
+// doc-read` prints.
+func (r *writersRig) uploadBase(t *testing.T, artifactID string) map[string]string {
+	t.Helper()
+	read := decoded[struct {
+		Token string `json:"token"`
+	}](t, r.request(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice", http.StatusOK))
+	if read.Token == "" {
+		t.Fatalf("the text read of %s answered no token", artifactID)
+	}
+	return map[string]string{"document": read.Token}
+}
+
 // decoded decodes body into a T, failing the test where it cannot.
 func decoded[T any](t *testing.T, body []byte) T {
 	t.Helper()
@@ -484,6 +498,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "spec.md", "content": "# Spec\n\nWhat the writers write, read once more.\n",
+				"precondition": r.uploadBase(t, r.spec),
 			}, "alice", http.StatusCreated)
 		},
 		Drive: func(t *testing.T) {

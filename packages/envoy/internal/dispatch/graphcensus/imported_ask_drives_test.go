@@ -57,6 +57,8 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// approval request, the document whose answered ask a person removes, the document an upload
 	// leaves as it was, and the project the decisions step converts.
 	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged string
+	// The token of the version same.md's replacement replaces, read before its drive.
+	var unchangedBase map[string]string
 	const decided = "DECIDE"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
@@ -307,10 +309,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n",
 			}, "alice", http.StatusCreated)).Artifact.ID
+			unchangedBase = r.uploadBase(t, unchanged)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n",
+				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n", "precondition": unchangedBase,
 			}, "alice", http.StatusCreated)
 			r.awaitTrue(t, "the upload writing version 2 of same.md", `
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
