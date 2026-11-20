@@ -276,16 +276,52 @@ func (d dockerDaemon) publish(port string) string {
 // address is the address this process dials for a published port.
 func (d dockerDaemon) address(port string) string { return net.JoinHostPort(d.dial, port) }
 
-// reachedDaemon is daemonHost of the endpoint the docker CLI resolves (cliEndpoint), read once per
-// process: every `docker create`, `start` and `port` of this file runs that CLI in this process's
-// environment, so it acts on that daemon.
+// reachedDaemon is daemonHost of the endpoint the docker CLI resolves (cliEndpoint), with
+// TESTCONTAINERS_HOST_OVERRIDE applied (withHostOverride), read once per process: every `docker
+// create`, `start` and `port` of this file runs that CLI in this process's environment, so it acts
+// on that daemon.
 var reachedDaemon = sync.OnceValues(func() (dockerDaemon, error) {
 	endpoint, err := cliEndpoint(context.Background())
 	if err != nil {
 		return dockerDaemon{}, err
 	}
-	return daemonHost(endpoint)
+	daemon, err := daemonHost(endpoint)
+	if err != nil {
+		return dockerDaemon{}, err
+	}
+	return withHostOverride(daemon, os.Getenv(hostOverrideVariable)), nil
 })
+
+// hostOverrideVariable is testcontainers-go's name for the host a test reaches a container's
+// published ports at, which the envoy module's container tests read through that library. This
+// fixture reads it too, so one setting serves both modules.
+const hostOverrideVariable = "TESTCONTAINERS_HOST_OVERRIDE"
+
+// withHostOverride is d dialled at override, when override names a host. daemonHost reads the
+// endpoint alone, and a process in a developer container that reaches the host's Docker socket
+// reads it as this machine, whose 127.0.0.1 is the container's own: such a process names the host
+// as it reaches it (the bridge gateway, host.docker.internal) in TESTCONTAINERS_HOST_OVERRIDE. A
+// port dialled at a host that is not loopback is published on every interface of the daemon's
+// machine, since the dial arrives through one of them; a loopback override keeps it on 127.0.0.1.
+// testcontainers-go found the bridge gateway itself where /.dockerenv exists, and this fixture does
+// not: there the variable is how to reach it.
+func withHostOverride(d dockerDaemon, override string) dockerDaemon {
+	switch {
+	case override == "":
+		return d
+	case isLoopback(override):
+		return dockerDaemon{dial: override, bind: "127.0.0.1"}
+	default:
+		return dockerDaemon{dial: override}
+	}
+}
+
+// isLoopback is whether host names this machine's loopback interface: localhost, or a loopback
+// address.
+func isLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || ip != nil && ip.IsLoopback()
+}
 
 // cliEndpoint is the endpoint of the Docker daemon the docker CLI reaches from this process's
 // environment, as the CLI itself resolves it. `docker context inspect` with no name inspects the
@@ -322,7 +358,7 @@ func daemonHost(endpoint string) (dockerDaemon, error) {
 		if host == "" {
 			return dockerDaemon{}, fmt.Errorf("the Docker endpoint %q names no host", endpoint)
 		}
-		if ip := net.ParseIP(host); host == "localhost" || ip != nil && ip.IsLoopback() {
+		if isLoopback(host) {
 			return local, nil
 		}
 		return dockerDaemon{dial: host}, nil

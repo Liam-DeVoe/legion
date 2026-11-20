@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/testpool"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // registrarA and registrarB are two daemons' login accounts, the registrars the writes below

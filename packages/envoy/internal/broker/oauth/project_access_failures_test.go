@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // TestANamedTradeMintsUncheckedOnlyForAnEmptyList: while Dispatch cannot be asked, an operator

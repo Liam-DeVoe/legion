@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:

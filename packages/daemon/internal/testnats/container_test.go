@@ -51,6 +51,41 @@ func TestTheDaemonHostFollowsTheEndpointsMachine(t *testing.T) {
 	}
 }
 
+// TESTCONTAINERS_HOST_OVERRIDE names the host a published port is dialled at, as testcontainers-go
+// reads it, whatever machine the endpoint names: a developer container on the host's socket sets
+// it to the host as the container reaches it (the bridge gateway, host.docker.internal). A port
+// dialled at a host that is not loopback is published on every interface of the daemon's machine,
+// since the dial reaches that machine through one of them; a loopback override keeps 127.0.0.1.
+// Empty, it changes nothing.
+func TestTheHostOverrideNamesTheHostAPublishedPortIsDialledAt(t *testing.T) {
+	local := dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}
+	remote := dockerDaemon{dial: "10.1.2.3"}
+	for _, tc := range []struct {
+		name, override string
+		daemon, want   dockerDaemon
+		address        string
+	}{
+		{"the bridge gateway over the host's socket", "172.17.0.1", local, dockerDaemon{dial: "172.17.0.1"}, "172.17.0.1:32768"},
+		{"a host name over the host's socket", "host.docker.internal", local, dockerDaemon{dial: "host.docker.internal"}, "host.docker.internal:32768"},
+		{"an IPv6 host over the host's socket", "fd00::1", local, dockerDaemon{dial: "fd00::1"}, "[fd00::1]:32768"},
+		{"another machine's daemon", "builder.example", remote, dockerDaemon{dial: "builder.example"}, "builder.example:32768"},
+		{"localhost", "localhost", local, dockerDaemon{dial: "localhost", bind: "127.0.0.1"}, "localhost:32768"},
+		{"a loopback address", "127.0.0.1", remote, local, "127.0.0.1:32768"},
+		{"no override", "", local, local, "127.0.0.1:32768"},
+		{"no override of another machine's daemon", "", remote, remote, "10.1.2.3:32768"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withHostOverride(tc.daemon, tc.override)
+			if got != tc.want {
+				t.Errorf("withHostOverride(%+v, %q) = %+v, want %+v", tc.daemon, tc.override, got, tc.want)
+			}
+			if address := got.address("32768"); address != tc.address {
+				t.Errorf("address = %q, want %q", address, tc.address)
+			}
+		})
+	}
+}
+
 // The endpoint the fixture reaches is the one the docker CLI resolves, under every setting that
 // chooses it: DOCKER_HOST, DOCKER_CONTEXT, both at once in either local/remote combination, and
 // the configuration's current context. Each row sets them, asks the CLI which context it resolves
