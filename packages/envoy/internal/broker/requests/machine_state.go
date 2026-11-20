@@ -2770,11 +2770,15 @@ const revokeJudgeAttempts = 3
 // writer that moves a grant off an enrollment locks that enrollment's row before it moves the
 // grant: an adoption takes its predecessors for update (enroll.adopt), and the end that hands a
 // claim's rows to another pod (enroll.handOver) runs under the end's own lock of the enrollment.
-// So the lock waits for such a move in flight to commit, and the later read, which sees what
-// committed before it started, sees the grant where the move left it. One statement that read the
-// grant and locked its enrollment together would read the grant as it was when the statement
-// began, before the move it waited on, and decide on the old holder. Once the lock is held,
-// nothing moves the grant off that enrollment until this transaction ends.
+// So the lock waits for such a move in flight to commit, and the later read, which under READ
+// COMMITTED takes a snapshot of its own and sees what committed before it started, sees the grant
+// where the move left it. One statement that read the grant and locked its enrollment together
+// would read the grant as it was when the statement began, before the move it waited on, and
+// decide on the old holder. Once the lock is held, nothing moves the grant off that enrollment
+// until this transaction ends. The transaction asks for READ COMMITTED by name, so a changed
+// default level cannot hand the later reads the first statement's snapshot: under REPEATABLE READ
+// they would see no move the lock waited on, and the lock wait itself would end in a
+// serialization failure rather than the read this relies on.
 //
 // An operator's withhold writes against each locked enrollment: the names bind the session, and
 // requests.Machine reads them by the enrollment's own id, so the box the session runs on must hold
@@ -2786,7 +2790,7 @@ const revokeJudgeAttempts = 3
 // case left: its box asks for the names automatically until the session's next move, which takes
 // them off the boxes this wrote them on (enroll.adopt's withheld clause).
 func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
-	tx, err := m.Store.Pool.Begin(ctx)
+	tx, err := m.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
