@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,6 +130,30 @@ const defaultBase = "https://api.github.com"
 // GitHub's expiry so a token handed to a caller never dies mid-request.
 const tokenExpirySlack = 5 * time.Minute
 
+// readPermissions is what every token this client mints asks for: the reads Dispatch makes, each
+// at read. Dispatch writes nothing to GitHub with an installation token, which makes only GETs and
+// GraphQL queries; its two other POSTs, a token mint and a webhook redelivery, are signed by the
+// App's JWT. A body naming a permission the installation is not granted makes GitHub refuse the
+// mint whole (a 422, as the daemon's appauth exchangeGranted says), so Dispatch mints a token only
+// on an installation that grants all seven.
+var readPermissions = map[string]string{
+	"actions": "read", "checks": "read", "contents": "read", "issues": "read",
+	"metadata": "read", "pull_requests": "read", "statuses": "read",
+}
+
+// accessTokensBody is readPermissions as the body of POST /app/installations/{id}/access_tokens,
+// encoded once. It names no repository, so the token reaches every repository the installation
+// holds.
+var accessTokensBody = func() []byte {
+	encoded, err := json.Marshal(struct {
+		Permissions map[string]string `json:"permissions"`
+	}{readPermissions})
+	if err != nil {
+		panic(err) // a map of strings always encodes
+	}
+	return encoded
+}()
+
 // Installation is the slice of GitHub's repository-installation response
 // dispatch inspects. AccountLogin (the installation's own account -- a user or an org) is set
 // only by ListInstallations (GET /app/installations), which is account-less in its own answer
@@ -150,8 +176,8 @@ type Source struct {
 type cachedToken struct {
 	token   string
 	expires time.Time
-	// permissions is what GitHub's access_tokens answer said this token holds. The client mints
-	// with no narrowing, so it is what the installation had granted the App at the mint.
+	// permissions is what GitHub's access_tokens answer said this token holds: some of
+	// readPermissions, since token refuses an answer past them.
 	permissions auth.AppPerms
 }
 
@@ -559,21 +585,20 @@ func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (strin
 	return token, err
 }
 
-// RepositoryTokenWithStatuses is RepositoryToken with whether that token holds Commit statuses at
-// read or write, which is what Dispatch's CI reconcile decides by whether it reads a head's commit
-// statuses at all. Both answers come from the one cached token: the permissions are the ones
-// GitHub's access_tokens answer named for that token, decoded and kept beside it in the one cache
-// entry (token), so a token is never answered beside another mint's permissions.
+// RepositoryTokenWithStatuses is RepositoryToken with whether that token holds Commit statuses,
+// which is what Dispatch's CI reconcile decides by whether it reads a head's commit statuses at
+// all. Both answers come from the one cached token: the permissions are the ones GitHub's
+// access_tokens answer named for that token, decoded and kept beside it in the one cache entry
+// (token), so a token is never answered beside another mint's permissions. token asks for Commit
+// statuses at read and refuses an answer past that, so a token that holds them holds them at read.
 //
 // The permission is the token's rather than the installation's, although the installation lookup
 // that resolves owner/repo names the installation's permissions too. A token lives about an hour
 // and is kept until tokenExpirySlack before its expiry, while the installation is remembered apart
-// for installationsCacheTTL. After a person accepts Commit statuses for the App, the installation
-// says the App holds it while the token in hand does not, for up to an hour, and every head the
-// reconcile read in that time would send a status read GitHub refuses, at every pass. The token's
-// own permissions are exact for each request the token makes. A grant can still be taken away
-// while a token lives, so a caller still meets a refused status read, which costs the head its
-// statuses alone.
+// for installationsCacheTTL, so after a person changes the App's grant the two can differ. The
+// token's own permissions are exact for each request the token makes. A grant can still be taken
+// away while a token lives, so a caller still meets a refused status read, which costs the head
+// its statuses alone.
 func (c *Client) RepositoryTokenWithStatuses(ctx context.Context, owner, repo string) (string, bool, error) {
 	if c == nil {
 		return "", false, ErrNoAppKey
@@ -591,7 +616,7 @@ func (c *Client) RepositoryTokenWithStatuses(ctx context.Context, owner, repo st
 		c.repositories.forget(name)
 		return "", false, err
 	}
-	statuses := minted.permissions.Statuses == "read" || minted.permissions.Statuses == "write"
+	statuses := minted.permissions.Statuses == "read"
 	return minted.token, statuses, nil
 }
 
@@ -808,6 +833,12 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 
 // token is Token with the permissions GitHub's access_tokens answer named for the token, which
 // are kept in the one cache entry beside the token they came with.
+//
+// It asks for readPermissions alone, and it refuses an answer naming a permission past them.
+// GitHub mints a token with no more than its body asks for, and one with no body at every
+// permission the App was granted, so such an answer means the body was lost or widened on the
+// way, and the token holds more than Dispatch asked for. That token is never handed out, cached
+// or credited to the installation (TokenScope).
 func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, error) {
 	if c == nil {
 		return cachedToken{}, ErrNoAppKey
@@ -823,7 +854,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, err
 	}
 	target := c.base + "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
-	body, status, header, err := c.do(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt)
+	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt, mediaTypeJSON, "", bytes.NewReader(accessTokensBody), responseLimit)
 	if err != nil {
 		return cachedToken{}, err
 	}
@@ -834,14 +865,29 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, fmt.Errorf("POST %s: %s", target, StatusText(status, body))
 	}
 	var payload struct {
-		Token       string        `json:"token"`
-		ExpiresAt   time.Time     `json:"expires_at"`
-		Permissions auth.AppPerms `json:"permissions"`
+		Token       string          `json:"token"`
+		ExpiresAt   time.Time       `json:"expires_at"`
+		Permissions json.RawMessage `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return cachedToken{}, fmt.Errorf("decode installation token: %w", err)
 	}
-	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
+	// The answer's permissions are read twice: every one of them, which the refusal holds to
+	// readPermissions, and the ones auth.AppPerms keeps beside the token.
+	var granted map[string]string
+	var permissions auth.AppPerms
+	if len(payload.Permissions) > 0 {
+		if err := json.Unmarshal(payload.Permissions, &granted); err != nil {
+			return cachedToken{}, fmt.Errorf("decode installation token permissions: %w", err)
+		}
+		if err := json.Unmarshal(payload.Permissions, &permissions); err != nil {
+			return cachedToken{}, fmt.Errorf("decode installation token permissions: %w", err)
+		}
+	}
+	if past := pastReads(granted); past != "" {
+		return cachedToken{}, fmt.Errorf("POST %s: GitHub answered a token wider than the reads asked for: it holds %s", target, past)
+	}
+	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: permissions}
 	c.mu.Lock()
 	now := c.now()
 	for token, minted := range c.installationOf {
@@ -853,6 +899,42 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 	c.installationOf[payload.Token] = mintedToken{installation: installationID, expires: payload.ExpiresAt}
 	c.mu.Unlock()
 	return fresh, nil
+}
+
+// githubPermissionName is the shape of every permission name GitHub gives: lowercase letters and
+// underscores.
+var githubPermissionName = regexp.MustCompile(`^[a-z_]{1,64}$`)
+
+// githubAccesses is every access GitHub gives a token's permission but none.
+var githubAccesses = []string{"read", "write", "admin"}
+
+// pastReads words the first permission, by name, that permissions holds past readPermissions: one
+// readPermissions does not name, or one at any access but read. An access of none holds nothing,
+// so it is past nothing. It is "" when permissions holds no more than readPermissions.
+//
+// It quotes only GitHub's own words, "<permission>: <access>", and words anything else by the
+// rule it breaks. An answer past the reads is no answer GitHub gave to this body, and whatever
+// wrote it held the App's JWT and can put it, or the token, in a name or an access. The refusal
+// is noted as a read's cause, which GET /healthz serves with no credential (StatusText).
+func pastReads(permissions map[string]string) string {
+	for _, permission := range slices.Sorted(maps.Keys(permissions)) {
+		access := permissions[permission]
+		if access == "none" {
+			continue
+		}
+		if asked, named := readPermissions[permission]; named && access == asked {
+			continue
+		}
+		switch {
+		case !githubPermissionName.MatchString(permission):
+			return "a permission whose name GitHub does not give"
+		case !slices.Contains(githubAccesses, access):
+			return permission + " at an access GitHub does not give"
+		default:
+			return permission + ": " + access
+		}
+	}
+	return ""
 }
 
 // CheckSource proves end to end that the App can read owner/repo: the
@@ -906,10 +988,11 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 }
 
 // request performs one API call under scope asking for the accept media type and returns its
-// complete body when it fits within limit, status and headers. body is nil for every GET call;
-// GraphQL is this package's only POST with a body. A non-empty ifNoneMatch sends that ETag as
-// If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
-// caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
+// complete body when it fits within limit, status and headers. body is nil for every call but a
+// token mint's (token), whose body names the permissions it asks for. A non-empty ifNoneMatch
+// sends that ETag as If-None-Match, so GitHub answers 304 Not Modified when its answer has not
+// changed since the caller read it, and charges the rate limit nothing for it; an empty one sends
+// no such header.
 //
 // It is send with GitHub's own REST limit read, once: an answer RateLimit reads as a limit is
 // noted on the attempt ctx carries (githubreads), whatever the client and the scope, and
