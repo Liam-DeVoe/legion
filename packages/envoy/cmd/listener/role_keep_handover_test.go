@@ -104,7 +104,7 @@ func (l *keptLaneUnderClaim) keep(t *testing.T, role, prefix string, count int) 
 	keys := make([]string, 0, count)
 	for index := range count {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("%s-%02d", prefix, index))
-		if _, kept := keepRoleMessage(l.harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(l.harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", index, l.harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -298,7 +298,7 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 	var want []string
 	for i := range expired + fresh {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-expired-%04d", i))
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		if i >= expired {
@@ -381,7 +381,7 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	defer cancel()
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-released-%02d", i))
-		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 	}
@@ -505,13 +505,13 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-sweep-%02d", i))
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
 	}
 	unheldItem := listenerTestEnvelope(contracts.RoleTopicPrefix+unheld, "kept-sweep-unheld-00")
-	if _, kept := keepRoleMessage(cfg, unheld, unheldItem); !kept {
+	if _, err := keepRoleMessage(cfg, unheld, unheldItem); err != nil {
 		t.Fatalf("keep the copy of the role no session claims; the listener log says why:\n%s", harness.logs.String())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -689,7 +689,7 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 			role := "kept-head-read-" + test.name
 			holder := "ses_kept_head_read_" + test.name
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-			if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+			if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 				t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -859,9 +859,9 @@ func TestAHandoverWhoseHolderResolutionDidNotAnswerSaysSoWhereItsWalkDrainedTheL
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
 	item.SourceSession = sender
-	held, kept := keepRoleMessage(harness.config, role, item)
-	if !kept {
-		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
+	held, err := keepRoleMessage(harness.config, role, item)
+	if err != nil {
+		t.Fatalf("keep the copy: %v; the listener log says why:\n%s", err, harness.logs.String())
 	}
 	claimRoleBeyondTheSessionCache(t, harness, holder, role)
 	// Every read of the session bucket fails from here, so the handover's own resolution of the
@@ -969,7 +969,7 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 			role := "kept-shutdown-" + test.name
 			holder := "ses_kept_shutdown_" + test.name
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-			if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+			if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 				t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 			}
 			claimRoleBeyondTheSessionCache(t, harness, holder, role)
