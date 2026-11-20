@@ -192,10 +192,11 @@ type sendOutcome struct {
 // Dispatch identity. The send is marked whenever the target was not redirected, and that includes
 // a role's stopped session the registry named: a recheck of the session pinned on the attempt
 // (mentionResolutionFor, messageDeliveryRoute, renewMessageDeliveryClaim) that finds the
-// listener's own record of it, a known-session record among them, names no redirect. The listener
-// then offers the marked send to the role's daemon on the role token before it keeps anything
-// (handOffOrKeepRoleSend in cmd/listener), so a finished role's message reaches the daemon either
-// way.
+// listener's own record of it, a known-session record among them, names no redirect. While no
+// session holds the role live, the listener then offers the marked send to the role's daemon on
+// the role token before it keeps anything (handOffOrKeepRoleSend in cmd/listener), so a finished
+// role's message reaches the daemon either way; a session that holds the role live, one that took
+// the role over among them, has the message kept for it instead.
 //
 // A role kept for its next holder (target.redirect.keepForRole) is published on the role's topic
 // rather than sent (publishForRole).

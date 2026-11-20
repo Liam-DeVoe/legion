@@ -18,10 +18,13 @@ body: |-
   resumes it - finds the listener's known-session record of that stopped session and is marked
   with the role.
   The listener's send route then hands a send marked with a role whose claim does not name its
-  target to the daemon of that role's newest session, on the conditions a role publish's
-  hand-off has (its issue finished, not released, its project answering, the session gone), and
-  answers it 200 with that session as recipient, rather than keep it on the role's kept lane for
-  a next holder a finished role does not have; a role whose issue still runs is kept as before.
+  target to the daemon of that role's newest session, while no session holds the role live and
+  on the conditions a role publish's hand-off has (its issue finished, not released, its project
+  answering, the session gone), and answers it 200 with that session as recipient, rather than
+  keep it on the role's kept lane for a next holder a finished role does not have. A role whose
+  issue still runs is kept as before, and a finished role that another session holds live, such
+  as one a person's resumed or forked session took over, is kept on that lane for that holder,
+  with nothing handed to the stopped session's daemon.
   A target the registry does not name, or names for a project that
   does not answer (its daemon runs without `answers`, or it never said it does), keeps the
   listener's own answer and is sent nothing: a mention fails `no live session <id>`, a role

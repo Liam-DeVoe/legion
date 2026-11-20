@@ -163,9 +163,11 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // session addressed by id is answered for whether its issue is finished or not: that session has
 // stopped, and the message is for it. A send that carries a role's mark (Dispatch's send to a
 // `role:` route) is held to that role's claim before it reaches this, and one whose claim does not
-// name its target is offered here on its role token, so it is answered for by this rule rather
-// than the session's (handOffOrKeepRoleSend): a finished role's message reaches its daemon, and a
-// running role's is kept for its next holder (#4387's keep).
+// name its target is offered here on its role token only while no session holds the role live, so
+// it is answered for by this rule rather than the session's (handOffOrKeepRoleSend): a finished
+// role's message reaches its daemon, and a running role's is kept for its next holder (#4387's
+// keep). A role a session holds live is that holder's, finished or not - a session that took the
+// role over among them - so its message is kept for that holder and never offered here.
 //
 // Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
 // released that session's idle issue pod and keeps its claim to resume, so the message is a wake
