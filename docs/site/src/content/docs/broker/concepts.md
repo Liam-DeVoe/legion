@@ -685,15 +685,17 @@ The broker evaluates every name
   and in `profiles check`, refuses a `github` block whose `permissions` leave `metadata` out or name
   it at any level but `read`. The values answer names each entry the cut left out
   (`github_left_out`), the broker logs one line for each, and `agent-secrets` writes one line on
-  stderr for each account that names them. A cut that leaves no permission
-  refuses the release with no request to GitHub (`422 PROFILE_MINT_REFUSED`), since GitHub gives
-  every permission the installation holds to a request that names none, and so does a
-  `value: token` profile whose account the App has more than one installation on (logins that
-  differ only in case), since a token minted for each would leave all but one live with nobody
-  holding it. GitHub's own `422`, such as for a repository the installation does not reach,
-  refuses it the same way. The broker releases a token only once GitHub's answer shows
-  it holds no more than the request asked, for every profile, and gives back one that holds more
-  (`502 MINT_FAILED`). A target is an entry of the signed request's `locations`, so the record a
+  stderr for each account that names them. A cut that leaves no permission but
+  `metadata`, of a profile that names more, refuses the release with no request to GitHub
+  (`422 PROFILE_MINT_REFUSED`): every installation GitHub lists holds `metadata`, so that token
+  would do nothing the profile is for, and GitHub gives every permission the installation holds
+  to a request that names none. So does a `value: token` profile whose account the App has more
+  than one installation on (logins that differ only in case), since a token minted for each would
+  leave all but one live with nobody holding it. GitHub's own `422`, such as for a repository the
+  installation does not reach, refuses it the same way. The broker releases a token only once
+  GitHub's answer shows it holds no more than the request asked, for every profile, and gives back
+  one that holds more (`502 MINT_FAILED`). A target is an entry of the signed request's
+  `locations`, so the record a
   person approves holds it and the approval page prints it beside the profile's source,
   permissions, accounts, repositories and proxy hosts, and a Google profile's scopes. The values
   answer carries the grant's target back in `locations`, as the request signed it and sorted, and
@@ -712,8 +714,9 @@ The broker evaluates every name
   profile, the broker first mints the token the release would mint, for the target's account or
   the profile's accounts, and revokes it at once, so a profile it cannot mint costs nobody an
   approval: an App with no installation on an account in effect, a cut that leaves no permission
-  and a repository the installation does not reach are each refused `422 PROFILE_MINT_REFUSED`
-  then, and nobody is asked (the release of a grant answers the first `502 MINT_FAILED`).
+  but `metadata` and a repository the installation does not reach are each refused
+  `422 PROFILE_MINT_REFUSED` then, and nobody is asked (the release of a grant answers the first
+  `502 MINT_FAILED`).
   Where it reaches no verdict, the request waits for its approver as before and the release makes
   the refusal. GitHub gives no verdict when it is out of reach, when it answers a 5xx or a rate
   limit, and when it refuses the App itself with a `401`, `403` or `404`. The broker reaches no
@@ -1150,10 +1153,13 @@ decided under, so an edit to one profile's entry ends that profile's grants and 
 fingerprint a grant is held to is its approval's, the entry the approval was given under, and
 every release compares it: a grant approved after an entry's edit ends when the file rolls back
 to the entry the request was made under. The proxy keeps the values it read for a grant until
-the policy moves, a minted value nears its expiry, or a name served from that value is reread: a
-reread of a source, or of any profile of it, rereads the one stored value they are all served
-from, so the proxy reads each of their grants' values again and a source's new value reaches
-every profile's requests.
+the policy moves, a minted value nears its expiry, or a reread finds a new value of the stored
+secret it is served from: a reread of a source, or of any profile of it, rereads the one stored
+value they are all served from, so the proxy reads each of their grants' values again and a
+source's new value reaches every profile's requests. A stored value has no version the broker
+tracks, so each reread of it counts as a new value; a type secret's reread does only when it
+finds a new version of the value, so a reread that finds the same one leaves the proxy spending
+the tokens it minted from it.
 
 What the airlock does not stop is as much of the design as what it does:
 

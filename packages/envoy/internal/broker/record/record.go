@@ -244,12 +244,12 @@ func validateLocations(locations []string) error {
 // TargetLocations reads the targets a run names for its secrets, each ACCOUNT or
 // ACCOUNT/REPOSITORY as a person types it, as the locations of the request's one detail: the
 // account lowered (fold.ASCII), since a caller passes a login in whatever case GitHub gives it,
-// then held to the account rule and the repository to the repository rule; the locations sorted,
-// as Target sorts a record's repositories, and each once, so two runs of one target sign the same
-// locations and match the same grant. It answers nil for no target. Each refusal names the rule a
-// target breaks: a target narrows one secret, all targets name one account, the account form
-// stands alone, and there are at most MaxTargetLocations once each is folded. A target is checked
-// here, before anything is signed, as validateLocations would check its locations at the broker.
+// then each location held to parseLocation, the rule the broker reads it by; the locations
+// sorted, as Target sorts a record's repositories, and each once, so two runs of one target sign
+// the same locations and match the same grant. It answers nil for no target. Each refusal names
+// the rule a target breaks, in the words a person typed it in: the account or the repository a
+// location cannot hold, a target narrows one secret, all targets name one account, the account
+// form stands alone, and there are at most MaxTargetLocations once each is folded.
 func TargetLocations(names, targets []string) ([]string, error) {
 	if len(targets) == 0 {
 		return nil, nil
@@ -263,20 +263,21 @@ func TargetLocations(names, targets []string) ([]string, error) {
 	for i, target := range targets {
 		owner, repository, named := strings.Cut(target, "/")
 		owner = fold.ASCII(owner)
+		location := gitHubLocationPrefix + owner
+		if named {
+			location += "/" + repository
+		}
+		_, _, ok := parseLocation(location)
 		switch {
-		case !locationAccount.MatchString(owner):
+		case !ok && !locationAccount.MatchString(owner):
 			return nil, fmt.Errorf("--target %q: the account %q is no GitHub login: 1 to 39 letters, digits, '-' and '_', the first a letter or a digit", target, owner)
-		case named && (!locationRepository.MatchString(repository) || repository == "." || repository == ".."):
+		case !ok:
 			return nil, fmt.Errorf("--target %q: the repository %q is no name GitHub can hold: 1 to 100 letters, digits, '.', '-' and '_', neither . nor ..", target, repository)
 		case i > 0 && owner != account:
 			return nil, fmt.Errorf("--target names two accounts, %s and %s: all targets of one run name one account", account, owner)
 		}
 		account = owner
 		accountForm = accountForm || !named
-		location := gitHubLocationPrefix + owner
-		if named {
-			location += "/" + repository
-		}
 		locations = append(locations, location)
 	}
 	slices.Sort(locations)

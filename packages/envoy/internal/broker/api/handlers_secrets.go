@@ -208,14 +208,16 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 // reread it too (notifyPeers) once this pod has merged what it read: when the reread succeeded,
 // and when only its value read was cut (policy.ErrValueUnchecked), since the tags it read are in
 // force here then too. It is the one place both of the route's rereads, a session's and the one
-// run after a 202, decide whether the peers are told.
+// run after a 202, decide whether the peers are told. The live policy is read before the reread,
+// so the fan-out's caller can tell what the reread moved (Deps.NotifyReread).
 func (s *server) refreshAndTell(ctx context.Context, name string, beforeNotify func()) (policy.Lookup, error) {
+	before := s.deps.Policy.Get()
 	lk, err := s.deps.Policy.RefreshOne(ctx, name)
 	if err == nil || errors.Is(err, policy.ErrValueUnchecked) {
 		if beforeNotify != nil {
 			beforeNotify()
 		}
-		s.notifyPeers(ctx, name)
+		s.notifyPeers(ctx, name, before)
 	}
 	return lk, err
 }
@@ -280,7 +282,8 @@ const rereadAfterAnswerTimeout = 45 * time.Second
 // reread run after its answer (rereadAfterAnswer) has done the same. A reread that merged nothing
 // - a name no secret can carry, a request that ended before or during the metadata read, a store
 // that failed, or the 429 refuseReread wrote before any work - is nothing for a peer to copy, and
-// neither calls it for any of them. ctx is the context the reread ran on, whose values it keeps.
+// neither calls it for any of them. ctx is the context the reread ran on, whose values it keeps,
+// and before the live policy as it stood before that reread.
 //
 // It notifies on every reread that merged, whether or not the broker now serves the name.
 // Notifying only when the live answer changed would need RefreshOne to report a change it does
@@ -304,13 +307,13 @@ const rereadAfterAnswerTimeout = 45 * time.Second
 // RefreshOne's other caller is the miss path in requests/machine_state.go, which is bounded per
 // enrollment and per process and already heals a new secret on first use; fanning that out would
 // spend every peer a store read for a name that peer may never be asked for.
-func (s *server) notifyPeers(ctx context.Context, name string) {
+func (s *server) notifyPeers(ctx context.Context, name string, before *policy.Set) {
 	if s.deps.NotifyReread == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyRereadTimeout)
 	defer cancel()
-	s.deps.NotifyReread(ctx, name)
+	s.deps.NotifyReread(ctx, name, before)
 }
 
 // notifyRereadTimeout bounds the fan-out one reread sends: a single Postgres NOTIFY on the shared

@@ -30,9 +30,9 @@ import (
 )
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
-// no airlock name the session may still have: every one of them is withheld from it. The proxy
-// answers it 407, as it answers an unknown placeholder, since a connection that may carry nothing
-// is no connection.
+// no airlock name the session may still have: nobody decided the grant, and every one of its names
+// is withheld from the session. The proxy answers it 407, as it answers an unknown placeholder,
+// since a connection that may carry nothing is no connection.
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
 // ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its type
@@ -512,8 +512,9 @@ func proxyPassword(names map[string]AirlockName) string {
 
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
-// grant's liveness, its enrollment's lease, and the names its operator withheld - and no others;
-// the full release checks run once per grant per pod, in AirlockValues.
+// grant's liveness, its enrollment's lease, and the names its operator withheld from a grant
+// nobody decided - and no others; the full release checks run once per grant per pod, in
+// AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
@@ -536,22 +537,31 @@ type AirlockGrantName struct {
 
 // AirlockConnection answers what the placeholder a proxy connection authenticated with proves. It
 // refuses with ErrGrantNotLive when no row holds that placeholder, when its grant is revoked or
-// expired, or when its enrollment is revoked or its lease lapsed; it drops every name the
-// enrollment's operator withheld, read as policy.Set.Withholds reads them, so a profile whose
-// source they withheld is dropped too, and refuses with ErrAirlockNoNames when that leaves none,
-// which the proxy answers 407.
+// expired, or when its enrollment is revoked or its lease lapsed; it drops, from a grant whose
+// request nobody decided, every name the enrollment's operator withheld, read as
+// policy.Set.Withholds reads them, so a profile whose source they withheld is dropped too, and
+// refuses with ErrAirlockNoNames when that leaves none, which the proxy answers 407.
+//
+// A grant someone decided keeps its withheld names, as Values releases them: stillAllowed judges a
+// withheld name by the login that decided the request, so only an automatic grant, which no one
+// decided, never passes. A withhold ends every grant that got a name it covers without asking, in
+// the transaction that withholds it (withhold), so a live grant someone decided that holds a
+// withheld name had that name approved: by a person after the withhold, whom the withheld name let
+// approve it (currentPolicyAdmits), or as a name its request waited on a decision for. Either
+// approval stands. A name the request got without asking, beside one it waited on a person for,
+// is approved with the whole request.
 //
 // This runs on every connection, so it is indexed reads alone and nothing else: the row by its
-// primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
-// policy snapshot already in memory, which costs no query. The checks a release makes besides —
-// the approval chain, the policy re-evaluation, the max-grant and the profile fingerprint — are
-// AirlockValues's, once per grant per pod.
+// primary key with its grant, its enrollment and its request, which says who decided it, joined
+// in, the grant's other placeholders by grant_id, and the enrollment's withheld names by
+// enrollment_id. Each name's type comes from the policy snapshot already in memory, which costs no
+// query. The checks a release makes besides — the approval chain, the policy re-evaluation, the
+// max-grant and the profile fingerprint — are AirlockValues's, once per grant per pod.
 func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
 	var conn AirlockConnection
-	var reason string
+	var reason, decidedBy string
 	var live bool
-	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
+	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		e.runtime_id, coalesce(e.session_id, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
 		from airlock_placeholders p
@@ -559,7 +569,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
+		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
 			&conn.RuntimeID, &conn.SessionID, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
@@ -587,7 +597,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	requester := policy.Requester{Withheld: withheld}
 	conn.Names = map[string]AirlockGrantName{}
 	for name, slots := range held {
-		if set.Withholds(requester, name) {
+		if decidedBy == "" && set.Withholds(requester, name) {
 			continue
 		}
 		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}

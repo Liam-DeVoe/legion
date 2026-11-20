@@ -272,14 +272,12 @@ The broker asks GitHub for the profile's permissions cut to what the App's insta
 names each permission it left out in the release (`github_left_out`); `agent-secrets` writes one
 line on stderr for each account, `the profile <NAME> left out <permissions> for <account>, since
 the installation there does not hold them`, and runs the command.
-Every GitHub profile names `metadata: read`, which GitHub grants with every installation token, so
-an installation that holds none of the profile's other permissions gets a token of `metadata`
-alone, and the release names each of the others as left out.
-A profile that names a repository the
-installation does not reach is refused `422 PROFILE_MINT_REFUSED`; an account the App is not
-installed on is refused with a message that says `has no installation on` that account,
-`422 PROFILE_MINT_REFUSED` when the broker refuses the request, and `502 MINT_FAILED` when the
-refusal comes as the broker reads the grant.
+A profile that asks for more than `metadata` and whose permissions the installation holds none of
+but `metadata`, which every installation holds and which alone does nothing the profile is for,
+or that names a repository the installation does not reach, is refused `422 PROFILE_MINT_REFUSED`;
+an account the App is not installed on is refused with a message that says `has no installation
+on` that account, `422 PROFILE_MINT_REFUSED` when the broker refuses the request, and
+`502 MINT_FAILED` when the refusal comes as the broker reads the grant.
 When a person approves the request, the broker makes these refusals before the approval request:
 it makes the token that your read would get, reads GitHub's answer, and gives that token back to
 GitHub at once, so no request waits and the person is not asked.

@@ -493,7 +493,7 @@ type recordingNotifier struct {
 	names []string
 }
 
-func (n *recordingNotifier) notify(ctx context.Context, name string) {
+func (n *recordingNotifier) notify(ctx context.Context, name string, _ *policy.Set) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := ctx.Err(); err != nil {

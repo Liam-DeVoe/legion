@@ -4,6 +4,7 @@
 package approval_test
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
@@ -142,5 +144,70 @@ func TestAnApprovalIsBoundToTheProfileItsPagePrinted(t *testing.T) {
 	b.Decide(t, p.recordID, true)
 	if grants := r.grants(t, p.recordID); grants != 1 {
 		t.Fatalf("the approval from the page opened again made %d grants; want one", grants)
+	}
+}
+
+// TestAnApprovalWhoseTargetARollTookOutIsARefusal: a profiles roll can take a pending request's
+// target out of its profile before the request's page is opened. The page prints the live profile
+// and its fingerprint, so the approval passes profilesMoved, and the approval's own target check
+// refuses it (requests.ErrTargetRefused). That is the ordinary outcome of the roll, as the judge
+// reads the same refusal, so the page decides nothing and logs the approval refused in the
+// broker's own words, as it logs every other refusal of one, and writes no error line.
+func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	r := newRig(t)
+	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	const block = `"permissions": {"contents": "read", "metadata": "read"}`
+	before := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
+	after := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "repositories": ["ada/lean"], ` + block + `}}`)
+	r.machine.Policy = policytest.ProfiledCurrent(t, local, before)
+	enrollmentID, key := r.benSession(t, "ben-box")
+	compact, err := record.Sign(key, r.url, []record.AuthorizationDetail{
+		{Type: record.KindAgentSecret, Identifier: "GITHUB_READ", Actions: []string{"inject"}, Locations: []string{"https://github.com/ada/proofs"}},
+	}, "read the proofs", "", nil, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	status, out := r.session(t, key, enrollmentID, http.MethodPost, "/v1/requests", map[string]any{"request": compact})
+	created := decode[struct {
+		State    string  `json:"state"`
+		RecordID *string `json:"record_id"`
+	}](t, out)
+	if status != http.StatusOK || created.State != "pending" || created.RecordID == nil {
+		t.Fatalf("POST /v1/requests for GITHUB_READ --target ada/proofs = %d %s, want it pending with a record", status, out)
+	}
+	recordID := *created.RecordID
+
+	r.machine.Policy = policytest.ProfiledCurrent(t, local, after)
+	b := r.browser(t)
+	b.SignIn(t, recordID, person(ada))
+	form := decisionForm(t, b.Page(t, recordID).Body, recordID)
+	if form == nil {
+		t.Fatalf("the page for %s offers no decision", recordID)
+	}
+	if res := b.FromPage(t, "/approve", decision(form, "approve")); res.Status != http.StatusSeeOther {
+		t.Fatalf("the approval of a target the rolled profile does not hold = %d, want 303 back to the record:\n%s", res.Status, res.Body)
+	}
+	r.requirePending(t, recordID)
+
+	var outcomes []any
+	for _, logged := range capture.Records() {
+		fields := map[string]any{}
+		logged.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+		if logged.Level >= slog.LevelError {
+			t.Errorf("the refused approval wrote an error line %q: %v", logged.Message, fields)
+		}
+		if logged.Message == "approval page decision" && fields["record"] == recordID {
+			outcomes = append(outcomes, fields["outcome"])
+		}
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("the approval logged the outcomes %v; want one", outcomes)
+	}
+	outcome, _ := outcomes[0].(string)
+	if !strings.HasPrefix(outcome, "refused: ") || !strings.Contains(outcome, "ada/proofs") {
+		t.Fatalf("the approval's outcome = %q; want it refused, naming the target ada/proofs", outcome)
 	}
 }

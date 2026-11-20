@@ -178,11 +178,11 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, secrets.ErrMintNarrowingRefused) || errors.Is(err, secrets.ErrMintNoInstallation):
 		// Create's check mint refused a GitHub profile the request names before anybody was asked
-		// to approve it: its permissions cut to what the installation holds leave none, GitHub
-		// refused a repository it names, or the App has no installation on an account in effect.
-		// The release route answers the first two alike and not the last: it wraps that refusal
-		// in requests.ErrMintFailed and answers it 502 MINT_FAILED, as it answers every refused
-		// mint. So this arm is the request route's own.
+		// to approve it: its permissions cut to what the installation holds leave none but
+		// metadata, GitHub refused a repository it names, or the App has no installation on an
+		// account in effect. The release route answers the first two alike and not the last: it
+		// wraps that refusal in requests.ErrMintFailed and answers it 502 MINT_FAILED, as it
+		// answers every refused mint. So this arm is the request route's own.
 		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case errors.Is(err, pgx.ErrNoRows):
@@ -520,8 +520,9 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
 		// The release's mint refused a GitHub profile's scope: its permissions cut to what the
-		// installation holds leave none, or GitHub refused a repository it names. The message
-		// says which; the profiles file or the caller's target fixes it, and nothing was released.
+		// installation holds leave none but metadata, or GitHub refused a repository it names.
+		// The message says which; the profiles file or the caller's target fixes it, and nothing
+		// was released.
 		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case err != nil:

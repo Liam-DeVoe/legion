@@ -320,10 +320,10 @@ func profileLookup(set *Set, name string) Lookup {
 // reread reads, which is name or, for a profile's name, the profile's source (RefreshOne), and
 // each profile of that source in the live policy (Set.ProfilesOf), since every one of them is
 // served from that one stored value. The airlock's proxy holds a grant's values by the name the
-// grant was released under, a profile's own name for a profile, so a reread drops each of these
-// from it (cmd/broker), and a new value of a source reaches every profile of it rather than only
-// a grant of the name that was reread. A name no profile is of, or that the policy has never
-// heard of, is itself alone.
+// grant was released under, a profile's own name for a profile, so a reread that moved that
+// value (MovedByReread) drops each of these from it (cmd/broker), and a new value of a source
+// reaches every profile of it rather than only a grant of the name that was reread. A name no
+// profile is of, or that the policy has never heard of, is itself alone.
 func (c *Current) RereadNames(name string) []string {
 	source := name
 	if profile := c.loader.Profiles.Lookup(name); profile != nil {
@@ -337,6 +337,35 @@ func (c *Current) RereadNames(name string) []string {
 	}
 	if !slices.Contains(names, name) {
 		names = append(names, name)
+	}
+	return names
+}
+
+// MovedByReread is the names whose value a reread of name may have moved, read against before,
+// the live set as it stood before that reread: RereadNames(name) where the reread moved the value
+// version (Set.ValueVersion) of a name served from the stored secret it read, or where neither set
+// lists a version of any of them, and none where both list the same versions. A type secret's
+// served names each carry its value version, which a reread moves only when the store holds a new
+// value, so a reread that finds the value the policy held gave no name a new one: what a proxy
+// holds of it was minted from that same value and is spent until it nears its expiry, rather than
+// minted again for each held grant of each profile of the source at every reread anyone may ask
+// for. A stored value has no version the policy lists, and nor does a name neither set serves, so
+// for those the reread is the only signal of a new value, and every one of its names is moved.
+// The live set is read after the reread, so a reload that moved a version in between counts as
+// moved too.
+func (c *Current) MovedByReread(name string, before *Set) []string {
+	names := c.RereadNames(name)
+	live := c.Get()
+	listed := false
+	for _, served := range names {
+		was := before.ValueVersion(served)
+		if was != live.ValueVersion(served) {
+			return names
+		}
+		listed = listed || was != ""
+	}
+	if listed {
+		return nil
 	}
 	return names
 }
