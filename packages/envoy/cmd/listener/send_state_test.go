@@ -17,8 +17,8 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -945,7 +945,7 @@ func TestALowPublishOfATokenSessionWithNoSourceSessionWakesTheRole(t *testing.T)
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		request = request.WithContext(withBrokerCaller(request.Context(), brokertoken.Caller{Session: sender, Person: "ada@example.com"}))
+		request = request.WithContext(withBrokerCaller(request.Context(), ciphertoken.Caller{Session: sender, Person: "ada@example.com"}))
 		publishHandler(d, logging.New("test")).ServeHTTP(recorder, request)
 		return recorder
 	}
