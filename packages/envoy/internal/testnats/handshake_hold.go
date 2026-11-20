@@ -1,0 +1,289 @@
+package testnats
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"unsafe"
+
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// HandshakeHold is a Proxy whose relay to the server can hold a reconnect's handshake: Hold drops
+// every connection the proxy relays, so a client through it reconnects, and until Release it holds
+// the server's answer to the CONNECT of each connection made meanwhile. The server's INFO reaches
+// the client and the client's CONNECT reaches the server; nothing more the server sends does, as at
+// a hub whose auth service has not answered the CONNECT. nats.go holds its connection lock through a
+// reconnect attempt's dial and handshake (v1.55.0 doReconnect, nats.go:3554-3581), so while a
+// handshake is held every read of the connection's state waits, until the client's connect timeout
+// ends the attempt; the next attempt is held in turn.
+//
+// The proxy (Cut, Freeze, Restore) carries the client's connections, and the hold's own relay sits
+// between it and the server. Restore ends a Cut or a Freeze and leaves a hold in force; Release
+// ends the hold.
+type HandshakeHold struct {
+	*Proxy
+	// target is the server's address, which the hold's relay dials.
+	target   string
+	listener net.Listener
+
+	mu sync.Mutex
+	// release is nil while connections are relayed as they are, and open from Hold until Release.
+	release chan struct{}
+	// held is closed once a CONNECT has reached the server under the hold Hold began.
+	held     chan struct{}
+	heldOnce *sync.Once
+	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
+	// attempt whose answer the hold keeps.
+	attempts atomic.Int64
+}
+
+// StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
+// through a proxy and the hold's own relay, on loopback ports of their own, until the test ends. URL
+// is the same server through both.
+func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
+	t.Helper()
+	server, err := url.Parse(target)
+	if err != nil || server.Host == "" {
+		t.Fatalf("read the NATS URL %q the handshake hold relays to: %v", target, err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the handshake hold: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	h := &HandshakeHold{target: server.Host, listener: listener}
+	go h.serve()
+	relayed := *server
+	relayed.Host = listener.Addr().String()
+	h.Proxy = StartProxy(t, relayed.String())
+	return h
+}
+
+// Hold drops every connection the proxy relays (Cut, then Restore) and holds the answer to the
+// CONNECT of each connection made from now until Release. The channel it returns is closed once a
+// client's CONNECT has reached the server through the hold, so that client's handshake is waiting
+// for the answer the hold keeps.
+func (h *HandshakeHold) Hold() <-chan struct{} {
+	h.mu.Lock()
+	if h.release == nil {
+		h.release, h.held, h.heldOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
+	}
+	held := h.held
+	h.mu.Unlock()
+	h.Cut()
+	h.Restore()
+	return held
+}
+
+// HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
+// CONNECT has reached the server through the hold, and nats.go holds its connection lock for that
+// handshake (AwaitLockHeld). Both waits are testwait's, so a reconnect that never reaches the hold
+// fails the test naming what it waited for. A bus client reconnects about a second after its
+// connection drops (ReconnectWait).
+func (h *HandshakeHold) HoldReconnect(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	testwait.Receive(t, "a reconnect's CONNECT to reach the server through the handshake hold", h.Hold())
+	AwaitLockHeld(t, conn)
+}
+
+// AwaitLockHeld waits until nats.go holds its connection lock on conn (lockFree), as a held
+// handshake or a held write holds it.
+func AwaitLockHeld(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	testwait.Eventually(t, "nats.go to hold its connection lock: a handshake or a write holding it", func() bool {
+		return !lockFree(t, conn)
+	})
+}
+
+// Release ends a Hold: every answer it kept moves on, and connections made from now on are relayed
+// as they are.
+func (h *HandshakeHold) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release != nil {
+		close(h.release)
+		h.release = nil
+	}
+}
+
+// HoldWriteLock holds conn's nats.go connection lock as a write to a socket that does not drain
+// holds it, on a connection that stays connected: it takes that lock itself (connLock), so from
+// the moment it returns every call of conn's that reads or writes the connection waits, as each
+// waits behind such a write, and nothing about the connection changes. The fixture takes the lock
+// rather than filling the socket, so no span decides when a write blocked: the lock is held when
+// the take returns, and let go when the row calls the func it returns, which the test's end calls
+// too. The proxy is left as it is.
+func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release func()) {
+	t.Helper()
+	lock := connLock(t, conn)
+	testwait.Eventually(t, "nats.go to let its connection lock go, so the row can take it as a write does", lock.TryLock)
+	var once sync.Once
+	release = func() { once.Do(lock.Unlock) }
+	t.Cleanup(release)
+	return release
+}
+
+// RequireLockHeld fails the test when nats.go's connection lock on conn is free (lockFree): the
+// handshake or the write the row holds it with is not held. A row calls it once the calls it
+// measures have answered, so their answers are known to have come while the lock was held.
+func RequireLockHeld(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	if lockFree(t, conn) {
+		t.Fatal("nats.go's connection lock was free: the handshake or the write the row holds it with was not held when the calls answered")
+	}
+}
+
+// lockFree reports whether nats.go's connection lock on conn is free, read from the lock itself
+// (connLock): TryRLock fails while a writer holds it or waits for it, which is when a read of conn's
+// status (Conn.Status, which takes it to read) waits.
+func lockFree(t testing.TB, conn *natsgo.Conn) bool {
+	t.Helper()
+	lock := connLock(t, conn)
+	if !lock.TryRLock() {
+		return false
+	}
+	lock.RUnlock()
+	return true
+}
+
+// connLock is nats.go's connection lock on conn: the sync.RWMutex every call that reads or writes
+// the connection takes (Conn.mu, nats.go v1.55.0 nats.go:659), which a reconnect's dial and
+// handshake hold (doReconnect) and a write to a socket that does not drain holds. nats.go does not
+// export it, so it is read through reflect, as cmd/listener's rows read the fields of the
+// listener's own types; a nats.go whose Conn holds no such field fails the test, naming it.
+func connLock(t testing.TB, conn *natsgo.Conn) *sync.RWMutex {
+	t.Helper()
+	field := reflect.ValueOf(conn).Elem().FieldByName("mu")
+	if !field.IsValid() || field.Type() != reflect.TypeFor[sync.RWMutex]() {
+		t.Fatal("nats.go's Conn holds no mu sync.RWMutex, the connection lock the handshake hold reads (nats.go v1.55.0 nats.go:659)")
+	}
+	return (*sync.RWMutex)(unsafe.Pointer(field.UnsafeAddr()))
+}
+
+// Answers runs each call at once, each on a goroutine of its own, and returns their answers in
+// order. Each answer is waited for through testwait, so a call that never answers fails the test
+// naming what and its place.
+func Answers(t testing.TB, what string, calls ...func() error) []error {
+	t.Helper()
+	answers := make([]chan error, len(calls))
+	for i, call := range calls {
+		answers[i] = make(chan error, 1)
+		go func() { answers[i] <- call() }()
+	}
+	got := make([]error, len(calls))
+	for i, answer := range answers {
+		got[i] = testwait.Receive(t, fmt.Sprintf("%s %d of %d to answer", what, i+1, len(calls)), answer)
+	}
+	return got
+}
+
+// AwaitLockFree waits until nats.go lets conn's connection lock go (lockFree). With every
+// reconnect's handshake held (HoldReconnect), that is the end of an attempt, when nats.go reads the
+// connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus client) with
+// its lock free.
+func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	testwait.Eventually(t, "nats.go to let its connection lock go: the held attempt to end", func() bool {
+		return lockFree(t, conn)
+	})
+}
+
+// Attempts is how many handshake attempts have reached the server under a hold: each CONNECT the
+// hold has kept the answer to.
+func (h *HandshakeHold) Attempts() int64 { return h.attempts.Load() }
+
+// AnswersWithinAttempt runs each call at once, each on a goroutine of its own, and returns their
+// answers in order. It fails the test, naming what, unless every call answered within the handshake
+// attempt the hold held when they began: no later attempt has reached the hold by the time all have
+// answered, and nats.go's lock is still held then (RequireLockHeld). A call that waits for nats.go's
+// lock answers only once that attempt has ended, at the client's connect timeout: in the gap after
+// it, with the lock free, or once the next attempt has begun. The row decides by those events, and
+// its waits are testwait's, with no bound of their own.
+func (h *HandshakeHold) AnswersWithinAttempt(t testing.TB, conn *natsgo.Conn, what string, calls ...func() error) []error {
+	t.Helper()
+	began := h.Attempts()
+	answers := Answers(t, what, calls...)
+	if ended := h.Attempts(); ended != began {
+		t.Fatalf("%s answered only after %d more handshake attempt(s) had reached the hold: it waited out the attempt held when it began", what, ended-began)
+	}
+	RequireLockHeld(t, conn)
+	return answers
+}
+
+// serve relays each connection the proxy makes to the hold until the hold's listener closes.
+func (h *HandshakeHold) serve() {
+	for {
+		client, err := h.listener.Accept()
+		if err != nil {
+			return
+		}
+		go h.join(client)
+	}
+}
+
+// join relays client, a connection the proxy made for one of its clients, to the server, under the
+// hold when one is in force as client arrives, until either side ends; then it closes both. The
+// client's stream is read as NATS protocol (protocolStream) to find its CONNECT, which may come in
+// pieces.
+func (h *HandshakeHold) join(client net.Conn) {
+	defer client.Close()
+	server, err := net.Dial("tcp", h.target)
+	if err != nil {
+		return
+	}
+	defer server.Close()
+	h.mu.Lock()
+	release, held, heldOnce := h.release, h.held, h.heldOnce
+	h.mu.Unlock()
+	gone := make(chan struct{})
+	defer close(gone)
+	go func() {
+		defer client.Close()
+		defer server.Close()
+		answers := bufio.NewReader(server)
+		if release != nil {
+			info, err := answers.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			if _, err := client.Write(info); err != nil {
+				return
+			}
+			select {
+			case <-release:
+			case <-gone:
+				return
+			}
+		}
+		_, _ = io.Copy(client, answers)
+	}()
+	var stream protocolStream
+	buffer := make([]byte, 32<<10)
+	for {
+		read, err := client.Read(buffer)
+		if read > 0 {
+			if _, err := server.Write(buffer[:read]); err != nil {
+				return
+			}
+			if release != nil && !stream.connected {
+				stream.wrote(buffer[:read])
+				if stream.connected {
+					h.attempts.Add(1)
+					heldOnce.Do(func() { close(held) })
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
