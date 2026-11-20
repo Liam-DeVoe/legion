@@ -952,10 +952,12 @@ func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T)
 // silent one, found by the client's own pings (bus.WithSilentCutDetection, the client
 // cmd/dispatch runs), reconnects through a path that answers nothing, and each attempt holds
 // nats.go's lock of the connection across its dial and handshake, up to the client's connect
-// timeout: a read of the connection's status that waited on that lock held the batch up to 6 s.
-// The bound is probeTimeout, one bounded status read past it (bus's connectionReadBound, 250 ms),
-// and the batch's own two statements, its read of the events and its release of what it did not
-// send, which the rest of the second covers.
+// timeout, with the client's reconnect wait between attempts: a read of the connection's status
+// that waited on that lock held the batch up to 6 s. So the silent row begins its batch while an
+// attempt holds the lock (inReconnectAttempt), where the batch's first read of the
+// connection's status meets it. The bound is probeTimeout, one bounded status read past it (bus's
+// connectionReadBound, 250 ms), and the batch's own two statements, its read of the events and its
+// release of what it did not send, which the rest of the second covers.
 func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -994,6 +996,9 @@ func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *tes
 			}
 			t.Cleanup(proxy.Restore)
 			waitFor(t, outboxHangGuard, "the client reading its connection lost", func() bool { return !bus.ConnectedWithin(client, statusReadBound) })
+			if row.silent {
+				waitFor(t, outboxHangGuard, "a reconnect attempt holding the client's connection", func() bool { return inReconnectAttempt(client) })
+			}
 			found := time.Now()
 
 			batch, err := scanBatch(context.Background(), holder.deps, hold, holder.instance)
@@ -1011,6 +1016,23 @@ func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *tes
 					took.Round(time.Millisecond), bound)
 			}
 		})
+	}
+}
+
+// inReconnectAttempt reports whether a read of client's connection status waits longer than
+// statusReadBound: nats.go holds its lock of the connection that long only across a reconnect
+// attempt's dial and handshake. The read it starts is left to end on its own.
+func inReconnectAttempt(client *bus.Client) bool {
+	answered := make(chan struct{})
+	go func() {
+		client.Connected()
+		close(answered)
+	}()
+	select {
+	case <-answered:
+		return false
+	case <-time.After(statusReadBound):
+		return true
 	}
 }
 
