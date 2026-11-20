@@ -1725,6 +1725,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     holds: "the picker's own name for a group of rows",
     written: "group.heading",
   },
+  {
+    file: `${FEATURES}/verification/VerificationTab.tsx`,
+    holds:
+      "the page's words for the server's reason it cannot say where a result's commit stands, a word of its model the page words, or shows as given when it is new",
+    written: "reasonWords(stands.reason, stands.repo)",
+  },
 ];
 
 /** Whether `draw` is one the list of fields that hold no stored text names. */
@@ -2256,21 +2262,28 @@ const CI_WORKFLOW = ".github/workflows/ci.yaml";
 
 /**
  * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. The job declares its filters over several
- * dorny/paths-filter steps, since Linux caps the one environment variable each step's input
- * travels in, so the filter is read from whichever step declares it, and a reading that finds
- * it in none or in more than one finds no filter. The filters are one YAML string inside the
- * workflow's YAML, and a filter may name a group of them through its anchor, so both are parsed
- * and the list is flattened, as dorny/paths-filter flattens it. The steps read their patterns
- * with the `some-with-excludes` quantifier, so a `!` pattern is an exclusion: a file is in the
- * filter when a pattern without `!` matches it and no `!` pattern does.
+ * starts the reference rows on a pull request. A dorny/paths-filter step's `filters` input is
+ * either the filters themselves, one YAML string, or the path of a file that holds them, which
+ * is how the job reads them now (`.github/ci-filters.yaml`), so a path is read from the
+ * repository and a string is parsed as it stands. The filter is read from whichever step
+ * declares it, and a reading that finds it in none or in more than one finds no filter. A
+ * filter may name a group of others through its anchor, so the list is flattened, as
+ * dorny/paths-filter flattens it. The step reads its patterns with the `some-with-excludes`
+ * quantifier, so a `!` pattern is an exclusion: a file is in the filter when a pattern without
+ * `!` matches it and no `!` pattern does.
  */
 function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
   const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
     jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
   };
+  const filtersOf = (input: string): string =>
+    /^[\w./-]+\.ya?ml$/u.test(input.trim())
+      ? readFileSync(join(REPO_ROOT, input.trim()), "utf8")
+      : input;
   const declaring = (workflow.jobs?.changes?.steps ?? [])
-    .map((step) => Bun.YAML.parse(step.with?.filters ?? "") as Record<string, unknown> | null)
+    .map((step) => step.with?.filters)
+    .filter((input): input is string => input !== undefined)
+    .map((input) => Bun.YAML.parse(filtersOf(input)) as Record<string, unknown> | null)
     .filter((groups) => groups?.dispatch_references !== undefined);
   const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
     .flat(Number.POSITIVE_INFINITY)
@@ -3084,7 +3097,7 @@ describe("every row of the writing list is a box the dashboard still draws", () 
         expect(
           inReferenceFilter(file)
             ? file
-            : `${file} (named by ${label}) is not in ${CI_WORKFLOW}'s dispatch_references filter`
+            : `${file} (named by ${label}) is not in the dispatch_references filter ${CI_WORKFLOW}'s changes job reads`
         ).toBe(file);
       }
     }

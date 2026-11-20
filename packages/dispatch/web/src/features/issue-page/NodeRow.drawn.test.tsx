@@ -432,7 +432,11 @@ test("an answer drawn through the renderer reads word for word, its text and its
       at: "2026-11-06T00:00:00Z",
       by: { id: "alice", kind: "user" },
       selected,
-      selectedTrees: selected.map((one) => displayTree(one)),
+      selectedTrees: selected.map((one) => {
+        const tree = displayTree(one);
+        if (tree === undefined) throw new Error("the warmed engine reads every option");
+        return tree;
+      }),
       text,
       textTree: displayTree(text),
     },
