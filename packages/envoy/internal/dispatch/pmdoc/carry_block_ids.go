@@ -19,13 +19,13 @@ import "slices"
 // which an upload resets (unchangedAttrs). An id goes to unchanged content at its paired
 // position, and to an untyped container the alignment keeps at that position though its
 // contents changed, whose identity is that place rather than what it holds (carryKept). It goes
-// onto nothing else: a changed block holding inline content - an edited, moved, swapped or
-// retyped paragraph, heading or code block, and every one a moved block passes, which the
-// alignment pairs with a changed neighbour - a changed typed block whose markdown names no id,
-// and every block the alignment pairs with nothing still take a fresh id from EnsureBlockIDs.
-// An id next names anywhere is not carried, nor is one no ask row or anchor could store
-// (storedBlockID). A repeat live carries may be carried to both holders, and EnsureBlockIDs
-// keeps it for the first, as it would have.
+// onto nothing else: every other changed untyped block, a leaf included - an edited, moved,
+// swapped or retyped paragraph, heading, code block or frontmatter, and every one a moved block
+// passes, which the alignment pairs with a changed neighbour - a changed typed block whose
+// markdown names no id, and every block the alignment pairs with nothing still take a fresh id
+// from EnsureBlockIDs. An id next names anywhere is not carried, nor is one no ask row or anchor
+// could store (storedBlockID). A repeat live carries may be carried to both holders, and
+// EnsureBlockIDs keeps it for the first, as it would have.
 func carryBlockIDs(next, live *Node) {
 	if next == nil || live == nil {
 		return
@@ -109,22 +109,27 @@ func (c blockIDCarrier) carryChildren(next, live []*Node) {
 // when the pair is unchanged, and otherwise the block's own id and those of its unchanged
 // descendants.
 //
-// An untyped container keeps its id though its contents changed, because its identity is its
-// place in the tree and not what it holds: a list that gains, loses or alters an item is still
-// that list, so carrying its id states what is true, where a fresh one would assert that a new
-// list exists where none does and reparent every untouched sibling onto it. That place is what
-// the call site has established, so it is not weighed again here: carryChildren comes here only
-// for the pair it keeps at one position of one parent, whose kinds match (sameChildKind), and a
-// container it pairs with nothing - another kind in that place, one under another parent, one
-// live never held - reaches EnsureBlockIDs instead and is minted a fresh id there.
+// An untyped container (isUntypedContainer) keeps its id though its contents changed, because its
+// identity is its place in the tree and not what it holds: a list that gains, loses or alters an
+// item is still that list, so carrying its id states what is true, where a fresh one would
+// assert that a new list exists where none does and reparent every untouched sibling onto it.
+// That place is what the call site has established, so it is not weighed again here:
+// carryChildren comes here only for the pair it keeps at one position of one parent, whose kinds
+// match (sameChildKind), and a container it pairs with nothing - another kind in that place, one
+// under another parent, one live never held - reaches EnsureBlockIDs instead and is minted a
+// fresh id there.
 //
-// A changed block holding inline content (isTextblock) still takes a fresh id. A paragraph, a
-// heading or a code block is its text, so one whose text changed is other content, and carrying
-// the id onto it would move an anchor or a reference keyed on what live said onto text that says
-// something else. A typed block whose id next does not name as live's is another block, however
-// alike, so nothing in it is carried; the schema owns its identity, and the attributes it
-// carries say what it is. An unchanged typed block takes live's id whether it names one or
-// not, as every unchanged block does.
+// Every other changed untyped block takes a fresh id, a leaf included, as the spec has it: "A
+// changed leaf still takes a fresh id". A paragraph, a heading, a code block or a frontmatter
+// block is its text, so one whose text changed is other content, and carrying the id onto it
+// would move an anchor or a reference keyed on what live said onto content that says something
+// else. A kind isUntypedContainer does not name takes a fresh id as well, a kind the schema adds
+// later included: at worst a fresh id leaves an anchor keyed on live's block naming a block the
+// document no longer holds, where a carried one can move it onto content it never named. A typed
+// block whose id next does not name as live's is another block, however alike, so nothing in it
+// is carried; the schema owns its identity, and the attributes it carries say what it is. An
+// unchanged typed block takes live's id whether it names one or not, as every unchanged block
+// does.
 func (c blockIDCarrier) carryKept(next, live *Node) {
 	if unchangedNode(next, live) {
 		c.carryUnchanged(next, live)
@@ -135,10 +140,30 @@ func (c blockIDCarrier) carryKept(next, live *Node) {
 		if liveID, _ := storedBlockID(live); !named || nextID != liveID {
 			return
 		}
-	} else if !isTextblock(next.Type) {
+	} else if isUntypedContainer(next.Type) {
 		c.carryID(next, live)
 	}
 	c.carryChildren(next.Children, live.Children)
+}
+
+// isUntypedContainer reports whether nodeType is an untyped block whose identity is its place in
+// the tree and not what it holds, the one kind of changed untyped block carryKept gives live's
+// id. Each holds blocks and no text of its own, so an edit inside it changes what it holds and
+// not which block it is: a bullet or an ordered list is the run of items at its place, and a list
+// item, a task item among them (a list item whose checked attribute is set), is one place in that
+// run; a blockquote quotes the blocks it holds; a footnote definition holds the blocks of the
+// note at its place; a table is the grid at its place, and a header row, a row, a header cell and
+// a cell are one row or one cell of that grid, a cell holding the one paragraph written there.
+// Nothing else is on the list: a textblock and a frontmatter block are their text, an hr has
+// neither content nor attributes to change, and html, an image, a hard break and a footnote
+// reference are inline atoms, which hold no block id (carryID).
+func isUntypedContainer(nodeType string) bool {
+	switch nodeType {
+	case "bullet_list", "ordered_list", "list_item", "blockquote", "footnote_definition",
+		"table", "table_header_row", "table_row", "table_header", "table_cell":
+		return true
+	}
+	return false
 }
 
 // carryUnchangedChild carries the ids of a pair of unchanged children: none for a text run, and
