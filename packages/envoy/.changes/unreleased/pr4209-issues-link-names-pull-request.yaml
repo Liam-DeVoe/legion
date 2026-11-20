@@ -29,11 +29,22 @@ body: |-
     forms are never stored. Before, a create whose own write found the link taken answered the
     issue that holds it, whatever its project.
 
-    A pull request whose URL an issue links is that issue's in any repository, also one the issue
+    A pull request that an issue links is that issue's in any repository, also one the issue
     does not resolve to: the results compare the issue's checks with its head, and the timeline
     names the issue for it. A branch, a title, a body or a commit message that names an issue is
     still held to the pull request's own repository, and a pull request whose head is in a fork
     still has no issue.
+
+    Every reader takes a link to a pull request by one rule, the one the link write owes its read
+    by, under the name its repository has today: a link by the name a repository had before a
+    rename names the pull request of the repository it was renamed to. The results, the timeline,
+    the link check, its lock and a read by `owner/repo#<n>` all read it so. Before, the results and
+    the timeline took such a link only where it was the stored pull request's URL, so an issue that
+    linked a pull request by the old name had no head, though the link owed its read and the read
+    stored the head. Once, at its first start, this release owes the read of each pull request
+    that a link stored before it names and whose head Dispatch does not hold, as a link write owes
+    it (migration `20261120171308_pull_request_reads_owed_link_backfill`), so a merged pull
+    request linked before this release gets its head without an event.
 time: 2026-11-19T20:36:28.000000000Z
 custom:
     Issue: pr4209

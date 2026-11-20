@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,57 @@ func TestALinkByHandStoresTheHeadOfThePullRequestItLinks(t *testing.T) {
 	if !comparedWithPull(t, read, "k1", 12) {
 		check := checkOf(t, read, "k1")
 		t.Fatalf("check k1 compares with %+v for the reason %q; want the head of acme/tools#12", check.ComparedWith, check.ComparedNothing)
+	}
+}
+
+// A link by hand by the name a repository had before a rename gives the linking issue the head
+// of its pull request (R5 of the results lookup), as a link by the name it has today does
+// (TestALinkByHandStoresTheHeadOfThePullRequestItLinks): oldco/tools is renamed to acme/tools, and
+// the issue links https://github.com/oldco/tools/pull/13. The link owes the read under acme/tools,
+// one pass stores the head that GitHub holds, and check k1 compares with it. When the statement
+// matched a link with the stored URL alone, the head row was stored and k1 compared with nothing,
+// which main's linked reader did not do (review of #4209, B1). The link check and the resolve read
+// a link by the same rule: another issue's link of acme/tools/pull/13 is refused with 409
+// EXTERNAL_LINK_TAKEN, and the reference acme/tools#13 resolves to the issue that links it.
+func TestALinkByHandByTheNameBeforeARenameGivesItsIssueTheHead(t *testing.T) {
+	handler, database, served, fake := readThroughGitHub(t, "acme/tools")
+	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Linked by the old name")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/oldco/tools",
+		map[string]any{"project": "ACME", "renamed_to": "acme/tools"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("record oldco/tools as renamed to acme/tools: status=%d body=%s", response.Code, response.Body.String())
+	}
+	fake.pullAnswers(func(repo, number string) string {
+		if repo != "acme/tools" || number != "13" {
+			return ""
+		}
+		return linkedOpenPull(repo, 13, headCommit)
+	})
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/oldco/tools/pull/13"}}})
+	if owed := owedReads(t, database); !slices.Equal(owed, []string{"acme/tools#13 failure"}) {
+		t.Fatalf("after a link to oldco/tools#13, the owed reads are %q; want the read of acme/tools#13", owed)
+	}
+	onePass(t, database, served)
+	if !comparedWithPull(t, readResults(t, handler, issue.Key), "k1", 13) {
+		check := checkOf(t, readResults(t, handler, issue.Key), "k1")
+		t.Fatalf("after the link by the old name and one pass, check k1 compares with %+v for the reason %q; want the head of acme/tools#13", check.ComparedWith, check.ComparedNothing)
+	}
+
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "ACME", "title": "Linked by the new name", "spec": "A spec\n"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create a second issue of ACME: status=%d body=%s", created.Code, created.Body.String())
+	}
+	other := decodeBody[model.Issue](t, created)
+	taken := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+other.Key,
+		map[string]any{"external_links": []map[string]string{{"url": "https://github.com/acme/tools/pull/13"}}}, "alice")
+	if taken.Code != http.StatusConflict || !strings.Contains(taken.Body.String(), `"code":"EXTERNAL_LINK_TAKEN"`) || !strings.Contains(taken.Body.String(), issue.Key) {
+		t.Fatalf("a link of acme/tools/pull/13 on %s, which %s links by the old name: status=%d body=%s; want 409 EXTERNAL_LINK_TAKEN naming %s",
+			other.Key, issue.Key, taken.Code, taken.Body.String(), issue.Key)
+	}
+	resolved := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=acme/tools%2313", nil, "alice")
+	if resolved.Code != http.StatusOK || !strings.Contains(resolved.Body.String(), issue.Key) {
+		t.Fatalf("resolve acme/tools#13: status=%d body=%s; want %s", resolved.Code, resolved.Body.String(), issue.Key)
 	}
 }
 

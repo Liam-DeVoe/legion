@@ -50,14 +50,23 @@ type ruleFacts struct {
 	CommitMessages                            []string
 }
 
-// resolvedKey stores facts as the results row and the texts of a new pull request of facts.Repo
-// (storeStatementRow), with facts.URL as its URL. The row takes a number above every stored one,
-// so one test can store many sets of facts. resolvedKey answers the issue that PullRequestIssues
-// gives, "" for nobody, and the source that named it.
+// resolvedKey stores facts as the results row and the texts of a pull request of facts.Repo
+// (storeStatementRow), with facts.URL as its URL. Where facts.URL is that repository's pull
+// request URL, the row takes its number, as GitHub's own URL holds the pull request's number, and
+// replaces the rows an earlier call stored under it, so one test can store many sets of facts of
+// one pull request; else the row takes a number above every stored one. resolvedKey answers the
+// issue that PullRequestIssues gives, "" for nobody, and the source that named it.
 func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts ruleFacts) (string, attributionSource) {
 	t.Helper()
 	var number int
-	if err := pool.QueryRow(ctx, `select greatest(100000, (select max(number) from pull_request_heads),
+	if repo, n, ok := linkedPullRequest(facts.URL); ok && strings.EqualFold(repo, facts.Repo) {
+		number = n
+		for _, table := range []string{"pull_request_texts", "pull_request_heads"} {
+			if _, err := pool.Exec(ctx, `delete from `+table+` where repo = $1 and number = $2`, facts.Repo, number); err != nil {
+				t.Fatalf("clear %s of %s#%d: %v", table, facts.Repo, number, err)
+			}
+		}
+	} else if err := pool.QueryRow(ctx, `select greatest(100000, (select max(number) from pull_request_heads),
 		(select max(number) from delivery_pull_requests)) + 1`).Scan(&number); err != nil {
 		t.Fatalf("choose the number of %+v: %v", facts, err)
 	}

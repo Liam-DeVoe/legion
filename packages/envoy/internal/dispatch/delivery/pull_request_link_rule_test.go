@@ -78,6 +78,7 @@ var linkCorpus = []string{
 // row.
 func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
+	seedDeliveryProject(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `
 		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
 		values ('oldco/widgets', $1, '{"kind":"system","id":"delivery-test"}'::jsonb, false, 'acme/widgets')

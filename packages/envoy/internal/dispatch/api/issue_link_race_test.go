@@ -31,9 +31,21 @@ const heldLinkLock = 4209012
 // The first issue is in project OTHER and the second in CORE, which acme/tools maps to, so no
 // owner lock the two writes would share (an issue's, or the create's of its project) orders B
 // behind A: only the lock of the pull request can. In one project the create waits on A's lock
-// of the project, and the case then passes with the lock of the pull request taken away.
+// of the project, and the case then passes with the lock of the pull request taken away. Two more
+// PATCH cases hold the lock to the link rule: B links /Issues/7 of ACME/Tools, in other letters,
+// and /issues/7 of oldco/tools, the name acme/tools had before a rename, each of which names the
+// pull request A links and takes A's lock (linkLockFormSQL).
 func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
-	for _, second := range []string{"patch", "create"} {
+	for _, c := range []struct {
+		second, url string
+		rename      bool
+	}{
+		{second: "patch", url: "https://github.com/acme/tools/issues/7"},
+		{second: "create"},
+		{second: "patch_in_other_letters", url: "https://github.com/ACME/Tools/Issues/7"},
+		{second: "patch_by_the_name_before_a_rename", url: "https://github.com/oldco/tools/issues/7", rename: true},
+	} {
+		second := c.second
 		t.Run(second, func(t *testing.T) {
 			handler, database := newTestHandlerWithStore(t)
 			ctx := context.Background()
@@ -45,6 +57,12 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 			// The create for acme/tools#7 takes its project from the repository's mapping.
 			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/tools", map[string]any{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
 				t.Fatalf("map acme/tools to CORE: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if c.rename {
+				if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/oldco/tools",
+					map[string]any{"project": "CORE", "renamed_to": "acme/tools"}, "alice"); response.Code != http.StatusOK {
+					t.Fatalf("record oldco/tools as renamed to acme/tools: status=%d body=%s", response.Code, response.Body.String())
+				}
 			}
 			keys := []string{}
 			for _, project := range []string{"OTHER", "CORE"} {
@@ -127,8 +145,8 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 
 			later := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
-				if second == "patch" {
-					later <- link(two, "https://github.com/acme/tools/issues/7")
+				if second != "create" {
+					later <- link(two, c.url)
 					return
 				}
 				later <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
@@ -163,7 +181,6 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 			var holders []string
 			if err := database.Pool.QueryRow(ctx, `
 				select coalesce(array_agg(distinct issue_key order by issue_key), '{}') from issue_external_links
-				where lower(url) in ('https://github.com/acme/tools/pull/7', 'https://github.com/acme/tools/issues/7')
 			`).Scan(&holders); err != nil {
 				t.Fatal(err)
 			}
@@ -171,13 +188,13 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 				t.Fatalf("the two forms of acme/tools#7 are held by %v after two writes at once, want %s alone: B's check read no row of A's write in flight", holders, one)
 			}
 			switch second {
-			case "patch":
-				if b.Code != http.StatusConflict || !strings.Contains(b.Body.String(), `"code":"EXTERNAL_LINK_TAKEN"`) || !strings.Contains(b.Body.String(), one) {
-					t.Fatalf("write B of /issues/7 to %s: status=%d body=%s, want 409 EXTERNAL_LINK_TAKEN naming %s", two, b.Code, b.Body.String(), one)
-				}
 			case "create":
 				if b.Code != http.StatusBadRequest || !strings.Contains(b.Body.String(), `"code":"EXTERNAL_PROJECT_MISMATCH"`) || !strings.Contains(b.Body.String(), "project OTHER") {
 					t.Fatalf("the create for acme/tools#7: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH naming project OTHER, the project of %s, which holds it", b.Code, b.Body.String(), one)
+				}
+			default:
+				if b.Code != http.StatusConflict || !strings.Contains(b.Body.String(), `"code":"EXTERNAL_LINK_TAKEN"`) || !strings.Contains(b.Body.String(), one) {
+					t.Fatalf("write B of %s to %s: status=%d body=%s, want 409 EXTERNAL_LINK_TAKEN naming %s", c.url, two, b.Code, b.Body.String(), one)
 				}
 			}
 		})

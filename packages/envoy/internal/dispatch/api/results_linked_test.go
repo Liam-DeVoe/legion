@@ -498,3 +498,28 @@ func TestAResultAtACommitOfAPullRequestTheIssueLinksInAnotherRepositoryIsKeptWit
 		})
 	}
 }
+
+// A result at the head of an open or merged pull request of the check's issue, as Dispatch last
+// read it, is stored with no read of GitHub (R17 of the spec of several open pull requests,
+// refuseUnknownCommit): the head's row says which repository holds the commit. Here GitHub would
+// answer that no repository holds the commit, so a record that asked GitHub about it would be
+// refused with 400 RESULT_COMMIT_UNKNOWN; the result at the head of the issue's #41 is stored all
+// the same. The control is a commit that heads no pull request of the issue, which GitHub's same
+// answer refuses.
+func TestAResultAtAHeadOfTheIssueDispatchHoldsIsStoredWithNoReadOfGitHub(t *testing.T) {
+	linked := &linkedGitHub{held: map[string][]string{}, pulls: map[string]string{}}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	issue := issueInRepository(t, handler, "KNWN", "acme/tools", "A head Dispatch holds")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeReadMergedRow(t, database, "acme/tools", 41, headCommit, issue.Key)
+	if stored := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)); stored.Code != http.StatusCreated {
+		t.Fatalf("a result at the head of %s's #41, which GitHub would say no repository holds: status=%d body=%s; want 201, taken from the head's row with no read of GitHub",
+			issue.Key, stored.Code, stored.Body.String())
+	}
+	other := strings.Repeat("e", 40)
+	refused := recordResult(t, handler, issue.Key, resultBody("k1", "pass", other, nil))
+	if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"RESULT_COMMIT_UNKNOWN"`) {
+		t.Fatalf("control: a result at %s, which heads no pull request of %s and which GitHub says no repository holds: status=%d body=%s; want 400 RESULT_COMMIT_UNKNOWN",
+			other, issue.Key, refused.Code, refused.Body.String())
+	}
+}

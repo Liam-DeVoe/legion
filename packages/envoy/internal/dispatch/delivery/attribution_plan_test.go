@@ -179,8 +179,8 @@ var growingTables = []string{"pull_request_heads", "pull_request_texts", "delive
 // reads issue_external_links_url_lower. Scans of issues and repo_projects are printed and fail
 // nothing: the repository rule (refs.IssueRepoTerms) and the hold join issues by a hash where the
 // planner prices that lower, and repo_projects holds one row for each mapped repository. Control
-// in the same test: with pull_request_heads_url_lower dropped, the read of the issue a link names
-// scans pull_request_heads.
+// in the same test: with issue_external_links_url_lower dropped, the read of one key, whose link
+// arms read the links of its pull request by that index, scans issue_external_links.
 func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedPlanFixture(t, ctx, pool)
@@ -264,13 +264,13 @@ func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 		t.Error("ACME-1 lists no pull request: the read by issue of a cited URL read nothing to plan")
 	}
 
-	if _, err := pool.Exec(ctx, `drop index pull_request_heads_url_lower`); err != nil {
+	if _, err := pool.Exec(ctx, `drop index issue_external_links_url_lower`); err != nil {
 		t.Fatal(err)
 	}
-	plan, scanned := planOf(t, ctx, pool, statements.headsAttributedTo, linkIssue)
-	t.Logf("the control, without pull_request_heads_url_lower: HeadsAttributedTo of %s scans %v", linkIssue, scanned)
-	if !slices.Contains(scanned, "pull_request_heads") {
-		t.Errorf("the control: without pull_request_heads_url_lower, HeadsAttributedTo of %s scans no pull_request_heads:\n%s", linkIssue, strings.Join(plan, "\n"))
+	plan, scanned := planOf(t, ctx, pool, statements.pullRequestIssues, []string{"acme/widgets"}, []int{2})
+	t.Logf("the control, without issue_external_links_url_lower: PullRequestIssues of 1 key scans %v", scanned)
+	if !slices.Contains(scanned, "issue_external_links") {
+		t.Errorf("the control: without issue_external_links_url_lower, PullRequestIssues of 1 key scans no issue_external_links:\n%s", strings.Join(plan, "\n"))
 	}
 }
 

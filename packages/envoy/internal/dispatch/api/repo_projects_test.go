@@ -591,12 +591,14 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		{"an owner of ..", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "../gadgets"}},
 		{"a name holding a character GitHub does not allow", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/gad?gets"}},
 	} {
+		// Each refused row is reported, so one run names every rule the route breaks.
 		response := put(refused.repo, refused.body)
 		if response.Code != http.StatusBadRequest {
-			t.Fatalf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+			t.Errorf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+			continue
 		}
 		if code, _ := refusalOf(t, response); code != "INVALID_REPO_PROJECT" {
-			t.Fatalf("%s: code %s, want INVALID_REPO_PROJECT (body %s)", refused.what, code, response.Body.String())
+			t.Errorf("%s: code %s, want INVALID_REPO_PROJECT (body %s)", refused.what, code, response.Body.String())
 		}
 	}
 	if got := renamedTo("oldco/gadgets"); got == nil || *got != "acme/gadgets" {

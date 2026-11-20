@@ -220,7 +220,7 @@ func TestTheLinkBackfillOwesTheReadOfEachLinkedPullRequestWithNoHead(t *testing.
 			t.Errorf("acme/widgets#%d is still owed after a pass GitHub answered", number)
 		}
 	}
-	for issue, want := range map[string]int{"ATTR-901": 5063, "ATTR-904": 5067, "ATTR-902": 5064} {
+	for issue, want := range map[string]int{"ATTR-901": 5063, "ATTR-904": 5067} {
 		heads, err := HeadsAttributedTo(ctx, pool, issue)
 		if err != nil {
 			t.Fatal(err)

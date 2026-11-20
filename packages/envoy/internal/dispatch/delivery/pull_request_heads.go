@@ -621,9 +621,10 @@ type AttributedHead struct {
 // whichever row the planner returned first. A reader taking the first head takes the one Dispatch
 // learned last.
 //
-// q is the pool, or the transaction of a caller that reads the heads inside its own write: the
-// record route does (api/results_linked.go, refuseUnknownCommit), so its read is the write's, in
-// the transaction whose commit marks the request's idempotency key.
+// q is the caller's querier: the pool, or a transaction of the caller's. The read is one select
+// and writes nothing. The record route passes the pool, before its write's transaction opens
+// (api/results_linked.go, refuseUnknownCommit), since it asks GitHub about the commit after this
+// read, and no transaction is held open across a read of GitHub.
 func HeadsAttributedTo(ctx context.Context, q Querier, issueKey string) ([]AttributedHead, error) {
 	statements, err := attribution()
 	if err != nil {
