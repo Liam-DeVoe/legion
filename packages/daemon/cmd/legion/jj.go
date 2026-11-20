@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -52,9 +53,11 @@ const wrappedJJAt = "WRAPPED_JJ_AT"
 // push the step leaves alone (readJJPush), a run that finds wrappedJJAt set, and a process with
 // no table (runtime.RoleIdentitiesVariable unset, as a controller's is) run that jj at once, with
 // nothing printed and no other process started. A table that is set but cannot be used
-// (runtime.ReadRoleIdentities) prints one line, and then runs the same. After a dry run the step
-// cannot read, the push gets the role's own words, but for a commit id whose commit a metaedit of
-// the step hid (jjPush.withRevisions).
+// (runtime.ReadRoleIdentities) prints one line, and then runs the same. After a step that
+// changes nothing more (errJJAsWritten), past a dry run it cannot read or a metaedit that jj
+// refuses because the commit it would make exists already (jjStep.metaedit), the push gets the
+// role's own words, but for a commit id whose commit a metaedit of the step moved
+// (jjPush.withRevisions).
 //
 // An interrupt or a terminate ends legion jj where it stands. The step's own commands are
 // children in this process's group, so a signal sent to the group ends them too, and the push
@@ -93,11 +96,11 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	case errors.As(err, &failed):
 		fmt.Fprint(stderr, failed.output)
 		return failed.code
-	case err != nil && !errors.Is(err, errJJUnreadable):
+	case err != nil && !errors.Is(err, errJJAsWritten):
 		fmt.Fprintf(stderr, "legion jj: %v\n", err)
 		return 1
 	}
-	return execWrapped("legion jj", next, push.withRevisions(step.ids, errors.Is(err, errJJUnreadable)), env, nil, stderr)
+	return execWrapped("legion jj", next, push.withRevisions(step.ids, errors.Is(err, errJJAsWritten)), env, nil, stderr)
 }
 
 // jjPush is a jj command line as legion jj reads it (readJJPush).
@@ -216,10 +219,11 @@ func (p jjPush) steps() bool { return p.push && !p.leave }
 // withRevisions is the command's words with each commit-id revision argument whose commit no
 // longer stands for itself replaced by the commit that does (jjFollowed), in its own spelling:
 // the dry run's words before dryRun adds to them, and the real push's after a dry run the step
-// read. With moved, it replaces only an argument whose commit a metaedit of the step moved: the
-// real push's words after a dry run the step could not read, which are the role's own but for a
-// commit the step's own rewrite hid (its loop over a commit with no author can rewrite one before
-// such a dry run).
+// read. With moved, it replaces only an argument whose commit a metaedit of the step moved
+// (jjFollowed): the real push's words after a step that changes nothing more (errJJAsWritten),
+// which are the role's own but for such a commit (the step's loop over a commit with no author
+// can move one before a dry run it cannot read, and an earlier metaedit one before a metaedit
+// that jj refuses).
 func (p jjPush) withRevisions(ids map[int]*jjFollowed, moved bool) []string {
 	words := slices.Clone(p.args)
 	for _, r := range p.revisions {
@@ -261,29 +265,33 @@ type jjStep struct {
 	ids map[int]*jjFollowed
 	// followed is each commit the step follows through its rewrites (advance).
 	followed []*jjFollowed
-	// rewrites are the commits a metaedit of the step rewrote, in order.
+	// rewrites are the commits a metaedit of the step rewrote or found rewritten already, in
+	// order.
 	rewrites []jjRewrite
 }
 
 // jjFollowed is a commit the step follows through each of its metaedits: origin, the commit id
 // the step read, and commit, the commit that stands for it now, of change; hidden is whether that
 // commit is hidden now. arg is whether it is a revision argument's, and moved whether a metaedit
-// of the step moved it to another commit (advance), apart from readIDs' reading of a hidden
-// commit as its change's one visible commit.
+// of the step moved it to another commit, the one that replaced it (advance) or the one a rewrite
+// before the step made of it already (existing), apart from readIDs' reading of a hidden commit
+// as its change's one visible commit.
 type jjFollowed struct {
 	origin, commit, change string
 	hidden, arg, moved     bool
 }
 
-// jjRewrite is a commit a metaedit of the step rewrote under role's identity.
+// jjRewrite is a commit a metaedit of the step rewrote under role's identity, or found rewritten
+// so already (existing).
 type jjRewrite struct {
 	role   legionclaim.Role
 	commit *jjFollowed
 }
 
 // jjStepFailure is a command of the step that failed: legion jj ends with code, after output,
-// what the command printed on standard error, and runs no push. Only readIDs goes on past one,
-// the failure of its read of a revision argument.
+// what the command printed on standard error, and runs no push. Two go on past one: readIDs, past
+// the failure of its read of a revision argument, and metaedit, past jj's refusal to make a
+// commit that exists already (jjCommitExists) and the failure of its read of that commit.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -291,13 +299,16 @@ type jjStepFailure struct {
 
 func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the step exited %d", f.code) }
 
-// errJJUnreadable is a dry run the step cannot read, which it has printed its one line for: it
-// changes nothing more, and the push runs.
-var errJJUnreadable = errors.New("could not read what the push sends")
+// errJJAsWritten is a step that has printed its one line of what it could not do and changes
+// nothing more: read what the push sends (unreadable), or set an author where jj refuses to make
+// a commit that exists already (metaedit). The push then runs as the role wrote it, but for a
+// commit id whose commit a metaedit of the step moved (jjPush.withRevisions).
+var errJJAsWritten = errors.New("the step changes nothing more; the push runs as written")
 
 // rewrite runs the step: the hidden-id read (readIDs), the dry run and the loop over a commit with
 // no author (dryRunFilled), and the rewrite of every other author (setAuthors). An error is a
-// jjStepFailure, a dry run it cannot read (errJJUnreadable), or output of jj's it cannot parse.
+// jjStepFailure, a step that changes nothing more (errJJAsWritten), or output of jj's it cannot
+// parse.
 func (s *jjStep) rewrite() error {
 	if err := s.readIDs(); err != nil {
 		return err
@@ -565,42 +576,131 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 	return set, nil
 }
 
-// metaedit runs one `jj metaedit --update-author` over commits under role's identity: the
-// caller's options first, then that identity as the command's last --config user.name and
-// user.email, each a TOML string (workspace.TOMLString), since a --config of the push's outranks
-// JJ_USER and JJ_EMAIL, which are set to the same. Then it follows every followed commit through
-// it (advance), and records each of commits as one role rewrote.
+// metaedit runs `jj metaedit --update-author` over commits under role's identity: the caller's
+// options first, then that identity as the command's last --config user.name and user.email,
+// each a TOML string (workspace.TOMLString), since a --config of the push's outranks JJ_USER and
+// JJ_EMAIL, which are set to the same. Then it follows every followed commit through it
+// (advance), and records each of commits as one role rewrote. A commit's timestamps are whole
+// seconds, so the commit the metaedit would make of one of commits can exist already: an earlier
+// rewrite of that commit in the same second made it, a refused push's step among them, and a
+// `jj undo` or a `jj op restore` may have hidden it since. jj then refuses the whole metaedit and
+// changes nothing (jjExistingCommit). Where that commit can stand for one of commits (existing),
+// the step records that one's rewrite, and the metaedit runs again over the rest of commits, if
+// any: each pass has one commit fewer, so the passes end. Otherwise the step prints one line that
+// names jj's error, and answers errJJAsWritten. Any other failure is answered as it is: a
+// jjStepFailure runs no push.
 func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 	identity := s.table[role]
-	in := map[string]bool{}
-	var hidden []string
-	args := []string{"metaedit", "--update-author"}
-	for _, c := range commits {
-		in[c.commit] = true
-		args = append(args, "-r", c.commit)
-		if c.hidden && !slices.Contains(hidden, c.change) {
-			hidden = append(hidden, c.change)
+	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
+	for len(commits) > 0 {
+		in := map[string]bool{}
+		var hidden []string
+		args := []string{"metaedit", "--update-author"}
+		for _, c := range commits {
+			in[c.commit] = true
+			args = append(args, "-r", c.commit)
+			if c.hidden && !slices.Contains(hidden, c.change) {
+				hidden = append(hidden, c.change)
+			}
 		}
-	}
-	// A hidden commit's change can already have a visible commit that replaced it, which names
-	// it in jj evolog as the commit the metaedit makes will: the one visible before is not this
-	// step's.
-	var before map[string][]string
-	if len(hidden) > 0 {
-		var err error
-		if before, err = s.visible(hidden); err != nil {
+		// A hidden commit's change can already have a visible commit that replaced it, which
+		// names it in jj evolog as the commit the metaedit makes will: the one visible before is
+		// not this step's.
+		var before map[string][]string
+		if len(hidden) > 0 {
+			var err error
+			if before, err = s.visible(hidden); err != nil {
+				return err
+			}
+		}
+		args = append(args, "--config", "user.name="+workspace.TOMLString(identity.Name), "--config", "user.email="+workspace.TOMLString(identity.Email))
+		_, err := s.jj(env, args...)
+		made, line, exists := jjExistingCommit(err)
+		if !exists {
+			if err != nil {
+				return err
+			}
+			for _, c := range commits {
+				s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: c})
+			}
+			return s.advance(in, before)
+		}
+		taken, err := s.existing(made, commits)
+		if err != nil {
 			return err
 		}
+		if taken == nil {
+			fmt.Fprintf(s.stderr, "legion jj: could not set the author: %s; the push runs as written\n", line)
+			return errJJAsWritten
+		}
+		s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: taken})
+		commits = slices.DeleteFunc(commits, func(c *jjFollowed) bool { return c == taken })
 	}
-	args = append(args, "--config", "user.name="+workspace.TOMLString(identity.Name), "--config", "user.email="+workspace.TOMLString(identity.Email))
-	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
-	if _, err := s.jj(env, args...); err != nil {
-		return err
+	return nil
+}
+
+// jjCommitExists is the line of jj's refusal to make a commit that exists already that names
+// the commit, `Newly-created commit <id> already exists`, which jj 0.38 and 0.45 alike print as
+// the cause of `Internal error: Unexpected error from backend`. Its group is the commit id.
+var jjCommitExists = regexp.MustCompile(`Newly-created commit ([0-9a-f]+) already exists`)
+
+// jjExistingCommit reads err, the failure of a command of the step (jjStepFailure), as jj's
+// refusal to make a commit that exists already (jjCommitExists): ok is whether it is one, id the
+// commit id it names, and line the words of it that name that commit.
+func jjExistingCommit(err error) (id, line string, ok bool) {
+	var failed jjStepFailure
+	if !errors.As(err, &failed) {
+		return "", "", false
 	}
+	match := jjCommitExists.FindStringSubmatch(failed.output)
+	if match == nil {
+		return "", "", false
+	}
+	return match[1], match[0], true
+}
+
+// existing is the one of commits that made stands for, made being a commit id that jj refused
+// to make again because a commit has it already: the one commit of commits that is of made's
+// change, where that one is hidden and no other of commits is. made is then the commit the
+// metaedit would have made of it, and a hidden commit has no visible descendant for the refused
+// metaedit to rebase; only another hidden commit of commits could descend from it, and the next
+// pass would rewrite that one onto the old commit, not onto made. Every followed commit that
+// stands for that one stands for made now, and has moved, hidden as made is. It is nil where made
+// is of no change of commits, of the change of more than one, or of a visible one's, whose
+// bookmarks and descendants only the refused metaedit would have moved onto made, where another
+// of commits is hidden, and where the step cannot read made.
+func (s *jjStep) existing(made string, commits []*jjFollowed) (*jjFollowed, error) {
+	read, err := s.read("commit_id(" + made + ")")
+	var failed jjStepFailure
+	if errors.As(err, &failed) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(read) != 1 || read[0].commit != made {
+		return nil, nil
+	}
+	var taken *jjFollowed
 	for _, c := range commits {
-		s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: c})
+		if c.change != read[0].change {
+			continue
+		}
+		if taken != nil {
+			return nil, nil
+		}
+		taken = c
 	}
-	return s.advance(in, before)
+	if taken == nil || !taken.hidden || slices.ContainsFunc(commits, func(c *jjFollowed) bool { return c != taken && c.hidden }) {
+		return nil, nil
+	}
+	old := taken.commit
+	for _, f := range s.followed {
+		if f.commit == old {
+			f.commit, f.hidden, f.moved = made, read[0].hidden, true
+		}
+	}
+	return taken, nil
 }
 
 // advance follows each followed commit through the metaedit that just ran over in: a
@@ -712,9 +812,10 @@ func (s *jjStep) visible(changes []string) (map[string][]string, error) {
 	return visible, nil
 }
 
-// report prints one line for each commit a metaedit of the step rewrote, with the id the step
-// read and the id of the commit that stands for it after every metaedit of the step. A metaedit
-// that changed a commit not at all prints nothing for it.
+// report prints one line for each commit a metaedit of the step rewrote or found rewritten
+// already (existing), with the id the step read and the id of the commit that stands for it after
+// every metaedit of the step. A commit that the step changed not at all, or that stands for a
+// hidden commit, prints nothing.
 func (s *jjStep) report() {
 	for _, r := range s.rewrites {
 		if f := r.commit; !f.hidden && f.commit != f.origin {
@@ -727,11 +828,11 @@ func (s *jjStep) report() {
 // step could not read: its first line that the step could not read or act on, jj's refusal of a
 // commit with no author that the step cannot fill among them (dryRunFilled), or a commit id of a
 // block that the step could not place among the commits it read (fullHeads), and answers
-// errJJUnreadable: the push then runs with the role's own words, but for a commit id whose commit
-// a metaedit of the step hid (jjPush.withRevisions).
+// errJJAsWritten: the push then runs with the role's own words, but for a commit id whose commit
+// a metaedit of the step moved (jjPush.withRevisions).
 func (s *jjStep) unreadable(line string) error {
 	fmt.Fprintf(s.stderr, "legion jj: could not read what the push sends: %s; the push runs as written\n", line)
-	return errJJUnreadable
+	return errJJAsWritten
 }
 
 // jjCommitTemplate prints, for each commit, its change id, its commit id, whether it is hidden,
