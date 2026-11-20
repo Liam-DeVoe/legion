@@ -1033,14 +1033,14 @@ func TestAPublishWhoseKeepTheFullStreamRefusesIsRefusedAndKeepsNothing(t *testin
 	assertRecordFields(t, record, map[string]any{"outcome": string(outcomeRoleUnclaimed), "status": float64(http.StatusNotFound)})
 	assertNothingKept(t, client, role)
 
-	// The keep was made, and the full stream refused it: without this line, a publish that never
+	// The keep was made, and the full stream refused it: without this record, a publish that never
 	// tried to keep would answer the same 404.
-	for _, line := range strings.Split(harness.logs.String(), "\n") {
-		if strings.Contains(line, roleKeepFailedLine) && strings.Contains(line, `"role":"`+role+`"`) && strings.Contains(line, bus.ErrStreamFull.Error()) {
+	for _, logged := range logRecordsNamed(harness.logs.String(), roleKeepFailedLine, role) {
+		if failure, _ := logged["error"].(string); strings.Contains(failure, bus.ErrStreamFull.Error()) {
 			return
 		}
 	}
-	t.Fatalf("no %q line names role %s and %q; the listener log:\n%s", roleKeepFailedLine, role, bus.ErrStreamFull, harness.logs.String())
+	t.Fatalf("no %q record names role %s with an error holding %q; the listener log:\n%s", roleKeepFailedLine, role, bus.ErrStreamFull, harness.logs.String())
 }
 
 // A keep that lands after a concurrent claim's drain has read the lane still reaches that holder:
