@@ -491,6 +491,61 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 	}
 }
 
+// A passing probe's warning lines reach the daemon's log as records of their own: each
+// `legion probe-image: warning: …` line of the pod's log tail is one Warn record naming the image,
+// the probe Sandbox and the warning's text, beside the pass record, so a watch on Warn records
+// sees what the probe warned of rather than finding it only inside the pass record's log field.
+// A tail with no such line logs no such record, and the probe passes either way.
+func TestAPassingProbesWarningsAreWarnRecordsOfTheirOwn(t *testing.T) {
+	const warning = "/home/legion/.cache is absent, so the controller's pod could write nothing else there"
+	for name, tc := range map[string]struct {
+		tail string
+		want []string
+	}{
+		"a tail with a warning line": {
+			tail: "probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
+				"legion probe-image: warning: " + warning + "\n" + okLine(3) + "\n",
+			want: []string{warning},
+		},
+		"a tail with none": {
+			tail: "probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
+				okLine(3) + "\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slog.New(slog.NewJSONHandler(logged, nil)) }))
+			g.succeeds(tc.tail)
+
+			if _, err := g.r.ProbeImage(g.ctx, probeOptions(t)); err != nil {
+				t.Fatalf("ProbeImage = %v, want a pass", err)
+			}
+			var warned []string
+			passed := 0
+			for line := range strings.Lines(logged.String()) {
+				var record struct {
+					Level, Msg, Image, Sandbox, Warning string
+				}
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("the runtime logged %q, which is no JSON record: %v", line, err)
+				}
+				switch record.Msg {
+				case "sandbox runtime: the worker image passed its probe":
+					passed++
+				case "sandbox runtime: the worker image's probe warned":
+					if record.Level != slog.LevelWarn.String() || record.Image != g.r.image || record.Sandbox != probeSandboxName {
+						t.Errorf("the warning record is %+v, want level WARN, image %s and sandbox %s", record, g.r.image, probeSandboxName)
+					}
+					warned = append(warned, record.Warning)
+				}
+			}
+			if passed != 1 || !slices.Equal(warned, tc.want) {
+				t.Errorf("the runtime logged %d pass records and the warnings %q, want one pass record and the warnings %q:\n%s", passed, warned, tc.want, logged.String())
+			}
+		})
+	}
+}
+
 // A pod that ran is judged by its log: only a Succeeded pod whose OK line confirms this daemon's
 // contract passes, and every other ending is an answer no retry changes — so the probe runs once.
 func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {

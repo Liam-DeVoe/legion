@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,33 @@ func TestConfirmedContractReadsOnlyTheContractTokenOnAnOKLine(t *testing.T) {
 			contract, ok := ConfirmedContract(testCase.output)
 			if contract != testCase.contract || ok != testCase.ok {
 				t.Fatalf("ConfirmedContract = (%d, %t), want (%d, %t)", contract, ok, testCase.contract, testCase.ok)
+			}
+		})
+	}
+}
+
+// A warning line is the prefix and its text on one line, its line breaks turned to spaces, and
+// Warnings reads back the text of every warning line of a log, in order: only a line that begins
+// with the prefix is one, so the prefix quoted inside another line, the OK line and a log with none
+// read as no warning.
+func TestWarningsReadsBackEveryWarningLine(t *testing.T) {
+	if got, want := WarningLine("/home/legion/.cache is absent,\nso the controller"), "legion probe-image: warning: /home/legion/.cache is absent, so the controller"; got != want {
+		t.Errorf("WarningLine = %q, want %q", got, want)
+	}
+	for _, testCase := range []struct {
+		name, output string
+		want         []string
+	}{
+		{"two warnings among other lines", "probe-image: capability eval-js: present\n" + WarningLine("the first") + "\n" +
+			"probe-image: TLS client curl site: refused\n" + WarningLine("the second") + "\n" + OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff),
+			[]string{"the first", "the second"}},
+		{"the prefix inside another line", "probe-image: capability x: present (it printed legion probe-image: warning: not one)", nil},
+		{"the OK line alone", OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff), nil},
+		{"nothing", "", nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := Warnings(testCase.output); !slices.Equal(got, testCase.want) {
+				t.Errorf("Warnings = %q, want %q", got, testCase.want)
 			}
 		})
 	}

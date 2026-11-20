@@ -301,6 +301,28 @@ func NATSUser(output string) string {
 	return match[1]
 }
 
+// warningPrefix begins each line of `legion probe-image` that reports a fact of the image and
+// refuses nothing for it, such as a ~/.cache the controller's pod could not write in
+// (cmd/legion's imageCacheHomeWarning). The daemon logs each one of a passing probe as a Warn
+// record of its own (internal/runtime/sandbox's judge), so a watch on Warn records sees it.
+const warningPrefix = "legion probe-image: warning: "
+
+// WarningLine is that line for text, its line breaks turned to spaces so the line carries the
+// whole of it.
+func WarningLine(text string) string { return warningPrefix + strings.Join(strings.Fields(text), " ") }
+
+// warning is a WarningLine.
+var warning = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(warningPrefix) + `(.*)$`)
+
+// Warnings are the texts of every WarningLine in output, in order, and nil when it holds none.
+func Warnings(output string) []string {
+	var texts []string
+	for _, match := range warning.FindAllStringSubmatch(output, -1) {
+		texts = append(texts, match[1])
+	}
+	return texts
+}
+
 // RoleConfigFilesFlag is the `legion probe-image` flag the daemon's probe Sandbox passes once per
 // role per whole PI_CONFIG_FILES tail that role starts on — its own `role_config_files`, and
 // those files with the overlays of one arm of one declared experiment after them — its value

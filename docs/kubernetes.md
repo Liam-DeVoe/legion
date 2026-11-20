@@ -130,7 +130,7 @@ It carries:
   A mount beside the folder, such as `/home/legion/.cache/<other>`, stays the operator's, as before.
   A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount or rename such a volume.
   A deployment's own image built on the worker image keeps `/home/legion/.cache` as the worker image makes it unless it changes that folder;
-  one whose folder is missing, is not a directory, or is not uid 1000's with `u+rwx` boots as before, and the daemon's log carries the probe's `legion probe-image: warning: /home/legion/.cache …` line, naming what it found; make the folder as the worker image does, or the controller's own writes under `~/.cache` fail;
+  one whose folder is missing, is not a directory, or is not uid 1000's with `u+rwx` boots as before, and the daemon logs the probe's warning as a Warn record of its own, `sandbox runtime: the worker image's probe warned`, whose `warning` names what the probe found; make the folder as the worker image does, or the controller's own writes under `~/.cache` fail;
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
@@ -533,9 +533,10 @@ installing from it would make the publish and every boot probe depend on the npm
 Each of the lane's refusals names a build of the image from this daemon's commit.
 The two probes the daemon shares hold the Legion plugin to the daemon API contract (`legion.daemonApiVersion`), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
 The image build's final step also requires `/home/legion/.cache` to read `1000:1000 755 directory`, which the image makes after `useradd`.
-On any other image `legion probe-image` reports that folder and refuses nothing: before those probes it prints one `legion probe-image: warning: /home/legion/.cache …` line, naming what it found, where the folder is absent, is not a directory, or is not uid 1000's with `u+rwx`, and its exit status is what its other checks make it (`imageCacheHome`, `packages/daemon/cmd/legion/probe_image.go`).
+On any other image `legion probe-image` reports that folder and refuses nothing: it reads the folder before those probes and, at the end of its output, prints one `legion probe-image: warning: /home/legion/.cache …` line, naming what it found, where the folder is absent, is not a directory, or is not uid 1000's with `u+rwx`, and its exit status is what its other checks make it (`imageCacheHome`, `packages/daemon/cmd/legion/probe_image.go`).
 The controller's pod mounts the leak check index's volume in that folder ([Worker image](#worker-image)), and a container runtime makes a missing parent of a mount point root's, so the controller could write nothing else there; that costs the controller's own writes under `~/.cache`, not the deployment's boot.
-The daemon's probe Sandbox runs the same probe on the deployment's own image, and its log tail reaches the daemon's log.
+The daemon's probe Sandbox runs the same probe on the deployment's own image.
+When that probe passes, the daemon logs each `legion probe-image: warning:` line of the pod's log tail as a Warn record of its own, `sandbox runtime: the worker image's probe warned`, with the `image`, the probe `sandbox` and the `warning`'s text, beside its Info record of the pass (`judge`, `internal/runtime/sandbox/probe.go`).
 
 The Legion plugin ships these in `agents/`:
 

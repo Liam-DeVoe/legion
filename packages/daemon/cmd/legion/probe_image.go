@@ -313,7 +313,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	cacheWarning := imageCacheHomeWarning(imageCacheHome)
 	warnOfCacheHome := func() {
 		if cacheWarning != "" {
-			fmt.Fprintf(stderr, "legion probe-image: warning: %s\n", cacheWarning)
+			fmt.Fprintln(stderr, bootprobe.WarningLine(cacheWarning))
 			cacheWarning = ""
 		}
 	}

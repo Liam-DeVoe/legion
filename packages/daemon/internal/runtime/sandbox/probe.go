@@ -1178,7 +1178,11 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // container, so only a CLI that predates the user line succeeds without one. Naming another is the
 // providers Secret holding another seed. An image whose CLI predates a flag the probe command
 // passes stops at the flags, and its Failed pod is refused naming the flag its CLI lacks. The
-// passing outcome's Report carries the line's model-fallback mark, which the daemon keeps.
+// passing outcome's Report carries the line's model-fallback mark, which the daemon keeps. A
+// passing probe's warning lines (bootprobe.Warnings: a fact of the image the probe reports and
+// refuses nothing for) are each logged as a Warn record of their own, beside the Info record of the
+// pass that carries the whole tail, so a watch on Warn records sees them; a refused probe's tail is
+// in its refusal already.
 func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, logErr error, contract int) bootprobe.Outcome {
 	if why := kubeletFailure(pod); why != "" {
 		// Whatever the container wrote before the kubelet ended it is quoted when it could be read.
@@ -1246,6 +1250,9 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 			return bootprobe.Outcome{Refusal: fmt.Errorf("the probe pod %s read nkey user %s through its NATS_NKEY_SEED_FILE, the providers Secret %s's NATS_NKEY_SEED, where the pane seed the daemon hands every pod is user %s: put that seed in that key — log tail: %s",
 				name, got, ProvidersSecretName(r.project), r.natsUser, logTail)}
 		}
+	}
+	for _, warning := range bootprobe.Warnings(logTail) {
+		r.log.Warn("sandbox runtime: the worker image's probe warned", "image", r.image, "sandbox", name, "warning", warning)
 	}
 	report := bootprobe.ImageReport{ModelFallback: bootprobe.ModelFallback(logTail)}
 	r.log.Info("sandbox runtime: the worker image passed its probe", "image", r.image, "sandbox", name, "model-fallback", report.ModelFallback, "log", logTail)
