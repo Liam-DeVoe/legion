@@ -62,6 +62,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "A kept volume keeps the files of that list that are on the volume",
+    keep: "A kept microVM volume's disk, not a Dispatch check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
     has: "The implementer is asked to merge the base forward",
     keep: "A forward merge's assignment, not a Dispatch check.",
   },
