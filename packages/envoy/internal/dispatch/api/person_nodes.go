@@ -132,9 +132,12 @@ var personNodesHeld = personNodeTies + `, related as (
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that
 // person: the store holds the person, not gone and visible to the reader, and the person holds
-// at least one node the reader may see. That second test is made over the ties one by one, not
-// over the page's grouped rows (personNodesHeld), so it stops at the first tie the reader may see
-// rather than grouping and probing every tie first.
+// at least one node the reader may see that the page lists (personNodeListed). That second test
+// is made over the ties one by one, not over the page's grouped rows (personNodesHeld), so it
+// stops at the first tie the reader may see rather than grouping and probing every tie first. It
+// reads no tie the page would not list: a person tied to a node of a kind the page opens no row
+// of - a block of a document they wrote - holds no row there, and a decision that counted it would
+// answer 200 with no rows.
 var personPageShownQuery = personNodeTies + `
 	select exists (
 		select 1 from graph_nodes
@@ -144,7 +147,32 @@ var personPageShownQuery = personNodeTies + `
 		select 1 from (select from_kind, from_id from authored union all select from_kind, from_id from received) tie
 		where ` + refs.VisibleNode("tie.from_kind", "tie.from_id", "$2") + `
 		  and ` + personNodeNotGone(refs.StoredNodeOf("tie.from_kind", "tie.from_id")) + `
+		  and ` + personNodeListed("tie.from_kind", "tie.from_id") + `
 	)`
+
+// personNodeListed is the test that the page lists the node the store keys at kind and id (SQL
+// text), by the conditions personNodesQuery's items arm opens a held node by, arm for arm: a
+// comment with a place, its issue's or its document's; a lens, a finding, a risk or a
+// constraint (refs.StandingKinds, by the kind the graph addresses it by) that stands under an
+// issue (refs.StandingIssueSQL); and a run of the command bar. A node of any other kind is listed
+// by no arm, and the test is false for it. Each arm probes one row by its key, so the decision
+// that reads it stops at its first listed tie. A comment's node is keyed by the comment's id,
+// which the comment arm alone reads as a uuid.
+func personNodeListed(kind, id string) string {
+	return `(case
+		when ` + kind + ` = '` + graphstore.KindComment + `' then exists (
+			select 1 from comments c
+			left join issues i on i.key = c.issue_key
+			left join artifacts a on a.id = c.artifact_id
+			where c.id = (` + id + `)::uuid and (i.key is not null or a.id is not null))
+		when ` + graphstore.AddressKindSQL(kind, id) + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `') then exists (
+			select 1 from graph_nodes n
+			where n.kind = ` + kind + ` and n.id = ` + id + ` and ` + refs.StandingIssueSQL("n.kind", "n.id") + ` is not null)
+		when ` + kind + ` = '` + graphstore.KindInteraction + `' then exists (
+			select 1 from graph_nodes n where n.kind = ` + kind + ` and n.id = ` + id + `)
+		else false
+	end)`
+}
 
 // personNodesQuery pages the nodes one person holds that the reader may see (personNodesHeld),
 // $3 and $4 being the page.
@@ -153,8 +181,10 @@ var personPageShownQuery = personNodeTies + `
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
 // build wrote: today the page opens comments, and the lenses, findings, risks, constraints and
 // runs of dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its
-// predicate already bound by the arm above. A lens, a finding, a risk or a constraint is a row of
-// the store alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it
+// predicate already bound by the arm above, and joins personNodeListed with the same condition, so
+// the page's decision (personPageShownQuery) counts what this lists and nothing else. A lens, a
+// finding, a risk or a constraint is a row of the store alone: its title is its text
+// (refs.StandingTextSQL), its time its row's made_at, and it
 // opens the page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no
 // issue - a constraint of the lens catalogue - is skipped as a comment with no place is. A run of
 // the command bar (an interaction) is a row of the store alone too, listed to the credential that
