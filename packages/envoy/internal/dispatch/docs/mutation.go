@@ -697,24 +697,29 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 // caller read it.
 var ErrDocumentChanged = errors.New("the document no longer holds the content the write expected")
 
-// MarkdownSHA256 is the hex SHA-256 of markdown, as ReplaceText's condition names a document's
-// content.
+// MarkdownSHA256 is the hex SHA-256 of markdown, as ReplaceTextExpecting's condition names a
+// document's content.
 func MarkdownSHA256(markdown string) string {
 	sum := sha256.Sum256([]byte(markdown))
 	return hex.EncodeToString(sum[:])
 }
 
 // ReplaceText replaces the entire live document tree so connected clients
-// receive document uploads as a regular server-side transaction.
-func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
-	return s.ReplaceTextExpecting(ctx, artifactID, markdown, actor, "")
+// receive document uploads as a regular server-side transaction. The precondition names the
+// token of the version the caller believes it is replacing, which every replacement names, and
+// is checked under the write's own locks.
+func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
+	return s.ReplaceTextExpecting(ctx, artifactID, markdown, actor, precondition, "")
 }
 
-// ReplaceTextExpecting is ReplaceText on a condition: expectSHA256, where it is not empty, is the
-// hex SHA-256 (MarkdownSHA256) of the markdown the live document must hold, read under the
-// write's own lock, or the replacement is refused with ErrDocumentChanged and nothing written; a
-// tree outside the schema holds no markdown to compare, and is refused too.
-func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, expectSHA256 string) (string, error) {
+// ReplaceTextExpecting is ReplaceText on a further condition: expectSHA256, where it is not
+// empty, is the hex SHA-256 (MarkdownSHA256) of the markdown the live document must hold, read
+// under the write's own locks beside the precondition, or the replacement is refused with
+// ErrDocumentChanged and nothing written; a tree outside the schema holds no markdown to
+// compare, and is refused too. An expected content says which version the replacement replaces,
+// as a token does, so a replacement that carries one may name no token; one that names a token
+// as well is held to both.
+func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition, expectSHA256 string) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined
 	}
@@ -759,6 +764,27 @@ func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown
 		}
 		if repairing {
 			current = nil
+		}
+		// The token the upload names is checked here, inside the write's own locks and before
+		// the replacement is parsed, so no other writer can land between the check and the
+		// write, as a conditional edit checks it (ApplyOps); a replacement that names none is
+		// refused here, since every replacement says which version it replaces, unless the
+		// expected content checked above already said it. A repair turns that around: the live
+		// tree is outside the Proof schema, so it renders no markdown and has no token at all,
+		// and this upload is the only way to repair the document, so a repair names no token,
+		// and one that names a token names a token this document has never had. That token is
+		// refused rather than dropped, since a dropped guard tells the caller its write was
+		// conditional when nothing had checked it.
+		if repairing {
+			if precondition != nil {
+				return ErrPreconditionUnavailable
+			}
+		} else if precondition != nil {
+			if _, err := checkEditPrecondition(current, *precondition); err != nil {
+				return err
+			}
+		} else if expectSHA256 == "" {
+			return ErrPreconditionRequired
 		}
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)

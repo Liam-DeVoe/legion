@@ -893,7 +893,8 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 // before - is the route's to refuse, 409 DOCUMENT_EXISTS. Where that read before found one, the
 // writes route refuses an upload without force before it is sent, however the write came to run
 // (goingUploadForceRefusal), as the dispatch command does, and sends one with force, which asks
-// for that document's next version, with no condition (goingUploadWritesOver).
+// for that document's next version, with no condition and naming the token of the version it
+// replaces (goingUploadWritesOver).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = goingText(call.arguments, "content")

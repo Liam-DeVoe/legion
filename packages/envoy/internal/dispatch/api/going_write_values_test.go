@@ -213,7 +213,10 @@ func TestGoingUndoComparesOnlyWhatTheWritesOwnTransactionFoundAndLeft(t *testing
 
 	t.Run("an upload's version another writer wrote before it", func(t *testing.T) {
 		notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "uploaded-over.md", "# Notes\n\nThe first version.\n")
-		rig.served.inProcess = goingBefore(inner, http.MethodPost+" /api/v1/issues/"+issue+"/artifacts", func() {
+		// Bob's version lands after the read before and before the bar reads the token its upload
+		// names (goingObserver.uploadBase): one landing after that read is refused by the upload's
+		// route, 409 PRECONDITION_FAILED, and replaced by nothing.
+		rig.served.inProcess = goingBefore(inner, http.MethodGet+" "+goingArtifactPath(notes.Artifact.ID, "text"), func() {
 			uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "uploaded-over.md", "# Notes\n\nThe second version, bob's.\n")
 		})
 		_, line := rig.runOne(t, "dispatch_artifact", map[string]any{

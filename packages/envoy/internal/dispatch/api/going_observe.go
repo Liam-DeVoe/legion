@@ -749,6 +749,25 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 	return observed, nil
 }
 
+// uploadBase is the token of the document an upload with force writes over (held, the document
+// its read before found), read now, which the upload names as the version it replaces in its
+// body's `precondition`: the upload route refuses a replacement of a document naming none (400
+// PRECONDITION_REQUIRED), and refuses this one 409 PRECONDITION_FAILED where another writer
+// changes the document between this read and the write. A file has no token, and neither has a
+// document whose tree is outside the Proof schema (409 DOC_SCHEMA), which renders no markdown and
+// which only an upload naming no token repairs: for each it is "", and the upload names none.
+func (o goingObserver) uploadBase(ctx context.Context, held *model.Artifact) (string, error) {
+	if held.Kind != "doc" {
+		return "", nil
+	}
+	_, token, err := o.documentValue(ctx, held.ID)
+	var refused goingRefusal
+	if errors.As(err, &refused) && refused.Code == codeDocSchema {
+		return "", nil
+	}
+	return token, err
+}
+
 // goingIssueFieldValue is one field of an issue's read as an update writes it. The advances
 // relation is the issue's own priority ids and its revision (goingAdvancesValue): a write replaces
 // the own set, so inherited entries are no part of its value and the revision is what the undo's

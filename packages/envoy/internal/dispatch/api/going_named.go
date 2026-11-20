@@ -529,10 +529,10 @@ func goingUploadOverRefusal(prepared goingPrepared, before goingObservation, per
 // sent without the create alone its translation carries (goingUploadCondition). Every other
 // upload stays a create alone: one with force whose read before found no document, or could name
 // no owner to read, is refused 409 DOCUMENT_EXISTS by its route where the owner holds a document
-// of the name by the time the upload takes the owner's lock, as an upload without force is. The
-// upload routes take no version or token of a document to expect, only the SHA-256 of the
-// markdown it must hold (goingCondition.ExpectSHA256), which the read before does not read and a
-// file cannot carry, so an upload over the document found is held to nothing further.
+// of the name by the time the upload takes the owner's lock, as an upload without force is. An
+// upload over the document found names, as every upload replacing a document does, the token of
+// the version it replaces (goingObserver.uploadBase), read just before it is sent, so its route
+// refuses it 409 PRECONDITION_FAILED where another writer changed the document after that read.
 func goingUploadWritesOver(prepared goingPrepared, before goingObservation) bool {
 	_, uploads := goingUploadNames[prepared.action]
 	return uploads && prepared.arguments["force"] == true && before.held != nil

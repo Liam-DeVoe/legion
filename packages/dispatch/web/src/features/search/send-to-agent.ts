@@ -114,6 +114,6 @@ export async function sendToAgent(
       { body: handoffBody(issue, block, words), delivery: "aside" },
       bounds
     );
-  const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
+  const message = await press(writes, `“${words}” to the agent on ${issue}`, "POST", write);
   return sendOutcome(message?.deliveries?.at(-1));
 }

@@ -446,10 +446,20 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if goingUploadWritesOver(prepared, before) {
 		// An upload with force over the document its read before found, one the words ask for,
-		// writes that document's next version: it sheds the create alone its translation carries,
-		// and its requests are encoded again, since a condition is part of each one's digest - the
-		// digest its plan, its landing and any resume after it compare (goingSend.digest).
+		// writes that document's next version: it sheds the create alone its translation carries
+		// and names instead the token of the version it replaces (uploadBase), as every upload
+		// replacing a document names one, and its requests are encoded again, since a condition
+		// and a body are part of each one's digest - the digest its plan, its landing and any
+		// resume after it compare (goingSend.digest).
 		prepared.call.condition = nil
+		base, err := observer.uploadBase(ctx, before.held)
+		if err != nil {
+			claim.refuse(before, err)
+			return
+		}
+		if base != "" {
+			prepared.call.body["precondition"] = map[string]any{"document": base}
+		}
 		if specs, err = prepared.call.requests(prepared.route); err != nil {
 			claim.refuse(before, fmt.Errorf("encode %s: %w", input.Offer, err))
 			return

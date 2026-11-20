@@ -28,7 +28,9 @@ body: |-
   its replacement, where its read before finds the document. Every upload is
   sent as a create alone, one with `force` too unless its read before found the document of its
   name, so a document made after that read is the route's `409 DOCUMENT_EXISTS` and is never
-  written over. Each write is
+  written over; one with `force` over the document found names that document's token, read just
+  before it is sent, as the version it replaces, so a change another writer makes after that read
+  is the route's `409 PRECONDITION_FAILED`. Each write is
   claimed on the run once, so a second request while it runs answers
   `429 GOING_WRITE_IN_PROGRESS`.
   A call the bar can never send as written - picture files, a `dispatch://` reference placing a

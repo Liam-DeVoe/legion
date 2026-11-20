@@ -316,6 +316,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
+	// The review the issue's specification already carries, reported beside the advice above.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document, and a review that version's carry queued, come off the ledger, and the rest
+	// from the table. It is about the document rather than about this session, so it is read for
+	// a person's question as for an agent's, and it rides the advice the write already answers
+	// rather than a read of its own. A question on a project document has no issue and so no
+	// specification, and a write whose advice read failed carries nothing to hang it on; both
+	// report no review.
+	if advice != nil && owner.IssueKey != nil {
+		advice.StandingReview = s.standingReviewAdvice(
+			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+		)
+	}
 	// The ask as this route answers it, with the id of the event that opened it, which the write
 	// phase fills in: the record the command bar's landing of this request makes in this
 	// transaction (goingRecordAnswer) and the response below are this one value, built by this one

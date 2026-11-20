@@ -99,6 +99,19 @@ const shellHandlers: RequestHandler[] = [
   // the server's own default, off - and a test of the setting spies `api.myGoingSettings`. It is
   // answered at any origin, as the capability read above is.
   http.get("*/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
+  // The base an upload names: before it posts a markdown file, the Upload control reads the
+  // token of the document the owner already holds under that name
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
+  http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
+  http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is
