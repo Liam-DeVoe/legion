@@ -121,6 +121,7 @@ function f1Case(id: string): Case {
     messages: messages.slice(0, 7),
     skillReads: [2, 4],
     realStep: messages[7] ?? {},
+    violatingStep: { role: "assistant", content: [{ type: "text", text: "Step 4 is done." }] },
     source: { store: "store_a", pathHash: pathHash("/sessions/alpha.jsonl") },
     sessionStart: "2026-11-20T01:59:41.780Z",
     secretsRemoved: 0,
@@ -454,24 +455,32 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
               PI_NO_TITLE: "1",
               [MESSAGES_VARIABLE]: messagesFile,
             },
-            stdout: "ignore",
+            stdout: "pipe",
             stderr: "pipe",
           }
         );
-        const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]);
         expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+        // The blocked call's result, as Oh My Pi's own event stream records it.
+        expect(stdout).toContain(BLOCK_REASON);
       } finally {
         await recorder.close();
       }
       expect(existsSync(marker)).toBe(false);
       expect(bodies.length).toBe(2);
       const [first, second] = bodies.map((body) => JSON.parse(body));
+      // The hook gives each request exactly the arm's messages, the run's own dropped.
+      expect(second.messages).toEqual(first.messages);
       const sent = texts(first.messages);
       for (const index of [0, 2]) {
         const text = messages[index]?.content?.[0]?.text ?? "";
         expect(sent.some((each) => each.includes(text))).toBe(true);
       }
-      expect(texts(second.messages).some((text) => text.includes(BLOCK_REASON))).toBe(true);
+      expect(texts(second.messages).some((text) => text.includes(BLOCK_REASON))).toBe(false);
       const transcript = readdirSync(sessions, { recursive: true })
         .map(String)
         .filter((file) => file.endsWith(".jsonl"));
@@ -484,6 +493,123 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         .map((entry) => entry.data);
       expect(digests.length).toBeGreaterThan(0);
       expect(digests[0]).toBe(promptDigest(first));
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a Legion-context capture defines the Legion and Envoy plugins' tools, and every endpoint it reached was a listener of its own on 127.0.0.1",
+    async () => {
+      // The two plugins as the worker image ships them: each one's bundle, built from this
+      // checkout into a made-up repository at a made-up commit, its manifest naming the bundle.
+      const repo = path.join(dir, "repos/acme/legion", COMMIT);
+      const packages = path.resolve(import.meta.dir, "../../..");
+      const plugins = [
+        {
+          name: "pi-envoy",
+          entry: "envoy",
+          externals: ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"],
+        },
+        {
+          name: "pi-legion",
+          entry: "legion",
+          externals: ["pi-coding-agent", "pi-tui", "pi-utils"],
+        },
+      ];
+      for (const plugin of plugins) {
+        const dist = path.join(repo, "packages", plugin.name, "dist");
+        const built = Bun.spawnSync(
+          [
+            "bun",
+            "build",
+            `extensions/${plugin.entry}.ts`,
+            "--outdir",
+            dist,
+            "--target",
+            "bun",
+            "--format",
+            "esm",
+            ...plugin.externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
+          ],
+          { cwd: path.join(packages, plugin.name), stderr: "pipe" }
+        );
+        expect({
+          code: built.exitCode,
+          stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
+        }).toEqual({ code: 0, stderr: "" });
+        writeTree(path.join(repo, "packages", plugin.name), {
+          "package.json": JSON.stringify({
+            name: `@acme/${plugin.name}`,
+            files: ["dist"],
+            omp: { extensions: [`dist/${plugin.entry}.js`], skills: ["dist/skills"] },
+          }),
+        });
+      }
+      // The Envoy plugin reads the dispatch-first skill from its skills at load.
+      writeTree(path.join(dir, "repos/acme/skills", COMMIT), {
+        "skills/dispatch-first/SKILL.md": readFileSync(
+          path.resolve(packages, "../skills/dispatch-first/SKILL.md"),
+          "utf8"
+        ),
+      });
+      await captures();
+      const base = f1Case("legion-1");
+      const c: Case = {
+        ...base,
+        context: "legion:acme:implementer",
+        profile: {
+          ...base.profile,
+          skills: [
+            ...base.profile.skills,
+            {
+              repo: "acme/skills",
+              commit: COMMIT,
+              path: "skills/dispatch-first",
+              name: "dispatch-first",
+            },
+          ],
+          plugins: plugins.map((plugin) => ({
+            repo: "acme/legion",
+            commit: COMMIT,
+            path: `packages/${plugin.name}`,
+            name: plugin.name,
+          })),
+          appendSystemPrompt: "You are a made-up role of a made-up project.",
+        },
+      };
+      const capture = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+        }
+      );
+      const { record, body } = capture;
+      expect(record.context.plugins.map((plugin) => plugin.as)).toEqual(["extension", "extension"]);
+      expect(record.pluginTools.tools).toContain("legion");
+      expect(record.pluginTools.legion).toBe(true);
+      expect(record.pluginTools.envoy).toContain("envoy_send");
+      expect(record.pluginTools.devices).toEqual(expect.arrayContaining(record.pluginTools.envoy));
+      expect(record.pluginTools.leftOut).toEqual([]);
+      // Every endpoint the pane was given is a listener of the capture's own on 127.0.0.1, and
+      // the stand-in daemon took the registration the tool waits for.
+      expect(record.legion?.role).toBe("implementer");
+      for (const endpoint of Object.values(record.legion?.endpoints ?? {})) {
+        expect(endpoint).toMatch(/^(http|nats):\/\/127\.0\.0\.1:\d+(\/|$)/);
+      }
+      expect(record.connections.http).toContain("POST /legion/v1/claims/register");
+      expect(record.connections.http).toContain("POST /v1/messages");
+      // Nothing the run added reaches the model: no endpoint's failure, no placeholder.
+      expect(record.hookDropped[0]).toBeGreaterThan(0);
+      expect(texts(body.messages).some((text) => text.includes("127.0.0.1"))).toBe(false);
+      expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
+      expect(record.exit.code === 0 || record.exit.reason !== "").toBe(true);
     },
     ROW_TIMEOUT_MS
   );

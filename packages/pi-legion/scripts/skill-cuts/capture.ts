@@ -42,6 +42,7 @@
  * holds a credential it redacts, so the two agree whenever no block is either.
  */
 import { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -57,10 +58,10 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import type { Arm, ArmName } from "./arms";
 import type { Case } from "./cases";
-import { buildContext, type ContextRecord, cacheKey, type RepoSource } from "./context";
+import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
 import type { Gateway, MessagesBody } from "./gateway";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
-import { MESSAGES_VARIABLE } from "./replay-hook";
+import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE } from "./replay-hook";
 
 /** The scratch profile's name. */
 const PROFILE = "capture";
@@ -78,6 +79,66 @@ const MAX_HINT_CHARS = 160;
  *  and no gateway ever gets this one. */
 // fixture-secret-next-line: a placeholder the recorder never reads, and never a credential
 const RECORDER_CREDENTIAL = "placeholder-the-recorder-reads-none";
+/** The made-up tree and issue a Legion capture's pane claims, and how many times its run is made
+ *  when it ends before the turn's request. */
+const CAPTURE_TREE = "CAPTURE-1";
+const CAPTURE_ISSUE = "CAPTURE-2";
+const CAPTURE_TRIES = 3;
+
+/** An Oh My Pi run that ended with no model request a capture can take. */
+class RunEnded extends Error {}
+
+/** The tools a body defines and the `xd://` devices its system prompt lists, the Legion and
+ *  Envoy plugins' among them, and each plugin tool left out with why. */
+function pluginTools(
+  body: MessagesBody,
+  context: ContextRecord,
+  pane: boolean,
+  role: { readonly role: string } | undefined,
+  stderr: string
+): CaptureRecord["pluginTools"] {
+  const tools = Array.isArray(body.tools)
+    ? body.tools.flatMap((tool: unknown) => {
+        const name = typeof tool === "object" && tool !== null ? Reflect.get(tool, "name") : null;
+        return typeof name === "string" ? [name] : [];
+      })
+    : [];
+  const devices = systemTexts(body).flatMap((text) =>
+    [...text.matchAll(/^- xd:\/\/([A-Za-z0-9_-]+)/gm)].map((match) => match[1] ?? "")
+  );
+  const leftOut = context.plugins
+    .filter((plugin) => plugin.as === "left out")
+    .map((plugin) => `${plugin.name}: its build failed: ${plugin.reason ?? ""}`);
+  if (role?.role === "controller") {
+    leftOut.push("legion: a controller session is not reproduced, so its tool is not defined");
+  } else if (pane && !tools.includes("legion")) {
+    const said = stderr
+      .split("\n")
+      .filter((line) => line.startsWith("[legion]") || line.includes("Extension error"));
+    leftOut.push(`legion: the plugin defined no tool: ${said.join(" ")}`);
+  }
+  return {
+    tools,
+    devices,
+    legion: tools.includes("legion"),
+    envoy: devices.filter((name) => name.startsWith("envoy_")),
+    leftOut,
+  };
+}
+
+/** The counts the hook's log holds: how many messages of its own run it dropped, per request. */
+function hookCounts(file: string): number[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .flatMap((line) => {
+      const entry: unknown = JSON.parse(line);
+      const dropped =
+        typeof entry === "object" && entry !== null ? Reflect.get(entry, "dropped") : null;
+      return typeof dropped === "number" ? [dropped] : [];
+    });
+}
 /** The providers Oh My Pi would otherwise try to discover models from. */
 const DISABLED_PROVIDERS = [
   "amazon-bedrock",
@@ -190,6 +251,36 @@ export interface CaptureRecord {
   /** Oh My Pi's own lines on extensions that failed to load. */
   readonly extensionErrors: readonly string[];
   readonly context: ContextRecord;
+  /** For a Legion context, the pane environment the capture gave Oh My Pi (made-up keys, every
+   *  endpoint a listener of this process on 127.0.0.1), or null. */
+  readonly legion: {
+    readonly role: string;
+    readonly tree: string;
+    readonly issue: string;
+    readonly endpoints: Readonly<Record<string, string>>;
+    readonly dispatch: string;
+  } | null;
+  /** Every request the capture's listeners took, as `<method> <path>` (the query left out), and
+   *  how many connections the NATS sink took: all of them went to 127.0.0.1. */
+  readonly connections: { readonly http: readonly string[]; readonly nats: number };
+  /** The tools the body defines (`tools`) and the `xd://` devices its system prompt lists, the
+   *  plugins' among them, and each plugin tool left out with why. */
+  readonly pluginTools: {
+    readonly tools: readonly string[];
+    readonly devices: readonly string[];
+    readonly legion: boolean;
+    readonly envoy: readonly string[];
+    readonly leftOut: readonly string[];
+  };
+  /** How many messages the run itself added that the hook dropped, at each model request. */
+  readonly hookDropped: readonly number[];
+  /** How the capture run ended: its exit code or signal, and why when it was not 0. A run that
+   *  ends after the recorder stored the turn's request still gives that request. */
+  readonly exit: {
+    readonly code: number | null;
+    readonly signal: string | null;
+    readonly reason: string;
+  };
   /** How many Oh My Pi runs the capture took, and how long each part took, in milliseconds. */
   readonly runs: number;
   readonly timings: {
@@ -395,6 +486,10 @@ export async function captureBody(
   arm: Arm,
   options: CaptureOptions
 ): Promise<Capture> {
+  const role = legionRole(c.context);
+  // A controller session is not reproduced: it claims with a controller secret, not a boot.
+  const pane = role !== undefined && role.role !== "controller" ? role : undefined;
+  const issue = pane?.isRoot === true ? CAPTURE_TREE : CAPTURE_ISSUE;
   const files = capturePaths(options.outDir, c.id, arm.name);
   if (existsSync(files.body) && existsSync(files.record)) {
     return {
@@ -470,7 +565,28 @@ export async function captureBody(
   const turns: { readonly body: string; readonly headers: Record<string, string> }[] = [];
   let hintRun = false;
   const route = async (request: RecordedRequest): Promise<Response | undefined> => {
-    if (request.method !== "POST" || !request.path.startsWith("/v1/messages")) return undefined;
+    // The stand-in daemon: a made-up registration and its ready, and an empty turn outcome.
+    // Every other route of every endpoint is refused.
+    if (request.path === "/legion/v1/claims/register" && pane !== undefined) {
+      return Response.json({
+        claimToken: `capture-${issue.toLowerCase()}-${pane.role}`,
+        tree: CAPTURE_TREE,
+        issue,
+        role: pane.role,
+        generation: 1,
+        secret: randomBytes(18).toString("base64url"),
+        promptAgents: [],
+      });
+    }
+    if (
+      request.path === "/legion/v1/claims/ready" ||
+      request.path === "/legion/v1/claims/turn-outcome"
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (request.method !== "POST" || !request.path.startsWith("/v1/messages")) {
+      return new Response("refused by the capture's stand-in", { status: 503 });
+    }
     const body = JSON.parse(request.body) as MessagesBody;
     const skill = hintSkill(body);
     if (body.tools !== undefined || body.system !== undefined) {
@@ -511,15 +627,53 @@ export async function captureBody(
   };
 
   const recorder = startRecorder({ route });
+  // The NATS servers the Envoy plugin dials: a sink that counts each connection and ends it.
+  let natsConnections = 0;
+  const nats = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        natsConnections += 1;
+        socket.end();
+      },
+      data() {},
+    },
+  });
+  const endpoints = {
+    LEGION_DAEMON_URL: recorder.url,
+    ENVOY_URL: `${recorder.url}/envoy`,
+    ENVOY_NATS_URL: `nats://127.0.0.1:${nats.port}`,
+  };
+  // The pane environment a Legion role's Oh My Pi has, each value made up for this capture.
+  const paneEnvironment: Record<string, string> =
+    pane === undefined
+      ? {}
+      : {
+          LEGION_ROLE: pane.role,
+          LEGION_TREE: CAPTURE_TREE,
+          LEGION_ISSUE: issue,
+          LEGION_STATE_DIR: path.join(root, "legion-state"),
+          LEGION_BOOT_TOKEN: randomBytes(18).toString("base64url"),
+          DISPATCH_SESSION_ID: "skill-cuts-capture",
+          ...endpoints,
+        };
   let stderr = "";
   let runs = 0;
-  const runOmp = async (): Promise<number> => {
+  let exit: CaptureRecord["exit"] = { code: 0, signal: null, reason: "" };
+  let hookLog = "";
+  /** One Oh My Pi run. The hint run holds no pane environment: the skill listing does not depend
+   *  on it, and its role claim would end the run before the hints are written. */
+  const runOmp = async (withPane: boolean): Promise<number> => {
     const runStarted = performance.now();
     runs += 1;
     const tmp = path.join(root, "tmp");
-    mkdirSync(tmp, { recursive: true });
+    const sessions = path.join(root, "sessions");
+    rmSync(sessions, { recursive: true, force: true });
+    for (const dir of [tmp, sessions]) mkdirSync(dir, { recursive: true });
     const out = path.join(root, `omp-${runs}.out.jsonl`);
     const err = path.join(root, `omp-${runs}.err.txt`);
+    hookLog = path.join(root, `hook-${runs}.jsonl`);
     const child = Bun.spawn(
       [
         options.omp,
@@ -528,7 +682,9 @@ export async function captureBody(
         "-p",
         "--mode",
         "json",
-        "--no-session",
+        // A Legion pane refuses a session with no transcript on disk; a scratch one serves.
+        "--session-dir",
+        sessions,
         "--model",
         model,
         "--thinking",
@@ -550,9 +706,11 @@ export async function captureBody(
           TZ: "UTC",
           PI_NO_TITLE: "1",
           [MESSAGES_VARIABLE]: messagesFile,
+          [HOOK_LOG_VARIABLE]: hookLog,
           ...(options.configFiles === undefined || options.configFiles.length === 0
             ? {}
             : { PI_CONFIG_FILES: options.configFiles.join(":") }),
+          ...(withPane ? paneEnvironment : {}),
         },
         stdin: "ignore",
         stdout: Bun.file(out),
@@ -564,11 +722,16 @@ export async function captureBody(
     const code = await child.exited;
     clearTimeout(timer);
     stderr = existsSync(err) ? readFileSync(err, "utf8") : "";
-    if (code !== 0) {
-      const tail = stderr.trim().split("\n").slice(-12).join("\n");
-      throw new Error(
-        `case ${c.id} arm ${arm.name}: Oh My Pi ended with ${child.signalCode ?? `exit ${code}`}${child.signalCode === "SIGKILL" ? ` after ${timeoutMs} ms` : ""}: ${tail}`
-      );
+    const ended = `${child.signalCode ?? `exit ${code}`}${child.signalCode === "SIGKILL" ? ` after ${timeoutMs} ms` : ""}`;
+    const tail = stderr.trim().split("\n").slice(-6).join("\n");
+    exit = {
+      code: child.signalCode === null ? code : null,
+      signal: child.signalCode,
+      reason: code === 0 ? "" : tail,
+    };
+    // A run that ended after the recorder stored the turn's request has given that request.
+    if (code !== 0 && (hintRun || turns.length === 0)) {
+      throw new RunEnded(`case ${c.id} arm ${arm.name}: Oh My Pi ended with ${ended}: ${tail}`);
     }
     return Math.round(performance.now() - runStarted);
   };
@@ -584,7 +747,7 @@ export async function captureBody(
     let hintRunMs = 0;
     if (wanted.size > 0) {
       hintRun = true;
-      hintRunMs = await runOmp();
+      hintRunMs = await runOmp(false);
       hintRun = false;
       const db = new Database(database);
       let rows: { key: string; description: string }[];
@@ -624,7 +787,19 @@ export async function captureBody(
         entry.written = true;
       }
     }
-    const captureRunMs = await runOmp();
+    // A Legion pane's run can end before its turn's request (its role claim exits the process
+    // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all.
+    let captureRunMs = 0;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        captureRunMs = await runOmp(true);
+        break;
+      } catch (error) {
+        if (!(error instanceof RunEnded) || pane === undefined || attempt >= CAPTURE_TRIES) {
+          throw error;
+        }
+      }
+    }
     const turn = turns[0];
     if (turn === undefined) {
       throw new Error(`case ${c.id} arm ${arm.name}: Oh My Pi sent no model request for the turn`);
@@ -677,6 +852,24 @@ export async function captureBody(
       otherRequests,
       extensionErrors: extensionErrors(profileDir, stderr),
       context: context.record,
+      legion:
+        pane === undefined
+          ? null
+          : {
+              role: pane.role,
+              tree: CAPTURE_TREE,
+              issue,
+              endpoints,
+              dispatch:
+                "off: its read of people's answers on each request would put its failure into the request",
+            },
+      connections: {
+        http: recorder.requests.map((request) => `${request.method} ${request.path.split("?")[0]}`),
+        nats: natsConnections,
+      },
+      pluginTools: pluginTools(body, context.record, pane !== undefined, role, stderr),
+      hookDropped: hookCounts(hookLog),
+      exit,
       runs,
       timings: {
         contextMs,
@@ -690,5 +883,6 @@ export async function captureBody(
     return { body, record, bodyFile: files.body, recordFile: files.record };
   } finally {
     await recorder.close();
+    nats.stop(true);
   }
 }

@@ -218,6 +218,7 @@ function aCase(context: string, profile: Partial<Case["profile"]>): Case {
     messages,
     skillReads: [2],
     realStep: { role: "assistant", content: [{ type: "text", text: "1. One." }] },
+    violatingStep: { role: "assistant", content: [{ type: "text", text: "None." }] },
     source: { store: "store_a", pathHash: pathHash("/sessions/a.jsonl") },
     sessionStart: "2026-11-20T01:00:00Z",
     secretsRemoved: 0,
