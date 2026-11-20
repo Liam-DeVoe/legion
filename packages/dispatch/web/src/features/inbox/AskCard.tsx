@@ -803,11 +803,11 @@ export function AskCard({
         >
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
-        {/* It grows with its text up to half the window (`growingField`). So a reason that
-            Dispatch wrote after a form refusal shows whole, and Answer stays on the screen.
-            `min-h-16!` keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
+        {/* Inside `NoTooltips` the field grows with its text up to half the window, so the reason
+            Dispatch wrote after a form refusal shows whole and Answer stays on the screen. Outside
+            it keeps main's plain field. */}
         <textarea
-          className={`block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none ${growingField} ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
+          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : `min-h-16! ${growingField} ${ON_PAGE.field}`}`}
           data-ask-answer=""
           disabled={disabledWhileOut}
           id={answerFieldId}

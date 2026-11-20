@@ -269,11 +269,11 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
-            {/* It grows with its text up to half the window (`growingField`), while preserving the
-                page's focus rule: during a page write it is read-only and the submit stays
-                aria-disabled, so the dialog keeps focus. */}
+            {/* Inside `NoTooltips` it grows with its text up to half the window (`growingField`),
+                so the reason Dispatch wrote after a form refusal shows whole, not in two lines.
+                Outside it keeps main's plain field. */}
             <textarea
-              className={`mt-1 block min-h-14! w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${growingField} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
+              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : `min-h-14! ${growingField} ${ON_PAGE.reasonBox}`}`}
               disabled={page === null && saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -549,16 +549,17 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              // While the write is out, Approve is `aria-disabled` and a press does nothing, so
-              // it keeps focus. A browser drops focus from a disabled button before a form refusal
-              // can return it here.
-              aria-disabled={review.isPending || undefined}
+              // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
+              // does nothing, so it keeps the focus: a `disabled` button drops it to the body in a
+              // browser. Outside it is `disabled` while the write is out, as on `main`.
+              aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
+              disabled={page === null && review.isPending}
               onClick={() => {
                 if (review.isPending) {
                   return;
