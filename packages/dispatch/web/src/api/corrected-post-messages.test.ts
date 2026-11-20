@@ -68,3 +68,19 @@ test("a message's edit writes its time into the issue's message list, as into th
     pinned: { body: OLD_WORDS, deleted_at: null, edited_at: EDITED_AT },
   });
 });
+
+// The Agents page's reply composer quotes the message it answers from `["agents", session,
+// "messages"]` (`AgentsPage.tsx`, `replyParentOf(…, messages.data)`), and stays open with that
+// quote when the conversation's refetch fails (FixAudit3 F5, test round at 869d340e). An issue
+// message targeted at a session is listed there, so its delete must mark that copy too.
+const AGENT = ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"];
+
+test("a message's delete writes its mark into the Agents page's copy of the session's messages", () => {
+  const client = cached();
+  client.setQueryData(AGENT, [{ message, replies: [] } as unknown as MessageRead]);
+  markCorrectedPost(client, correction("message", MESSAGE, false));
+  expect({ agent: messageIn(client, AGENT), pinned: messageIn(client, PINNED) }).toEqual({
+    agent: { body: "", deleted_at: DELETION.deleted_at, edited_at: null },
+    pinned: { body: "", deleted_at: DELETION.deleted_at, edited_at: null },
+  });
+});
