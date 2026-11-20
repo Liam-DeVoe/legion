@@ -7,4 +7,6 @@ body: |-
   to the architect, and again when its relay is published to the controller. A kept decision carries
   Dispatch's own mark of the review, so it is ordered against the approval by Dispatch and not by
   two clocks, and the only way to clear a generation forgets a superseded decision first. The
-  sweep's re-send of a lost resume start is also rendered when it is sent.
+  sweep's re-send of a lost resume start is also rendered when it is sent. A changes request relayed
+  to the controller now carries the review's own mark and document, and its publish asks at those
+  alone, so an approval of another document the gate moved to no longer drops it.

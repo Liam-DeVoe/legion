@@ -47,12 +47,17 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 		{"the tree lingers before its architect's suspend ran", supervise.StateWorking, true, true},
 		{"the architect's claim failed on a running tree", supervise.StateFailed, false, true},
 	} {
-		// The review's place in Dispatch's log travels with a design decision's notice and is
-		// kept with the decision, so a later approval is weighed against it by Dispatch's order.
+		// The review's place in Dispatch's log and the document reviewed travel with a design
+		// decision's notice: the decision is kept at that place, so a later approval is weighed
+		// against it by Dispatch's order, and the relay carries both as the notice did, so its
+		// publish asks again of the same review.
 		review := record.EventMark{Seq: 7, At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 		for _, decision := range []record.Notice{
-			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
-			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
+			{Kind: "design-approved", Version: 3, Actor: "user:alice",
+				Ref: "dispatch://LEGION-1/spec", Review: review, Artifact: "artifact-1"},
+			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path",
+				Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review,
+				Artifact: "artifact-1"},
 			{Kind: "carried-gate-opened", Version: 3, Reason: carried, Actor: "user:alice", Ref: "dispatch://LEGION-9/spec"},
 		} {
 			t.Run(tc.name+"/"+string(decision.Kind), func(t *testing.T) {
@@ -78,7 +83,8 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 				}
 				kind, _ := record.SpecDecision(decision.Kind)
 				want := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Decision: kind, Root: "LEGION-1",
-					Ref: decision.Ref, Actor: "user:alice", Version: 3, Reason: decision.Reason}
+					Ref: decision.Ref, Actor: "user:alice", Version: 3, Reason: decision.Reason,
+					Review: decision.Review, Artifact: decision.Artifact}
 				if got := parkedDecisions(t, pool); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 					t.Fatalf("parked decisions %#v, want one %#v", got, want)
 				}

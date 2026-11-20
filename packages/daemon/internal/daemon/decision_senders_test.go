@@ -144,9 +144,9 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // the first out and the walk still passes. What holds that ask is its behavior, which
 // TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of a relay to the
 // controller (controllerNotice) reaches it one way alone, through its ask of a relayed changes
-// request (relayedChangesAnswered), so the walk fails it if that ask goes; that the ask reads the
-// review's mark from the decision the relay kept is its behavior too, which
-// TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
+// request (decisionSuperseded), so the walk fails it if that ask goes; that the ask is of the
+// review's mark and document the relay carries, and of nothing kept beside the row, is its
+// behavior too, which TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a

@@ -28,12 +28,15 @@ import (
 // runs (readNoticeTree's decisionSuperseded): the row's first attempt finds no session holding the
 // architect's role, as while its pod is released or relaunching, and waits; the person's approval
 // lands; the next attempt runs. The review and the approval reach the engine as Dispatch's
-// artifact events do, so the rows are the ones the workflow writes.
+// artifact events do, and a gate's move to another document as register_gate's registration does,
+// so the rows are the ones the workflow writes.
 //
 // Where the person approved the reviewed version after the request, the request's row finishes
 // with nothing published and one line naming the row, the issue and both versions, and the
 // approval's own notice behind it still goes. The controls are a request no approval followed,
-// and one that came after the person's approval: each is published.
+// one that came after the person's approval, and one on a document the step's gate has since left
+// for another, which the person approved at the version reviewed: each is published, since only
+// an approval of the document reviewed can answer the review.
 func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
@@ -42,20 +45,29 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 		return intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactApproved, Version: 3, Actor: alice,
 			Mark: record.EventMark{Seq: seq, At: at}}
 	}
+	approved := approval(9, reviewed.Add(5*time.Minute))
+	earlier := approval(7, reviewed.Add(-5*time.Minute))
+	moved := movedGate(reviewed.Add(5 * time.Minute))
 	for _, tc := range []struct {
 		name string
-		// queued are the events applied before the first attempt, and waited those applied while
+		// queued are the facts applied before the first attempt, and waited those applied while
 		// the row waits for the architect. published is every notice the architect is then sent.
-		queued, waited []intake.DispatchArtifact
+		queued, waited []intake.Fact
 		published      []record.NoticeKind
 		superseded     bool
 	}{
-		{name: "the person approved the reviewed version after the request", queued: []intake.DispatchArtifact{changes},
-			waited: []intake.DispatchArtifact{approval(9, reviewed.Add(5*time.Minute))}, published: []record.NoticeKind{"design-approved"}, superseded: true},
-		{name: "no approval followed the request", queued: []intake.DispatchArtifact{changes},
+		{name: "the person approved the reviewed version after the request",
+			queued: []intake.Fact{changes}, waited: []intake.Fact{approved},
+			published: []record.NoticeKind{"design-approved"}, superseded: true},
+		{name: "no approval followed the request",
+			queued:    []intake.Fact{changes},
 			published: []record.NoticeKind{"design-changes-requested"}},
-		{name: "the request came after the person's approval", queued: []intake.DispatchArtifact{approval(7, reviewed.Add(-5*time.Minute)), changes},
+		{name: "the request came after the person's approval",
+			queued:    []intake.Fact{earlier, changes},
 			published: []record.NoticeKind{"design-approved", "design-changes-requested"}},
+		{name: "the gate moved to another document the person approved at the version reviewed",
+			queued: []intake.Fact{changes}, waited: []intake.Fact{moved},
+			published: []record.NoticeKind{"design-changes-requested", "design-approved"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -69,20 +81,14 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 			}
 			steps := config.DesignGateRootIssues.Steps()
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: steps}, quietLogger())
-			apply := func(events []intake.DispatchArtifact) {
-				t.Helper()
-				for _, event := range events {
-					id := fmt.Sprintf("artifact-%s-%d", event.Kind, event.Mark.Seq)
-					if result, err := intake.ApplyFact(ctx, pool, "dispatch", id, event, engine); err != nil || result.Refusal != nil {
-						t.Fatalf("apply %s = %#v, %v", id, result, err)
-					}
-				}
-			}
-			apply(tc.queued)
+			applyFacts(t, pool, engine, tc.queued)
 			request := soleNoticeRow(t, pool, "design-changes-requested")
-			if want := (record.Notice{Kind: "design-changes-requested", Version: 3, Reason: changes.Reason, Actor: "user:alice",
-				Ref: "dispatch://LEGION-1/spec", Review: changes.Mark}); !reflect.DeepEqual(request.notice, want) {
-				t.Fatalf("the workflow queued %#v, want the changes request %#v", request.notice, want)
+			wantQueued := record.Notice{Kind: "design-changes-requested", Version: 3,
+				Reason: changes.Reason, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec",
+				Review: changes.Mark, Artifact: "artifact-1"}
+			if !reflect.DeepEqual(request.notice, wantQueued) {
+				t.Fatalf("the workflow queued %#v, want the changes request %#v",
+					request.notice, wantQueued)
 			}
 
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -100,7 +106,7 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 				t.Fatalf("published %v to the architect on the attempt no session holds its role; want the request's row %d waiting", published, request.id)
 			}
 
-			apply(tc.waited)
+			applyFacts(t, pool, engine, tc.waited)
 			publisher.setAbsent()
 			for run := 0; run < 5 && outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) > 0; run++ {
 				clock = clock.Add(time.Hour)
@@ -126,6 +132,37 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 				t.Fatalf("logged %q, want one Info line naming %s", dropped, want)
 			}
 		})
+	}
+}
+
+// movedGate is the registration that moves LEGION-1's spec step from the document the tests'
+// changes request is of (artifact-1) to another (artifact-2), whose version 3 register_gate's
+// read found the person approved at approved: the version the request reviewed, on a document it
+// did not review. The step's reference stays dispatch://LEGION-1/spec through the move.
+func movedGate(approved time.Time) intake.GateRegistered {
+	return intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "artifact-2", Version: 3,
+		DispatchVersion: 3, ApprovedVersion: 3,
+		ApprovedMark: record.EventMark{Seq: 9, At: approved}, ReviewedBy: alice}
+}
+
+// applyFacts applies each fact to engine as its source does: a registration as register_gate's
+// call, every other fact as Dispatch's event, each under an id of its own.
+func applyFacts(t *testing.T, pool *store.Pool, engine *workflow.Engine, facts []intake.Fact) {
+	t.Helper()
+	for _, fact := range facts {
+		var source, id string
+		switch fact := fact.(type) {
+		case intake.DispatchArtifact:
+			source, id = "dispatch", fmt.Sprintf("artifact-%s-%d", fact.Kind, fact.Mark.Seq)
+		case intake.GateRegistered:
+			source, id = "api", "register-"+fact.ArtifactID
+		default:
+			t.Fatalf("no source of the tests applies a %T", fact)
+		}
+		result, err := intake.ApplyFact(context.Background(), pool, source, id, fact, engine)
+		if err != nil || result.Refusal != nil {
+			t.Fatalf("apply %s = %#v, %v", id, result, err)
+		}
 	}
 }
 
@@ -182,17 +219,23 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // A person's changes request relayed to the controller, because nobody in its tree hears it
 // (parkDecision), is told only while it is still the person's word (dispatch://INFRA-3136/spec
 // R2). The relay asks when it writes the controller's row, and the publish asks again
-// (controllerNotice): the row's first attempt finds no session holding the controller's claim,
-// and waits; the person's approval of the version reviewed lands; the holder returns and the next
-// attempt runs. The review and the approval reach the engine as Dispatch's artifact events do, on
-// a running tree whose architect's claim failed, so every row is one the workflow and the relay
-// write.
+// (controllerNotice), of the decision the row carries: the version, Dispatch's mark of the review
+// and the document reviewed, which the relay copied from the request's own notice. The row's
+// first attempt finds no session holding the controller's claim, and waits; the person's approval
+// of the version reviewed lands; the holder returns and the next attempt runs. The review and the
+// approval reach the engine as Dispatch's artifact events do, and a gate's move to another
+// document as register_gate's registration does, on a running tree whose architect's claim
+// failed, so every row is one the workflow and the relay write.
 //
 // Where the approval followed the request, the request's row finishes with nothing published and
 // one line naming the row, the issue, the ref and both versions, and the approval's own relay
-// still goes. The controls are a request no approval followed, and one Dispatch recorded after
-// the person's approval of the same version: each is told, since the review's mark, not the version
-// alone, decides which came first.
+// still goes. That holds whether the request's row asks before the approval's own notice is
+// relayed or after, when the decision kept on the document's reference is the approval in the
+// request's place (record.Store.AddParkedDecision): what is kept beside the row decides nothing.
+// The controls are a request no approval followed, one Dispatch recorded after the person's
+// approval of the same version, and one on a document the step's gate has since left for another,
+// which the person approved at the version reviewed: each is told, since the review's mark and
+// its document, not the version alone, decide whether the approval answered it.
 func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T) {
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
@@ -201,22 +244,37 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 		return intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactApproved, Version: 3, Actor: alice,
 			Mark: record.EventMark{Seq: seq, At: at}}
 	}
+	approved := approval(9, reviewed.Add(5*time.Minute))
+	earlier := approval(7, reviewed.Add(-5*time.Minute))
+	moved := movedGate(reviewed.Add(5 * time.Minute))
+	changesKind := record.DecisionDesignChangesRequested
+	approvalKind := record.DecisionDesignApproved
 	for _, tc := range []struct {
 		name string
-		// queued are the events applied before the relay's first attempt, and waited those
+		// queued are the facts applied before the relay's first attempt, and waited those
 		// applied while its row waits for the controller. told is every decision the controller
-		// is then told, in order.
-		queued, waited []intake.DispatchArtifact
+		// is then told, in order. keptFirst has the approval's own notice relayed, and kept in
+		// the request's place, before the request's row runs again.
+		queued, waited []intake.Fact
 		told           []record.DecisionKind
 		superseded     bool
+		keptFirst      bool
 	}{
-		{name: "the person approved the reviewed version after the request", queued: []intake.DispatchArtifact{changes},
-			waited: []intake.DispatchArtifact{approval(9, reviewed.Add(5*time.Minute))}, told: []record.DecisionKind{record.DecisionDesignApproved},
-			superseded: true},
-		{name: "no approval followed the request", queued: []intake.DispatchArtifact{changes},
-			told: []record.DecisionKind{record.DecisionDesignChangesRequested}},
-		{name: "the request came after the person's approval", queued: []intake.DispatchArtifact{approval(7, reviewed.Add(-5*time.Minute)), changes},
-			told: []record.DecisionKind{record.DecisionDesignApproved, record.DecisionDesignChangesRequested}},
+		{name: "the person approved the reviewed version after the request",
+			queued: []intake.Fact{changes}, waited: []intake.Fact{approved},
+			told: []record.DecisionKind{approvalKind}, superseded: true},
+		{name: "the approval was kept in the request's place before the request's row ran again",
+			queued: []intake.Fact{changes}, waited: []intake.Fact{approved},
+			told: []record.DecisionKind{approvalKind}, superseded: true, keptFirst: true},
+		{name: "no approval followed the request",
+			queued: []intake.Fact{changes},
+			told:   []record.DecisionKind{changesKind}},
+		{name: "the request came after the person's approval",
+			queued: []intake.Fact{earlier, changes},
+			told:   []record.DecisionKind{approvalKind, changesKind}},
+		{name: "the gate moved to another document the person approved at the version reviewed",
+			queued: []intake.Fact{changes}, waited: []intake.Fact{moved},
+			told: []record.DecisionKind{changesKind, approvalKind}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -229,23 +287,16 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 				t.Fatalf("register the spec gate at version 3: %v", err)
 			}
 			// One clock for the engine and the outbox: the rows the engine queues come due by it,
-			// and the waiting row's backoff counts from it. The approval lands a minute after the
-			// request's row waited, so that row is due before the approval's own notice, and asks
-			// the gate while the decision kept for it is still the request.
+			// and the waiting row's backoff counts from it. The facts applied while the row waits
+			// land a minute after it waited, so that row is due before the notice they queue, and
+			// asks the gate while the decision kept for it is still the request. Where the
+			// approval is kept first, they land at the moment the row waited, so their notice is
+			// due while the row's backoff still holds it.
 			clock := reviewed.Add(time.Hour)
 			now := func() time.Time { return clock }
 			steps := config.DesignGateRootIssues.Steps()
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: steps, Clock: now}, quietLogger())
-			apply := func(events []intake.DispatchArtifact) {
-				t.Helper()
-				for _, event := range events {
-					id := fmt.Sprintf("artifact-%s-%d", event.Kind, event.Mark.Seq)
-					if result, err := intake.ApplyFact(ctx, pool, "dispatch", id, event, engine); err != nil || result.Refusal != nil {
-						t.Fatalf("apply %s = %#v, %v", id, result, err)
-					}
-				}
-			}
-			apply(tc.queued)
+			applyFacts(t, pool, engine, tc.queued)
 
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", supervise.StateFailed)
@@ -267,8 +318,24 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 					told, request, attempts)
 			}
 
-			clock = clock.Add(time.Minute)
-			apply(tc.waited)
+			if !tc.keptFirst {
+				clock = clock.Add(time.Minute)
+			}
+			applyFacts(t, pool, engine, tc.waited)
+			if tc.keptFirst {
+				if err := runner.RunOnce(ctx); err != nil {
+					t.Fatalf("the run that relays the approval: %v", err)
+				}
+				kept := keptDecisions(t, pool, records, "LEGION-1")
+				if len(kept) != 1 || kept[0].Decision != record.DecisionDesignApproved {
+					t.Fatalf("kept %#v, want the person's approval in the request's place", kept)
+				}
+				_, again := relayRow(t, pool, record.DecisionDesignChangesRequested)
+				if again != attempts {
+					t.Fatalf("the request's row made %d attempts, want %d: it ran again first",
+						again, attempts)
+				}
+			}
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
 			left := func() int {
 				return outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) + outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindControllerNotice)
@@ -296,71 +363,6 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			if len(dropped) != 1 || !strings.Contains(dropped[0], `the person's approval followed it"`) || !strings.Contains(dropped[0], want) ||
 				!strings.Contains(dropped[0], "level=INFO") {
 				t.Fatalf("logged %q, want one Info line that the approval followed the request, naming %s", dropped, want)
-			}
-		})
-	}
-}
-
-// A relayed changes request that nothing keeps any more, or that the person's later decision on
-// the same document replaced, is not told either: the decision kept beside the row is what says
-// the request is still owed (relayedChangesAnswered). Nothing keeps it once a start or a catch-up
-// told an architect, the forget of a superseded decision took it, or the clear of its generation
-// did, and a later decision is told on its own. The control is a relayed approval nothing keeps,
-// which is published as every other controller notice is: only a changes request is asked.
-func TestARelayedChangesRequestNothingKeepsIsNotToldToTheController(t *testing.T) {
-	at := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
-	ref := "dispatch://LEGION-1/spec"
-	for _, tc := range []struct {
-		name     string
-		decision record.DecisionKind
-		kept     *record.ParkedDecision
-		// line is the one line that finishes the row unpublished, "" where the row publishes.
-		line string
-	}{
-		{name: "nothing keeps the request any more", decision: record.DecisionDesignChangesRequested,
-			line: `msg="outbox parked changes request finished without publishing: nothing is kept for it any more"`},
-		{name: "the person's later decision replaced it", decision: record.DecisionDesignChangesRequested,
-			kept: &record.ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at.Add(5 * time.Minute), Seq: 9},
-			line: `msg="outbox parked changes request finished without publishing: the person's later decision replaced it"`},
-		{name: "an approval nothing keeps", decision: record.DecisionDesignApproved},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			noticeTree(t, pool, records, true)
-			if tc.kept != nil {
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, *tc.kept) }); err != nil {
-					t.Fatalf("keep %#v: %v", *tc.kept, err)
-				}
-			}
-			var logged bytes.Buffer
-			publisher := &holderPublisher{}
-			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
-				notices: publisher, project: "legion", gatedSteps: config.DesignGateRootIssues.Steps(), now: time.Now}
-			notice := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Decision: tc.decision, Root: "LEGION-1", Ref: ref, Actor: "user:alice", Version: 3}
-			if tc.decision == record.DecisionDesignChangesRequested {
-				notice.Reason = "name the rollback path"
-			}
-			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", notice, at))
-			if err := runner.controllerNotice(ctx, row, notice); err != nil {
-				t.Fatalf("controller notice: %v", err)
-			}
-			_, delivered := publisher.snapshot()
-			dropped := textLines(logged.String(), `msg="outbox parked changes request finished without publishing`)
-			if tc.line == "" {
-				if len(delivered) != 1 || !reflect.DeepEqual(delivered[0].payload, record.Notice(notice)) || len(dropped) != 0 {
-					t.Fatalf("delivered %+v and logged %q, want the notice published as it is", delivered, dropped)
-				}
-				return
-			}
-			want := fmt.Sprintf("row=%d issue=LEGION-1 ref=%s version=3", row.ID, ref)
-			if tc.kept != nil {
-				want += " kept=" + string(tc.kept.Decision)
-			}
-			if len(delivered) != 0 || len(dropped) != 1 || !strings.Contains(dropped[0], tc.line) || !strings.Contains(dropped[0], want) ||
-				!strings.Contains(dropped[0], "level=INFO") {
-				t.Fatalf("delivered %+v and logged %q, want nothing published and one Info line %s naming %s", delivered, dropped, tc.line, want)
 			}
 		})
 	}

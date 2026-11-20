@@ -93,17 +93,21 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
 //     slot, and the one parked-decision controller notice that names it, the decision, where in
-//     Dispatch, who made it, and a spec decision's version and a changes request's reason.
+//     Dispatch, who made it, and what spec says of it.
 //
-// The notice carries no mark of the review, and the decision kept beside it does (ParkedDecision.At
-// and Seq), so the publish of a changes request reads that kept decision again rather than the
-// notice (the daemon's controllerNotice, through Store.KeptDecision): a kept row gone, replaced by
-// the person's later decision, or followed by their approval finishes the notice unpublished.
+// spec is the notice that reported a spec decision (the daemon's parkDecision passes the one no
+// architect took), and the controller notice carries what it says as it says it: the version, a
+// changes request's reason, and Dispatch's mark of the review with the document reviewed
+// (Notice.Review, Notice.Artifact). A decision no notice reported, an ask's, passes the zero
+// Notice. The mark is the notice's own and never the time the decision is kept at, which is the
+// daemon's clock where the notice gave none (ParkedDecision.At), because the publish of a relayed
+// changes request asks again whether the person's approval followed it (the daemon's
+// controllerNotice), and asks it of that mark and that document.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, version int, reason string, steps []DesignStep) (RelayOutcome, error) {
+	decision ParkedDecision, spec Notice, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -129,8 +133,10 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
-		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
+	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice,
+		Decision: decision.Decision, Root: root.Key, Ref: decision.Ref, Actor: decision.Actor,
+		Version: spec.Version, Reason: spec.Reason, Review: spec.Review, Artifact: spec.Artifact},
+		decision.At)
 	if err != nil {
 		return RelayNone, err
 	}

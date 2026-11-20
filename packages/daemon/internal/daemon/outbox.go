@@ -2354,18 +2354,39 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // row's own key.
 //
 // A parked-decision notice that relays a person's changes request is asked first whether the
-// request is still the person's word (relayedChangesAnswered), and finishes with nothing published
-// once it is not: the relay asked when it wrote the row (parkDecision), but the row waits here for
-// as long as no session holds the controller's claim, and an approval that lands meanwhile would
-// reach the controller as a request to act on. Every other notice, a parked decision of any other
-// kind among them, is published as it is.
+// request is still the person's word, and finishes with nothing published and one line naming the
+// approved version once the person's approval followed it: the relay asked when it wrote the row
+// (parkDecision), but the row waits here for as long as no session holds the controller's claim,
+// and an approval that lands meanwhile would reach the controller as a request to act on. The ask
+// is the one predicate's (decisionSuperseded), of the decision the row carries: the version,
+// Dispatch's mark of the review and the document reviewed, which the relay copied from the
+// changes request's own notice (record.RelayParkedDecision), read in one read-only snapshot of
+// the gates. A row an earlier daemon queued carries no mark and no document, and is asked at its
+// version alone, as the architect's delivery asks such a notice (readNoticeTree). One window is
+// left, as in deliverNotice: an approval that commits between that read and the publish, which
+// reaches the controller after the request it answered. Every other notice, a parked decision of
+// any other kind among them, is published as it is.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
 	if payload.Kind == record.ParkedDecisionNotice && payload.Decision == record.DecisionDesignChangesRequested {
-		if answered, err := r.relayedChangesAnswered(ctx, row, payload); err != nil || answered {
+		var approval *workflow.Approval
+		read := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+		if err := pgx.BeginTxFunc(ctx, r.pool, read, func(tx pgx.Tx) error {
+			var err error
+			approval, err = r.decisionSuperseded(ctx, tx, row.Issue, record.Notice(payload),
+				payload.Decision)
 			return err
+		}); err != nil {
+			return fmt.Errorf("read whether the changes request relayed for %s is still the "+
+				"person's word: %w", row.Issue, err)
+		}
+		if approval != nil {
+			r.log.Info("outbox parked changes request finished without publishing: "+
+				"the person's approval followed it", "row", row.ID, "issue", row.Issue,
+				"ref", payload.Ref, "version", payload.Version, "approved", approval.Version)
+			return nil
 		}
 	}
 	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
