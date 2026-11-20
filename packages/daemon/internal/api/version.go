@@ -2845,17 +2845,21 @@ package api
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never null, and a caller
 // whose contract is under 198 — the one its `Legion-Plugin-Contract` header states, else the
-// highest its pod's claims record — is served the state without the key (shaping.go's
-// stateNarrowings, questionsForControllerContract, withoutQuestionsForController), since the
-// strict reader before 198 refuses it. The bands compose with the pause's: a caller below 178 is
-// served neither the pause's keys nor this one, and a caller from 178 to 197 is served the pause
-// alone of the two; 193's band, between them, decides 193's own keys. The 198 reader takes the key
-// as optional for that body alone, as it takes `wakesWaiting`; a daemon below 198 is not what
-// serves it a body without the key, since the boot gate and `legion probe-image` refuse that mixed
-// pair. The key's one enumerated field is each question's `role` (answers.go's questionRoles),
-// whose values arrived with the key and ride its band. 198's records are 193's under its own
-// number with the key paths of `questionsForController` and that field's domain on the state's,
-// and every record below 198 is as it was. No request a plugin sends moves. (This branch
+// highest its pod's claims record below 193, since a plugin from 193 states its contract — is
+// served the state without the key (shaping.go's stateNarrowings, questionsForControllerContract,
+// withoutQuestionsForController), since a reader before 198 does not take it. The bands compose
+// with the pause's: a caller below 178 is served neither the pause's keys nor this one, and a
+// caller from 178 to 197 is served the pause alone of the two; 193's band, between them, decides
+// 193's own keys. The 198 reader takes the key as optional for that body alone, as it takes
+// `wakesWaiting`; a daemon below 198 is not what serves it a body without the key, since the boot
+// gate and `legion probe-image` refuse that mixed pair. The key's one enumerated field is each
+// question's `role` (answers.go's questionRoles), whose values arrived with the key and ride its
+// band. 198's records are 193's under its own number with the key paths of
+// `questionsForController` and that field's domain on the state's. Each state record from 46 to
+// 193 gains that domain empty, as `"questionsForController.*.role": []`, since a record holds the
+// domain of every enumerated field of its answer at every contract
+// (TestTheRecordSetIsOneRecordPerAnswerPerContract) and no value of this one arrived below 198;
+// nothing else of a record below 198 moves. No request a plugin sends moves. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
 // stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
