@@ -29,6 +29,13 @@ const clockGlobals = [
  *  `window["setTimeout"]`. */
 const globalObjects = new Set(["globalThis", "global", "window", "self"]);
 
+/** The members of `process` that read no clock, wait for nothing and end no process, which a
+ *  caller of the removal reads: its environment, its arguments, its pid and platform, and its
+ *  signal listeners, which a signal from outside fires and no clock does. Every other use of
+ *  `process` is a read of a clock or an end of a process (`exit`, `kill`, `hrtime`, `uptime`,
+ *  `nextTick`, and the name taken whole), and counts. */
+const processReadsNoClock = new Set(["env", "argv", "pid", "platform", "on", "once", "off"]);
+
 /** The globals of `clockGlobals`, and every name an import of `node:timers`,
  *  `node:timers/promises` or `node:child_process` binds in `source`. */
 function clockNames(source: ts.SourceFile): Set<string> {
@@ -53,7 +60,8 @@ function clockNames(source: ts.SourceFile): Set<string> {
 
 /** Each place under `root`, a node of `source`, that reads a clock or runs a program, as
  *  "<line>:<column> <text>": a name of `real` that is no property's name, the same name as a
- *  member of a global object (`globalObjects`, dotted or indexed), and `AbortSignal.timeout`.
+ *  member of a global object (`globalObjects`, dotted or indexed), and `AbortSignal.timeout`;
+ *  `process` but where a member of it that reads no clock is read (`processReadsNoClock`).
  *  Nothing under a node `skip` answers true for is read. */
 function clockReads(
   source: ts.SourceFile,
@@ -79,7 +87,13 @@ function clockReads(
           ts.isPropertySignature(parent) ||
           ts.isMethodSignature(parent)) &&
           parent.name === node);
-      if (!property) found.push(place(node));
+      // `process.env` and the other members that read no clock are no read of one.
+      const data =
+        node.text === "process" &&
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === node &&
+        processReadsNoClock.has(parent.name.text);
+      if (!property && !data) found.push(place(node));
     }
     if (
       (ts.isPropertyAccessExpression(node) &&
@@ -133,62 +147,282 @@ function offTheMachine(text: string): string[] {
   ];
 }
 
-/** Each function of `text`, the sweep's source (`e2e/harness-postgres-removal.ts`), that the
- *  removal of one container runs under: each that calls `removeContainer`, and each that calls one
- *  of those, at any depth (`under`); and each place in their bodies that reads a clock or runs a
- *  program (`found`, `clockReads`, prefixed with the function's name). A limit put on the removal
- *  by a caller, a timer raced against it, is one of them, and no row on the row's clock, which
- *  calls `removeContainer` itself, runs that caller. */
-function aroundTheRemoval(text: string): { under: string[]; found: string[] } {
-  const source = ts.createSourceFile("sweep.ts", text, ts.ScriptTarget.Latest, true);
-  const functions = new Map<string, ts.FunctionDeclaration>();
+/** One production module of `e2e/`: its file name and its text. */
+interface Module {
+  readonly file: string;
+  readonly text: string;
+}
+
+/** The production modules of `e2e/` (its own `.ts` files, not its rows in `__tests__`): the
+ *  sweep's module and every module that may run it, as the pool's start (`harness-pool.ts`), the
+ *  shell stacks' command (`postgres-mark.ts`), `global-setup.ts` and `harness-up.ts` do. */
+function e2eModules(): Module[] {
+  const directory = fileURLToPath(new URL("..", import.meta.url));
+  return readdirSync(directory, { withFileTypes: true })
+    .filter(
+      (entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")
+    )
+    .map((entry) => entry.name)
+    .sort()
+    .map((file) => ({ file, text: readFileSync(join(directory, file), "utf8") }));
+}
+
+/** A body of a module that runs as one: a function it declares by name (`default` for an export
+ *  default with none), an arrow or function expression a `const` of its top level binds to a
+ *  name, or its own top level, "(top level)", which leaves out those functions. */
+interface Body {
+  readonly file: string;
+  readonly name: string;
+  readonly node: ts.Node;
+  readonly source: ts.SourceFile;
+  /** The names `clockReads` reads in this module (`clockNames`). */
+  readonly real: ReadonlySet<string>;
+  readonly parameters: readonly string[];
+  /** What a read of this body leaves out: the functions of the top level, bodies of their own. */
+  readonly skip: (node: ts.Node) => boolean;
+  /** Each call in the body (`callsUnder`), and the name each calls (`calleeOf`). */
+  readonly calls: readonly ts.CallExpression[];
+  readonly callees: ReadonlySet<string>;
+  /** Each name the module's imports bind, with the name it imports, `[imported, bound]`. */
+  readonly imports: readonly (readonly [string, string])[];
+}
+
+/** The bodies of each module read so far, by its file and text, so a planted copy reads anew only
+ *  the module it changed. */
+const parsed = new Map<string, Body[]>();
+
+/** Each body of `module` (`Body`). */
+function bodiesOf({ file, text }: Module): Body[] {
+  const key = `${file}\n${text}`;
+  const known = parsed.get(key);
+  if (known !== undefined) return known;
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const real = clockNames(source);
+  const functions: { name: string; node: ts.SignatureDeclaration }[] = [];
+  const imports: [string, string][] = [];
   for (const statement of source.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
-      functions.set(statement.name.text, statement);
+    if (ts.isFunctionDeclaration(statement)) {
+      functions.push({ name: statement.name?.text ?? "default", node: statement });
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const { initializer } = declaration;
+        if (
+          ts.isIdentifier(declaration.name) &&
+          initializer !== undefined &&
+          (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+        ) {
+          functions.push({ name: declaration.name.text, node: initializer });
+        }
+      }
+    }
+    const bindings = ts.isImportDeclaration(statement)
+      ? statement.importClause?.namedBindings
+      : undefined;
+    if (bindings !== undefined && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        imports.push([(element.propertyName ?? element.name).text, element.name.text]);
+      }
     }
   }
-  const calls = (body: ts.Node, names: ReadonlySet<string>): boolean => {
-    let found = false;
-    const visit = (node: ts.Node): void => {
-      if (found) return;
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        found = names.has(node.expression.text);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(body);
-    return found;
+  const own = new Set<ts.Node>(functions.map(({ node }) => node));
+  const body = (
+    name: string,
+    node: ts.Node,
+    parameters: readonly string[],
+    skip: (node: ts.Node) => boolean
+  ): Body => {
+    const calls = callsUnder(node, skip);
+    const callees = new Set(calls.flatMap((call) => calleeOf(call) ?? []));
+    return { file, name, node, source, real, parameters, skip, calls, callees, imports };
   };
-  const under = new Set(["removeContainer"]);
+  const bodies = [
+    ...functions.map(({ name, node }) =>
+      body(
+        name,
+        node,
+        node.parameters.flatMap((parameter) =>
+          ts.isIdentifier(parameter.name) ? [parameter.name.text] : []
+        ),
+        () => false
+      )
+    ),
+    body("(top level)", source, [], (node) => own.has(node)),
+  ];
+  parsed.set(key, bodies);
+  return bodies;
+}
+
+/** The name a call calls: `f` of `f()`, and `f` of `object.f()` too, so a function reached through
+ *  a namespace import is followed (and a method of the same name, which only reads more). */
+function calleeOf(call: ts.CallExpression): string | undefined {
+  if (ts.isIdentifier(call.expression)) return call.expression.text;
+  if (ts.isPropertyAccessExpression(call.expression)) return call.expression.name.text;
+  return undefined;
+}
+
+/** Each call under `root` but under a node `skip` answers true for. */
+function callsUnder(root: ts.Node, skip: (node: ts.Node) => boolean): ts.CallExpression[] {
+  const found: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (skip(node)) return;
+    if (ts.isCallExpression(node)) found.push(node);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(root, visit);
+  return found;
+}
+
+/** Whether `node` holds the promise of a call of a name of `names`: such a call that no `await`
+ *  takes, so its promise, not what it settled to, is what `node` hands on. */
+function promiseOf(node: ts.Node, names: ReadonlySet<string>): boolean {
+  return [node, ...callsUnder(node, () => false)].some(
+    (each) =>
+      ts.isCallExpression(each) &&
+      names.has(calleeOf(each) ?? "") &&
+      !ts.isAwaitExpression(each.parent)
+  );
+}
+
+/** Every body of `modules`, the production modules of `e2e/` (`e2eModules`), that the removal of
+ *  one container runs under, read whole, and each place in them that reads a clock or runs a
+ *  program (`found`, `clockReads`, each prefixed with the body's file and name). A body is under
+ *  the removal where it calls `removeContainer`, or a function under it, at any depth and in any
+ *  module, by its name or by the name an import gives it (`under`: the container sweep, the
+ *  start's sweep, the pool's start and every caller of it, the shell stacks' command); and where a
+ *  body under the removal hands it the removal's promise (`handed`): an argument that holds a call
+ *  of a function under it that no `await` takes, or names a `const` bound to one, or, in a body
+ *  handed the removal, names one of its parameters, as a helper that races the promise against a
+ *  timer is handed it (what such a call settled to, once awaited, is no removal that runs). So a
+ *  limit put on the removal by any caller or helper on the real clock is one of them, which no row
+ *  on the row's clock runs: those rows call `removeContainer` itself. Out of it, by design: a
+ *  function that awaits a start already running, as the pool's SIGTERM handler does for a bounded
+ *  time (`terminate` of `harness-pool.ts`) to stop the whole start, which the signal ends and no
+ *  limit of the removal's does. */
+function aroundTheRemoval(modules: readonly Module[]): {
+  under: string[];
+  handed: string[];
+  found: string[];
+} {
+  // A module is read once its text names a function under the removal, or a helper handed it:
+  // only such a module can call one or define one.
+  const read = new Set<Module>();
+  const bodies: Body[] = [];
+  const readNaming = (name: string): boolean => {
+    let more = false;
+    for (const module of modules) {
+      if (!read.has(module) && module.text.includes(name)) {
+        read.add(module);
+        bodies.push(...bodiesOf(module));
+        more = true;
+      }
+    }
+    return more;
+  };
+  const names = new Set(["removeContainer"]);
+  const under = new Set<Body>();
   for (let grew = true; grew; ) {
     grew = false;
-    for (const [name, declaration] of functions) {
-      if (!under.has(name) && calls(declaration, under)) {
-        under.add(name);
+    for (const name of names) grew = readNaming(name) || grew;
+    for (const body of bodies) {
+      if (!under.has(body) && [...body.callees].some((callee) => names.has(callee))) {
+        under.add(body);
+        if (body.name !== "(top level)") names.add(body.name);
         grew = true;
+      }
+      // A name an import gives a function under the removal is one too.
+      for (const [imported, bound] of body.imports) {
+        if (names.has(imported) && !names.has(bound)) {
+          names.add(bound);
+          grew = true;
+        }
       }
     }
   }
-  under.delete("removeContainer");
-  const real = clockNames(source);
-  const found = [...under].flatMap((name) => {
-    const declaration = functions.get(name);
-    return declaration === undefined
-      ? []
-      : clockReads(source, declaration, real, () => false).map((place) => `${name} ${place}`);
-  });
-  return { under: [...under].sort(), found };
+  const handed = new Set<Body>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const body of [...under, ...handed]) {
+      // The names in this body that hold the removal: a `const` bound to a call of a function
+      // under it, and, in a body handed it, each parameter.
+      const holders = new Set(handed.has(body) ? body.parameters : []);
+      const visit = (node: ts.Node): void => {
+        if (body.skip(node)) return;
+        // A `const` bound to the promise itself; one that awaits a call that took it holds what
+        // that call settled to.
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined &&
+          ts.isCallExpression(node.initializer) &&
+          names.has(calleeOf(node.initializer) ?? "")
+        ) {
+          holders.add(node.name.text);
+        }
+        ts.forEachChild(node, visit);
+      };
+      ts.forEachChild(body.node, visit);
+      for (const call of body.calls) {
+        const callee = calleeOf(call);
+        if (callee === undefined || names.has(callee)) continue;
+        const hands = call.arguments.some(
+          (argument) =>
+            promiseOf(argument, names) || (ts.isIdentifier(argument) && holders.has(argument.text))
+        );
+        if (!hands) continue;
+        readNaming(callee);
+        for (const helper of bodies) {
+          if (helper.name === callee && !under.has(helper) && !handed.has(helper)) {
+            handed.add(helper);
+            grew = true;
+          }
+        }
+      }
+    }
+  }
+  const label = ({ file, name }: Body) => `${file} ${name}`;
+  const found = [...under, ...handed].flatMap((body) =>
+    clockReads(body.source, body.node, body.real, body.skip).map(
+      (place) => `${label(body)} ${place}`
+    )
+  );
+  return { under: [...under].map(label).sort(), handed: [...handed].map(label).sort(), found };
+}
+
+/** `modules` with the text of `file` changed by `change`, which must change it. */
+function planted(
+  modules: readonly Module[],
+  file: string,
+  change: (text: string) => string
+): Module[] {
+  const was = modules.find((module) => module.file === file);
+  if (was === undefined) throw new Error(`no module ${file} to plant in`);
+  const text = change(was.text);
+  if (text === was.text) throw new Error(`the plant in ${file} changed nothing`);
+  return modules.map((module) => (module === was ? { file, text } : module));
+}
+
+/** A text's place in `found`, a list of "<line>:<column> <text>", where it is one entry at column
+ *  1, read as text and with no pattern built from it: the text itself, or a line saying why not. */
+function atColumnOne(found: readonly string[]): string {
+  const [only, ...more] = found;
+  if (only === undefined || more.length > 0) return `not one place: ${JSON.stringify(found)}`;
+  const at = /^\d+:1 /.exec(only);
+  return at === null ? `not at column 1: ${only}` : only.slice(at[0].length);
 }
 
 // The rows of `harness-postgres-removal.test.ts` on the row's clock see a limit of the removal on
 // that clock; one on the real clock never fires in their moment of real time, and they call
-// `removeContainer` itself, not the sweep that runs it. So this row reads the source: the removal
-// module reads the time, waits and runs `docker` only through its machine, and the machine's own
-// sets no number; and no function of the sweep that the removal runs under reads a clock at all.
-// Its controls are such limits, planted in copies of the sources, which it must name: a timer
-// called bare and as a member of the global object, an `AbortSignal.timeout`, a number in the
-// machine, and a timer raced against the removal by its caller; and the machine's own timers,
-// which it must pass.
+// `removeContainer` itself, not what runs it. So this row reads the source: the removal module
+// reads the time, waits and runs `docker` only through its machine, and the machine's own sets no
+// number; and no body of `e2e/` that the removal runs under, or that one of them hands it, reads a
+// clock at all (`aroundTheRemoval`). Its controls are such limits, planted in copies of the
+// sources, which it must name: a timer called bare and as a member of the global object, an
+// `AbortSignal.timeout`, a number in the machine; a timer raced against the removal in the
+// container sweep, one set by the start's sweep, a helper the sweep hands the removal's promise
+// to, as an argument and as a `const`, which races it against an `AbortSignal.timeout`, an arrow
+// function that races it, and a race of the sweep in the pool's start and in the shell stacks'
+// command; and the machine's own timers, which it must pass.
 test("v-no-leftover-postgres: a start's removal of a dead stack's container reads the time, waits and runs docker only through its machine, which sets no limit of its own, and no function the removal runs under sets one", () => {
   const text = readFileSync(
     fileURLToPath(new URL("../harness-postgres-container-removal.ts", import.meta.url)),
@@ -200,9 +434,9 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
     expect.stringMatching(/^\d+:1 setTimeout$/),
   ]);
   for (const member of ["globalThis.setTimeout", 'globalThis["setTimeout"]', "window.setTimeout"]) {
-    expect(offTheMachine(`${text}\n${member}(() => undefined, 120_000);\n`)).toEqual([
-      expect.stringMatching(new RegExp(`^\\d+:1 ${member.replace(/[.[\]]/g, "\\$&")}$`)),
-    ]);
+    expect(atColumnOne(offTheMachine(`${text}\n${member}(() => undefined, 120_000);\n`))).toBe(
+      member
+    );
   }
   expect(
     offTheMachine(`${text}\nconst limit = AbortSignal.any([AbortSignal.timeout(120_000)]);\n`)
@@ -219,33 +453,90 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
   expect(ownTimer).not.toBe(text);
   expect(offTheMachine(ownTimer)).toEqual([]);
 
-  const sweep = readFileSync(
-    fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url)),
-    "utf8"
-  );
-  const read = aroundTheRemoval(sweep);
-  // The control that the walk found the callers: the container sweep and the start's sweep.
+  const modules = e2eModules();
+  const read = aroundTheRemoval(modules);
+  // The control that the walk found the callers, in this module and in others, and read no more:
+  // the pool's SIGTERM handler, which waits a bounded time for a start in flight, is no caller.
   expect(read.under).toEqual(
-    expect.arrayContaining(["removeContainers", "removeLeftoverPostgres"])
+    expect.arrayContaining([
+      "global-setup.ts globalSetup",
+      "harness-pool.ts startPool",
+      "harness-pool.ts startStacks",
+      "harness-postgres-removal.ts removeContainers",
+      "harness-postgres-removal.ts removeLeftoverPostgres",
+      "harness-up.ts (top level)",
+      "postgres-mark.ts (top level)",
+    ])
   );
+  expect(read.under).not.toContain("harness-pool.ts terminate");
+  expect(read.handed).toEqual([]);
   expect(read.found).toEqual([]);
-  const raced = sweep.replace(
-    "const removal = await removeContainer(",
-    "const removal = await Promise.race([new Promise<never>((_, fail) => setTimeout(fail, 120_000)), removeContainer("
+
+  const sweep = "harness-postgres-removal.ts";
+  const raced = planted(modules, sweep, (source) =>
+    source.replace(
+      "const removal = await removeContainer(",
+      "const removal = await Promise.race([new Promise<never>((_, fail) => setTimeout(fail, 120_000)), removeContainer("
+    )
   );
-  expect(raced).not.toBe(sweep);
   expect(aroundTheRemoval(raced).found).toEqual([
-    expect.stringMatching(/^removeContainers \d+:\d+ setTimeout$/),
+    expect.stringMatching(/^harness-postgres-removal\.ts removeContainers \d+:\d+ setTimeout$/),
   ]);
-  const globalCap = sweep.replace(
-    "  const self = stackOwner();\n  const left: Left",
-    "  globalThis.setTimeout(() => process.exit(1), 120_000);\n  const self = stackOwner();\n  const left: Left"
+  const globalCap = planted(modules, sweep, (source) =>
+    source.replace(
+      "  const self = stackOwner();\n  const left: Left",
+      "  globalThis.setTimeout(() => process.exit(1), 120_000);\n  const self = stackOwner();\n  const left: Left"
+    )
   );
-  expect(globalCap).not.toBe(sweep);
   expect(aroundTheRemoval(globalCap).found).toEqual([
-    expect.stringMatching(/^removeLeftoverPostgres \d+:\d+ globalThis\.setTimeout$/),
-    expect.stringMatching(/^removeLeftoverPostgres \d+:\d+ process$/),
+    expect.stringMatching(
+      /^harness-postgres-removal\.ts removeLeftoverPostgres \d+:\d+ globalThis\.setTimeout$/
+    ),
+    expect.stringMatching(/^harness-postgres-removal\.ts removeLeftoverPostgres \d+:\d+ process$/),
   ]);
+  // A helper of the sweep's that races the promise it is handed against a 120 s abort, handed
+  // the container sweep's promise as an argument, and as a `const`.
+  const helper =
+    "\nfunction capped<T>(work: Promise<T>, fallback: T): Promise<T> {\n" +
+    '  return Promise.race([work, new Promise<T>((done) => AbortSignal.timeout(120_000).addEventListener("abort", () => done(fallback)))]);\n' +
+    "}\n";
+  const containerSweep = "const containers = await removeContainers(self, left, bounds, reader);";
+  for (const handing of [
+    "const containers = await capped(removeContainers(self, left, bounds, reader), undefined);",
+    "const sweeping = removeContainers(self, left, bounds, reader);\n    const containers = await capped(sweeping, undefined);",
+  ]) {
+    const cappedSweep = aroundTheRemoval(
+      planted(modules, sweep, (source) => `${source.replace(containerSweep, handing)}${helper}`)
+    );
+    expect(cappedSweep.handed).toEqual([`${sweep} capped`]);
+    expect(cappedSweep.found).toEqual([
+      expect.stringMatching(/^harness-postgres-removal\.ts capped \d+:\d+ AbortSignal\.timeout$/),
+    ]);
+  }
+  const arrow = planted(
+    modules,
+    sweep,
+    (source) =>
+      `${source}\nexport const removeOneCapped = (id: string) => Promise.race([removeContainer(id), Bun.sleep(120_000)]);\n`
+  );
+  expect(aroundTheRemoval(arrow).found).toEqual([
+    expect.stringMatching(/^harness-postgres-removal\.ts removeOneCapped \d+:\d+ Bun$/),
+  ]);
+  for (const [file, body] of [
+    ["harness-pool.ts", "startPool"],
+    ["postgres-mark.ts", "(top level)"],
+  ] as const) {
+    const raceOfTheSweep = planted(modules, file, (source) =>
+      source.replace(
+        "await removeLeftoverPostgres();",
+        "await Promise.race([removeLeftoverPostgres(), Bun.sleep(120_000)]);"
+      )
+    );
+    expect(aroundTheRemoval(raceOfTheSweep).found).toEqual([
+      expect.stringMatching(/^\S+ .+ \d+:\d+ Bun$/),
+    ]);
+    expect(aroundTheRemoval(raceOfTheSweep).found[0]?.startsWith(`${file} ${body} `)).toBe(true);
+  }
 });
 
 /** The test files whose rows count their waits with these fixtures (`rowOf`), which the shared
