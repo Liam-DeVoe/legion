@@ -106,6 +106,25 @@ It carries:
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
+- the shared public leak check's index of sandbox lines, which is not in the image either, and which no pod downloads:
+  the daemon reads it every 10 minutes from the release `leak-check-index` of the check's repository, with the token it reads the check with (`leakCheckToken`), and pushes each index it reads to the launcher of every pod whose hello says it takes one and which has not installed it yet (`refreshLeakCheckIndex`, `internal/runtime/sandbox/launcher.go`).
+  It also pushes the newest index it holds to a launcher before each role's start, and a push that fails never stops the start.
+  A read that fails keeps the index the daemon holds, and a push that fails is made again after the next read.
+  Every issue pod and the controller's pod carry a volume of their own for it, `leak-check-index`, a disk `emptyDir` of 64 MiB that starts empty (`leakCheckIndexVolumeOf`, `internal/runtime/sandbox/manifest.go`), and every role sees it at `/home/legion/.cache/public-leak-check`:
+  the controller's pod mounts it there, and an issue pod's `roles` container mounts it at `/var/run/legion/home/.cache/public-leak-check`, from where role-init binds it into every role's home, so one rename there reaches every role.
+  The pod's launcher is told that folder as it holds it (`--leak-check-index-dir`), writes the empty marker `sandbox-lines.idx.pushed` there before it first connects to the daemon, and installs each index it is pushed as `sandbox-lines.idx` by a rename, keeping an index built at the same time or later (`indexInstall`, `internal/launcher/leakcheckindex.go`).
+  A check that finds the marker never downloads the index, so a role reads only what the daemon pushed.
+  A pod that holds no index, a new pod before its first push lands or one whose every push failed, reads UNKNOWN for every scan that needs one, naming `no index file at /home/legion/.cache/public-leak-check/sandbox-lines.idx`, and that write exits 2;
+  a push to a private or internal repository, a `gh` write whose every target is private or internal, and a `gh` read go on without it.
+  From 2 hours old the check warns that the pod's launcher holds no newer index, and from 6 hours old it reads the index UNKNOWN, as it reads a missing one:
+  `docs/site/src/content/docs/legion/troubleshooting.md` gives each line the daemon and the check print for it.
+
+  **Upgrading.**
+  This release refuses three things of the operator's pod the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/home/legion/.cache`, one at or under `/home/legion/.cache/public-leak-check`, and a `runtime.kubernetes.pod.volumes[].name` of `leak-check-index`.
+  The loader refuses each in every deployment, as `runtime.kubernetes.pod.volume_mounts[<i>].mount_path <path> overlaps /home/legion/.cache/public-leak-check, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`, or `runtime.kubernetes.pod.volumes[<i>].name leak-check-index is a volume Legion puts in every pod` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+  A mount beside the folder, such as `/home/legion/.cache/<other>`, stays the operator's, as before.
+  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount or rename such a volume;
+
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
   The image seeds no mise store, so the rig's first run in a fresh pod downloads the pin from GitHub into the role's own `MISE_DATA_DIR`, and mise reads `MISE_GITHUB_TOKEN` when it is set;
@@ -4555,8 +4574,8 @@ the launcher token, as `LAUNCHER_TOKEN`), `/var/run/legion/roles/<r>/gh` (`gh-<r
 the role's gh bundle, each directory's two keys as `<dir>/hosts.yml` and `<dir>/config.yml`), `/var/run/legion/roles/<r>/private` (`private-<r>`, memory), `/var/run/legion/roles/<r>/state` (`state-<r>`, memory) and, only when the pod enrolls with the secrets broker, `/var/run/legion/roles/<r>/agent-secrets` (`agent-secrets-key-<r>`, memory).
 One disk `emptyDir`, `role-homes`, is at `/var/run/legion/roles/.homes`.
 A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` also mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/roles/workload-identity`, where no role's namespace shows it ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
-The pod's shared mounts appear once: the issue volume at `/legion`, the config home, the feed read-only, the providers Secret's configured keys when there are any (with its `NATS_NKEY_SEED` key when the daemon has a NATS nkey seed), the broker's token when the pod enrolls, its exchange token at `/var/run/legion/agent-secrets-exchange` where `agent_secrets.exchange_audience` is set, and the operator's volumes and mounts.
-Every one of them that belongs at or under `/home/legion` (the config home at `.config`, an operator's mount there) is mounted under `/var/run/legion/home` at the same relative path instead, so `/home/legion` itself carries no mount in the `roles` container;
+The pod's shared mounts appear once: the issue volume at `/legion`, the config home, the feed read-only, the leak check index's disk `emptyDir`, `leak-check-index`, the providers Secret's configured keys when there are any (with its `NATS_NKEY_SEED` key when the daemon has a NATS nkey seed), the broker's token when the pod enrolls, its exchange token at `/var/run/legion/agent-secrets-exchange` where `agent_secrets.exchange_audience` is set, and the operator's volumes and mounts.
+Every one of them that belongs at or under `/home/legion` (the config home at `.config`, the leak check index's folder at `.cache/public-leak-check`, an operator's mount there) is mounted under `/var/run/legion/home` at the same relative path instead, so `/home/legion` itself carries no mount in the `roles` container;
 each role's namespace binds it back at its own path, except the config home.
 That one is `workspace-init`'s, and no role sees or writes it:
 each role gets a config home of its own at `~/.config`, a copy of the shared one made the first time a generation of the role starts in the pod and kept on `role-homes` for the pod's life (`/var/run/legion/roles/.homes/<role>/config` in the container's view;

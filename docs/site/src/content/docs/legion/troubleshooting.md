@@ -598,6 +598,37 @@ the check is published from, written `<owner>/<repository>` below, and its owner
   verify or move the check into place on the pod's disk. The sentence on the claim is the whole
   record, because the launcher writes no log line for a refusal.
 
+**A write the leak check reads UNKNOWN for its index of sandbox lines** writes nothing and exits 2.
+The check reads that index for a push to a public repository and a `gh` write, among other scans;
+a push to a private or internal repository, a `gh` write whose every target is private or
+internal, and a `gh` read go on without it.
+Under the Kubernetes runtime no pod downloads the index: the daemon reads it from the release
+`leak-check-index` of the repository the check is published from every 10 minutes, and pushes
+each new one to every pod's launcher, which installs it where every role reads it,
+`/home/legion/.cache/public-leak-check/sandbox-lines.idx`
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+pod that holds none reads `no index file at
+/home/legion/.cache/public-leak-check/sandbox-lines.idx`, and one whose index was built 6 hours
+ago or more reads it UNKNOWN by its age. Three lines say the index is falling behind before then;
+`<owner>/<repository>` below is the repository the check is published from:
+
+- The daemon's warning `launcher leak check index: the daemon could not read a new leak check
+  index, so each pod keeps the index it holds, and is pushed the newest one the daemon read
+  before, if any`, with the read's `error`: one read of the release failed. Each pod keeps the
+  index it holds, and the daemon reads again 10 minutes later; the `error` says what failed, the
+  daemon's token, GitHub's answer or the index GitHub sent.
+- In a role, on standard error, `LEAK CHECK: WARNING: the sandbox-line index was built <h> hours
+  ago, and the pod's launcher holds no newer one.`: the pod's index is 2 hours old or more. The
+  write goes on, and the warning changes no exit status. Either the builder has published no newer
+  index, which `gh release view leak-check-index -R <owner>/<repository> --json assets --jq
+  '.assets[] | [.name, .updatedAt] | @tsv'` shows (a current builder's asset, `sandbox-lines.idx`,
+  was updated less than an hour ago), or the daemon could not read or push it, which its warnings
+  that begin `launcher leak check index:` name, with the launcher a push did not reach.
+- `LEAK CHECK: WARNING: could not refresh the sandbox-line index (<reason>). Scanning with the
+  index built <time>.`: on a machine where the check keeps its own index, a tmux pane's rather
+  than a pod's, its download failed or brought no newer index while the one it holds is 2 hours
+  old or more. `<reason>` says why. The scan goes on with the index it holds.
+
 **A pod launch whose system prompt is too large for one start frame** is refused before anything
 starts, and its claim fails at once, charged no launch failure, since every try would compose the
 same text from the same files. The prompt reaches the pod's launcher in one frame, which holds at

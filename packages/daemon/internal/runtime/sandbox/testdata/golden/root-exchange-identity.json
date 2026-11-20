@@ -38,6 +38,8 @@
               "legion-legion-legion-208",
               "--roles-dir",
               "/var/run/legion/roles",
+              "--leak-check-index-dir",
+              "/var/run/legion/home/.cache/public-leak-check",
               "--role",
               "architect",
               "--role",
@@ -102,6 +104,10 @@
                 "name": "issue",
                 "readOnly": true,
                 "subPath": "feed"
+              },
+              {
+                "mountPath": "/var/run/legion/home/.cache/public-leak-check",
+                "name": "leak-check-index"
               },
               {
                 "mountPath": "/var/run/legion/roles/architect/launcher",
@@ -821,6 +827,12 @@
           {
             "emptyDir": {},
             "name": "role-homes"
+          },
+          {
+            "emptyDir": {
+              "sizeLimit": "64Mi"
+            },
+            "name": "leak-check-index"
           },
           {
             "name": "agent-secrets-token",

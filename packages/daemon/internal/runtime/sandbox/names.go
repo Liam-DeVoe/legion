@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	corev1 "k8s.io/api/core/v1"
@@ -146,6 +147,16 @@ func containerHomePath(path string) string {
 	}
 	return path
 }
+
+// leakCheckIndexDir is the folder of the leak check's index of sandbox lines as every role sees
+// it: leakguard.IndexDir under the image's home, where the check reads the index and the pushed
+// marker that stops it downloading one (leakguard.IndexFile, leakguard.IndexPushedMarker). Every
+// pod mounts its own leakCheckIndexVolume there, and its launcher writes the marker and each index
+// the daemon pushes into the folder its container holds (--leak-check-index-dir): an issue pod's
+// roles container holds it under HomeMountsDir (containerHomePath), from where role-init binds it
+// into every role's home, so one rename there reaches every role; the controller's pod holds it at
+// this path.
+const leakCheckIndexDir = podHome + "/" + leakguard.IndexDir
 
 // feedSubPath is the issue volume's directory that holds the pod's feed (FeedDir). The kubelet
 // makes it on first use.

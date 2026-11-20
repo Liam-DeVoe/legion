@@ -54,7 +54,10 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 		t.Fatalf("the issue pod runs containers %v, want one, roles", names)
 	}
 	c := pod.Containers[0]
-	want := []string{"/opt/legion/bin/legion", "launcher", "--connect", opts.StreamURL, "--sandbox", l.name, "--roles-dir", "/var/run/legion/roles"}
+	want := []string{
+		"/opt/legion/bin/legion", "launcher", "--connect", opts.StreamURL, "--sandbox", l.name, "--roles-dir", "/var/run/legion/roles",
+		"--leak-check-index-dir", "/var/run/legion/home/.cache/public-leak-check",
+	}
 	for _, role := range claim.Roles {
 		want = append(want, "--role", string(role))
 	}

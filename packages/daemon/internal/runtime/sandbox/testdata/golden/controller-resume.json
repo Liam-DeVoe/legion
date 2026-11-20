@@ -40,6 +40,8 @@
               "controller",
               "--private-dir",
               "/var/run/legion/private",
+              "--leak-check-index-dir",
+              "/home/legion/.cache/public-leak-check",
               "--stop-grace",
               "30s"
             ],
@@ -104,6 +106,10 @@
                 "mountPath": "/var/run/legion/gh",
                 "name": "gh-controller",
                 "readOnly": true
+              },
+              {
+                "mountPath": "/home/legion/.cache/public-leak-check",
+                "name": "leak-check-index"
               },
               {
                 "mountPath": "/var/run/legion/providers",
@@ -203,6 +209,12 @@
               ],
               "secretName": "legion-legion-controller-controller-boot"
             }
+          },
+          {
+            "emptyDir": {
+              "sizeLimit": "64Mi"
+            },
+            "name": "leak-check-index"
           },
           {
             "name": "providers",

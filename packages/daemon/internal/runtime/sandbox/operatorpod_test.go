@@ -148,7 +148,8 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: overlaps("/var/run/legion/testpg.log", "/var/run/legion/testpg.log", false)},
 		{name: "a mount under a path Legion mounts", pod: mountAt("/legion/operator"), want: overlaps("/legion/operator", "/legion", false)},
 		{name: "a mount above a path Legion mounts", pod: mountAt("/var/run/legion"), want: overlaps("/var/run/legion", "/var/run/legion/agent-secrets", false)},
-		{name: "a mount at the root", pod: mountAt("/"), want: overlaps("/", "/home/legion/.config", false)},
+		// The refusal names the first of Legion's paths in their order, the leak check index's folder.
+		{name: "a mount at the root", pod: mountAt("/"), want: overlaps("/", "/home/legion/.cache/public-leak-check", false)},
 		{name: "a mount where an issue pod holds the home's volumes", pod: mountAt("/var/run/legion/home"),
 			want: overlaps("/var/run/legion/home", "/var/run/legion/home", false)},
 		{name: "a mount under where an issue pod holds the home's volumes", pod: mountAt("/var/run/legion/home/operator"),

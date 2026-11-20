@@ -57,7 +57,27 @@ const (
 	// (WorkloadIdentityDir, workloadIdentityVolumes), when the deployment names that endpoint
 	// (runtime.kubernetes.sandbox.microvm.metadata).
 	workloadIdentityTokenVolume = "workload-identity-token"
+	// leakCheckIndexVolume is the disk emptyDir every issue pod and the controller's pod keep the
+	// leak check's index of sandbox lines in, mounted at leakCheckIndexDir (leakCheckIndexVolumeOf).
+	leakCheckIndexVolume = "leak-check-index"
 )
+
+// leakCheckIndexBytes is the bound of the leak check index volume, 64 MiB: room for the index the
+// folder holds and the new one leakguard.InstallIndex writes beside it before its rename, each at
+// most the shimwire.MaxLeakCheckIndexBytes, 16 MiB, one push carries, and for one more such file a
+// stopped install left behind. The pushed marker is empty, and the check in a pod that finds it
+// takes no download lock.
+const leakCheckIndexBytes = 64 << 20
+
+// leakCheckIndexVolumeOf is the volume every issue pod and the controller's pod mount at
+// leakCheckIndexDir (podKind.mainVolumes): an emptyDir on the node's disk, created empty with the
+// pod, so a pod holds no index until its launcher installs the first one the daemon pushes, and
+// bounded at leakCheckIndexBytes, past which the kubelet evicts the pod.
+func leakCheckIndexVolumeOf() corev1.Volume {
+	return corev1.Volume{Name: leakCheckIndexVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+		SizeLimit: resource.NewQuantity(leakCheckIndexBytes, resource.BinarySI),
+	}}}
+}
 
 // The agent-secrets volumes: agentSecretsTokenVolume alone carries the projected token for the
 // broker's audience, and agentSecretsKeyVolume the memory-backed directory the client keeps its
@@ -249,18 +269,18 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
-// test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
-// whether or not this deployment enrolls, the workload identity token whether or not an issue pod
-// of it serves the metadata endpoint, and the test database's whether or not it sets
-// `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
-// identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
-// an exchange audience: one that names none keeps that name the operator's, as it was before the
-// key existed. Every launcher
-// role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
+// test database's, the leak check index's, and each launcher role's private ones. The
+// agent-secrets volumes are reserved whether or not this deployment enrolls, the workload identity
+// token whether or not an issue pod of it serves the metadata endpoint, and the test database's
+// whether or not it sets `runtime.kubernetes.test_postgres`: an operator's pod may never claim
+// them. The exchange identity's (agentSecretsExchangeVolume) is Legion's only where exchange says
+// the deployment names an exchange audience: one that names none keeps that name the operator's,
+// as it was before the key existed. Every launcher role, the controller's included, has a key
+// volume when the pod enrolls and a gh volume always.
 func legionVolumeNames(exchange bool) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
-		roleHomesVolume, roleProbeVolume, testPGVolume,
+		roleHomesVolume, roleProbeVolume, testPGVolume, leakCheckIndexVolume,
 	}
 	if exchange {
 		names = append(names, agentSecretsExchangeVolume)
@@ -284,14 +304,16 @@ func legionVolumeNames(exchange bool) []string {
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
 // namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
-// for its role-namespace check, and TestPGLogFile is reserved whether or not the deployment
-// serves a test database: it is where each role's namespace binds the pod's test server log when
-// the pod serves one.
+// for its role-namespace check, leakCheckIndexDir is the leak check index's folder, which the
+// controller's container mounts at that path and an issue pod's roles container under
+// HomeMountsDir, for role-init to bind into every role, and TestPGLogFile is reserved whether or
+// not the deployment serves a test database: it is where each role's namespace binds the pod's
+// test server log when the pod serves one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
 		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
-		TestPGLogFile,
+		leakCheckIndexDir, TestPGLogFile,
 	}
 	if exchange {
 		paths = append(paths, AgentSecretsExchangeDir)

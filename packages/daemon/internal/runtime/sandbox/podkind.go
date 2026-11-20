@@ -54,7 +54,8 @@ type podKind interface {
 	// role of roles, and launcherContainer that container: its command, the mounts of every role's
 	// own volumes and the pod's shared ones, and the kubelet-resolved environment (resolved).
 	// mainVolumes are the volumes that container mounts beyond each role's own, the pod's volume,
-	// the config home, the agent-secrets volumes, the providers and the operator's.
+	// the config home, the agent-secrets volumes, the providers and the operator's: the leak check
+	// index's (leakCheckIndexVolumeOf) in every kind, and what the kind adds of its own.
 	container() string
 	launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container
 	mainVolumes(r *Runtime) []corev1.Volume
@@ -227,23 +228,29 @@ func (issuePod) initVolumes(l launch) []corev1.Volume {
 // (roleHomesVolume) at RoleHomesDir holds each role's home overlay, temporary directories and own
 // config home. The pod's shared mounts are mounted once: the issue's disk, the config home
 // workspace-init writes, the feed read-only (so no agent writes what workspace-fetch, the token's
-// holder, reads), the providers, the broker's token and the exchange's, and the operator's. Every
-// one of them that belongs at or under the image's home — the config home, an operator's mount
-// there — is mounted under launcher.HomeMountsDir at the same relative path instead
-// (homeMountsView), so the home carries no mount: each role's namespace overlays the home, which
-// Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
-// own path, but the shared config home, whose place gets the role's own copy of it
-// (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so (--microvm),
-// and, where the block names the metadata endpoint, is told the endpoint's pool and identity
-// provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
-// where no role's namespace shows it.
+// holder, reads), the leak check index's folder, the providers, the broker's token and the
+// exchange's, and the operator's. Every one of them that belongs at or under the image's home —
+// the config home, the index's folder, an operator's mount there — is mounted under
+// launcher.HomeMountsDir at the same relative path instead (homeMountsView), so the home carries
+// no mount: each role's namespace overlays the home, which Linux refuses over a lower layer with
+// mounts under it, and then binds each of them back at its own path, but the shared config home,
+// whose place gets the role's own copy of it (launcher.ConfigHomeDir). The launcher is told the
+// index's folder as the container holds it (--leak-check-index-dir), and writes the pushed marker
+// and each index the daemon pushes there, where every role's bind of it reads the one rename. The
+// values the kubelet resolves are the same for every role (the downward API's POD_UID), so they
+// are set once. A microVM pod's launcher is told so (--microvm), and, where the block names the
+// metadata endpoint, is told the endpoint's pool and identity provider and mounts the projected
+// token it exchanges at WorkloadIdentityDir, under RolesDir, where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
-	command := []string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir}
+	command := []string{
+		r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir,
+		"--leak-check-index-dir", containerHomePath(leakCheckIndexDir),
+	}
 	mounts := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
 		readOnlyFeed(),
+		{Name: leakCheckIndexVolume, MountPath: leakCheckIndexDir},
 	}
 	for _, role := range l.roles {
 		command = append(command, "--role", string(role))
@@ -288,13 +295,14 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 	}
 }
 
-// mainVolumes is the role homes volume: an emptyDir on the node's disk, charged to the pod's
-// ephemeral storage as a container's own filesystem is, where each role's namespace keeps its home
-// overlay's writable layer, its /tmp and /var/tmp, and its own config home (`legion launcher
-// role-init`). An overlay's writable layer cannot be the container's own root filesystem, and a
-// memory one would charge a role's /tmp to the pod's memory.
+// mainVolumes are the role homes volume and the leak check index's (leakCheckIndexVolumeOf). The
+// role homes volume is an emptyDir on the node's disk, charged to the pod's ephemeral storage as a
+// container's own filesystem is, where each role's namespace keeps its home overlay's writable
+// layer, its /tmp and /var/tmp, and its own config home (`legion launcher role-init`). An overlay's
+// writable layer cannot be the container's own root filesystem, and a memory one would charge a
+// role's /tmp to the pod's memory.
 func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
-	volumes := []corev1.Volume{{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	volumes := []corev1.Volume{{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, leakCheckIndexVolumeOf()}
 	if r.testPostgres {
 		// The test database's cluster, on the node's disk for the same reason the role homes are:
 		// a memory volume would charge its data directory and every test's database to the pod's
@@ -455,7 +463,9 @@ func (controllerPod) initContainers(*Runtime, launch) []corev1.Container { retur
 // single-role mode, with the controller's own launcher token, private directory, state directory
 // and gh volume mounted at the fixed paths it reads them at, the gh volume read-only, its key
 // directory and the broker's token when the pod enrolls, beside the pod's volume, the config home,
-// the providers and the operator's mounts.
+// the leak check index's folder, the providers and the operator's mounts. The controller runs in
+// no namespace of its own, so its launcher is told the index's folder at the path the controller
+// reads it at (--leak-check-index-dir).
 func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	role := claim.RoleController
 	mounts := []corev1.VolumeMount{
@@ -465,6 +475,7 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 		{Name: roleVolume(stateVolume, role), MountPath: StateDir},
 		{Name: configVolume, MountPath: xdgConfigHome},
 		{Name: roleVolume(ghVolume, role), MountPath: GHConfigDir, ReadOnly: true},
+		{Name: leakCheckIndexVolume, MountPath: leakCheckIndexDir},
 	}
 	return corev1.Container{
 		Name:  k.container(),
@@ -472,7 +483,7 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 		Command: slices.Concat([]string{
 			r.tools.Legion, "launcher", connectFlag, r.streamURL, "--token-file", LauncherDir + "/" + LauncherTokenFile,
 			"--sandbox", l.name, "--role", string(role), "--private-dir", LauncherPrivateDir,
-			"--stop-grace", r.terminationGrace.String(),
+			"--leak-check-index-dir", leakCheckIndexDir, "--stop-grace", r.terminationGrace.String(),
 		}, r.sessionProxyFlags()),
 		Env:             resolved,
 		WorkingDir:      l.workspace,
@@ -482,9 +493,12 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 	}
 }
 
-// mainVolumes are none beyond the controller's own: its launcher has no namespaces to keep homes
-// in, and the pod's own test database is an issue pod's (issuePod.mainVolumes).
-func (controllerPod) mainVolumes(*Runtime) []corev1.Volume { return nil }
+// mainVolumes are the leak check index's alone (leakCheckIndexVolumeOf): the controller's launcher
+// has no namespaces to keep homes in, and the pod's own test database is an issue pod's
+// (issuePod.mainVolumes).
+func (controllerPod) mainVolumes(*Runtime) []corev1.Volume {
+	return []corev1.Volume{leakCheckIndexVolumeOf()}
+}
 
 // initVolumes are none: the controller's pod runs no init container.
 func (controllerPod) initVolumes(launch) []corev1.Volume { return nil }
