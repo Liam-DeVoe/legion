@@ -99,11 +99,11 @@ check and every requirement, in the five sources that
 
 Run the `goal-red-team` read your role prompt names. Accept only when a pass stands for every
 `before_merge` check at the approved head, every requirement has a check, and none is unmet or read
-narrower than written: post a `dispatch comment` naming each check and its result, then
-`legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
-(`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
-still going; a name no run answers is yours to correct in the check. Finding asks, refusals and
-what follows: `skill://legion-architect/references/acceptance.md`.
+narrower than written; a pass and a fail at one head leave the check not known: do not accept,
+`request_backward_move` naming the check, and do not wait for a later result. Post a `dispatch comment`
+naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`. A `ci_check`
+run still going waits; a name no run answers is yours to correct in the check. Finding asks,
+refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 

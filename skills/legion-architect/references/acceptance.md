@@ -15,7 +15,7 @@ instructions, or open a `dispatch ask` naming the missing instruction.
 Read, against the goal, every check and every requirement:
 
 1. the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head;
+2. `dispatch results --issue <issue>`: each check's approved head's own line reads yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait;
 3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
    (`skill://legion-worker/references/merge-gate.md`);
 4. each claim of the reviewer's prose, against the code at that head;
@@ -40,12 +40,15 @@ Read, against the goal, every check and every requirement:
 ## The last round
 
 Sign off a parent only on an approved head that carries the merges of every child its checks
-need. Each check needs a pass at that head; one in another repository, a pass standing since the
-close of each child it needs, at a commit on the branch that issue's pull request merged into or
-on its default branch; a `default_branch` check, on the default branch. A criterion proven on a
-deployed system is proven after that child's deploy, as the repository's deploy skill says. A
-child's result proves no check of the parent: a child carrying part of a parent's requirement
-proves it with a check of its own whose `serves` names it. Nothing builds on the parent's merge,
+need. Each check's approved head's own line needs yes only from the implementer and from the tester,
+or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and
+require `REQUEST_CHANGES` naming the check, with no wait; one in another repository needs a pass
+standing since the close of each child it needs, at a commit on the branch that issue's pull request
+merged into or on its default branch; a `default_branch` check needs one on the default branch. A
+criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy
+skill says. A child's result proves no check of the parent: a child carrying part of a parent's
+requirement proves it with a check of its own whose `serves` names it. Nothing builds on the parent's
+merge,
 which comes last. Until those children close, leave the issue in `accepting`; that wait is no
 reason to park a child. Before you park a child, move its criterion to the parent's own pull
 request or a released, open child; never downgrade it. Then, in one turn:
@@ -58,10 +61,11 @@ request or a released, open child; never downgrade it. Then, in one turn:
 
 A child's merge while the parent waits needs no move of its own: the last round's forward merge
 takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below). If
-the pull request merged before its last round, move nothing back: once the children close, have
-a fresh `task` subagent run each check with no `ci_check` on the default branch and record each
-result, read each `ci_check` result in `dispatch results`, post them in the acceptance comment,
-then `sign_off`.
+the pull request merged before its last round, move nothing back unless a pass and a fail at one
+head leave a check not known: do not accept, `request_backward_move` naming the check, with no
+wait; once the children close, have a fresh `task` subagent run each check with no `ci_check` on
+the default branch and record each result, read each `ci_check` result in `dispatch results`, post
+them in the acceptance comment, then `sign_off`.
 
 ## After your sign-off
 

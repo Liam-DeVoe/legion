@@ -174,59 +174,39 @@ const ENTRIES: readonly Entry[] = [
     keep: MERGE_OF_THE_BASE,
   },
   {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "While the approved head does not carry those merges",
-    keep: "The wait for a child's close, which brings the result a parent's check needs. It is no statement of a check whose result is there and not known.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "A check those files or the resolution can reach runs again",
-    keep: MERGE_OF_THE_BASE,
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "Every `before_merge` check of the issue reads yes on the line of the approved head",
-    gate: "merge",
-  },
-  {
-    file: "skills/legion-worker/SKILL.md",
-    has: "Deployment instructions in your prompt override this skill",
-    keep: "The rules that no deployment overrides. It names the implementer's own result, and no condition of an approval, an acceptance or a merge.",
-  },
-  {
     file: "skills/legion-worker/references/conflicts-and-rewrites.md",
     has: "A check those files or the resolution can reach runs again",
     keep: MERGE_OF_THE_BASE,
   },
   {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "- Between the reviewer's approval and retro the issue sits in `accepting`",
-    keep: ACCEPTANCE_STEP,
+    file: "skills/legion-architect/SKILL.md",
+    has: "Accept only when a pass stands for every",
+    gate: "architect",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "`dispatch results --issue <issue>`: each check's approved head's own line",
+    gate: "reviewer",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "Each `before_merge` check's approved head's own line",
+    gate: "reviewer",
+  },
+  {
+    file: "skills/legion-worker/SKILL.md",
+    has: "They override this skill, except",
+    gate: "reviewer",
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
-    has: "An issue with no Verification document, or none holding a `before_merge` check",
-    keep: NO_CHECK,
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "A check those files or the resolution can reach runs again",
-    keep: MERGE_OF_THE_BASE,
+    has: "Approval is gated by each `before_merge` check's reviewed head's own line",
+    gate: "reviewer",
   },
   {
     file: "skills/legion-worker/references/pr-body.md",
-    has: "**A result proves the head it was recorded at.**",
-    keep: "Which commit a result proves. It names no approval, acceptance or merge that waits on it.",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "A code path whose first execution would be after the merge",
-    keep: "An `after_merge` check, recorded after the merge, which no approval or acceptance waits on.",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "A check those files or the resolution can reach runs again",
-    keep: MERGE_OF_THE_BASE,
+    has: "A `before_merge` result stands while its commit",
+    gate: "reviewer",
   },
 ];
 
