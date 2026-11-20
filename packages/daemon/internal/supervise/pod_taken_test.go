@@ -13,8 +13,8 @@ import (
 // gone, so no decision owes it, wrapped or not. A deadline the write ran out, which the database
 // never answered, is still owed, which shows the rule is read and not bypassed.
 func TestAStoreRefusalOfATakenPodIsNotOwed(t *testing.T) {
-	taken := &PodTakenError{Issue: "LEGION-208", Release: 7, Sandbox: "legion-legion-legion-208"}
-	for _, err := range []error{taken, fmt.Errorf("put claim legion-legion-legion-208-architect: %w", taken)} {
+	taken := &PodTakenError{Issue: "the-root-issue", Release: 7, Sandbox: "the-root-issue-pod"}
+	for _, err := range []error{taken, fmt.Errorf("put claim the-architect: %w", taken)} {
 		if writeOwed(err) {
 			t.Fatalf("writeOwed(%v) = true, want the refusal not owed: the same write is refused until the release ends", err)
 		}

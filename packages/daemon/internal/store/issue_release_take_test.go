@@ -20,7 +20,7 @@ import (
 )
 
 // takenSandbox is the Sandbox the teardowns of these tests take, as the runtime names it.
-const takenSandbox = "legion-legion-208"
+var takenSandbox = "legion-" + strings.ToLower(rootIssue)
 
 // storedReleasedArchitect is the root issue's architect claim an earlier release left
 // `released`, stored: the suspended claim an operator's suspend takes over (supervise's
@@ -88,7 +88,7 @@ func storedSource(t *testing.T, st *Store, c supervise.Claim) (state, by string)
 }
 
 // refusedAsTaken requires err to be the refusal of a take-over while the release of
-// LEGION-208's pod takes it, naming that release and the Sandbox, and the claim to be stored as
+// the root issue's pod takes it, naming that release and the Sandbox, and the claim to be stored as
 // it was.
 func refusedAsTaken(t *testing.T, st *Store, err error, c supervise.Claim) {
 	t.Helper()
@@ -175,7 +175,8 @@ func TestTheTeardownsLastReadTakesThePodFromAnOperatorsTakeOver(t *testing.T) {
 		st := migratedStore(t)
 		openRunningTree(t, st)
 		markOfKind(t, st, childIssue, releaseKindUnowned)
-		if _, err := st.Pool().Exec(ctx, `update issue_releases set taken_pod = 'legion-legion-209' where issue = $1`, childIssue); err != nil {
+		if _, err := st.Pool().Exec(ctx, `update issue_releases set taken_pod = $2 where issue = $1`, childIssue,
+			"legion-"+strings.ToLower(childIssue)); err != nil {
 			t.Fatalf("take the other issue's pod: %v", err)
 		}
 		architect := storedReleasedArchitect(t, st)

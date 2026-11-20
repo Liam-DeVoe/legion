@@ -34,7 +34,7 @@ func TestTheTeardownOfAReleaseThatSuspendsNoRoleReadsTheOperatorsSuspension(t *t
 		{name: "an idle release beside an operator's suspension it never read", kind: releaseKindIdle,
 			by: supervise.SuspendedByOperator, want: ReleaseActs},
 		// This issue's architect is still released; the operator's suspension is of a claim of
-		// LEGION-209, another issue of the tree, whose pod is not the one this teardown takes.
+		// childIssue, another issue of the tree, whose pod is not the one this teardown takes.
 		{name: "an operator's suspension of a claim of another issue", kind: releaseKindUnowned,
 			by: supervise.SuspendedByOperator, other: true, want: ReleaseActs},
 	} {
