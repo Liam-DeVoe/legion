@@ -226,7 +226,7 @@ func TestCheckFindsAnAddressAndAHandle(t *testing.T) {
 		{"Dispatch asks @ada about each change.", "@ada"},
 	} {
 		text := statement(test.body)
-		want := []Finding{finding(text, "person", personDetail(test.name))}
+		want := []Finding{finding(text, "person", personBreak(test.name).detail)}
 		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}

@@ -18,13 +18,18 @@ import (
 // in "Seed the database and run the test", names no instruction; a second instruction after a
 // relative clause, as in "Read each request that Dispatch opens and record its version", is the
 // reviewer's to name; a condition ends at its first comma, so a list of verbs in it reads as two
-// instructions; and a listed verb that is a noun of the object with no clause of its own after it,
-// as `name` in "the step, name `lint`", reads as a second instruction.
+// instructions; a listed verb that is a noun of the object with no clause of its own after it, as
+// `name` in "the step, name `lint`", reads as a second instruction, and so does one before a
+// clause whose verb has no -s or -ed, as `output` in "the input and output the tools write"; and
+// a listed verb before a word that starts no object, as in "Run tests against the server", starts
+// no instruction, so its sentence keeps 25 words. Each finding's ways out are the sentences that
+// TestEachWayOutOfARefusalPasses applies.
 func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testing.T) {
 	procedure := func(body string) Text { return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where} }
-	twoInstructions := func(second, verb string) string {
+	twoInstructions := func(second, split, verb string) string {
 		return `a sentence gives two instructions, and a sentence of a procedure gives one: "` + second +
-			`". Write each instruction in a sentence of its own, or, if "` + verb + `" is no verb here, write "that" before the clause after it`
+			`". Write each instruction in a sentence of its own, as in "` + split + `", or, if "` + verb +
+			`" is no verb here, write "that" before the clause after it`
 	}
 	const twenty = "Run the merge test against a fixture server that holds two approved specs of the same issue and three requests."
 	const twentyOne = "Run the merge test against a fixture server that holds two approved specs of the same issue and three open requests."
@@ -37,25 +42,34 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 		{"a procedure of 21 words", procedure(twentyOne), []Finding{finding(procedure(twentyOne), ruleSentenceWords,
 			`a sentence has 21 words, and an instruction has at most 20: "Run the merge test against a fixture server"`)}},
 		{"a procedure of two instructions", procedure("Read each open approval request and record its version."),
-			[]Finding{finding(procedure("Read each open approval request and record its version."), ruleInstructions, twoInstructions("record its version", "record"))}},
+			[]Finding{finding(procedure("Read each open approval request and record its version."), ruleInstructions,
+				twoInstructions("record its version", "Read each open approval request. Record its version.", "record"))}},
 		{"the review's procedure of two instructions in 22 words",
 			procedure("Read each open approval request and record the document, its version, its author and the reason that the request gives for approval."),
 			[]Finding{
 				finding(procedure("Read each open approval request and record the document, its version, its author and the reason that the request gives for approval."),
 					ruleSentenceWords, `a sentence has 22 words, and an instruction has at most 20: "Read each open approval request and record the"`),
 				finding(procedure("Read each open approval request and record the document, its version, its author and the reason that the request gives for approval."),
-					ruleInstructions, twoInstructions("record the document, its version, its author and", "record")),
+					ruleInstructions, twoInstructions("record the document, its version, its author and",
+						"Read each open approval request. Record the document, its version, its author and the reason that the request gives for approval.", "record")),
 			}},
 		{"a second instruction after a comma", procedure("Read the log, record its size."),
-			[]Finding{finding(procedure("Read the log, record its size."), ruleInstructions, twoInstructions("record its size", "record"))}},
+			[]Finding{finding(procedure("Read the log, record its size."), ruleInstructions,
+				twoInstructions("record its size", "Read the log. Record its size.", "record"))}},
 		{"a second instruction after then", procedure("Run the test, then read the log."),
-			[]Finding{finding(procedure("Run the test, then read the log."), ruleInstructions, twoInstructions("read the log", "read"))}},
+			[]Finding{finding(procedure("Run the test, then read the log."), ruleInstructions,
+				twoInstructions("read the log", "Run the test. Read the log.", "read"))}},
+		// After "If so," the second sentence still gives two instructions, so the finding offers no
+		// condition of its own.
 		{"a second instruction after a condition", procedure("If the run fails, read the log and send the report."),
-			[]Finding{finding(procedure("If the run fails, read the log and send the report."), ruleInstructions, twoInstructions("send the report", "send"))}},
+			[]Finding{finding(procedure("If the run fails, read the log and send the report."), ruleInstructions,
+				twoInstructions("send the report", "If the run fails, read the log. Send the report.", "send"))}},
 		{"an object in code font", procedure("Run `go test` and read the log."),
-			[]Finding{finding(procedure("Run `go test` and read the log."), ruleInstructions, twoInstructions("read the log", "read"))}},
+			[]Finding{finding(procedure("Run `go test` and read the log."), ruleInstructions,
+				twoInstructions("read the log", "Run `go test`. Read the log.", "read"))}},
 		{"a second instruction of an object in code font", procedure("Read the log and run `go test ./...` on it."),
-			[]Finding{finding(procedure("Read the log and run `go test ./...` on it."), ruleInstructions, twoInstructions("run `go test ./...` on it", "run"))}},
+			[]Finding{finding(procedure("Read the log and run `go test ./...` on it."), ruleInstructions,
+				twoInstructions("run `go test ./...` on it", "Read the log. Run `go test ./...` on it.", "run"))}},
 		{"the control: a procedure of 20 words and one instruction", procedure(twenty), nil},
 		{"the control: two sentences of one instruction each", procedure("Read each open approval request. Record its version."), nil},
 		{"the control: two verbs of one object", procedure("Push and hold the switch."), nil},
@@ -67,13 +81,29 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 		{"the control: a list of nouns after a word and a comma", procedure("Instead, this skill reads each word and keeps it."), nil},
 		{"the control: a word and a comma at the start", procedure("Locally, the tests read each file and record the time."), nil},
 		{"the stated limit: a list of verbs in a condition", procedure("Before you plan, file an issue or post a finding, run the search."),
-			[]Finding{finding(procedure("Before you plan, file an issue or post a finding, run the search."), ruleInstructions, twoInstructions("post a finding, run the search", "post"))}},
+			[]Finding{finding(procedure("Before you plan, file an issue or post a finding, run the search."), ruleInstructions,
+				twoInstructions("post a finding, run the search", "Before you plan, file an issue. Post a finding. Run the search.", "post")+
+					`, or, if the words before it are part of the condition, write the condition as a sentence of its own, as in `+
+					`"You plan, file an issue or post a finding. Before that, run the search."`)}},
 		{"the stated limit: a listed verb that is a noun of the object", procedure(named),
-			[]Finding{finding(procedure(named), ruleInstructions, twoInstructions("name `lint`, with the race detector", "name"))}},
+			[]Finding{finding(procedure(named), ruleInstructions,
+				twoInstructions("name `lint`, with the race detector", "Run the test of the step. Name `lint`, with the race detector.", "name"))}},
 		{"the control: a claim of two instructions", Text{Node: "v-run", Kind: KindClaim, Body: "Read each open approval request and record its version.", Where: where}, nil},
 		{"the control: a claim of 21 words", Text{Node: "v-run", Kind: KindClaim, Body: twentyOne, Where: where}, nil},
 		{"the stated limit: a verb that the list does not name", procedure("Seed the database and run the test."), nil},
 		{"the stated limit: a second instruction after a relative clause", procedure("Read each request that Dispatch opens and record its version."), nil},
+		{"the stated limit: a listed verb before a clause whose verb has no -s or -ed", procedure("Compare the input and output the tools write."),
+			[]Finding{finding(procedure("Compare the input and output the tools write."), ruleInstructions,
+				twoInstructions("output the tools write", "Compare the input. Output the tools write.", "output"))}},
+		{"the control: the same clause after that", procedure("Compare the input and output that the tools write."), nil},
+		{"the stated limit: a listed verb before a word that starts no object, in 21 words",
+			procedure("Run tests against the server with the race detector on and with a timeout of ten minutes for each run here."), nil},
+		{"the stated limit: a listed verb before a name, with a second listed verb after a comma",
+			procedure("Start Dispatch with a root of The Spec and a fixture issue, then send each fixture text through each route."), nil},
+		{"the control: the same instruction with an object start",
+			procedure("Run the tests against the server with the race detector on and with a timeout of ten minutes for each run here."),
+			[]Finding{finding(procedure("Run the tests against the server with the race detector on and with a timeout of ten minutes for each run here."),
+				ruleSentenceWords, `a sentence has 22 words, and an instruction has at most 20: "Run the tests against the server with the"`)}},
 	} {
 		if got := Check(planted(), Input{Texts: []Text{test.text}}); !sameFindings(got, test.want) {
 			t.Errorf("%s: Check = %#v, want %#v", test.name, got, test.want)
@@ -138,7 +168,8 @@ func TestAProcedureOfOneInstructionIsTakenWhateverWordStandsAfterACommaOrAnd(t *
 	two := Text{Node: "v-run", Kind: KindProcedure, Body: "Read the log and record the date.", Where: where}
 	if got := Check(planted(), Input{Texts: []Text{two}}); !sameFindings(got, []Finding{finding(two, ruleInstructions,
 		`a sentence gives two instructions, and a sentence of a procedure gives one: "record the date". `+
-			`Write each instruction in a sentence of its own, or, if "record" is no verb here, write "that" before the clause after it`)}) {
+			`Write each instruction in a sentence of its own, as in "Read the log. Record the date.", `+
+			`or, if "record" is no verb here, write "that" before the clause after it`)}) {
 		t.Errorf("a procedure of two instructions: Check = %#v, want the one finding of the rule instructions", got)
 	}
 }

@@ -177,11 +177,24 @@ const addressEnd = `\s\v\x{85}\p{Z}\p{Pe}\p{Pf},;!?`
 // broken is one rule a text breaks, the detail of the break, and for a break of the rule
 // dispatch-link the record of Dispatch that it names and how the text names it (named), so that
 // one link gives one finding (heldBreaks) and that finding's detail says each form from its parts.
+// ways is each way out that the detail gives, which the detail is written from.
 type broken struct {
 	rule   Rule
 	detail string
 	record text.Ref
 	named  naming
+	ways   [maxWays]wayOut
+}
+
+// maxWays is the most ways out that one finding gives: the rule person gives three.
+const maxWays = 3
+
+// wayOut is one way out that a finding gives, as a change of the text: the words that it changes
+// (from) and what it writes in their place (to). A test applies each way out of each finding and
+// holds the text that results to the rule (TestEachWayOutOfARefusalPasses), so a finding gives no
+// way out that its rule refuses again. A zero wayOut is none.
+type wayOut struct {
+	from, to string
 }
 
 // naming is how a text names a record of Dispatch: by a link to it, or by its key or its id
@@ -419,7 +432,7 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste.Verbs) {
 	var found []broken
 	for _, word := range stopsWithNoSpace(line) {
-		found = append(found, broken{rule: ruleStopNoSpace, detail: stopNoSpaceDetail(word)})
+		found = append(found, stopNoSpaceBreak(word))
 	}
 	sentences := sentencesOf(line)
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
@@ -601,23 +614,25 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 		names = personNames(people, line, references)
 	}
 	for _, name := range names {
-		found = append(found, broken{rule: rulePerson, detail: personDetail(name)})
+		found = append(found, personBreak(name))
 	}
 	return found
 }
 
-// personDetail is the detail of the rule person for name. An email address is the one form of
-// both a person and the user and host of a remote command with no path, such as "scp report.txt
-// deploy@build.example.com:", so its detail says so and gives the two ways out of a remote path:
-// a path after the colon, or the user and the host apart.
-func personDetail(name string) string {
+// personBreak is the break of the rule person for name. An email address is the one form of both
+// a person and the user and host of a remote command with no path, such as "scp report.txt
+// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path,
+// written from its ways: a path after the colon, or the user and the host apart.
+func personBreak(name string) broken {
 	user, host, found := strings.Cut(name, "@")
 	if !found || user == "" {
-		return fmt.Sprintf("it names a person: %q", name)
+		return broken{rule: rulePerson, detail: fmt.Sprintf("it names a person: %q", name)}
 	}
-	return fmt.Sprintf("it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person. "+
-		"For a remote path, write the path after the colon, such as %s:~/ or %s:./?.log, or write the user and the host apart, such as ssh -l %s %s",
-		name, name, name, user, host)
+	ways := [maxWays]wayOut{{name, name + ":~/"}, {name, name + ":./?.log"}, {name, "ssh -l " + user + " " + host}}
+	return broken{rule: rulePerson, ways: ways, detail: fmt.Sprintf(
+		"it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person. "+
+			"For a remote path, write the path after the colon, such as %s or %s, or write the user and the host apart, such as %s",
+		name, ways[0].to, ways[1].to, ways[2].to)}
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar

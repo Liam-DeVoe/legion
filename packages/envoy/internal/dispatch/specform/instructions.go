@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // maxProcedureWords is R49's bound on an instruction, a sentence of the procedure of a check that
@@ -71,8 +72,11 @@ var (
 
 // instructionBreaks is a finding of the rule instructions for each sentence of a procedure that
 // gives two instructions (secondInstruction). A span in code font counts as one word of the
-// sentence, where the rules that count words read none. The finding gives both ways out: two
-// sentences, or "that" before the clause, for a listed verb that is a noun of the object there.
+// sentence, where the rules that count words read none. The finding gives its ways out, each
+// written from a change of the sentence that gives one instruction in each sentence: the
+// instructions in sentences of their own (splitInstructions); "that" before the clause, for a
+// listed verb that is a noun of the object there; and, after a condition at the start, the
+// condition as a sentence of its own (conditionSentence), for a list of verbs in the condition.
 func instructionBreaks(line string) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
@@ -82,13 +86,90 @@ func instructionBreaks(line string) []broken {
 		if !ok {
 			continue
 		}
-		quoted := strings.Join(sentence[second:min(len(sentence), second+instructionQuote)], " ")
-		found = append(found, broken{rule: ruleInstructions, detail: fmt.Sprintf(
-			"a sentence gives two instructions, and a sentence of a procedure gives one: %q. "+
-				`Write each instruction in a sentence of its own, or, if %q is no verb here, write "that" before the clause after it`,
-			strings.TrimRight(spans.Replace(quoted), ".!?"), words[second])})
+		said := func(words []string) string { return spans.Replace(strings.Join(words, " ")) }
+		original := said(sentence)
+		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
+		ways := [maxWays]wayOut{
+			{original, said(splitInstructions(sentence))},
+			{original, said(slices.Insert(slices.Clone(sentence), second+1, "that"))},
+		}
+		detail := fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q. "+
+			`Write each instruction in a sentence of its own, as in %q, or, if %q is no verb here, write "that" before the clause after it`,
+			quoted, ways[0].to, words[second])
+		if condition, ok := conditionSentence(sentence, words, commas); ok {
+			ways[2] = wayOut{original, said(condition)}
+			detail += fmt.Sprintf(", or, if the words before it are part of the condition, write the condition as a sentence of its own, as in %q",
+				ways[2].to)
+		}
+		found = append(found, broken{rule: ruleInstructions, detail: detail, ways: ways})
 	}
 	return found
+}
+
+// splitInstructions is sentence with each instruction in a sentence of its own: the words before
+// the second instruction, without the word that joins it, end with a stop, and the rest, with a
+// capital, is split the same way.
+func splitInstructions(sentence []string) []string {
+	words, commas := sentenceWords(sentence)
+	second, ok := secondInstruction(words, commas)
+	if !ok {
+		return sentence
+	}
+	first := slices.Clone(sentence[:second])
+	if joiners[words[second-1]] {
+		first = first[:len(first)-1]
+	}
+	first[len(first)-1] = strings.TrimRight(first[len(first)-1], ",") + "."
+	rest := slices.Clone(sentence[second:])
+	rest[0] = capitalized(rest[0])
+	return append(first, splitInstructions(rest)...)
+}
+
+// conditionThen is how a sentence after a condition of its own goes on from it, for each word
+// that opens a condition and reads as one again after it (conditionSentence).
+var conditionThen = map[string]string{
+	"after": "After that,", "before": "Before that,", "if": "If so,", "once": "Once that is done,",
+	"until": "Until then,", "when": "When that happens,", "while": "While that happens,",
+}
+
+// conditionSentence is sentence with the condition at its start as a sentence of its own, for a
+// list of verbs in the condition: the words from after the condition's first word to the last
+// comma that an instruction follows end with a stop, and a sentence that goes on from the
+// condition (conditionThen) gives that last instruction, as in "You plan, file an issue or post
+// a finding. Before that, run the search." False for a sentence with no condition at its start,
+// and where that change still gives a sentence two instructions, which no finding offers.
+func conditionSentence(sentence, words []string, commas []bool) ([]string, bool) {
+	then, ok := conditionThen[words[0]]
+	if !ok {
+		return nil, false
+	}
+	last := 0
+	for at := 1; at < len(words); at++ {
+		if commas[at-1] && opensInstruction(words, commas, at) {
+			last = at
+		}
+	}
+	if last < 2 {
+		return nil, false
+	}
+	condition := slices.Clone(sentence[1:last])
+	condition[0] = capitalized(condition[0])
+	condition[len(condition)-1] = strings.TrimRight(condition[len(condition)-1], ",") + "."
+	changed := append(append(condition, strings.Fields(then)...), sentence[last:]...)
+	for _, each := range sentencesOf(strings.Join(changed, " ")) {
+		if words, commas := sentenceWords(each); words != nil {
+			if _, two := secondInstruction(words, commas); two {
+				return nil, false
+			}
+		}
+	}
+	return changed, true
+}
+
+// capitalized is word with its first letter in upper case; a span in code font stays as it is.
+func capitalized(word string) string {
+	first, size := utf8.DecodeRuneInString(word)
+	return string(unicode.ToUpper(first)) + word[size:]
 }
 
 // codeAsWords is line with each span in code font, as ste-lint cuts one ("`" to the next "`"),

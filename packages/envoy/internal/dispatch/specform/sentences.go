@@ -82,10 +82,33 @@ func isAddress(word string) bool {
 	return addressStart.MatchString(strings.TrimLeft(word, openingMarks))
 }
 
-// stopNoSpaceDetail is the detail of the rule stop-no-space for word: the place, and the two ways
-// out.
-func stopNoSpaceDetail(word string) string {
-	return fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence. Put a space after the stop, or put the name in code font", word)
+// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and the two ways out,
+// a space after each such stop (spacedStops) or the word in code font.
+func stopNoSpaceBreak(word string) broken {
+	return broken{rule: ruleStopNoSpace, ways: [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + word + "`"}},
+		detail: fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence. Put a space after the stop, or put the name in code font", word)}
+}
+
+// spacedStops is word with a space after each stop that joinedStop reads, after its closing marks.
+func spacedStops(word string) string {
+	var spaced strings.Builder
+	afterLetter, pending := false, -1
+	for index, letter := range word {
+		if index == pending {
+			spaced.WriteByte(' ')
+		}
+		spaced.WriteRune(letter)
+		if !isStop(letter) || !afterLetter {
+			afterLetter = afterLetter || isLetterOrDigit(letter)
+			continue
+		}
+		rest := word[index+utf8.RuneLen(letter):]
+		marks := len(rest) - len(strings.TrimLeft(rest, closingMarks))
+		if next, _ := utf8.DecodeRuneInString(rest[marks:]); unicode.IsUpper(next) {
+			pending = index + utf8.RuneLen(letter) + marks
+		}
+	}
+	return spaced.String()
 }
 
 // endsSentence reports whether word ends in a stop and then any closing marks, and is no

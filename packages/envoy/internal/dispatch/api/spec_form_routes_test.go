@@ -209,7 +209,8 @@ var procedureFaults = []formFault{
 		clean:  "Read each open approval request.",
 		broken: "Read each open approval request and record its version.",
 		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version". ` +
-			`Write each instruction in a sentence of its own, or, if "record" is no verb here, write "that" before the clause after it`},
+			`Write each instruction in a sentence of its own, as in "Read each open approval request. Record its version.", ` +
+			`or, if "record" is no verb here, write "that" before the clause after it`},
 }
 
 // twentyWords is the control of the procedure faults: a procedure of one instruction in 20 words.

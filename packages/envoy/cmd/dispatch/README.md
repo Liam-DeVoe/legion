@@ -5045,20 +5045,22 @@ Each item below names a path with its method and identity, then its purpose.
 
     - How the rules read the procedure of a check: each sentence gives one instruction, an instruction has at most 20 words, and a sentence that describes has at most 25, as ASD-STE100 writes a procedure.
       A sentence is an instruction when it starts with a verb of the rule's list, with no comma after it, and then the first word of the verb's object.
-      The list is `internal/dispatch/specform/instruction-verbs.txt`: a program writes it from the verbs that start the instructions of the repository's skills and of the live procedures of The Spec, and a test writes it again and fails when the two differ.
+      The list is `internal/dispatch/specform/instruction-verbs.txt`: a program writes it from the verbs that start the instructions of the repository's skills and of the live procedures of The Spec, keeps the sentences it read in `testdata/` beside it, and a test writes it again from those sentences in any clone and fails when the two differ.
       The first word of the object is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
       After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
       A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
       Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.
       A word that the list does not name is no verb, so `Read the log, especially the last line` and `Count the rows, minus the header` give one instruction.
-      A listed verb that a noun phrase and then a verb of its own follow is a noun of the object, as `time` in `Measure the memory and time it uses`, so that sentence gives one instruction.
+      A listed verb that a noun phrase and then an auxiliary or a verb ending in -s or -ed follow is a noun of the object, as `output` in `Read the input and output the tool writes`, so that sentence gives one instruction.
       A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and each of its sentences has at most 25 words.
-      The refusal gives both ways out: write each instruction in a sentence of its own, or write `that` before the clause after a listed verb that is no verb there.
-      Four forms are stated limits.
+      The refusal gives its ways out, each as the sentence it makes, and a test applies each and holds the result to the rule: each instruction in a sentence of its own, `that` before the clause after a listed verb that is no verb there, and, after a condition at the start, the condition as a sentence of its own.
+      Six forms are stated limits.
       A verb that the list does not name starts no instruction, so `Seed the database and run the test` breaks no rule.
       A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.
-      A condition ends at its first comma, so a list of verbs in it, as in `Before you plan, file an issue or post a finding, run the search`, reads as two instructions: write the condition as a sentence of its own.
+      A condition ends at its first comma, so a list of verbs in it, as in `Before you plan, file an issue or post a finding, run the search`, reads as two instructions: write the condition as a sentence of its own, as in `You plan, file an issue or post a finding. Before that, run the search`.
       A listed verb that is a noun of the object with no clause of its own after it, as `name` in ``Run the test of the step, name `lint`, with the race detector``, reads as a second instruction: 43 verbs of the list are also nouns in the skills.
+      A listed verb before a clause whose verb is a plural or a past form with no -ed, as `output` in `Compare the input and output the tools write`, reads as a second instruction: write `that` before the clause.
+      A listed verb before a word that starts no object, such as `tests`, `go` or a name, as in `Run tests against the server` and `Start Dispatch with a fixture issue`, starts no instruction, so its sentence has at most 25 words and no second instruction is read in it.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
