@@ -7,6 +7,7 @@ import {
   expect,
   jest,
   mock,
+  setDefaultTimeout,
   setSystemTime,
   spyOn,
   test,
@@ -14945,6 +14946,18 @@ console.log(JSON.stringify(args));
        *  before it removes the directory: a command the code under test failed to stop ends with
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
+      // The limit of every row of this describe, set here as the default for the rows registered
+      // inside it (`setDefaultTimeout` is read as each row is registered), so a row added here
+      // takes it too: a hang guard, not a bound on work. What can hang is a wait with no deadline
+      // of its own, which each row makes after `bootShellSession`: an `until` for a command that
+      // never starts, never writes its pid or never ends, or a reply that never arrives. 120_000.
+      // Worst measured cost: 10 476.19 ms, the row "answers the addressed session's message when
+      // the host leaves as the command ends", over 20 runs of this describe at 16 busy loops (the
+      // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. A
+      // row run alone pays the file's start as well: one run of "hands the agent no copy when the
+      // host moved on with no session event" alone cost 25 497.91 ms there, which main's 20_000
+      // cut, and 120_000 is 4.7 times that.
+      setDefaultTimeout(120_000);
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
       // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
       // describe at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
@@ -15111,7 +15124,7 @@ console.log(JSON.stringify(args));
           () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-ran"),
           "the shell command's message to be recorded as taken"
         );
-      }, 20_000);
+      });
 
       test("runs it in the directory the session's context names", async () => {
         const { agent, delivered, replied, replies, work } = await bootShellSession(
@@ -15126,7 +15139,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: `!pwd -P\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
         });
-      }, 20_000);
+      });
 
       test("answers a command that printed nothing", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
@@ -15143,7 +15156,7 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: "!true\n\nThe command printed nothing.",
         });
-      }, 20_000);
+      });
 
       test("names a failing command's status in the frame and in the reply", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
@@ -15159,7 +15172,7 @@ console.log(JSON.stringify(args));
           "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
         expect(streamFrames()[0]?.message.parts).toEqual([{ text: answer, type: "text" }]);
         expect(replies[0]?.body).toMatchObject({ body: answer });
-      }, 20_000);
+      });
 
       test("stops a command past its limit and says when, keeping what it printed", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
@@ -15177,7 +15190,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid && printf early && sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
         });
-      }, 20_000);
+      });
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
       // second message is taken while the first command still runs.
@@ -15204,7 +15217,7 @@ console.log(JSON.stringify(args));
             body: "!echo $$ > pid && sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
-      }, 20_000);
+      });
 
       test("cuts output past the bound and says so", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession("shell-command-cut", {
@@ -15222,7 +15235,7 @@ console.log(JSON.stringify(args));
             )
           ),
         });
-      }, 30_000);
+      });
 
       // The mark is one `!`, and the rest is the command whatever it starts with.
       test("runs the rest of the line, and answers with the shell's own failure", async () => {
@@ -15242,7 +15255,7 @@ console.log(JSON.stringify(args));
         });
         // Nothing is hidden from the model: it reads the same report.
         expect(sends[0]?.content).toContain("The command ended with exit status 127.");
-      }, 20_000);
+      });
 
       // Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER),
       // so output that holds one would leave the person with no answer at all and their message
@@ -15265,7 +15278,7 @@ console.log(JSON.stringify(args));
           () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-nul"),
           "the shell command's message to be recorded as taken"
         );
-      }, 20_000);
+      });
 
       // The host can refuse the agent's copy (`pi.sendMessage` throws on a host mid-switch), and
       // the person's message must be taken all the same: the command has run, and a redelivery
@@ -15284,7 +15297,7 @@ console.log(JSON.stringify(args));
           () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-send-throws"),
           "the shell command's message to be recorded as taken though the send threw"
         );
-      }, 20_000);
+      });
 
       // `/new` and `/resume` fire `session_switch`, not `session_shutdown`, so neither stops a
       // running command: a command asked of one session can end with the host on another. The
@@ -15337,11 +15350,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-        // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000, the guard of the
-        // row "hands the agent no copy when the host moved on with no session event", sized from
-        // the reading beside that row.
-      }, 120_000);
+      });
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15390,12 +15399,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-        // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000. One correct run
-        // of this row was cut by the base's 20_000 at 25 497.91 ms, at 16 busy loops (the 96 rung)
-        // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, so 120_000 is 4.7 times that cut. Four
-        // other rows of this describe carry the same guard on this reading.
-      }, 120_000);
+      });
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -15457,7 +15461,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 20_000);
+      });
 
       // The same move, made inside the Dispatch accept the delivery awaits: a `/new` whose
       // `session_switch` lands there has moved the plugin's own `sessionID`, and its working
@@ -15522,7 +15526,7 @@ console.log(JSON.stringify(args));
             .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
             .filter((frame) => frame.kind === "message")
         ).toEqual([]);
-      }, 20_000);
+      });
 
       // The two windows before the capture. Every row above moves the host after the session
       // the message was addressed to has been read off the live id; these two move it before,
@@ -15664,7 +15668,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 20_000);
+      });
 
       // The second window: the read of the message whole. A person's message whose body the
       // event carried in part is read through Dispatch before anything is captured, and a
@@ -15734,7 +15738,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 20_000);
+      });
 
       // The last window of the four: the command has ended and its reply has not gone out. The
       // host is handed the agent's copy there, and this row makes it leave at that moment - its
@@ -15812,7 +15816,7 @@ console.log(JSON.stringify(args));
             .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
             .filter((frame) => frame.kind === "message")
         ).toEqual([]);
-      }, 20_000);
+      });
 
       // The same window, read on the credential rather than on the actor: the row above holds
       // the session the reply names, and this one the session it is signed as.
@@ -15948,7 +15952,7 @@ console.log(JSON.stringify(args));
           // A token this process traded is held under its session for the life of the process.
           forgetBrokerClients();
         }
-      }, 20_000);
+      });
 
       // The same credential, on an accept Dispatch answers twice. The row above moves the host
       // after its one accept attempt has gone out, so that attempt traded before the move
@@ -16030,7 +16034,7 @@ console.log(JSON.stringify(args));
         } finally {
           broker.stop();
         }
-      }, 20_000);
+      });
 
       /** The sentence a report carries when the agent of the session the command was asked of
        *  was handed no copy of it (`shellCommandWithheldReport` in `src/typed-shell.ts`). */
@@ -16095,11 +16099,7 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
-        // A hang guard: what can hang is a first command that never starts, which the `until` above
-        // waits for with no deadline of its own, or a reply that never arrives. 120_000, the guard
-        // of the row "hands the agent no copy when the host moved on with no session event", sized
-        // from the reading beside that row.
-      }, 120_000);
+      });
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
@@ -16141,11 +16141,7 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
-        // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000, the guard of the
-        // row "hands the agent no copy when the host moved on with no session event", sized from
-        // the reading beside that row.
-      }, 120_000);
+      });
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -16179,11 +16175,9 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid && exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-        // A hang guard: what can hang is a command that never writes its pid, which the `until`
-        // above waits for with no deadline of its own, or a shutdown that does not end it, whose
-        // reply then never arrives. 120_000, the guard of the row "hands the agent no copy when the
-        // host moved on with no session event", sized from the reading beside that row.
-      }, 120_000);
+        // What can hang here is also a shutdown that does not end the command, whose reply then
+        // never arrives: the describe's guard.
+      });
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
@@ -16213,7 +16207,7 @@ console.log(JSON.stringify(args));
         });
         expect(sends).toEqual([]);
         expect(streamFrames()).toEqual([]);
-      }, 20_000);
+      });
 
       test("a BTW is answered by the model and runs no command", async () => {
         const { agent, replied, replies, sends } = await bootShellSession("shell-command-btw", {
@@ -16226,7 +16220,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({ body: "The model's answer." });
         expect(streamFrames()).toEqual([]);
         expect(sends).toEqual([]);
-      }, 20_000);
+      });
 
       test("a broadcast keeps its card and runs no command", async () => {
         const { agent, delivered, replies, sends } =
@@ -16246,7 +16240,7 @@ console.log(JSON.stringify(args));
         });
         expect(streamFrames()).toEqual([]);
         expect(replies).toEqual([]);
-      }, 20_000);
+      });
 
       // The plugin's one input handler passes on every line whose source is not `extension`, so a
       // line typed at the session's own terminal keeps the host's own shell mode.
@@ -16260,7 +16254,7 @@ console.log(JSON.stringify(args));
         ).toBeUndefined();
         expect(streamFrames()).toEqual([]);
         expect(fixture.deliveries).toEqual([]);
-      }, 20_000);
+      });
 
       // The negative control: the same line without the mark is a prompt, and runs nothing.
       test("runs nothing for a line that does not start with the mark", async () => {
@@ -16279,7 +16273,11 @@ console.log(JSON.stringify(args));
         });
         expect(streamFrames()).toEqual([]);
         expect(replies).toEqual([]);
-      }, 20_000);
+      });
+
+      // Every row registered after this describe runs at bun's own default again, 5 s: this
+      // file's `bun test` passes no `--timeout` and no bunfig sets one.
+      setDefaultTimeout(5_000);
     });
 
     // The windows the `!` rows above hold, on the two other branches of a delivery: a typed
