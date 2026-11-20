@@ -82,6 +82,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 )
 
@@ -307,7 +308,7 @@ func (r *dispatchBrokerRig) setUp() {
 	r.qIssue = r.createIssue(rigQ, "An issue of the other project", "")
 	r.call(http.MethodPost, "/api/v1/issues/"+r.pIssue+"/artifacts", false, map[string]any{
 		"name": "verification.md", "actor": rigSetupActor,
-		"content": fmt.Sprintf("How %s is proved.\n\n:::check{#%s serves=\"dispatch://%s/spec#b-r1\" surface=\"api\" run=\"bash scripts/e2e/dispatch-broker.sh\" negative_control=\"A token of another project is refused 403 PROJECT_SCOPE.\"}\nA role records a result with its own token.\n:::\n",
+		"content": fmt.Sprintf("How %s is proved.\n\n:::check{#%s serves=\"dispatch://%s/spec#b-r1\" surface=\"api\" run=\"bash scripts/e2e/dispatch-broker.sh\" negative_control=\"A token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role.\"}\nA role records a result with its own token.\n:::\n",
 			r.pIssue, rigCheck, r.pIssue),
 	}, http.StatusCreated, nil)
 }
@@ -1184,21 +1185,62 @@ func (r *dispatchBrokerRig) namesP(record proxyRecord) bool {
 	return strings.HasSuffix(names, " of "+rigP) || names == "project "+rigP
 }
 
-// TestTheDaemonWritesAsItselfOnlyInItsProject is K2: under dispatch_token_broker the daemon's own
-// client, with the identity of P's daemon account, posts an issue message (PostMessage, its one
-// conversation write) on an issue of P and then on an issue of Q, and `dispatch whoami` runs in a
-// role's environment of P; the result names each request's Authorization scheme and each answer's
-// status, whoami's output, and the names of the role's variables that hold DISPATCH.
+// eventHeader is the sequence and the type of one event of an issue's event log.
+type eventHeader struct {
+	Seq  int64  `json:"seq"`
+	Type string `json:"type"`
+}
+
+// eventAt is the event of an issue's event log (dispatch.HTTPClient.EventsAfter) at sequence seq,
+// nil where the log holds none.
+func eventAt(events []json.RawMessage, seq int64) json.RawMessage {
+	for _, event := range events {
+		var header eventHeader
+		if json.Unmarshal(event, &header) == nil && header.Seq == seq {
+			return event
+		}
+	}
+	return nil
+}
+
+// decodedFact says in words what intake.DecodeDispatchEvent made of an event.
+func decodedFact(fact intake.Fact, err error) string {
+	issue, isIssue := fact.(intake.DispatchIssue)
+	switch {
+	case err != nil:
+		return "an error: " + err.Error()
+	case fact == nil:
+		return "no fact"
+	case isIssue:
+		return fmt.Sprintf("a DispatchIssue with DaemonActor %t and ActorSession %q", issue.DaemonActor, issue.ActorSession)
+	}
+	return fmt.Sprintf("a %T", fact)
+}
+
+// TestTheDaemonWritesAsItselfOnlyInItsProject is K2. "Only in its project" is the name of #4392's
+// check, whose rule held a token that names a project to the writes of that project; it is no
+// longer the rule (dispatch://INFRA-4799's R8), and the name stays because C3's run names it.
+// Under dispatch_token_broker the daemon's own client, with the identity of P's daemon account,
+// posts an issue message (PostMessage, its one conversation write) on an issue of P and on an issue
+// of Q; on that issue of Q it also sets a status and writes a step record, its rating, a plan and
+// the role holders, the writes of a daemon that runs a claim on another project's issue (legion
+// claims spawn); it sets a status on its own issue of P; and the daemon's intake decodes the status
+// events of both issues as the boot catch-up decodes Dispatch's event log
+// (intake.DecodeDispatchEvent over EventsAfter). `dispatch whoami` runs in a role's environment of
+// P. The result names each request's Authorization scheme and each answer's status, the decodes,
+// whoami's output, and the names of the role's variables that hold DISPATCH.
 //
-// Controls: the write to Q is refused 403 PROJECT_SCOPE and the write to P is accepted, so the
-// refusal is the token's scope and not a broken client; a write of the same client whose proof
-// names an origin outside DISPATCH_PROOF_ORIGINS is refused 401 BROKER_TOKEN_PROOF_INVALID; and
-// with the setting off the same two writes carry Bearer and are both accepted, and whoami says it
-// runs under the shared token.
+// Controls: every write on P and on Q is accepted, each checked on its own so that a run shows
+// the answer to every one; a write of the same client whose proof names an origin outside
+// DISPATCH_PROOF_ORIGINS is refused 401 BROKER_TOKEN_PROOF_INVALID, so an accepted write is the
+// token's and not a proof check left open; the status event on P's issue decodes as the daemon's
+// own write, and each event of Q's issue as no fact, since the intake reads no other project's
+// events; whoami names the project the role's token names; and with the setting off the same two
+// messages carry Bearer and are both accepted, and whoami says it runs under the shared token.
 func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	r := newDispatchBrokerRig(t, 15*time.Minute)
 	ctx := context.Background()
-	report := r.report("K2: the daemon writes as itself and only in its project")
+	report := r.report("K2: the daemon writes as itself, on an issue of its project and on an issue of another")
 
 	subject, _ := r.daemonSubject()
 	var client *dispatch.HTTPClient
@@ -1210,6 +1252,46 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	})
 	onQ := r.daemonCall("PostMessage on "+r.qIssue, false, func() error {
 		return client.PostMessage(ctx, r.qIssue, "The daemon's notice on an issue of another project.")
+	})
+	// The other writes of a daemon that runs a claim on the issue of Q: its status, and its
+	// records with the values daemonScript writes.
+	var writtenOnQ dispatch.Issue
+	statusOnQ := r.daemonCall("SetStatus on "+r.qIssue, false, func() error {
+		var err error
+		writtenOnQ, err = client.SetStatus(ctx, r.qIssue, "in_progress")
+		return err
+	})
+	stepID, step := uuid.NewString(), daemonStep(r.qIssue, time.Now().UTC())
+	stepOnQ := r.daemonCall("PutStep on "+r.qIssue, false, func() error {
+		return client.PutStep(ctx, r.qIssue, stepID, step)
+	})
+	ratingOnQ := r.daemonCall("PutStepRating on "+r.qIssue, false, func() error {
+		return client.PutStepRating(ctx, r.qIssue, stepID, step, daemonRating)
+	})
+	planOnQ := r.daemonCall("PutPlan on "+r.qIssue, false, func() error {
+		return client.PutPlan(ctx, r.qIssue, uuid.NewString(), daemonPlan())
+	})
+	holdersOnQ := r.daemonCall("PutRoleHolders on "+r.qIssue, false, func() error {
+		return client.PutRoleHolders(ctx, r.qIssue, []dispatch.RoleHolder{})
+	})
+	// A status on the daemon's own issue of P, and the event logs of both issues, which the
+	// daemon's intake decodes below.
+	var writtenOnP dispatch.Issue
+	statusOnP := r.daemonCall("SetStatus on "+r.pDaemon, false, func() error {
+		var err error
+		writtenOnP, err = client.SetStatus(ctx, r.pDaemon, "in_progress")
+		return err
+	})
+	var eventsOfP, eventsOfQ []json.RawMessage
+	readP := r.daemonCall("EventsAfter on "+r.pDaemon, true, func() error {
+		var err error
+		eventsOfP, err = client.EventsAfter(ctx, r.pDaemon, 0)
+		return err
+	})
+	readQ := r.daemonCall("EventsAfter on "+r.qIssue, true, func() error {
+		var err error
+		eventsOfQ, err = client.EventsAfter(ctx, r.qIssue, 0)
+		return err
 	})
 	outside := r.daemonCall("PostMessage on "+r.pIssue+", sent to an origin DISPATCH_PROOF_ORIGINS does not name", false, func() error {
 		return dispatch.New(r.outside, transport).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
@@ -1229,8 +1311,27 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	off := r.environment(role, shared)
 	whoamiOff := r.command(role, off, "whoami")
 
+	// The daemon's intake decodes each event as the boot catch-up decodes Dispatch's event log: the
+	// status event its write on its own issue of P made, and each event of the issue of Q, the
+	// status event of its write there among them.
+	eventOfP := eventAt(eventsOfP, writtenOnP.LastSeq)
+	factOfP, _, errOfP := intake.DecodeDispatchEvent(rigP, r.pDaemon, eventOfP)
+	var decodesOfQ, factsOfQ []string
+	for _, event := range eventsOfQ {
+		var header eventHeader
+		_ = json.Unmarshal(event, &header)
+		fact, _, err := intake.DecodeDispatchEvent(rigP, r.qIssue, event)
+		decode := fmt.Sprintf("sequence %d, %s: %s", header.Seq, header.Type, decodedFact(fact, err))
+		decodesOfQ = append(decodesOfQ, decode)
+		if fact != nil || err != nil {
+			factsOfQ = append(factsOfQ, decode)
+		}
+	}
+
 	report.say("The daemon's client of project %s, with dispatch_token_broker on: its pod identity is the rig's DaemonExchangeAccount, traded at the broker %s; Dispatch is reached through the proxy %s, which DISPATCH_PROOF_ORIGINS names, and %s, which it does not.", rigP, r.broker.URL, r.url, r.outside)
-	report.writes("The setting on", []rigWrite{boot, onP, onQ, outside}, time.Time{})
+	report.writes("The setting on", []rigWrite{boot, onP, onQ, statusOnQ, stepOnQ, ratingOnQ, planOnQ, holdersOnQ, statusOnP, readP, readQ, outside}, time.Time{})
+	report.say("The daemon's intake, for project %s, decodes the status event at sequence %d of %s, the daemon's own issue, as %s.", rigP, writtenOnP.LastSeq, r.pDaemon, decodedFact(factOfP, errOfP))
+	report.say("It decodes each event of %s, an issue of %s, the status event of the daemon's write at sequence %d among them: %s.", r.qIssue, rigQ, writtenOnQ.LastSeq, strings.Join(decodesOfQ, "; "))
 	report.say("`dispatch whoami` in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s (%s):", role.session, rigP, whoamiOn.outcome())
 	report.quote(whoamiOn.stdout + whoamiOn.stderr)
 	report.say("The variables of that environment whose name holds DISPATCH: %s.", strings.Join(dispatchNames(on), ", "))
@@ -1239,6 +1340,35 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	report.quote(whoamiOff.stdout + whoamiOff.stderr)
 	report.say("The variables of that environment whose name holds DISPATCH: %s.", strings.Join(dispatchNames(off), ", "))
 	report.write("k2")
+
+	// Each write on Q, and the status on P, is checked on its own, so that one refused write
+	// leaves the answers to the others in the run's log.
+	for _, write := range []rigWrite{onQ, statusOnQ, stepOnQ, ratingOnQ, planOnQ, holdersOnQ, statusOnP} {
+		if write.err != nil || len(write.records) != 1 || write.records[0].Scheme != "DPoP" || write.records[0].Status/100 != 2 {
+			t.Errorf("under the setting the daemon's %s = %s; the proxy recorded %+v; want one request under DPoP, answered 2xx", write.write, write.outcome, write.records)
+		}
+	}
+	for _, read := range []rigWrite{readP, readQ} {
+		if read.err != nil {
+			t.Errorf("under the setting the daemon's %s = %s, want the issue's event log", read.write, read.outcome)
+		}
+	}
+	issueOfP, isIssue := factOfP.(intake.DispatchIssue)
+	switch {
+	case eventOfP == nil:
+		t.Errorf("the event log of %s holds no event at sequence %d, the sequence the daemon's status write answered (%s)", r.pDaemon, writtenOnP.LastSeq, statusOnP.outcome)
+	case errOfP != nil || !isIssue || !issueOfP.DaemonActor || issueOfP.ActorSession != "":
+		t.Errorf("the daemon's intake decodes its status event on %s, its own issue, as %s; want a DispatchIssue with DaemonActor true and no ActorSession", r.pDaemon, decodedFact(factOfP, errOfP))
+	}
+	if len(eventsOfQ) == 0 {
+		t.Errorf("the event log of %s holds no event, want at least the issue's creation", r.qIssue)
+	}
+	if writtenOnQ.LastSeq != 0 && eventAt(eventsOfQ, writtenOnQ.LastSeq) == nil {
+		t.Errorf("the event log of %s holds no event at sequence %d, the sequence the daemon's status write answered", r.qIssue, writtenOnQ.LastSeq)
+	}
+	for _, decode := range factsOfQ {
+		t.Errorf("the daemon's intake decodes an event of %s, an issue of %s, as more than no fact (%s); want no fact, since it reads no other project's events", r.qIssue, rigQ, decode)
+	}
 
 	only := func(write rigWrite) proxyRecord {
 		t.Helper()
@@ -1250,9 +1380,6 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 	if record := only(onP); onP.err != nil || record.Scheme != "DPoP" || record.Status != http.StatusCreated {
 		t.Errorf("under the setting the daemon's write to its own project %s went %s and was answered %d %s (%v), want DPoP and 201", r.pIssue, record.Scheme, record.Status, record.Code, onP.err)
 	}
-	if status, code := refusal(onQ.err); only(onQ).Scheme != "DPoP" || status != http.StatusForbidden || code != "PROJECT_SCOPE" {
-		t.Errorf("under the setting the daemon's write to %s of %s was answered %d %s (%v), want 403 PROJECT_SCOPE", r.qIssue, rigQ, status, code, onQ.err)
-	}
 	if status, code := refusal(outside.err); only(outside).Address != "outside" || status != http.StatusUnauthorized || code != "BROKER_TOKEN_PROOF_INVALID" {
 		t.Errorf("a write whose proof names %s, an origin DISPATCH_PROOF_ORIGINS does not name, was answered %d %s (%v), want 401 BROKER_TOKEN_PROOF_INVALID", r.outside, status, code, outside.err)
 	}
@@ -1261,8 +1388,8 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 			t.Errorf("without the setting %s went %s and was answered %d %s (%v), want Bearer and 201", write.write, record.Scheme, record.Status, record.Code, write.err)
 		}
 	}
-	if whoamiOn.code != 0 || !strings.Contains(whoamiOn.stdout, "acts for "+r.broker.Operator) || !strings.Contains(whoamiOn.stdout, "may write project "+rigP+" and no other") {
-		t.Errorf("dispatch whoami in the role's environment under the setting = %s, want it acting for %s and writing project %s alone", whoamiOn.outcome(), r.broker.Operator, rigP)
+	if whoamiOn.code != 0 || !strings.Contains(whoamiOn.stdout, "acts for "+r.broker.Operator) || !strings.Contains(whoamiOn.stdout, " Its token names project "+rigP+".") {
+		t.Errorf("dispatch whoami in the role's environment under the setting = %s, want it acting for %s and naming the project %s its token names", whoamiOn.outcome(), r.broker.Operator, rigP)
 	}
 	for _, name := range dispatchNames(on) {
 		if name == "DISPATCH_TOKEN" || name == "DISPATCH_TOKEN_FILE" {
@@ -1446,6 +1573,15 @@ type roleRefs struct {
 	handoff   string
 }
 
+// commandWrite runs the dispatch command with args in env, from the role's home, as the write of
+// a table named write, with the requests the proxy recorded while it ran.
+func (r *dispatchBrokerRig) commandWrite(role *rigRole, env []string, write string, args ...string) rigWrite {
+	r.t.Helper()
+	var out rigRun
+	records := r.during(func() { out = r.command(role, env, args...) })
+	return rigWrite{write: write, client: "the dispatch command", ok: out.code == 0, outcome: out.outcome(), records: records}
+}
+
 // commandScript is K4's script through the dispatch command: one write of each kind R8 names on
 // P's issue, each a process of its own in env. inbox is the person's direct message to the
 // role's session, which the conversation file's reply answers.
@@ -1454,16 +1590,14 @@ func (r *dispatchBrokerRig) commandScript(role *rigRole, env []string, run strin
 	var writes []rigWrite
 	command := func(write string, args ...string) {
 		r.t.Helper()
-		var out rigRun
-		records := r.during(func() { out = r.command(role, env, args...) })
-		writes = append(writes, rigWrite{write: write, client: "the dispatch command", ok: out.code == 0, outcome: out.outcome(), records: records})
+		writes = append(writes, r.commandWrite(role, env, write, args...))
 	}
 	issue := r.pIssue
 	body := r.file("handoff-"+run+".json", fmt.Sprintf(`{"schemaVersion": 1, "phase": "implement", "issue": %q, "summary": "the %s run's handoff through the dispatch command"}`, issue, run))
 	command("handoff-write", "handoff-write", "--issue", issue, "--phase", "implement", "--body-file", body)
 	command("result", "result", "--issue", issue, "--check", rigCheck, "--role", "tester", "--verdict", "pass", "--commit", rigCommit,
 		"--surface", "api", "--run", "bash scripts/e2e/dispatch-broker.sh", "--observed", "the "+run+" run's result through the dispatch command",
-		"--negative-control", "a token of another project is refused 403 PROJECT_SCOPE")
+		"--negative-control", "a token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role")
 	command("comment", "comment", "--issue", issue, "--body", "The "+run+" run's comment through the dispatch command.")
 	command("message", "message", "--issue", issue, "--body", "The "+run+" run's message through the dispatch command.")
 	question := "The " + run + " run asks through the dispatch command: does a person read this ask on " + issue + "?"
@@ -1512,7 +1646,7 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 	call("result", "recordResult", issue, map[string]any{
 		"actor": actor, "check": rigCheck, "role": "tester", "verdict": "pass", "commit": rigCommit, "surface": "api",
 		"run": "bash scripts/e2e/dispatch-broker.sh", "observed": "the " + run + " run's result through the plugin's client",
-		"negative_control": "a token of another project is refused 403 PROJECT_SCOPE",
+		"negative_control": "a token of another session is refused 403 SESSION_SCOPE on an upload into the conversation of this role",
 	})
 	call("comment", "comment", issue, map[string]any{"actor": actor, "body": "The " + run + " run's comment through the plugin's client."})
 	call("message", "message", issue, map[string]any{"actor": actor, "body": "The " + run + " run's message through the plugin's client."})
@@ -1553,12 +1687,33 @@ type daemonRefs struct {
 	document, handoff string
 }
 
+// daemonStep is the step record the rig's daemon writes on the issue key: a retro's start at
+// started, the first write of a fresh record, so it names the run's whole identity, and a retro's,
+// which daemonRating rates.
+func daemonStep(key string, started time.Time) dispatch.StepWrite {
+	return dispatch.StepWrite{
+		Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-example-" + strings.ToLower(key) + "-implementer", Generation: 1, StartedAt: &started,
+	}
+}
+
+// daemonRating is the rating the rig's daemon gives the retro daemonStep writes.
+var daemonRating = dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."}
+
+// daemonPlan is the plan the rig's daemon writes: a run's default plan.
+func daemonPlan() dispatch.PlanWrite {
+	return dispatch.PlanWrite{Generation: 1, Source: "default",
+		Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+}
+
 // daemonScript is K4's script through the daemon's client: one call of each method of
 // internal/dispatch's HTTPClient, its twelve writes and every read, Whoami among them, on the
-// daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
-// the first write of its run, so it names the run's whole identity; PutStepRating rates that same
-// record, a retro's, and PutPlan writes a fresh default plan of the run.
-func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
+// daemon's issue of P. The document UploadArtifact writes is named for the run, as the role
+// scripts' documents are, so each run's upload is a first upload, which names no token. The step
+// record PutStep writes is a fresh one at each run of the script, the first write of its run
+// (daemonStep); PutStepRating rates that same record, a retro's, and PutPlan writes a fresh default
+// plan of the run.
+func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, run string, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
 	issueKey := r.pDaemon
@@ -1590,7 +1745,7 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	slug := ""
 	call("UploadArtifact", false, func() error {
 		var err error
-		slug, err = client.UploadArtifact(ctx, issueKey, "rig-daemon.md", "# The daemon's own document\n")
+		slug, err = client.UploadArtifact(ctx, issueKey, "rig-"+run+"-daemon.md", "# The "+run+" run's daemon document\n")
 		return err
 	})
 	if refs.document == "" && slug != "" {
@@ -1599,21 +1754,10 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("PutGatedSteps", false, func() error { return client.PutGatedSteps(ctx, rigP, []string{}) })
 	call("PutDesignGates", false, func() error { return client.PutDesignGates(ctx, issueKey, []dispatch.DesignGateDocument{}) })
 	call("PutRoleHolders", false, func() error { return client.PutRoleHolders(ctx, issueKey, []dispatch.RoleHolder{}) })
-	stepID := uuid.NewString()
-	started := time.Now().UTC()
-	step := dispatch.StepWrite{
-		Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-example-" + strings.ToLower(issueKey) + "-implementer", Generation: 1, StartedAt: &started,
-	}
+	stepID, step := uuid.NewString(), daemonStep(issueKey, time.Now().UTC())
 	call("PutStep", false, func() error { return client.PutStep(ctx, issueKey, stepID, step) })
-	call("PutStepRating", false, func() error {
-		return client.PutStepRating(ctx, issueKey, stepID, step,
-			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
-	})
-	call("PutPlan", false, func() error {
-		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
-	})
+	call("PutStepRating", false, func() error { return client.PutStepRating(ctx, issueKey, stepID, step, daemonRating) })
+	call("PutPlan", false, func() error { return client.PutPlan(ctx, issueKey, uuid.NewString(), daemonPlan()) })
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
 	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
@@ -1628,16 +1772,22 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 // an issue of P - handoff-write, result, comment, message, comment --reply-to-ask on an ask the
 // script opens with ask, artifact and doc-edit, claim and claim --release, and the session's own
 // conversation file, a picture uploaded to /agents/<session>/artifacts through the client's
-// agentArtifact (the call `dispatch message --in-reply-to` makes for a picture); and with the
-// daemon's token for P, one call of each method of internal/dispatch's client. The result is a
-// table: the write, the route, the status. A row of it that is not 2xx fails the test, and is a
-// defect to report.
+// agentArtifact (the call `dispatch message --in-reply-to` makes for a picture); three writes of
+// the dispatch command on objects of Q, which a token that names one project makes as a
+// credential that names none does (dispatch://INFRA-4799's R8): a comment on Q's issue, a
+// blocked_by link from P's issue to Q's, and a new title of Q's issue; and with the daemon's token
+// for P, one call of each method of internal/dispatch's client. The result is a table: the write,
+// the route, the status. A row of it that is not 2xx fails the test, and is a defect to report.
 //
-// Control: the same script with a token of OtherProjectAccount (project Q) is refused 403
-// PROJECT_SCOPE on each write that names an issue or a document of P. The table names each request
-// that names no issue, which this control cannot tell apart: the conversation file's upload to the
-// caller's own session among them, whose upload to the role of P's session a token of another
-// session is refused 403 SESSION_SCOPE instead, which the control shows too.
+// Control: the same scripts with a token of OtherProjectAccount (project Q), whose entry fixes the
+// session other-project-worker. A token that names one project writes another project's objects
+// (INFRA-4799's R8), so each write of the control on P's objects is accepted, but for the records
+// only a Legion daemon's session writes: the daemon's script's step record, its rating and its
+// plan are refused 403 STEP_WRITER, and its role holders 403 ROLE_HOLDER_FORBIDDEN, because
+// other-project-worker is no daemon's session. The table names each request that names no issue,
+// which this control cannot tell apart: the conversation file's upload to the caller's own session
+// among them. Its upload to the role of P's session, another session's conversation, is refused
+// 403 SESSION_SCOPE, which the control shows too.
 func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	r := newDispatchBrokerRig(t, 15*time.Minute)
 	since := time.Now()
@@ -1653,7 +1803,17 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	withP = append(withP, r.commandScript(role, env, "P", refs, r.directMessage(role.session))...)
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
 	daemon := &daemonRefs{handoff: refs.handoff}
-	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
+	withP = append(withP, r.daemonScript(daemonClient, "P", daemon, since)...)
+	// INFRA-4799's R8: the role's token of P writes objects of Q, as a credential that names no
+	// project does.
+	onQ := []rigWrite{
+		r.commandWrite(role, env, "comment on "+r.qIssue, "comment", "--issue", r.qIssue,
+			"--body", "The P run's comment through the dispatch command, on an issue of "+rigQ+"."),
+		r.commandWrite(role, env, "issue-update --blocked-by "+r.qIssue, "issue-update", "--issue", r.pIssue, "--blocked-by", r.qIssue),
+		r.commandWrite(role, env, "issue-update --title of "+r.qIssue, "issue-update", "--issue", r.qIssue,
+			"--title", "An issue of the other project, retitled by a role of "+rigP),
+	}
+	withP = append(withP, onQ...)
 	// K4's words: with the daemon's token for P the script makes one of each kind of write the
 	// daemon's Dispatch client has a method for. A method the client gains and the script does not
 	// call is a write no row of the table proves under the broker, so each exported method of
@@ -1685,7 +1845,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withQ []rigWrite
 	withQ = append(withQ, r.commandScript(other, otherEnv, "Q", refs, r.directMessage(other.session))...)
 	withQ = append(withQ, r.pluginScript(otherClients, other, "Q", refs, other.session)...)
-	withQ = append(withQ, r.daemonScript(r.otherProjectDaemonClient(), daemon, since)...)
+	withQ = append(withQ, r.daemonScript(r.otherProjectDaemonClient(), "Q", daemon, since)...)
 	var intoP clientAnswer
 	scoped := rigWrite{write: "the conversation file, uploaded to the session " + role.session + " of P's role", client: "the plugin's client"}
 	scoped.records = r.during(func() {
@@ -1697,7 +1857,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	scoped.ok, scoped.outcome = intoP.OK, intoP.outcome()
 
 	report := r.report("K4: a role writes every kind with its own token")
-	report.say("Every write on %s, the issue of %s the role %s's session addresses, and on %s, the daemon's issue of %s. The role is a registered session of an ExchangeRolesAccount pod of %s; the daemon's identity is the rig's DaemonExchangeAccount; the control's is OtherProjectAccount, whose entry fixes the session %s of %s. A row whose names column says no issue is one this control cannot tell apart.", r.pIssue, rigP, role.session, r.pDaemon, rigP, rigP, other.session, rigQ)
+	report.say("Every write on %s, the issue of %s the role %s's session addresses, on %s, the daemon's issue of %s, and the role's three writes on %s, an issue of %s. The role is a registered session of an ExchangeRolesAccount pod of %s; the daemon's identity is the rig's DaemonExchangeAccount; the control's is OtherProjectAccount, whose entry fixes the session %s of %s, which writes the objects of %s as a credential that names no project does, but for the four records only a Legion daemon's session writes. A row whose names column says no issue is one this control cannot tell apart.", r.pIssue, rigP, role.session, r.pDaemon, rigP, r.qIssue, rigQ, rigP, other.session, rigQ, rigP)
 	report.writes("With the tokens of "+rigP, withP, time.Time{})
 	report.writes("The control: the same script with tokens of "+rigQ, withQ, time.Time{})
 	report.writes("The control's conversation file in another session's conversation", []rigWrite{scoped}, time.Time{})
@@ -1712,6 +1872,14 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			t.Errorf("with the token of %s, %s's %s = %s; the proxy recorded %+v: every row of the P table must be 2xx, and this one is a defect to report", rigP, write.client, write.write, write.outcome, write.records)
 		}
 	}
+	for _, write := range onQ {
+		if len(write.mutations()) == 0 {
+			t.Errorf("with the token of %s, the role's %s = %s, and the proxy recorded no write (%+v); want it sent to Dispatch and accepted", rigP, write.write, write.outcome, write.records)
+		}
+	}
+	// The control's four records rows, and the code each is refused with: only a Legion daemon's
+	// session writes them, and other-project-worker is none.
+	refusedRecords := map[string]string{"PutStep": "STEP_WRITER", "PutStepRating": "STEP_WRITER", "PutPlan": "STEP_WRITER", "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
 	for _, write := range withQ {
 		if write.read {
 			continue
@@ -1731,12 +1899,23 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			continue
 		}
 		if len(addressed) == 0 {
-			t.Errorf("the control's %s through %s wrote nothing that names %s (%s; the proxy recorded %+v), want it refused 403 PROJECT_SCOPE", write.write, write.client, rigP, write.outcome, write.records)
+			t.Errorf("the control's %s through %s wrote nothing that names %s (%s; the proxy recorded %+v), want a write on %s's objects", write.write, write.client, rigP, write.outcome, write.records, rigP)
+			continue
 		}
-		for _, record := range addressed {
-			if record.Status != http.StatusForbidden || record.Code != "PROJECT_SCOPE" {
-				t.Errorf("the control's %s through %s: %s %s was answered %d %s, want 403 PROJECT_SCOPE", write.write, write.client, record.Method, record.Route, record.Status, record.Code)
+		if code, refused := refusedRecords[write.write]; refused && write.client == "the daemon's client" {
+			for _, record := range addressed {
+				if record.Status != http.StatusForbidden || record.Code != code {
+					t.Errorf("the control's %s through %s: %s %s was answered %d %s, want 403 %s, since %s is no Legion daemon's session", write.write, write.client, record.Method, record.Route, record.Status, record.Code, code, other.session)
+				}
 			}
+			continue
+		}
+		bad := !write.ok
+		for _, record := range addressed {
+			bad = bad || record.Status/100 != 2
+		}
+		if bad {
+			t.Errorf("the control's %s through %s = %s; the proxy recorded %+v; want each of its writes on %s's objects accepted 2xx, as a credential that names no project writes them", write.write, write.client, write.outcome, write.records, rigP)
 		}
 	}
 	if len(scoped.records) != 1 || scoped.records[0].Status != http.StatusForbidden || scoped.records[0].Code != "SESSION_SCOPE" {

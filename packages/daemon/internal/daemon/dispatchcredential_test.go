@@ -272,6 +272,63 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 	}
 }
 
+// TestTheDaemonsClientNamesTheSessionItsTokenProves: under dispatch_token_broker the daemon's
+// token proves the daemon's own session, legion-daemon:<its project>, which the boot's whoami
+// check holds it to (checkDaemonCaller), and Dispatch refuses a write whose actor names any other
+// session than the one the token proves (403 ACTOR_SESSION_MISMATCH). So the client the boot
+// builds names that session on every write, on an issue of another project too, which the daemon
+// writes when it runs a claim on that issue (legion claims spawn). With the setting off the
+// daemon's bearer proves no session, and each write names the session of the daemon of the
+// issue's project (dispatch.DaemonSession), as it did before the setting.
+func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
+	broker := newCredentialBroker(t, mintsTheDaemonsToken)
+	for name, tc := range map[string]struct {
+		broker bool
+		want   string
+	}{
+		"dispatch_token_broker": {broker: true, want: "legion-daemon:EXAMPLE"},
+		"dispatch_token_file":   {broker: false, want: "legion-daemon:OTHER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
+			cfg, dispatchToken := brokerConfig(dispatchServer.URL), ""
+			if !tc.broker {
+				const fileToken = "dispatch-file-token-4e7a"
+				cfg = config.Config{Project: "EXAMPLE", DispatchURL: dispatchServer.URL, DispatchTokenFile: writeSecret(t, "dispatch-token", fileToken)}
+				dispatchToken = fileToken
+			}
+			transport, err := dispatchCredential(context.Background(), cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), quietLogger())
+			if err != nil {
+				t.Fatalf("dispatchCredential: %v", err)
+			}
+			client := dispatch.New(cfg.DispatchURL, transport)
+			if err := client.PostMessage(context.Background(), "OTHER-1", "The daemon's notice on an issue of another project."); err != nil {
+				t.Fatalf("post a message on OTHER-1: %v", err)
+			}
+			var posted []credentialRequest
+			for _, request := range dispatchServer.received() {
+				if request.method == http.MethodPost && request.target == "/api/v1/issues/OTHER-1/messages" {
+					posted = append(posted, request)
+				}
+			}
+			if len(posted) != 1 {
+				t.Fatalf("Dispatch received %d messages on OTHER-1, want the one the client posted", len(posted))
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(posted[0].body), &body); err != nil {
+				t.Fatalf("decode the message on OTHER-1, %s: %v", posted[0].body, err)
+			}
+			var actor struct {
+				Kind string `json:"kind"`
+				ID   string `json:"id"`
+			}
+			if err := json.Unmarshal(body["actor"], &actor); err != nil || actor.Kind != "session" || actor.ID != tc.want {
+				t.Errorf("the daemon's message on OTHER-1 names the actor %s (%v), want the session %s", body["actor"], err, tc.want)
+			}
+		})
+	}
+}
+
 // TestTheDaemonNeverSendsTheTransitionToken: under dispatch_token_broker a transition file holds the
 // shared Dispatch token a launch into a pod built before the setting gets, and the daemon's own
 // client never presents it: boot plans no bearer for its own calls (plan.dispatchToken), which a
