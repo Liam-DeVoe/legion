@@ -632,9 +632,10 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 `phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
 claim's `state` is `failed` with its `failure` beside it. A phase worker held for its failure is
 its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
-controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task) or `children`
-(a parent waits, before its retro, for the issues beneath it) is no failure, and a retry of it is
-refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
+controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
+failed with no earlier step of the type implementation to take its work back, which stops the
+task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park

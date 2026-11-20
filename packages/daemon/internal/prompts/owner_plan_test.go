@@ -18,11 +18,14 @@ import (
 // replaces the default steps once the work started, and the answers a later version gets from the
 // workflow (workflow.planGiven): the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
-// be given again, and an issue that started its work before Legion took plans takes none. Each is
-// held by its terms: a term alone where the term is the rule (a code, an operation, a role), and
-// otherwise the terms of the clause that states the rule, in their order. Both architect
-// compositions share that part, so both are read. This shows the text is loaded, never that an
-// owner follows it.
+// be given again, and an issue that started its work before Legion took plans takes none. A new
+// version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
+// upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
+// plan only after its rerun, since a version for its done or left task is refused TASK_DONE
+// (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is held by its terms:
+// a term alone where the term is the rule (a code, an operation, a role), and otherwise the terms
+// of the clause that states the rule, in their order. Both architect compositions share that
+// part, so both are read. This shows the text is loaded, never that an owner follows it.
 func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -93,6 +96,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
+				// A new version of plan.md names the token of the text it replaces.
+				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
+				// A parked or done child takes a new plan after its rerun: stop, then give it.
+				{"parked or done child", "only after `rerun_child`", "`TASK_DONE`"},
+				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
 			} {
 				if !clauseHolds(composed, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
@@ -231,7 +239,9 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
 // told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. Each
 // duty is held by the terms of the clause that states it, in their order, so a rewording that
-// keeps them passes. This shows the text is loaded, never that a worker follows it.
+// keeps them passes. CI ends no run (no row of the workflow's table has a CI trigger), so no
+// prompt names CI among the events that send a task back. This shows the text is loaded, never
+// that a worker follows it.
 func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -252,6 +262,9 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 			if !clauseHolds(composed, terms...) {
 				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
 			}
+		}
+		if retired := "CI sent it back"; strings.Contains(foldWhitespace(composed), retired) {
+			t.Errorf("the composed %s prompt still says %q", role, retired)
 		}
 	}
 }
@@ -295,6 +308,8 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"reviewed head",
 		"the planner's `plan` handoff",
 		"so its planner may already be reading it",
+		"child's planner may already be working",
+		"once the issue enters `accepting`",
 		"since the reviewer approves only",
 		"The reviewer's approval moves this child to `accepting`",
 		"is mandatory after your acceptance",
@@ -306,7 +321,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		want []string
 	}{
 		{"architect-root.md", append(slices.Clone(shared), "each issue's `plan.md`", "before `register_gate`")},
-		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "given it its plan with `register_plan`")},
+		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`")},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			part := rolePart(t, tc.part)

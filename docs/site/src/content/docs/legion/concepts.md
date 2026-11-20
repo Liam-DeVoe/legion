@@ -454,8 +454,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
   the base requires a pull request to be current with it; or the daemon could not read the base's
   rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
-  records the conflict, and the tester and the reviewer go on at that head; an approval of the
-  head ends the review round, and the daemon acts once the issue enters `accepting`.
+  records the conflict, and the task's steps go on at that head; an approval of the head ends the
+  review round, and the daemon acts once the issue moves past its review, into `accepting`,
+  `retro` or `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
   push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
@@ -556,9 +557,10 @@ When a merge fails, the decision is the merger's, on GitHub's own answer: wait f
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
-base keeps the issue in `merging`: the merger merges nothing, the daemon asks the implementer to
-merge the base forward and the reviewer to approve the new head, and the merger merges that head
-once the approval is on the pull request.
+base keeps the issue in `merging`: the merger merges nothing, and the daemon asks the implementer
+to merge the base forward. Where the task has a reviewer step, it also asks the reviewer to approve
+the new head, and the merger merges that head once the approval is on the pull request; on a task
+with no reviewer step, the merger goes on at the new head.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head

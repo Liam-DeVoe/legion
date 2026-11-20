@@ -8,7 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
-The plan is the issue's `plan.md` document (`dispatch artifact` on the issue, with `--force` once `plan.md` exists).
+The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
 ```markdown
@@ -29,6 +29,10 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because it records what the work needed.
+
+- Once `plan.md` exists, upload each new version with `--force --precondition-json '{"document":"sha256:…"}'`, the token `dispatch doc-read --issue <issue> --artifact plan.md` prints.
+  An upload replaces the whole document, so Dispatch refuses one with no token (`400 PRECONDITION_REQUIRED`) and one whose token is behind the live version (`409 PRECONDITION_FAILED`):
+  your version cannot erase what a planner step wrote since your read, and on that refusal you read the plan again and upload again.
 
 ## The roles and their order
 
@@ -102,6 +106,8 @@ Legion reads that version and no later one, so a version you do not give changes
 
 - **An issue that already runs** runs the task `default`, the project's default steps.
   Call `stop_task` on the task `default`, then `register_plan` with a version whose one task replaces it: Legion starts that task at its first step.
+
+- **A parked or done child:** only after `rerun_child`, as `skill://legion-architect/references/plan-changes.md` says.
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.

@@ -19,6 +19,10 @@ A plan's text, its steps and when to give it first: `skill://legion-architect/re
   A task that never started waits for its gate and its line first, as any task does before its first step.
   `retry_or_escalate` refuses the hold, a retry and an escalation alike (`409 TASK_STOPPED`), as the daemon refuses an operator's restart of it.
 
+- A parked or done child takes a new plan only after `rerun_child`: before it, the plan's task is done or left the workflow, and `register_plan` is refused `409 TASK_DONE`.
+  The rerun's first step can start in the same admission pass, so after the rerun call `stop_task` on the task of the child's plan (`default` where you gave it none), then `register_plan` with the new version:
+  Legion starts the new task at its first step.
+
 - A later version may change or remove only a task that waits or is stopped.
   Legion refuses one that changes or removes the running task, a change of the text in its block alone included, with `PLAN_REFUSED` and the reason `task <id> is running: stop it with stop_task before you
   change it.` It takes a version that leaves the running task's block as it is, including one that changes only the text outside the block, and the task goes on at its step.
