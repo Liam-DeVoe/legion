@@ -3,12 +3,15 @@ package main
 // A consumer create or update whose caller stopped waiting for its answer can still land, and it
 // can land after a later read or write of the same connection: nats-server works its JetStream
 // API requests on a pool of workers, so that later call can be answered first
-// (bus.UnansweredWrite). Each case here holds such a write in the listener's own TCP relay past
-// its caller's budget, lets the fence behind it run, and then forwards the write, in order, ahead
-// of the calls behind it. The consumer must end on the row the bucket holds once the work the
-// listener left behind the write has run (awaitSettled): its handler waits for the write's answer
-// and judges the consumer again after it (sessionDelivery.unansweredWrite). The first row of each
-// table holds the call for less than the budget, so it is answered, and is the control that the
+// (bus.UnansweredWrite). Each case here holds that one write frame in a relay in front of the
+// listener's session-consumer connection past its caller's budget, lets every frame behind it
+// through at once - the flush that confirms its publish, and the fence's reads and writes after
+// it - and then forwards it. So the listener's own reads reach the server before the write, and
+// only the judgment made after the write's answer can see what it left. The consumer must end on
+// the row the bucket holds once the server has applied the write (apiAudits) and the work the
+// listener left behind it has run (awaitSettled): its handler waits for the write's answer and
+// judges the consumer after it (sessionDelivery.unansweredWrite). The first row of each table
+// holds the write for less than the budget, so it is answered, and is the control that the
 // check can pass.
 
 import (
@@ -27,19 +30,20 @@ import (
 // caller's own budget (sessionConsumerCallTimeout), so the caller stops waiting for it.
 const unansweredWriteHold = sessionConsumerCallTimeout + 500*time.Millisecond
 
-// newRelayedConsumerRig is a rig whose session-consumer connection goes through a TCP relay of
-// the test's own (startListenerRelay), while its bucket reads go to the server directly: the
-// relay can then hold one consumer call and nothing the fence reads from the bucket.
-func newRelayedConsumerRig(t *testing.T) (*sessionConsumerRig, *listenerRelay) {
+// newFrameRelayedConsumerRig is a rig whose session-consumer connection goes through a frame
+// relay of the test's own that can hold one consumer create or update (startFrameRelay), while
+// its bucket reads go to the server directly, with the server's audits of its API requests.
+func newFrameRelayedConsumerRig(t *testing.T) (*sessionConsumerRig, *frameRelay, *apiAudits) {
 	t.Helper()
 	url := testnats.URL(t)
-	relay := startListenerRelay(t, url)
+	audits := watchAPIAudits(t, url)
+	relay := startFrameRelay(t, url, "$JS.API.CONSUMER.CREATE.")
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newSessionConsumerRigOn(t, client, relay.relayed), relay
+	return newSessionConsumerRigOn(t, client, relay.url), relay, audits
 }
 
 // A registration whose consumer call loses its answer is answered 503, and the settle behind it
@@ -58,22 +62,20 @@ func TestASettleAfterARegistrationWhoseConsumerCallLostItsAnswerLeavesNoUnstored
 		{"answer-lost-under-a-newer-row", unansweredWriteHold, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			a, relay := newRelayedConsumerRig(t)
+			a, relay, audits := newFrameRelayedConsumerRig(t)
 			b := newSessionConsumerRig(t)
 			sessionID := "ses_unanswered_settle_" + strings.ReplaceAll(c.name, "-", "_")
 			const stored = "notifications.dispatch.issue.UNANSWEREDSTORED.>"
 			const planned = "notifications.dispatch.issue.UNANSWEREDPLANNED.>"
 			const newer = "notifications.dispatch.issue.UNANSWEREDNEWER.>"
 			b.subscribe(t, consumerRegistration(sessionID, "epoch-1", stored))
-			held := make(chan struct{})
-			relay.pause("$JS.API.CONSUMER.CREATE.", 1, func() {
+			relay.on(relay.next(), holdFor(c.hold, func() {
 				if c.newer {
 					// Under the held call: another listener stores a newer row.
 					b.subscribe(t, consumerRegistration(sessionID, "epoch-1", stored, newer))
 				}
-				time.Sleep(c.hold)
-				close(held)
-			})
+			}))
+			from := audits.count()
 			recorder := httptest.NewRecorder()
 			a.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 				strings.NewReader(consumerRegistration(sessionID, "epoch-1", planned))))
@@ -84,7 +86,7 @@ func TestASettleAfterARegistrationWhoseConsumerCallLostItsAnswerLeavesNoUnstored
 			if recorder.Code != want {
 				t.Fatalf("the registration answered %d, want %d: %s", recorder.Code, want, recorder.Body.String())
 			}
-			<-held
+			audits.awaitApplied(t, from, sessionID, carrying("UNANSWEREDPLANNED"), 30*time.Second)
 			awaitSettled(a)
 			requireFilteredOnStoredRow(t, a, sessionID)
 			if c.newer {
@@ -107,7 +109,7 @@ func TestARelayRestartWhoseWriteLostItsAnswerSettlesOnTheNewestRow(t *testing.T)
 		{"answer-lost", unansweredWriteHold},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			a, relay := newRelayedConsumerRig(t)
+			a, relay, audits := newFrameRelayedConsumerRig(t)
 			relays, err := startSessionRelays(a.deps.consumers, a.harness.config)
 			if err != nil {
 				t.Fatalf("start the relays: %v", err)
@@ -123,8 +125,8 @@ func TestARelayRestartWhoseWriteLostItsAnswerSettlesOnTheNewestRow(t *testing.T)
 			const added = "notifications.dispatch.issue.UNANSWEREDADD.>"
 			a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-			held := make(chan struct{})
 			reads := 0
+			from := 0
 			a.deps.consumers.afterStoredRowRead = func() {
 				reads++
 				if reads > 1 {
@@ -133,16 +135,14 @@ func TestARelayRestartWhoseWriteLostItsAnswerSettlesOnTheNewestRow(t *testing.T)
 				// Under the restart's read: another listener stores a newer row and sets its
 				// filter, and the restart's own write of the older row is held at the relay.
 				b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
-				relay.pause("$JS.API.CONSUMER.CREATE.", 1, func() {
-					time.Sleep(c.hold)
-					close(held)
-				})
+				from = audits.count()
+				relay.on(relay.next(), holdFor(c.hold, nil))
 			}
 			_, pull, _ := relays.restart(context.Background(), &relayRun{sessionID: sessionID})
 			if pull != nil {
 				pull.Stop()
 			}
-			<-held
+			audits.awaitApplied(t, from, sessionID, lacking("UNANSWEREDADD"), 30*time.Second)
 			awaitSettled(a)
 			a.deps.consumers.afterStoredRowRead = nil
 			requireFilters(t, b, sessionID, kept, added)

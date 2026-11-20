@@ -261,9 +261,24 @@ type sessionDelivery struct {
 	afterAnswerCtx  context.Context
 	afterAnswerStop context.CancelFunc
 	// settleMu guards settling, the settle loop running for each session and what it has been
-	// asked since its last attempt began (settleAgain, session_filter_settle.go).
+	// asked since its last attempt began (settleAgain, session_filter_settle.go), and lateLanded.
 	settleMu sync.Mutex
 	settling map[string]*settleRequest
+	// lateLanded is when an attempt of the settle loop last saw a consumer write whose answer was
+	// lost land (settleLoop): the server read the connection that write went out on then, so it
+	// goes on reading that connection for up to staleLimit after, and every write lost with it is
+	// watched until then (lateWatch.until).
+	lateLanded time.Time
+	// staleLimit is how long the server goes on reading a connection after the last byte it read
+	// from it (bus.StaleConnectionLimit of the hub's ping_interval and ping_max): the settle loop
+	// judges a session's consumer at each pause for that long after a write's answer was lost with
+	// its connection (unansweredWrite). connectSessionDelivery sets it from nats-server's own
+	// defaults, main from ENVOY_NATS_PING_INTERVAL and ENVOY_NATS_PING_MAX (envconf.ServerPings),
+	// and a test from the configuration of the server it starts.
+	staleLimit time.Duration
+	// fenceBudget, above 0, is each attempt's budget in place of sessionConsumerCallTimeout
+	// (fenceAttemptBudget); only a test sets it.
+	fenceBudget time.Duration
 	// sessions and registry are the session bucket and the interest bucket the settle loop's
 	// repair reads (settleLoop, repairPass): the listener's own (listenerDeps.sessions,
 	// listenerDeps.registry), which main and every rig hand connectSessionDelivery. Every other
@@ -308,7 +323,8 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	delivery := &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now, registry: registry, sessions: sessions}
+	delivery := &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now, registry: registry, sessions: sessions,
+		staleLimit: bus.StaleConnectionLimit(bus.ServerPingInterval, bus.ServerPingMax)}
 	consumers.OnUnansweredWrite(delivery.unansweredWrite)
 	return delivery, nil
 }
@@ -356,12 +372,13 @@ func (m *sessionDelivery) close() {
 // changes is the filter.
 //
 // It runs on the fence's own budget (fenceBudget), under the lock the registration holds, so the
-// registration's own calls before it spend none of it.
+// registration's own calls before it spend none of it, and nothing of the registration's stops
+// it (fenceWithoutStop).
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
 	}
-	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+	m.repairRegistered(fenceWithoutStop(ctx), d, sessionID, ackFloor, repairAfterRegistration)
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -396,14 +413,36 @@ const (
 // deleted or not whatever this call did. What this attempt could not settle the settle loop
 // repairs again (fence, settleAgain), at ackFloor still. The line names the session, which is what
 // an operator reading a pause in its delivery has to go on.
-func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	m.fence(ctx, d.registry, sessionID, after, ackFloor, m.repairPass(d.sessions, d.registry, sessionID, ackFloor, after))
+func (m *sessionDelivery) repairRegistered(stop fenceStop, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
+	m.fence(stop, d.registry, sessionID, after, ackFloor, m.repairPass(d.sessions, d.registry, sessionID, ackFloor, after, nil))
+}
+
+// stopRefused logs newFenceStop's refusal of the context a caller handed for the fence it was to
+// run after its act, and hands that fence to the settle loop instead, whose stop is the
+// listener's (settleAgain): no filter that act left is left unjudged.
+func (m *sessionDelivery) stopRefused(sessionID, after string, ackFloor uint64, err error) {
+	m.logger.Error("listener did not run the fence after a consumer call of a session: its stop was refused; the settle loop judges the filter instead",
+		slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
+	m.settleAgain(sessionID, after, ackFloor, "the fence's stop was refused", false)
+}
+
+// lateJudgment is the consumer writes whose answers did not come back that one attempt of the
+// settle loop judges (settleLoop, bus.LateWrite); for each, whether a pass of the attempt read the
+// consumer standing on its filters where the row asks for others (bus.SessionConsumers.EnsureAfter);
+// and the sequence a pass took the consumer back to, or 0.
+type lateJudgment struct {
+	writes    []bus.LateWrite
+	seen      []bool
+	rewoundAt uint64
 }
 
 // repairPass is one pass of the repair of sessionID's consumer (repairRegistered), reading the
 // session's record from sessions and its interest row from registry: the write the fence drives
-// for that repair and for every attempt of the settle loop (settleLoop).
-func (m *sessionDelivery) repairPass(sessions *session.SessionRegistry, registry *store.Registry, sessionID string, ackFloor uint64, after string) func(ctx context.Context) (uint64, filterWriteOutcome) {
+// for that repair and for every attempt of the settle loop (settleLoop). late, which only the
+// settle loop hands it, is the writes whose answers did not come back that the pass judges: a
+// consumer one of them may have made skip a message of the stored row's topics is taken back to
+// that message (bus.SessionConsumers.EnsureAfter).
+func (m *sessionDelivery) repairPass(sessions *session.SessionRegistry, registry *store.Registry, sessionID string, ackFloor uint64, after string, late *lateJudgment) func(ctx context.Context) (uint64, filterWriteOutcome) {
 	return func(ctx context.Context) (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
@@ -431,18 +470,33 @@ func (m *sessionDelivery) repairPass(sessions *session.SessionRegistry, registry
 		if m.afterRepairPlan != nil {
 			m.afterRepairPlan()
 		}
-		start, err := m.consumers.Ensure(ctx, sessionID, want.filter, want.start)
+		var writes []bus.LateWrite
+		if late != nil {
+			writes = late.writes
+		}
+		start, seen, err := m.consumers.EnsureAfter(ctx, sessionID, want.filter, want.start, writes)
+		for i, s := range seen {
+			late.seen[i] = late.seen[i] || s
+		}
 		switch {
 		case err != nil:
 			m.logger.Warn("listener could not repair the consumer of a session the bucket holds a record for",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
 				slog.Uint64("consumer_start", want.start), slog.String("error", err.Error()))
 			// A call the server answered changed nothing, so there is nothing for the fence to
-			// hold; a call whose answer did not come back may have set this row's filter, and
-			// the loop judges it as it judges a write that answered (consumerCallAnswered).
+			// hold; a call whose answer did not come back may have set this row's filter, or may
+			// set it later, so the fence ends for the settle loop to judge (consumerCallAnswered).
 			if consumerCallAnswered(err) {
 				return 0, filterWriteNotMade
 			}
+			return want.revision, filterWriteUnanswered
+		case start.Rewound:
+			if late != nil {
+				late.rewoundAt = start.StartSeq
+			}
+			m.logger.Warn(rewoundLine,
+				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
+				slog.Uint64("consumer_start", start.StartSeq))
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -460,6 +514,12 @@ func (m *sessionDelivery) repairPass(sessions *session.SessionRegistry, registry
 		return want.revision, filterWriteLanded
 	}
 }
+
+// rewoundLine is the WARN line of a repair that took a session's consumer back to an earlier
+// stream sequence (repairPass, bus.SessionConsumers.EnsureAfter): a consumer write whose answer
+// did not come back landed filters that lack a topic the bucket's row holds, and the consumer had
+// gone past a message on that topic, which it now delivers.
+const rewoundLine = "listener took the consumer of a session back to the first message a late consumer write made it skip: the write landed a filter without a topic of the row the bucket holds"
 
 // registeredConsumer is what the bucket's newest record and interest row of a session ask of its
 // consumer: the repair of both sides writes it (repairRegistered).

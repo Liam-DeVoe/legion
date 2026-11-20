@@ -1327,6 +1327,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The hub's ping_interval and ping_max, which the listener cannot ask the server for: the
+	// settle loop watches a consumer that a write lost with its connection may still land on for
+	// as long as the server goes on reading that connection (bus.StaleConnectionLimit,
+	// sessionDelivery.staleLimit).
+	pingInterval, pingMax, err := envconf.ServerPings(logger.Slog(), os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// The session consumer sweep's period, the bound on how long a session that ended without
 	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
 	// It is neither reaper's: what it waits for is the state the session registry answers, and a
@@ -1575,6 +1583,7 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	delivery.staleLimit = bus.StaleConnectionLimit(pingInterval, pingMax)
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).
 	relays, err := startSessionRelays(delivery, deliveryConfig)

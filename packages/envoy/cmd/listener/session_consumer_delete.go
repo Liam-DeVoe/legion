@@ -120,14 +120,15 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 //
 // One budget covers the record read, the delete and the resume record it writes first, as one
 // budget covers a registration's consumer call. The repair after them runs on a budget of its
-// own (fenceFilterWrite, fenceBudget) and on ctx, the caller's own context, not on that budget:
-// the read and the delete may have spent it, which on a loaded bus is when a registration on
-// another listener lands between them, and a repair made on what they left would give that
-// session no consumer until its next heartbeat; and a stop of the caller (the reaper's or the
-// sweep's loop) still ends the repair, which a context whose own deadline had passed would no
-// longer pass on. So a delete holds the session's lock for its own calls' budget and then for the
-// repair's first attempt, sessionConsumerCallTimeout each; a repair that attempt could not make
-// is the settle loop's, which holds the lock for each attempt alone (settleAgain).
+// own (fenceFilterWrite, fenceBudget) and not on that budget: the read and the delete may have
+// spent it, which on a loaded bus is when a registration on another listener lands between them,
+// and a repair made on what they left would give that session no consumer until its next
+// heartbeat. Its stop is ctx, the caller's own context, which holds no deadline (fenceStop), so a
+// stop of the caller (the reaper's or the sweep's loop) still ends the repair. A ctx that holds
+// one is refused, and the settle loop repairs the consumer instead (stopRefused). So a delete
+// holds the session's lock for its own calls' budget and then for the repair's first attempt,
+// sessionConsumerCallTimeout each; a repair that attempt could not make is the settle loop's,
+// which holds the lock for each attempt alone (settleAgain).
 //
 // A listener whose NATS user may not manage session consumers deletes nothing while its refusal
 // episode stands (grantRefused): the delete would be refused, and the episode's one warning has
@@ -173,6 +174,11 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	// registration was answered 200 with consumer delivery, so the consumer comes back on the
 	// filter and the start the record and the bucket's newest row ask for (registeredTarget),
 	// at the floor the delete recorded.
-	m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
+	stop, err := newFenceStop(ctx)
+	if err != nil {
+		m.stopRefused(sessionID, repairAfterDelete, floor, err)
+		return true
+	}
+	m.repairRegistered(stop, d, sessionID, floor, repairAfterDelete)
 	return true
 }

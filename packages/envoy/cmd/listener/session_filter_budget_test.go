@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -43,7 +44,8 @@ func TestARelayRestartWhoseCallsSpentItsBudgetStillSettlesTheFilterOnTheNewestRo
 		stored.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
 	}
 	a.deps.consumers.afterOwnCalls = spendOwnBudget
-	ctx, cancel := context.WithTimeout(context.Background(), 3*consumerFilterFenceWait)
+	// The run's own context, which holds no deadline: the fence's stop (fenceStop).
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, pull, _ := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead, a.deps.consumers.afterOwnCalls = nil, nil
@@ -80,7 +82,12 @@ func TestARelayRestartWhoseRunWasCancelledSettlesNothing(t *testing.T) {
 	}
 	ended, end := context.WithCancel(context.Background())
 	end()
-	a.relays.settleFilter(ended, sessionID, wrote)
+	stop, err := newFenceStop(ended)
+	if err != nil {
+		unlock()
+		t.Fatalf("the stop of a cancelled context holding no deadline: %v", err)
+	}
+	a.relays.settleFilter(stop, sessionID, wrote, true)
 	unlock()
 
 	requireFilters(t, b, sessionID, kept)
@@ -233,30 +240,61 @@ func TestAFenceAttemptOnASlowBusHoldsTheSessionsLockNoLongerThanItsBudget(t *tes
 	requireFilteredOnStoredRow(t, a, sessionID)
 }
 
-// A fence's budget whose caller is cancelled already is cancelled already, before any wait: the
-// fence's first read sees it rather than racing the callback that would cancel it
-// (fenceBudget). Each round below reads the budget the moment it is made; a budget cancelled only
-// by that callback is not yet in most of them. The control: a caller whose deadline has passed
-// gets a budget that has a deadline of its own to come.
+// A fence's budget whose stop is cancelled already is cancelled already, before any wait, and
+// one whose stop is not has a deadline of its own, the fence's budget from now (fenceBudget).
 func TestAFenceBudgetOfACallerCancelledAlreadyIsCancelledAtOnce(t *testing.T) {
 	for round := range 100 {
 		caller, cancel := context.WithCancel(context.Background())
 		cancel()
-		budget, stop := fenceBudget(caller)
+		budget, stop := fenceBudget(fenceStop{ctx: caller}, sessionConsumerCallTimeout)
 		err := budget.Err()
 		stop()
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("round %d: the budget of a caller cancelled already answers %v at once, want context.Canceled", round, err)
 		}
 	}
-	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	budget, stop := fenceBudget(spent)
+	budget, stop := fenceBudget(fenceStop{ctx: context.Background()}, sessionConsumerCallTimeout)
 	defer stop()
 	if err := budget.Err(); err != nil {
-		t.Fatalf("the budget of a caller whose deadline passed answers %v, want a budget of its own", err)
+		t.Fatalf("the budget of a caller not cancelled answers %v, want a budget of its own", err)
 	}
 	if deadline, ok := budget.Deadline(); !ok || time.Until(deadline) < sessionConsumerCallTimeout-time.Second {
-		t.Fatalf("the budget of a caller whose deadline passed ends at %v (%t), want sessionConsumerCallTimeout from now", deadline, ok)
+		t.Fatalf("the budget of a caller not cancelled ends at %v (%t), want sessionConsumerCallTimeout from now", deadline, ok)
+	}
+}
+
+// A fence's stop holds no deadline, and newFenceStop refuses by name a context that holds one:
+// once its deadline passes, a timed context detaches from its parent (context.go's removeChild),
+// so a cancellation of that parent made after it would never reach the fence. The case is the
+// review's probe of round 2 (a relay's run cancelled after the restart's own deadline passed):
+// the timed child it handed the corrections is refused, the run's own context is taken, and a
+// context with its cancellation dropped is taken too (fenceWithoutStop). The control that the
+// run's own cancellation still ends the corrections is
+// TestARelayRestartCancelledAfterItsOwnBudgetEndsItsCorrections.
+func TestAFenceStopRefusesAContextWithADeadlineByName(t *testing.T) {
+	run, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	callCtx, cancel := context.WithTimeout(run, 300*time.Millisecond)
+	defer cancel()
+	<-callCtx.Done()
+	if _, err := newFenceStop(callCtx); !errors.Is(err, errFenceStopDeadline) {
+		t.Fatalf("newFenceStop of a context whose deadline passed answered %v, want errFenceStopDeadline", err)
+	}
+	live, cancelLive := context.WithTimeout(run, time.Hour)
+	defer cancelLive()
+	_, err := newFenceStop(live)
+	if !errors.Is(err, errFenceStopDeadline) || !strings.Contains(err.Error(), "the context holds a deadline") {
+		t.Fatalf("newFenceStop of a context whose deadline is to come answered %v, want the refusal by name", err)
+	}
+	stop, err := newFenceStop(run)
+	if err != nil {
+		t.Fatalf("newFenceStop of the run's own context answered %v, want its stop", err)
+	}
+	stopRun()
+	if !errors.Is(stop.ctx.Err(), context.Canceled) {
+		t.Fatalf("the stop of the run's context answers %v once the run is cancelled, want context.Canceled", stop.ctx.Err())
+	}
+	if _, ok := fenceWithoutStop(live).ctx.Deadline(); ok {
+		t.Fatal("the stop that drops its caller's cancellation holds a deadline")
 	}
 }

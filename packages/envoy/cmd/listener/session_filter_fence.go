@@ -9,7 +9,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -57,6 +59,13 @@ const (
 	// later one a filter the bucket has already answered a newer row than, which is the window
 	// fenceFilterWrite names.
 	filterWriteNotMade
+	// filterWriteUnanswered is a pass whose write's answer did not come back (consumerCallAnswered):
+	// the server may still apply it, and may apply it after any read this attempt makes, since its
+	// API workers give no order between a write and a later call (bus.UnansweredWrite). No read of
+	// this attempt can confirm what stands, so the fence ends on it and the settle loop reads the
+	// consumer again; the write itself is judged once its answer comes or is lost
+	// (sessionDelivery.unansweredWrite).
+	filterWriteUnanswered
 )
 
 // filterFenceAttempts bounds the writes one attempt of a fenced filter write makes: the first, and
@@ -130,7 +139,8 @@ const filterFenceAttempts = 5
 // outrun: its first read or call meets the spent deadline, and the filter of a row the bucket no
 // longer holds stands. The caller's cancellation still ends the attempt, with no line and no
 // settle loop behind it (fenceCancelled), since it means the caller itself is ending (a relay
-// whose run was cancelled, a loop the shutdown stopped).
+// whose run was cancelled, a loop the shutdown stopped). That cancellation is all a caller hands
+// the fence (fenceStop), and it holds no deadline.
 //
 // What one attempt leaves open, each window carrying the cost stated above: a row stored after
 // the attempt's last read stands unfenced, since nothing reads the bucket again to find it; a
@@ -139,11 +149,12 @@ const filterFenceAttempts = 5
 // of passes leaves the filter of its last pass, under which the row moved once more; a read that
 // failed after a write that landed ends the attempt unjudged; a first pass that wrote nothing
 // leaves whatever the act before the fence left; and a write whose answer did not come back may
-// land after the attempt has ended (bus.UnansweredWrite). The second, third and fourth end the
-// attempt on the two lines stated above, the fifth on the failure the pass itself logged, and the
-// settle loop takes each of them; the sixth is the handler of the unanswered write's, which judges
-// the consumer again once that write may have landed (sessionDelivery.unansweredWrite); the first
-// is the other writer's own fence's to settle, since that writer stored the row. A pass that finds
+// land after any read of the attempt (bus.UnansweredWrite). The second, third and fourth end the
+// attempt on the two lines stated above, the fifth on the failure the pass itself logged, the
+// sixth on a line of its own, and the settle loop takes each of them, the sixth after the
+// handler of the unanswered write has judged it too (sessionDelivery.unansweredWrite); the first
+// is the other writer's own fence's to settle, since that writer stored the row. So an attempt
+// ends settled only on what it read or on a write the server answered. A pass that finds
 // the consumer already filtering on what its row asks, the stream holding no consumer at all, or
 // the record asking for no consumer of this session opens none of these windows and ends the
 // attempt with no line, whichever pass it is: nothing of such a pass stands in that session's
@@ -166,16 +177,17 @@ const filterFenceAttempts = 5
 // (bus.KeyValue.Get states that limit and why this build leaves it standing); rowMovedUnder is
 // what keeps such an answer from starting a pass planned from the lagging row it carries.
 //
-// write plans its write from a bucket read made within ctx, the fence's own budget, makes it, and
-// answers what that left on the consumer (filterWriteOutcome) with the revision of the interest
-// row it was built from. The attempt goes on
-// from filterWriteLanded alone, reading the bucket again to judge the filter that write may have
-// left; filterWriteSettled ends it where nothing of any row stands in the session's delivery,
-// filterWriteSessionGone where the session a filter of this attempt's would stand for is gone, and
-// filterWriteNotMade where nothing of this pass reached the consumer, which leaves what the pass
-// before it left standing. Every failure is logged by write itself, which names what it was
-// doing. A caller whose first write is already made answers that write from its first pass and
-// writes nothing in it (sessionRelays.settleFilter), so that write is one of the passes below.
+// write plans its write from a bucket read made within ctx, the fence's own budget, budget long
+// from the attempt's start (sessionDelivery.fenceAttemptBudget), makes it, and answers what that
+// left on the consumer (filterWriteOutcome) with the revision of the interest row it was built
+// from. The attempt goes on from filterWriteLanded alone, reading the bucket again to judge the
+// filter that write left; filterWriteSettled ends it where nothing of any row stands in the
+// session's delivery, filterWriteSessionGone where the session a filter of this attempt's would
+// stand for is gone, filterWriteNotMade where nothing of this pass reached the consumer, which
+// leaves what the pass before it left standing, and filterWriteUnanswered where the pass's write
+// did not answer. Every failure is logged by write itself, which names what it was doing. A
+// caller whose first write is already made answers that write from its first pass and writes
+// nothing in it (sessionRelays.settleFilter), so that write is one of the passes below.
 // after names what the write the fence drives follows, for the session-gone line, the one line
 // of the fence's own that carries it: only the repair of a session's consumer answers that
 // outcome, so the label that line names is a repair's (repairRegistered,
@@ -184,17 +196,17 @@ const filterFenceAttempts = 5
 // other two lines leave it unnamed (storedFilterWrite, sessionRelays.settleFilter): the settle
 // loop's own lines name it, since both end on a filter that loop writes again, the same act
 // whatever the write followed.
-func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func(ctx context.Context) (uint64, filterWriteOutcome)) fenceEnd {
-	ctx, cancel := fenceBudget(ctx)
+func fenceFilterWrite(stop fenceStop, budget time.Duration, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func(ctx context.Context) (uint64, filterWriteOutcome)) fenceEnd {
+	ctx, cancel := fenceBudget(stop, budget)
 	defer cancel()
 	// stands is the revision of the row whose filter is on the consumer, and landed says a pass
 	// put one there, which stands alone cannot: a write built for a session the bucket holds no
 	// row for is fenced on revision 0. newest is what the bucket answered after that write.
 	var stands, newest uint64
 	landed := false
-	// cancelled is the caller's cancellation, which fenceBudget passes on as context.Canceled
-	// while its own deadline ends the budget with context.DeadlineExceeded: an attempt its caller
-	// ended is no window to report or to settle again.
+	// cancelled is the caller's cancellation, which the budget passes on as context.Canceled
+	// while its own deadline ends it with context.DeadlineExceeded: an attempt its caller ended
+	// is no window to report or to settle again.
 	cancelled := func() bool { return errors.Is(ctx.Err(), context.Canceled) }
 	for range filterFenceAttempts {
 		wrote, outcome := write(ctx)
@@ -216,6 +228,10 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 		if cancelled() {
 			return fenceCancelled
 		}
+		if outcome == filterWriteUnanswered {
+			logger.Warn(fenceUnansweredLine, slog.String("session_id", sessionID), slog.Uint64("wrote_revision", wrote))
+			return fenceUnanswered
+		}
 		if outcome == filterWriteNotMade {
 			if !landed {
 				// Nothing of this attempt's landed, so no older row's filter of its own stands;
@@ -227,7 +243,6 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 			// bucket answered a newer row than that one: that is the line below's case too.
 			break
 		}
-		stands, landed = wrote, true
 		var err error
 		if _, newest, err = storedTopics(ctx, registry, sessionID); err != nil {
 			if cancelled() {
@@ -246,13 +261,15 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 	return fenceOutrun
 }
 
-// fenceExhaustionLine and fenceReadFailureLine are the two WARN lines an attempt of a fenced
-// filter write ends on when what it leaves is a filter the bucket's row may not ask for
-// (fenceFilterWrite): an older row's, the row having moved under every pass or a corrective pass
-// having written nothing, and one the fence could not judge, its read after a write failing.
+// fenceExhaustionLine, fenceReadFailureLine and fenceUnansweredLine are the three WARN lines an
+// attempt of a fenced filter write ends on when what it leaves is a filter the bucket's row may
+// not ask for (fenceFilterWrite): an older row's, the row having moved under every pass or a
+// corrective pass having written nothing; one the fence could not judge, its read after a write
+// failing; and one whose write's answer did not come back.
 const (
 	fenceExhaustionLine  = "session consumer filter left on an older interest row than the bucket holds; the listener writes it again"
 	fenceReadFailureLine = "session consumer filter written and left unjudged: the interest row could not be read again; the listener judges it again"
+	fenceUnansweredLine  = "session consumer filter written and its answer did not come back: the server may apply it after any read of this attempt; the listener judges it again"
 )
 
 // fenceEnd is how one attempt of a fenced filter write ended (fenceFilterWrite), which decides
@@ -266,7 +283,7 @@ const (
 	// fenceSessionGone: the bucket holds no record of the session (filterWriteSessionGone), so
 	// no filter of it is a window in any delivery and nothing is left to settle.
 	fenceSessionGone
-	// fenceCancelled: the caller's cancellation ended the attempt (fenceBudget).
+	// fenceCancelled: the caller's cancellation ended the attempt (fenceStop).
 	fenceCancelled
 	// fenceNotWritten: the attempt's first pass wrote nothing - what it would build went unread,
 	// or the server refused its call - so what stands is what the act before the fence left.
@@ -277,6 +294,8 @@ const (
 	// fenceUnjudged: a write landed and the bucket could not be read after it
 	// (fenceReadFailureLine).
 	fenceUnjudged
+	// fenceUnanswered: a pass's write did not answer (filterWriteUnanswered, fenceUnansweredLine).
+	fenceUnanswered
 )
 
 // String is the end as the settle loop's line names it.
@@ -294,30 +313,47 @@ func (e fenceEnd) String() string {
 		return "left on an older row"
 	case fenceUnjudged:
 		return "left unjudged"
+	case fenceUnanswered:
+		return "left unanswered"
 	}
 	return "unknown"
 }
 
-// fenceBudget is ctx with its deadline replaced by the fence's own, sessionConsumerCallTimeout
-// from now (fenceFilterWrite says why no caller's deadline bounds an attempt): ctx's cancellation
-// still ends it, and ctx's deadline, passed or to come, does not. The two are told apart by what
-// ctx answers once it is done (context.Canceled against context.DeadlineExceeded), so a
-// cancellation that comes only after ctx's deadline has passed no longer reaches the fence, which
-// its own budget still bounds. A ctx cancelled already is a budget cancelled already, so the
-// fence's first read sees it rather than racing the callback that would cancel it.
-func fenceBudget(ctx context.Context) (context.Context, context.CancelFunc) {
-	own, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionConsumerCallTimeout)
-	cancelled := func() {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			cancel()
-		}
+// fenceStop is what a caller hands a fenced filter write to end it before its own budget does:
+// the caller's cancellation, on a context that holds no deadline (newFenceStop). fenceFilterWrite
+// says why no caller's deadline bounds an attempt. A context with a deadline could not even carry
+// that cancellation: once its deadline passes, Go's context package detaches it from its parent
+// (context.go, cancelCtx.cancel with removeFromParent, removeChild), so a cancellation of the
+// parent made after that never reaches it, and a fence built on it would run on after its caller
+// stopped. A stop that holds no deadline has nothing to detach it.
+type fenceStop struct{ ctx context.Context }
+
+// errFenceStopDeadline is newFenceStop's refusal of a context that holds a deadline.
+var errFenceStopDeadline = errors.New("listener refused a fenced filter write's stop: the context holds a deadline, which would stop the fence from hearing its caller's cancellation once it passed; hand it the caller's untimed context")
+
+// newFenceStop is the stop of a fenced filter write that ctx's cancellation ends. It refuses a ctx
+// that holds a deadline (errFenceStopDeadline), naming that deadline.
+func newFenceStop(ctx context.Context) (fenceStop, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		return fenceStop{}, fmt.Errorf("%w (deadline %s)", errFenceStopDeadline, deadline.UTC().Format(time.RFC3339Nano))
 	}
-	cancelled()
-	stop := context.AfterFunc(ctx, cancelled)
-	return own, func() {
-		stop()
-		cancel()
-	}
+	return fenceStop{ctx: ctx}, nil
+}
+
+// fenceWithoutStop is the stop of a fenced filter write nothing of its caller's ends: ctx with its
+// cancellation dropped (context.WithoutCancel), which holds no deadline either. The writes that
+// follow a change to the session's row the caller cannot take back take it (storedFilterWrite,
+// confirmRegistered).
+func fenceWithoutStop(ctx context.Context) fenceStop {
+	return fenceStop{ctx: context.WithoutCancel(ctx)}
+}
+
+// fenceBudget is the context one attempt of a fenced filter write runs under: budget long from
+// now, the fence's own, and ended at once by stop's cancellation. stop holds no deadline, so
+// nothing of the caller's shortens the budget, and a stop cancelled already is a budget cancelled
+// already. It answers context.Canceled for the stop and context.DeadlineExceeded for the budget.
+func fenceBudget(stop fenceStop, budget time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(stop.ctx, budget)
 }
 
 // rowMovedUnder reports whether the interest row the bucket answered at revision newest was
@@ -391,18 +427,27 @@ const (
 
 // fence runs one attempt of a fenced write of sessionID's consumer filter (fenceFilterWrite)
 // under the session's lock its caller holds, and hands a filter that attempt could not settle to
-// the settle loop (settleAgain), which makes the next attempt after a pause: ctx is the caller's
-// own context, whose cancellation ends the attempt and leaves nothing to settle, since it means
-// the caller is ending, and whose deadline the attempt does not keep (fenceBudget). ackFloor is
-// what the settle loop's repair starts a consumer it must create again at, as repairRegistered's
-// is: the floor the act before the fence read, or 0.
-func (m *sessionDelivery) fence(ctx context.Context, registry *store.Registry, sessionID, after string, ackFloor uint64, write func(ctx context.Context) (uint64, filterWriteOutcome)) {
-	end := fenceFilterWrite(ctx, m.logger, registry, sessionID, after, write)
+// the settle loop (settleAgain), which makes the next attempt after a pause: stop is the
+// caller's cancellation, which ends the attempt and leaves nothing to settle, since it means the
+// caller is ending. ackFloor is what the settle loop's repair starts a consumer it must create
+// again at, as repairRegistered's is: the floor the act before the fence read, or 0.
+func (m *sessionDelivery) fence(stop fenceStop, registry *store.Registry, sessionID, after string, ackFloor uint64, write func(ctx context.Context) (uint64, filterWriteOutcome)) {
+	end := fenceFilterWrite(stop, m.fenceAttemptBudget(), m.logger, registry, sessionID, after, write)
 	switch end {
 	case fenceSettled, fenceSessionGone, fenceCancelled:
 		return
 	}
 	m.settleAgain(sessionID, after, ackFloor, end.String(), true)
+}
+
+// fenceAttemptBudget is how long one attempt of a fenced filter write may wait for the bus:
+// sessionConsumerCallTimeout, or fenceBudget where a test sets it, to judge the rule an attempt
+// follows apart from how fast the bus answers.
+func (m *sessionDelivery) fenceAttemptBudget() time.Duration {
+	if m.fenceBudget > 0 {
+		return m.fenceBudget
+	}
+	return sessionConsumerCallTimeout
 }
 
 // storedFilterWrite holds the filter of sessionID's consumer to the topics the bucket's newest
@@ -426,7 +471,7 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 	}
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
-	m.fence(context.WithoutCancel(ctx), registry, sessionID, after, 0, func(ctx context.Context) (uint64, filterWriteOutcome) {
+	m.fence(fenceWithoutStop(ctx), registry, sessionID, after, 0, func(ctx context.Context) (uint64, filterWriteOutcome) {
 		return m.storedFilterStep(ctx, registry, sessionID, after)
 	})
 }
@@ -472,8 +517,9 @@ func (m *sessionDelivery) settleAfterAnswer(ctx context.Context, registry *store
 //
 // A row it could not read is a pass that planned nothing, and a call the server refused one that
 // sent nothing: both leave what the pass before them left and end the fence
-// (filterWriteNotMade). A call whose answer did not come back may have set this row's filter, so
-// it is the fence's to judge like one that answered (filterWriteLanded, consumerCallAnswered).
+// (filterWriteNotMade). A call whose answer did not come back may have set this row's filter, or
+// may set it later, so it ends the fence for the settle loop to judge (filterWriteUnanswered,
+// consumerCallAnswered).
 //
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence, and ctx is the fence's own budget (fenceFilterWrite, fenceBudget).
@@ -496,7 +542,7 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 		if consumerCallAnswered(err) {
 			return 0, filterWriteNotMade
 		}
-		return revision, filterWriteLanded
+		return revision, filterWriteUnanswered
 	}
 	return revision, filterWriteLanded
 }
@@ -510,10 +556,10 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 //
 // Every other failure leaves the call ambiguous: a request that timed out, a context that ended
 // under it, a connection that went are answers that did not come back, and the server may have
-// applied the call all the same. A fenced filter write treats one as a write that may stand
-// (fenceFilterWrite), because an older row's filter left on a consumer with nothing to read it
-// again is exactly what that fence is there to catch; the cost of being wrong is one bucket read
-// and one consumer call that changes nothing.
+// applied the call all the same, or may apply it later. A fenced filter write ends its attempt on
+// one (filterWriteUnanswered), because an older row's filter left on a consumer with nothing to
+// read it again is exactly what that fence is there to catch; the cost of being wrong is one
+// pause, one bucket read and one consumer call that changes nothing.
 func consumerCallAnswered(err error) bool {
 	var api *jetstream.APIError
 	return errors.As(err, &api) ||

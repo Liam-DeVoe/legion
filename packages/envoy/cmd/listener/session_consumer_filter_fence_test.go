@@ -272,7 +272,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	}
 	requireFilters(t, b, sessionID, kept, added)
 
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	ctx, cancel := context.WithCancel(context.Background()) // a relay run's own context holds no deadline (fenceStop)
 	defer cancel()
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	if pull == nil {
@@ -314,7 +314,7 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 		// consumer call built from it, which goes over the session-consumer connection.
 		once.Do(a.harness.client.Close)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	ctx, cancel := context.WithCancel(context.Background()) // a relay run's own context holds no deadline (fenceStop)
 	defer cancel()
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
@@ -373,7 +373,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	a.deps.consumers.afterStoredRowRead = func() {
 		once.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	ctx, cancel := context.WithCancel(context.Background()) // a relay run's own context holds no deadline (fenceStop)
 	defer cancel()
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
