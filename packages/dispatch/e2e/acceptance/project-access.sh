@@ -373,10 +373,10 @@ await_start twin "$twin_pid" 120 "the twin to answer /healthz" curl -fsS --max-t
 note "main serves ${build_url[main]}, the twin ${build_url[twin]}"
 pass
 
-# mark_restricted BUILD PERSON makes PERSON a restricted member. No route of this stack writes a
-# member kind: the outside sign-in does, when it signs in an email outside the
-# deployment's domain that a project names. Until it is in this stack, the people row is written
-# as that sign-in writes it.
+# mark_restricted BUILD PERSON makes PERSON a restricted member. No route writes a member kind: the
+# outside sign-in does, when it signs in an email outside the deployment's domain that a project
+# names, and a server refuses to boot with it beside the dev sign-in this driver's servers run
+# (scripts/e2e/lib/two-builds.sh). So the people row is written as that sign-in writes it.
 mark_restricted() {
   local url_var=${1}_database_url
   psql "${!url_var}" -X -q -v ON_ERROR_STOP=1 \
