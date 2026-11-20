@@ -53,8 +53,9 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
 // made. A count of revisions other than two is a refusal. A commit of an earlier run that the
 // merge keeps, because another commit stands on it, a bookmark other than a carrier's names it, a
-// remote bookmark holds it or it is a working-copy commit, and a bookmark of a carrier's name that
-// it leaves on a commit no legion merge wrote, are named on stderr too, and the merge goes on.
+// tracked remote bookmark holds it or it is a working-copy commit, and a bookmark of a carrier's
+// name that it leaves on a commit no legion merge wrote, are named on stderr too, and the merge
+// goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {
 	refuse := func(err error) int {
 		fmt.Fprintf(stderr, "legion merge: %v\n%s", err, mergeRefusedNextStep)
@@ -188,16 +189,11 @@ func shownPath(path string) string {
 	return path
 }
 
-// mergeComparison is the reading command that the help prints: jjmerge.Comparison of merge, with
-// flags for git diff. The rows that run the help's command call it by this name.
-func mergeComparison(merge string, flags ...string) string {
-	return jjmerge.Comparison(merge, flags...)
-}
-
 // mergeHelp is `legion merge --help`'s text: what the command does and why, that one run at a
 // time goes on in a workspace, which commits of a stopped run the next run removes and which it
-// keeps and names, the next step of each exit status, the case of a legion that has no merge
-// command, what goes into the merge, how to name a merge, and how to read one.
+// keeps and names, that it changes no immutable commit, the next step of each exit status, the
+// case of a legion that has no merge command, what goes into the merge, how to name a merge, and
+// how to read one.
 func mergeHelp() string {
 	return `legion merge makes the merge commit of two commits in a jj workspace.
 The merge holds git's merge of the two commits (git merge-tree --write-tree).
@@ -232,9 +228,10 @@ If the description of the merge ends with its Legion-Merge line, the merge holds
 The next run keeps a commit of the stopped run if one of these is true, and it names the commit on stderr:
   another commit stands on it,
   a bookmark other than the carrier bookmarks names it,
-  a remote bookmark is on it or on a commit above it,
+  a tracked remote bookmark is on it or on a commit above it,
   it is a working-copy commit.
 The next run also keeps each commit of the stopped run below a commit that it keeps.
+The next run does not change or remove an immutable commit, for example a commit that only an untracked remote bookmark holds.
 A bookmark with the name of a carrier bookmark can be on a commit that is not a carrier.
 The next run does not remove that commit or that bookmark, and it names the bookmark on stderr.
 
@@ -270,9 +267,9 @@ Get it with: jj log -r <change id> --no-graph -T commit_id
 git rev-parse gives git the full commit ids of the parents, as the command gives them.
 Then git names a file that it puts aside in a conflict (p~<commit id>) as the merge names it.
   The difference between the merge and git's merge of its parents (the resolution of git's conflicts):
-    ` + mergeComparison("<merge>") + `
+    ` + jjmerge.Comparison("<merge>") + `
   The files of that difference:
-    ` + mergeComparison("<merge>", "--name-only") + `
+    ` + jjmerge.Comparison("<merge>", "--name-only") + `
   The files that the merge brings into its first parent:
     git diff --stat <merge>^1 <merge>
 Do not read a merge with jj diff -r <merge>.

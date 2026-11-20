@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -685,36 +686,45 @@ func tomlString(value string) string {
 // list's name pattern (`exact:` selects how a pattern matches, not that its text is literal) and
 // a revset symbol as expressions, so a bare `release#stable` fails to parse and a bare
 // `release|stable` matches `release` or `stable`. Quoted, every name git accepts is the one name
-// it is. Each control character is written as the jj escape jj reads back as it (`\n`, `\t`,
-// `\r`, `\0`, else `\x` and two hex digits): a git ref name holds none, but a path git conflicts
-// in can, and the squash command `legion merge` prints holds the path's literal, where a raw
-// newline would end the command's line and put the rest of the path on a line of its own.
+// it is. It escapes each control character as the jj escape that jj reads back as it: the C0
+// controls U+0000 to U+001F (`\n`, `\t`, `\r`, `\0`, else `\x` and two hex digits), DEL U+007F
+// (`\x7f`), and the C1 controls U+0080 to U+009F (`\x80` to `\x9f`, which jj reads as those
+// characters, not as bytes). A git ref name holds no C0 control and no DEL, but a path git
+// conflicts in can hold any of them, and the squash command `legion merge` prints holds the path's
+// literal, where a raw newline, or a raw U+0085 to a reader that splits lines at Unicode line
+// breaks, would end the command's line and put the rest of the path on a line of its own. U+2028
+// and U+2029 stay raw, since a jj string literal has no escape for them (jj 0.45.1 refuses
+// `\u{2028}` and `\u2028`). Every other character passes as it is, and so does a byte that is not
+// valid UTF-8, as the byte it is: a U+FFFD in its place would name another path.
 func JJString(s string) string {
 	const hex = "0123456789abcdef"
 	var quoted strings.Builder
 	quoted.Grow(len(s) + 2)
 	quoted.WriteByte('"')
-	// By byte: each byte of a UTF-8 character of more than one byte is 0x80 or above, and passes.
-	for i := range len(s) {
-		switch c := s[i]; {
-		case c == '\\' || c == '"':
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			quoted.WriteByte(s[i])
+		case r == '\\' || r == '"':
 			quoted.WriteByte('\\')
-			quoted.WriteByte(c)
-		case c == '\n':
+			quoted.WriteByte(s[i])
+		case r == '\n':
 			quoted.WriteString(`\n`)
-		case c == '\t':
+		case r == '\t':
 			quoted.WriteString(`\t`)
-		case c == '\r':
+		case r == '\r':
 			quoted.WriteString(`\r`)
-		case c == 0:
+		case r == 0:
 			quoted.WriteString(`\0`)
-		case c < 0x20 || c == 0x7f:
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
 			quoted.WriteString(`\x`)
-			quoted.WriteByte(hex[c>>4])
-			quoted.WriteByte(hex[c&0xf])
+			quoted.WriteByte(hex[r>>4])
+			quoted.WriteByte(hex[r&0xf])
 		default:
-			quoted.WriteByte(c)
+			quoted.WriteString(s[i : i+size])
 		}
+		i += size
 	}
 	quoted.WriteByte('"')
 	return quoted.String()

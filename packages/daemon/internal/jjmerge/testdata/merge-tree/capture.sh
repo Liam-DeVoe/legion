@@ -18,8 +18,10 @@
 # adds the session's trailers. So the same git writes the same bytes: two runs give files that
 # `cmp` finds identical.
 #
-# merge-tree gets the option list `legion merge` gives it, each a documented default, so a
-# configuration could not change the merge even if one were read.
+# merge-tree gets the option list `legion merge` gives it, in the same order (jjmerge's
+# mergeTreeOptions): git's merge options at their documented defaults, an empty merge.default,
+# which names no driver, and core.attributesFile at /dev/null. So each file holds the merge that
+# `legion merge` reads, and a configuration could change it only as it changes that merge.
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
@@ -73,7 +75,8 @@ side() {
 capture() {
   local status=0
   g -c merge.renames=true -c merge.directoryRenames=conflict -c merge.renameLimit=7000 \
-    -c merge.conflictStyle=merge -c merge.renormalize=false \
+    -c merge.conflictStyle=merge -c merge.renormalize=false -c merge.default= \
+    -c core.attributesFile=/dev/null \
     merge-tree --write-tree -z a b >"$out/$1.z" || status=$?
   if [ "$status" -gt 1 ]; then
     echo "capture.sh: git merge-tree of $1 exited $status" >&2

@@ -343,14 +343,17 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 }
 
 // B12: the merge's option list sets git's merge options to their documented defaults, sets
-// merge.default to git's built-in text driver, and points core.attributesFile at /dev/null, so
-// neither a global or repository merge option, nor a default driver, nor the user's attributes
-// file changes the merge. B4's history with merge.renames=false and merge.conflictStyle=diff3 in
-// the repository's configuration gives B4's result. B3's history with merge.default=union and an
-// attributes file of `* merge=union` gives B3's jj conflict at f, where git's own merge under
-// either setting alone is clean. What still chooses a path's merge driver is the repository's own
-// attributes (the .gitattributes of the working copy or of git's index when git runs in a git
-// worktree, and $GIT_DIR/info/attributes) and the machine's system attributes file.
+// merge.default empty, and points core.attributesFile at /dev/null, so neither a global or
+// repository merge option, nor a default driver, nor the user's attributes file changes the
+// merge. B4's history with merge.renames=false and merge.conflictStyle=diff3 in the repository's
+// configuration gives B4's result. B3's history with merge.default=union, an attributes file of
+// `* merge=union` and a merge driver named text that exits 0 (`merge.text.driver = true`) gives
+// B3's jj conflict at f. git's own merge is clean under either of the first two settings alone,
+// and under the driver alone with merge.default=text: git chooses a driver a configuration
+// defines before its built-in one of the same name, so a merge.default of text does not close it.
+// What still chooses a path's merge driver is the repository's own attributes (the .gitattributes
+// of the working copy or of git's index when git runs in a git worktree, and
+// $GIT_DIR/info/attributes) and the machine's system attributes file.
 func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 	t.Run("git's merge options", func(t *testing.T) {
 		r := newMergeRepo(t)
@@ -368,11 +371,23 @@ func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 		}
 		r.git("config", "merge.default", "union")
 		r.git("config", "core.attributesFile", attributes)
-		// The controls: git's own merge is clean under each setting alone, so each of the two
-		// options is what makes the merge below conflict.
-		for _, closed := range []string{"merge.default=text", "core.attributesFile=/dev/null"} {
-			if out, err := r.fixture.Try(r.ws, "git", "-c", closed, "merge-tree", "--write-tree", r.id(mergeFirst), r.id("main")); err != nil {
-				t.Fatalf("git -c %s merge-tree = %v, want a clean merge under the other setting alone:\n%s", closed, err, out)
+		r.git("config", "merge.text.driver", "true")
+		// The controls: git's own merge is clean under each of these lists, and under each one
+		// another of the three settings chooses f's driver: the user's attributes file, the
+		// configured merge.default, and the driver named text. So each setting is what the
+		// merge below closes.
+		for _, closed := range [][]string{
+			{"merge.default="},
+			{"core.attributesFile=/dev/null"},
+			{"merge.default=text", "core.attributesFile=/dev/null"},
+		} {
+			args := []string{"git"}
+			for _, option := range closed {
+				args = append(args, "-c", option)
+			}
+			args = append(args, "merge-tree", "--write-tree", r.id(mergeFirst), r.id("main"))
+			if out, err := r.fixture.Try(r.ws, args...); err != nil {
+				t.Fatalf("%s = %v, want a clean merge under the setting it leaves open:\n%s", strings.Join(args, " "), err, out)
 			}
 		}
 		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
@@ -440,7 +455,7 @@ func TestLegionMergeNextStepMovesTheResolutionIntoTheMerge(t *testing.T) {
 	if got := r.template(change, "description"); got != description {
 		t.Errorf("the merge's description is now\n%s\nwant the one the merge wrote\n%s", got, description)
 	}
-	comparison := exec.Command("sh", "-c", mergeComparison(r.id(change), "--name-only"))
+	comparison := exec.Command("sh", "-c", jjmerge.Comparison(r.id(change), "--name-only"))
 	comparison.Dir, comparison.Env = r.ws, r.env()
 	if out, err := comparison.Output(); err != nil || string(out) != "f\n" {
 		t.Errorf("the comparison with git's merge lists %q (%v), want f alone", out, err)
@@ -843,14 +858,14 @@ func TestLegionMergeMakesNothingWhenAnotherMergeOfTheParentsAppears(t *testing.T
 }
 
 // A carrier a killed run left is a visible head, and a role can build on it: a commit of its own
-// work on the carrier, git's merged tree, which is not the working copy. The next run removes
-// the carrier, but no abandon of its may reach the role's work (jjmerge's remove: "no abandon
-// here reaches the repository's own work"): the run refuses, naming the commit, or leaves it
-// visible with its file.
+// work on the carrier, git's merged tree, which is not the working copy. The next run keeps the
+// carrier and names it on stderr, since the role's commit stands on it (jjmerge's keep): an
+// abandon of the carrier would move the role's work onto other parents. The run then makes the
+// merge, exit 0, and the role's commit stays visible with its file.
 func TestLegionMergeKeepsARolesWorkOnALeftoverCarrier(t *testing.T) {
 	r := newMergeRepo(t)
 	r.minimalCase(2)
-	carrier := r.git("commit-tree", r.gitTree(mergeFirst, "main"), "-m", "a carrier a killed run in default left")
+	carrier := r.writeCarrier(r.gitTree(mergeFirst, "main"), "a carrier a killed run in default left")
 	r.git("update-ref", "refs/heads/legion-merge-default-0123456789abcdef-g", carrier)
 	r.jj("git", "import")
 	r.jj("new", carrier, "-m", "the role's work on git's tree")
@@ -862,18 +877,24 @@ func TestLegionMergeKeepsARolesWorkOnALeftoverCarrier(t *testing.T) {
 	work := r.id("@")
 	r.workOn("base")
 	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if code != 0 {
+		t.Errorf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
 	if got := r.template(work, "hidden"); got != "false" {
 		t.Errorf("legion merge = %d, and the role's commit %s on the leftover carrier is hidden: its work was abandoned\nstdout:\n%s\nstderr:\n%s", code, work, stdout, stderr)
 	} else if got := r.show(work, "work"); got != "the role's work\n" {
 		t.Errorf("the role's commit %s holds %q at work, want its own file", work, got)
 	}
+	if want := "legion merge: kept commit " + carrier + ", which a legion merge made, because commit " + work + " stands on it.\n"; !strings.Contains(stderr, want) {
+		t.Errorf("legion merge = %d, and stderr lacks %q:\n%s", code, want, stderr)
+	}
 }
 
 // A merge a stopped run left, which still carries the run's Legion-Merge-Run line, that a
-// bookmark names or that a remote bookmark holds: a role put its bookmark on the merge, or pushed
-// it, and a tracked remote bookmark leaves it mutable. An abandon of the merge deletes the
-// bookmark, or hides a commit the remote holds, with exit 0 and nothing on stderr. The next run of
-// B1 keeps the merge visible with its bookmarks, and names it on stderr.
+// bookmark names or that a tracked remote bookmark holds: a role put its bookmark on the merge,
+// or pushed it, and a tracked remote bookmark leaves it mutable. An abandon of the merge deletes
+// the bookmark, or hides a commit the remote holds, with exit 0 and nothing on stderr. The next
+// run of B1 keeps the merge visible with its bookmarks, and names it on stderr.
 func TestLegionMergeKeepsALeftoverMergeABookmarkNames(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -884,14 +905,14 @@ func TestLegionMergeKeepsALeftoverMergeABookmarkNames(t *testing.T) {
 			r.jj("bookmark", "create", "legion/ACME-2", "-r", stopped)
 			return "the bookmark legion/ACME-2 names it"
 		}},
-		{"a remote bookmark holds it", func(r *mergeRepo, stopped string) string {
+		{"a tracked remote bookmark holds it", func(r *mergeRepo, stopped string) string {
 			r.jj("bookmark", "create", "legion/ACME-2", "-r", stopped)
 			r.jj("git", "push", "--bookmark", "legion/ACME-2")
 			r.jj("bookmark", "delete", "legion/ACME-2")
 			if got := r.template(stopped, `self.contained_in("bookmarks()") ++ " " ++ self.contained_in("mutable()")`); got != "false true" {
 				r.t.Fatalf("the pushed merge reads %q, want no local bookmark on it and mutable", got)
 			}
-			return "a remote bookmark is on it or on a commit above it"
+			return "a tracked remote bookmark is on it or on a commit above it"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -921,7 +942,7 @@ func TestLegionMergeKeepsALeftoverMergeABookmarkNames(t *testing.T) {
 // with no parent in the repository or on another carrier. A role's commit on root() that a
 // carrier's bookmark names has no parent in the repository either: the run leaves it visible
 // with its bookmark, and names the bookmark on stderr. A role's commit on a carrier that a run
-// wrote keeps the carrier, which the run names on stderr, and the role's work stays visible.
+// wrote is TestLegionMergeKeepsARolesWorkOnALeftoverCarrier's.
 func TestLegionMergeTellsACarrierByItsAuthor(t *testing.T) {
 	const bookmark = "legion-merge-default-0123456789abcdef-g"
 	t.Run("a role's commit on root() that a carrier's bookmark names", func(t *testing.T) {
@@ -940,32 +961,6 @@ func TestLegionMergeTellsACarrierByItsAuthor(t *testing.T) {
 			t.Errorf("the role's commit %s reads %q, want it visible with its bookmark %s\nstderr:\n%s", work, got, bookmark, stderr)
 		}
 		if want := "legion merge: left the bookmark " + bookmark + " where it is, on commit " + work + ", which is not a commit a legion merge wrote.\n"; !strings.Contains(stderr, want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr)
-		}
-	})
-	t.Run("a role's commit on a carrier a run wrote", func(t *testing.T) {
-		r := newMergeRepo(t)
-		r.minimalCase(2)
-		carrier := r.writeCarrier(r.gitTree(mergeFirst, "main"), "a carrier a killed run in default left")
-		r.git("update-ref", "refs/heads/"+bookmark, carrier)
-		r.jj("git", "import")
-		r.jj("new", carrier, "-m", "the role's work on git's tree")
-		if err := os.WriteFile(filepath.Join(r.ws, "work"), []byte("the role's work\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		r.jj("status")
-		work := r.id("@")
-		r.workOn("base")
-		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
-		if code != 0 {
-			t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
-		if got := r.template(work, "hidden"); got != "false" {
-			t.Errorf("the role's commit %s on the carrier is hidden: its work was abandoned\nstderr:\n%s", work, stderr)
-		} else if got := r.show(work, "work"); got != "the role's work\n" {
-			t.Errorf("the role's commit %s holds %q at work, want its own file", work, got)
-		}
-		if want := "legion merge: kept commit " + carrier + ", which a legion merge made, because commit " + work + " stands on it.\n"; !strings.Contains(stderr, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr)
 		}
 	})
@@ -991,10 +986,10 @@ func TestLegionMergeHelpsComparisonListsNothingForGitsOwnTree(t *testing.T) {
 	if got, want := r.git("rev-parse", merge+"^{tree}"), r.gitTree(mergeFirst, "main"); got != want {
 		t.Fatalf("the merge's tree is %s, want git's merged tree %s", got, want)
 	}
-	comparison := exec.Command("sh", "-c", mergeComparison(merge, "--name-only"))
+	comparison := exec.Command("sh", "-c", jjmerge.Comparison(merge, "--name-only"))
 	comparison.Dir, comparison.Env = r.ws, r.env()
 	if out, err := comparison.Output(); err != nil || string(out) != "" {
-		t.Errorf("%s printed %q (%v), want nothing: the merge holds git's merged tree", mergeComparison(merge, "--name-only"), out, err)
+		t.Errorf("%s printed %q (%v), want nothing: the merge holds git's merged tree", jjmerge.Comparison(merge, "--name-only"), out, err)
 	}
 }
 

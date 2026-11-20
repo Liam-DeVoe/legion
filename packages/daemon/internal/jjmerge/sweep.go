@@ -56,14 +56,14 @@ func (m *merger) own(run string) bool {
 // its bookmarks, and the run names it on stderr (keep), when a commit outside them stands on it
 // (a role's commit on a carrier or on a merge a killed run left), when it is any workspace's
 // working-copy commit, when a bookmark other than a carrier bookmark of such a run names it, or
-// when a remote bookmark holds it: an abandon would move that commit onto other parents, delete
-// that bookmark, or hide a commit that a remote holds. A bookmark of a carrier's name on a commit
-// that is no carrier (notCarriers), a commit of the repository, makes that commit no member: the
-// commit, the bookmark and its git ref stay where they are, and the run names the bookmark on
-// stderr. One abandon takes the commits and their bookmarks together, so a run killed after it
-// still finds each carrier by its bookmark. Then remove deletes each bookmark of such a run that
-// jj still holds with no commit, and each git ref of such a run under refs/heads but a kept
-// bookmark's. ours is asked only of the run prefixes of names under bookmarkPrefix and of the
+// when a tracked remote bookmark holds it: an abandon would move that commit onto other parents,
+// delete that bookmark, or hide a commit that a remote holds. A bookmark of a carrier's name on a
+// commit that is no carrier (notCarriers), a commit of the repository, makes that commit no
+// member: the commit, the bookmark and its git ref stay where they are, and the run names the
+// bookmark on stderr. One abandon takes the commits and their bookmarks together, so a run killed
+// after it still finds each carrier by its bookmark. Then remove deletes each bookmark of such a
+// run that jj still holds with no commit, and each git ref of such a run under refs/heads but a
+// kept bookmark's. ours is asked only of the run prefixes of names under bookmarkPrefix and of the
 // lines the commits carry. The bookmarks go through jj, which exports their removal in a
 // colocated workspace; deleting a git ref under jj is only for a ref jj never imported or does not
 // export.
@@ -231,16 +231,21 @@ func (m *merger) marked(ctx context.Context, ours func(run string) bool) ([]stri
 // keep is each commit of set, a revset of a run's commits, that stays, with each commit of set
 // below it, since an abandon of a commit moves the commits above it. A commit of set stays when a
 // commit outside set stands on it, when it is any workspace's working-copy commit, when a local
-// bookmark names it that is none of swept, the bookmarks of the runs the sweep takes, or when
-// `::remote_bookmarks()` holds it (held). jj deletes each bookmark of a commit it abandons and
-// says nothing of it, and a tracked remote bookmark, as a push leaves it, keeps the commit it
-// holds mutable. keep names each commit that stays on stderr, one line each, with why it stays.
+// bookmark names it that is none of swept, the bookmarks of the runs the sweep takes, or when a
+// tracked remote bookmark is on it or on a commit above it (held). jj deletes each bookmark of a
+// commit it abandons and says nothing of it, and a tracked remote bookmark, as a push leaves it,
+// keeps the commit it holds mutable. A commit that only an untracked remote bookmark holds is
+// immutable, since jj's builtin_immutable_heads() holds untracked_remote_bookmarks(), so no set
+// holds it. keep names each commit that stays on stderr, one line each, with why it stays.
 func (m *merger) keep(ctx context.Context, set string, swept []string) ([]string, error) {
 	held, err := m.held(ctx, set, swept)
 	if err != nil {
 		return nil, err
 	}
-	parts := append([]string{fmt.Sprintf("(children(%[1]s) ~ %[1]s)", set), "working_copies()"}, slices.Sorted(maps.Keys(held))...)
+	// standing is what a kept commit of set is below. It needs no working_copies(): held gives a
+	// reason to each working-copy commit of set, and a working-copy commit outside set that stands
+	// on a member descends from children(set) ~ set.
+	parts := append([]string{fmt.Sprintf("(children(%[1]s) ~ %[1]s)", set)}, slices.Sorted(maps.Keys(held))...)
 	standing := "(" + strings.Join(parts, " | ") + ")"
 	kept, err := m.list(ctx, fmt.Sprintf("%s & ::%s", set, standing), "commit_id")
 	if err != nil {
@@ -267,9 +272,11 @@ func (m *merger) keep(ctx context.Context, set string, swept []string) ([]string
 
 // held is why each commit of set stays on its own, read with one jj log: it is a working-copy
 // commit, a local bookmark that is none of swept, the bookmarks of the runs the sweep takes, names
-// it, or `::remote_bookmarks()` holds it. A commit of set with no such reason is not in the map.
-// jj prints each commit's id, the two answers, the count of its local bookmarks and their names,
-// each ended by NUL, which no name holds.
+// it, or a tracked remote bookmark is on it or on a commit above it. The revset reads
+// `::remote_bookmarks()`, and a commit of set is in it only below a tracked one, since the commit
+// of an untracked remote bookmark and each commit below it are immutable (keep). A commit of set
+// with no such reason is not in the map. jj prints each commit's id, the two answers, the count of
+// its local bookmarks and their names, each ended by NUL, which no name holds.
 func (m *merger) held(ctx context.Context, set string, swept []string) (map[string][]string, error) {
 	out, err := m.jj(ctx, "log", "--no-graph", "-r", set+" & (working_copies() | bookmarks() | ::remote_bookmarks())", "-T",
 		`commit_id ++ "\0" ++ self.contained_in("working_copies()") ++ "\0" ++ self.contained_in("::remote_bookmarks()") ++ "\0" ++ local_bookmarks.len() ++ "\0" ++ local_bookmarks.map(|b| b.name() ++ "\0").join("")`)
@@ -301,7 +308,7 @@ func (m *merger) held(ctx context.Context, set string, swept []string) (map[stri
 			why = append(why, "the bookmarks "+strings.Join(names, " ")+" name it")
 		}
 		if remote {
-			why = append(why, "a remote bookmark is on it or on a commit above it")
+			why = append(why, "a tracked remote bookmark is on it or on a commit above it")
 		}
 		if len(why) > 0 {
 			held[id] = why

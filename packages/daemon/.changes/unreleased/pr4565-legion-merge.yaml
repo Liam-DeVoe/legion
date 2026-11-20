@@ -14,8 +14,8 @@ body: |-
   merge of those commits, and a merge that still carries the Legion-Merge-Run line.
   A merge whose description ends with its Legion-Merge line holds git's merge. The run leaves it.
   The run keeps a commit of the stopped run and names it on stderr when another commit stands on
-  it, when a bookmark other than the stopped run's own bookmarks names it, when a remote bookmark
-  is on it or on a commit above it, or when it is a working-copy commit.
+  it, when a bookmark other than the stopped run's own bookmarks names it, when a tracked remote
+  bookmark is on it or on a commit above it, or when it is a working-copy commit.
   A run leaves a bookmark with the name of a stopped run's bookmark on a commit that a legion
   merge did not write, and names it.
   It needs git 2.38 or later.
