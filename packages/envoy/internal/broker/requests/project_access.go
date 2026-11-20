@@ -677,8 +677,8 @@ func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[str
 // (credentialProjects). It is the one source every reader uses — the release (projectFacts), the
 // decision (mayDecide), the record a person reads (ReadRecord) and both approver lists — so the
 // path that releases a secret and the path that shows a request cannot disagree on whose it is:
-// a pod's enrollment row names no project of its own, and reading that column alone showed a
-// private project's pod requests to everyone.
+// a service's pod's enrollment row names no project of its own, and reading that column alone
+// showed a private project's pod requests to everyone.
 func (m *Machine) namedProjects(e enrollmentRow) []string {
 	_, named := m.credentialProjects(e)
 	return named
