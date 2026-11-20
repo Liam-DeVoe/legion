@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import {
   pgBinVariable,
   pgImageVariable,
@@ -124,7 +125,11 @@ const terminateGraceMs = 15_000;
  *  cancels the start, WAITS for it (`starting`, bounded by `terminateGraceMs`), stops the stacks,
  *  and then ends the process with the signal's OWN disposition rather than an exit status this
  *  file invented, which it can do because `stopStacks` has by then removed the listener and the
- *  signal sent again meets Node's default. */
+ *  signal sent again meets Node's default.
+ *
+ *  Neither listener is armed for a signal this process was started with ignored, as `nohup`
+ *  ignores SIGHUP (`ignoredAtStart`): a listener would end the run on the signal it was started to
+ *  outlive, since taking one off brings back the default action, not the ignore. */
 let onInterrupt: (() => void) | undefined;
 let onTerminate: ((signal: TerminatingSignal) => void) | undefined;
 
@@ -158,7 +163,7 @@ async function terminate(signal: TerminatingSignal): Promise<void> {
 function watchSignals(): void {
   if (onInterrupt === undefined) {
     onInterrupt = (): void => stopping.abort();
-    process.on("SIGINT", onInterrupt);
+    if (!ignoredAtStart("SIGINT")) process.on("SIGINT", onInterrupt);
   }
   if (onTerminate === undefined) {
     onTerminate = (signal): void => {
@@ -181,7 +186,9 @@ function watchSignals(): void {
       terminating = true;
       void terminate(signal);
     };
-    for (const signal of terminatingSignals) process.on(signal, onTerminate);
+    for (const signal of terminatingSignals) {
+      if (!ignoredAtStart(signal)) process.on(signal, onTerminate);
+    }
   }
 }
 

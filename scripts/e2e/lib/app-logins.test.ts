@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join } from "node:path";
+import { ignoresSignal, sleepRuns, until } from "@legion/test-fixtures/held-process";
 import {
   type AppCredentialSource,
   type AppRole,
@@ -818,23 +819,25 @@ describe("read_app_logins", () => {
 describe("app-logins.ts on a signal", () => {
   const seconds = "278";
   const signalNumbers = osConstants.signals;
-  const sleepRuns = (pid: number) => {
-    try {
-      return (
-        readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") ===
-        `sleep ${seconds}`
-      );
-    } catch {
-      return false;
-    }
-  };
-  /** Reads `holds` every 50 ms until it answers true, up to `ms`: a state another process reaches
-   * raises no event this row can await. */
-  const until = async (holds: () => boolean, ms: number) => {
-    for (const deadline = performance.now() + ms; !holds(); await Bun.sleep(50)) {
-      if (performance.now() > deadline) return false;
-    }
-    return true;
+  /** The helper run as these rows run it, its first App's token command recording its pid in
+   *  pidFile and becoming `sleep 278`, under a shell that ignores `ignored` first where one is
+   *  named. */
+  const startHelper = (pidFile: string, ignored?: "HUP") => {
+    const command = `echo $$ >${pidFile}.new && mv ${pidFile}.new ${pidFile} && exec sleep ${seconds}`;
+    const ignore = ignored === undefined ? "" : `trap '' ${ignored}; `;
+    return Bun.spawn(
+      [
+        "/bin/sh",
+        "-c",
+        `${ignore}ulimit -c 0 && exec "$@"`,
+        "sh",
+        "bun",
+        script,
+        config(app("101", command), app("202")),
+        standIn,
+      ],
+      { env: { PATH: process.env.PATH ?? "", HOME: home }, stdout: "pipe", stderr: "pipe" }
+    );
   };
   for (const signals of [
     ["SIGINT"],
@@ -846,25 +849,12 @@ describe("app-logins.ts on a signal", () => {
   ] as const) {
     test(`a ${signals.join(" and then a ")} while a token command runs ends the command's group and exits by it`, async () => {
       const pidFile = join(dir, `signal-${signals.join("-")}.pid`);
-      const command = `echo $$ >${pidFile}.new && mv ${pidFile}.new ${pidFile} && exec sleep ${seconds}`;
-      const helper = Bun.spawn(
-        [
-          "/bin/sh",
-          "-c",
-          'ulimit -c 0 && exec "$@"',
-          "sh",
-          "bun",
-          script,
-          config(app("101", command), app("202")),
-          standIn,
-        ],
-        { env: { PATH: process.env.PATH ?? "", HOME: home }, stdout: "pipe", stderr: "pipe" }
-      );
+      const helper = startHelper(pidFile);
       let pid = 0;
       try {
         const ran = () => {
           pid = existsSync(pidFile) ? Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10) : 0;
-          return sleepRuns(pid);
+          return sleepRuns(pid, seconds);
         };
         expect(await until(ran, 30_000), "the token command never ran").toBe(true);
         for (const signal of signals) helper.kill(signal);
@@ -873,16 +863,50 @@ describe("app-logins.ts on a signal", () => {
           helper.exited,
         ]);
         expect(
-          await until(() => !sleepRuns(pid), 5_000),
+          await until(() => !sleepRuns(pid, seconds), 5_000),
           `the token command (pid ${pid}) still runs after the helper ended (exit ${code}): ${stderr}`
         ).toBe(true);
         const by = signals.find((signal) => code === 128 + signalNumbers[signal]);
         expect(by, `the helper exited ${code}, by no signal it was sent: ${stderr}`).toBeDefined();
         expect(stderr).toContain(`github_apps.implement.token_command was stopped by ${by}`);
       } finally {
-        if (pid !== 0 && sleepRuns(pid)) process.kill(pid, "SIGKILL");
+        if (pid !== 0 && sleepRuns(pid, seconds)) process.kill(pid, "SIGKILL");
         if (helper.exitCode === null) helper.kill("SIGKILL");
       }
     }, 60_000);
   }
+
+  // `nohup` starts the helper with SIGHUP ignored, so that it outlives the terminal. The helper
+  // keeps that ignore while a token command runs, when its listeners are armed: the kernel's
+  // record of what it ignores still names SIGHUP there, where a listener for SIGHUP would have
+  // cleared it and ended the run on the hangup it was started to outlive. So the SIGHUP sent then
+  // changes nothing, and the SIGTERM sent after it still ends the command's group and the helper.
+  test("a SIGHUP the helper was started ignoring stays ignored, and a SIGTERM after it still ends the command's group", async () => {
+    const pidFile = join(dir, "signal-nohup.pid");
+    const helper = startHelper(pidFile, "HUP");
+    let pid = 0;
+    try {
+      const ran = () => {
+        pid = existsSync(pidFile) ? Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10) : 0;
+        return sleepRuns(pid, seconds);
+      };
+      expect(await until(ran, 30_000), "the token command never ran").toBe(true);
+      expect(
+        ignoresSignal(helper.pid, "SIGHUP"),
+        "the helper, started with SIGHUP ignored, no longer ignores it while a token command runs"
+      ).toBe(true);
+      helper.kill("SIGHUP");
+      helper.kill("SIGTERM");
+      const [stderr, code] = await Promise.all([new Response(helper.stderr).text(), helper.exited]);
+      expect(
+        await until(() => !sleepRuns(pid, seconds), 5_000),
+        `the token command (pid ${pid}) still runs after the helper ended (exit ${code}): ${stderr}`
+      ).toBe(true);
+      expect(code, `the helper exited ${code}: ${stderr}`).toBe(128 + signalNumbers.SIGTERM);
+      expect(stderr).toContain("github_apps.implement.token_command was stopped by SIGTERM");
+    } finally {
+      if (pid !== 0 && sleepRuns(pid, seconds)) process.kill(pid, "SIGKILL");
+      if (helper.exitCode === null) helper.kill("SIGKILL");
+    }
+  }, 60_000);
 });

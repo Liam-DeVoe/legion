@@ -47,6 +47,7 @@
 import { createSign } from "node:crypto";
 import { writeSync } from "node:fs";
 import { constants } from "node:os";
+import { ignoredAtStart } from "../../../packages/envoy-client/src/signal-ignores";
 
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
 export type AppRole = "implement" | "review";
@@ -222,10 +223,17 @@ let stoppedBy: NodeJS.Signals | undefined;
  * command leads a process group of its own, in a session of its own, so no signal sent to this
  * process reaches it, and without the watch a Ctrl-C, a SIGTERM, a closing terminal's SIGHUP or its
  * quit key's SIGQUIT would end this process by its default action and leave the command running,
- * up to commandLimitMs or for good. Each ends the command's group instead, as commandLimitMs does,
- * and the run then exits with 128 plus the signal (stoppedBy). The watch is armed before the
- * start, so no signal meets the default while the command runs, and stays until its wait is over,
- * so a repeat while it stops finds a listener and does nothing more. */
+ * up to commandLimitMs or for good. Each kills the command's group at once instead (SIGKILL), as
+ * commandLimitMs does, and the run then exits with 128 plus the signal (stoppedBy). That kill ends
+ * everything the command started, since the commands this runs start no process group of their
+ * own: lib/github-apps.sh writes the implement App's token_command as `agent-secrets NAME … -- sh
+ * -c 'printf …'`, whose exec form asks the secrets broker and then execs its command, having
+ * started no child (packages/envoy/cmd/agent-secrets, cmdExec), or as a `cat --` of a release
+ * file, and the review App's private_key_command as a `cat --` of the run's key file. The watch is
+ * armed before the start, so no signal meets the default action while the command runs. A signal
+ * this process was started with ignored, as `nohup` ignores SIGHUP, gets no listener
+ * (ignoredAtStart): one would end the run on the signal it was started to outlive, since taking a
+ * listener off brings back the default action, not the ignore. */
 async function runCredentialCommand(
   field: string,
   command: string,
@@ -236,7 +244,9 @@ async function runCredentialCommand(
     stoppedBy ??= signal;
     end?.(`was stopped by ${signal}`);
   };
-  for (const signal of stopSignals) process.on(signal, onSignal);
+  for (const signal of stopSignals) {
+    if (!ignoredAtStart(signal)) process.on(signal, onSignal);
+  }
   try {
     return await runCredentialCommandOnce(field, command, kind, (started) => {
       end = started;

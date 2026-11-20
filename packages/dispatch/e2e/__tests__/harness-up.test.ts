@@ -21,6 +21,10 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // sent, which Bun runs with the script's when it hands the signal on. A script that arms its
 // listener only after the start returns, listens for SIGINT alone, or listens once, has none at
 // one of those moments, so the signal's default ends it and the stop never runs or never ends.
+// Where a row names a signal the script is started ignoring, the shell ignores it first, as `nohup`
+// ignores SIGHUP, and the stand-in's stop says whether the script still ignores it by then: a
+// listener for it would have cleared the ignore and ended the script on the signal it was started
+// to outlive.
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const stubs = mkdtempSync(join(tmpdir(), "harness-up-"));
 afterAll(() => rmSync(stubs, { force: true, recursive: true }));
@@ -28,7 +32,9 @@ afterAll(() => rmSync(stubs, { force: true, recursive: true }));
 const pool = join(stubs, "harness-pool.ts");
 writeFileSync(
   pool,
-  `export async function startStacks(count: number) {
+  `import { ignoresSignal } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@legion/test-fixtures/held-process")))};
+
+export async function startStacks(count: number) {
   const onInterrupt = (): void => {};
   process.on("SIGINT", onInterrupt);
   await Promise.resolve();
@@ -40,6 +46,7 @@ writeFileSync(
 }
 
 export async function stopStacks(keepLogs: boolean) {
+  console.log(\`stand-in: ignores SIGHUP \${ignoresSignal(process.pid, "SIGHUP")}\`);
   const again = process.env.STAND_IN_STOP_SIGNAL as NodeJS.Signals | undefined;
   if (again) {
     console.error(\`stand-in: stop begun, sending \${again}\`);
@@ -77,6 +84,7 @@ for (const row of [
   { name: "a second Ctrl-C while the stack stops", up: "SIGINT", stop: "SIGINT" },
   { name: "a SIGHUP while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGHUP" },
   { name: "a SIGQUIT while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGQUIT" },
+  { name: "a Ctrl-C to a script started ignoring SIGHUP", up: "SIGINT", ignored: "HUP" },
 ]) {
   test(
     `${row.name} stops the stack once, not the script alone`,
@@ -87,7 +95,7 @@ for (const row of [
         argv: [
           "/bin/sh",
           "-c",
-          'ulimit -c 0 && exec "$@"',
+          `${row.ignored === undefined ? "" : `trap '' ${row.ignored}; `}ulimit -c 0 && exec "$@"`,
           "sh",
           process.execPath,
           "--preload",
@@ -109,6 +117,12 @@ for (const row of [
         `stand-in: 1 stack up, sending ${row.up}`
       );
       expect(run.stdout).toContain("export STAND_IN_PORT=5433");
+      if (row.ignored !== undefined) {
+        expect(
+          run.stdout,
+          `${run.named}, started with SIG${row.ignored} ignored, no longer ignored it by its stop:\n${run.stderr}`
+        ).toContain(`stand-in: ignores SIG${row.ignored} true`);
+      }
       expect(
         run.stdout.split("\n").filter((line) => line === "stand-in: stopped, keepLogs=false"),
         `${run.named} did not stop the stack exactly once:\n${run.stderr}`

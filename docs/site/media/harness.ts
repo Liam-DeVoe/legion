@@ -22,6 +22,7 @@ import type {
 } from "../../../packages/dispatch/e2e/harness-start";
 import { sessionIds } from "../../../packages/dispatch/e2e/session-ids";
 import type { SeededWorkspace } from "../../../packages/dispatch/e2e/workspace";
+import { ignoredAtStart } from "../../../packages/envoy-client/src/signal-ignores";
 
 export const REPO = resolve(import.meta.dir, "../../..");
 const WEB_DIST = join(REPO, "packages/dispatch/web/dist/index.html");
@@ -108,7 +109,9 @@ export async function withHarness<T>(body: (harness: Harness) => Promise<T>): Pr
   // harness, and the run then exits with 128 plus the signal. The harness is stopped once, by the
   // first of this and the run's own end (`stopOnce`), and the listeners stay until that stop has
   // ended, so a repeat while it runs finds one and does nothing more, rather than meeting the
-  // signal's default action half-way through the stop.
+  // signal's default action half-way through the stop. A signal this run was started with
+  // ignored, as `nohup` ignores SIGHUP, gets no listener (`ignoredAtStart`): one would end the run
+  // on the signal it was started to outlive, since taking it off brings back the default action.
   const stopSignals = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
   let stopping: Promise<void> | undefined;
   const stopOnce = (harness: E2eHarness) => {
@@ -127,7 +130,9 @@ export async function withHarness<T>(body: (harness: Harness) => Promise<T>): Pr
       )
       .then(() => process.exit(128 + constants.signals[signal]));
   };
-  for (const signal of stopSignals) process.on(signal, onSignal);
+  for (const signal of stopSignals) {
+    if (!ignoredAtStart(signal)) process.on(signal, onSignal);
+  }
   let started: E2eHarness | undefined;
   try {
     started = await starting;

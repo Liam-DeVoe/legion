@@ -33,6 +33,7 @@
  *
  *  Every value is shell-quoted, since a `DATABASE_URL` carries characters a reader would
  *  otherwise have to think about (`e2e/local-instance-support.ts`). */
+import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import { startStacks, stopStacks } from "./harness-pool";
 import { shellQuote } from "./local-instance-support";
 
@@ -51,10 +52,15 @@ import { shellQuote } from "./local-instance-support";
 // any of the three - a second Ctrl-C while the stack stops, the SIGHUP a terminal and then its
 // shell send - finds a listener that does nothing more, rather than the default action half-way
 // through the stop, and no second stop starts. A signal during the start is the pool's as well:
-// it cancels the start, which stops what it began, and `startStacks` rejects.
+// it cancels the start, which stops what it began, and `startStacks` rejects. A signal this script
+// was started with ignored, as `nohup bun e2e/harness-up.ts &` ignores SIGHUP, gets no listener
+// here (`ignoredAtStart`) and none from the pool: a listener would end the script on the signal it
+// was started to outlive, since taking one off brings back the default action, not the ignore.
 const stopSignals = ["SIGINT", "SIGHUP", "SIGQUIT"] as const;
 const interrupted = Promise.withResolvers<void>();
-for (const signal of stopSignals) process.on(signal, () => interrupted.resolve());
+for (const signal of stopSignals) {
+  if (!ignoredAtStart(signal)) process.on(signal, () => interrupted.resolve());
+}
 const [stack] = await startStacks(1);
 for (const [variable, value] of Object.entries(stack.env)) {
   console.log(`export ${variable}=${shellQuote(value)}`);

@@ -6,6 +6,7 @@
  *  to reseed. */
 import { fileURLToPath } from "node:url";
 
+import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import { harnessVariables } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { type Harness, startHarness } from "./harness-start";
@@ -34,10 +35,12 @@ const localDatabase = "dispatch_local";
  *  session of its own (`Supervisor.start`), so none of these signals reaches them, and a signal
  *  this command did not listen for would end it by its default action and leave them running.
  *  The listeners stay until the command exits, so a repeat while it stops finds one, and
- *  `interrupt` does nothing more once a stop is under way. */
+ *  `interrupt` does nothing more once a stop is under way. A signal this command was started with
+ *  ignored, as `nohup bun run dispatch:local &` ignores SIGHUP, gets no listener
+ *  (`ignoredAtStart`): one would end the command on the signal it was started to outlive. */
 const supervisor = new Supervisor();
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
-  process.on(signal, () => supervisor.interrupt());
+  if (!ignoredAtStart(signal)) process.on(signal, () => supervisor.interrupt());
 }
 const untilInterrupted = <T>(step: Promise<T>) => supervisor.untilInterrupted(step);
 /** psql against the dev container's admin database, killed by an interrupt like every child. */
