@@ -12,9 +12,16 @@ body: |-
   hand-off reads. Such a session is the attempt's session whatever the delivery mode (the
   capability check is skipped), the send goes to it through the listener, which hands it to the
   agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
-  that attempt is accepted. That send carries no role mark, a role's route included: the
-  listener keeps a send marked with a role whose claim does not name its target on the role's
-  kept lane, for a next holder a finished role does not have, rather than hand it to the daemon.
+  that attempt is accepted. That send carries no role mark, a role's route included, so it
+  needs no Dispatch identity at the listener. A send that checks the attempt's pinned session
+  again first - a mention's, and a targeted message's after a listener take-over or when a sweep
+  resumes it - finds the listener's known-session record of that stopped session and is marked
+  with the role.
+  The listener's send route then hands a send marked with a role whose claim does not name its
+  target to the daemon of that role's newest session, on the conditions a role publish's
+  hand-off has (its issue finished, not released, its project answering, the session gone), and
+  answers it 200 with that session as recipient, rather than keep it on the role's kept lane for
+  a next holder a finished role does not have; a role whose issue still runs is kept as before.
   A target the registry does not name, or names for a project that
   does not answer (its daemon runs without `answers`, or it never said it does), keeps the
   listener's own answer and is sent nothing: a mention fails `no live session <id>`, a role

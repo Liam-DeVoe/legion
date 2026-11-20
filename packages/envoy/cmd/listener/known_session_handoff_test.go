@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -221,5 +222,100 @@ func TestAPublishToAFinishedRoleWhoseNewestSessionIsReleasedIsKept(t *testing.T)
 	}
 	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
 		t.Fatalf("the stream holds %d hand-offs for %s, want the one the publish to the entry not released made", count, finishedRoleSession)
+	}
+}
+
+// markedSendAnswer is one marked send's answer as the test below reads it: the status and raw
+// body, and the fields of a hand-off's 200 and of a keep's 202.
+type markedSendAnswer struct {
+	status int
+	raw    string
+
+	EventID   string `json:"event_id"`
+	Recipient string `json:"recipient"`
+	State     string `json:"state"`
+	Kept      bool   `json:"kept"`
+	KeptUntil int64  `json:"kept_until"`
+}
+
+// sendMarkedByDispatch sends one message to target marked with role through the rig's /v1 routes,
+// as Dispatch's send for a route to role arrives behind apiAuth: from principal, which the rig
+// names as Dispatch's (useDispatchPrincipal) and the request's context carries as apiAuth verified
+// it (withVerifiedPrincipal), with Dispatch's own source and no source session.
+func sendMarkedByDispatch(t *testing.T, rig *knownSessionRig, principal, target, role, message string) markedSendAnswer {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]any{
+		"target_session": target, "role": role, "source": "dispatch", "message": message,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := postJSON("/v1/messages/send", string(encoded))
+	request = request.WithContext(withVerifiedPrincipal(request.Context(), principal))
+	recorder := httptest.NewRecorder()
+	rig.mux.ServeHTTP(recorder, request)
+	answer := markedSendAnswer{status: recorder.Code, raw: recorder.Body.String()}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the marked send's answer %s: %v", answer.raw, err)
+	}
+	return answer
+}
+
+// Dispatch marks a role's message with the role when it sends it to the session it pinned for the
+// role, and its recheck of that session before the send names no registry redirect once the
+// listener holds the session's known-session record, as it does for 30 days after the session
+// stopped. So a mention or a message for a finished Legion role reaches the send route marked,
+// aimed at the role's stopped newest session, with no claim of the role standing. The send route
+// offers it to the role's daemon on the role token (handOffOrKeepRoleSend): 200 with that session
+// as recipient and no state, one hand-off carrying the role token, nothing kept on the role's kept
+// lane, which no holder would drain, and nothing stored on the session's own subject.
+//
+// The control is the same send once the entry is written again as an issue that still runs: the
+// role's next holder is coming, so the message is kept on the role's kept lane for it, 202 kept,
+// as #4387 keeps a marked send whose role's claim does not name its target, and nothing more is
+// handed off.
+func TestADispatchSendMarkedWithAFinishedRoleIsHandedToItsDaemonAndNotKept(t *testing.T) {
+	rig := newKnownSessionRig(t)
+	const principal = "system:serviceaccount:dispatch:example-dispatch"
+	useDispatchPrincipal(rig.deps, principal)
+	const agent = "ses_finished_role_marked"
+	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
+	finished.Finished = true
+	role := finished.RoleToken
+	agents := withLegionAgent(t, rig.deps, finished)
+	rig.register(t, agent, nil)
+	rig.stop(t, agent)
+	rig.record(t, agent)
+	client := rig.harness.client
+	subject := contracts.LegacyAgentSubject(agent)
+
+	handed := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	if handed.status != http.StatusOK || handed.Recipient != agent || handed.State != "" || handed.Kept {
+		t.Fatalf("a send marked with the finished role %s to its stopped newest session: status %d, body %s; want 200 handed off to %s with no state and nothing kept",
+			role, handed.status, handed.raw, agent)
+	}
+	count, data := handoffs(t, client, agent)
+	if count != 1 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want the one the marked send made", count, agent)
+	}
+	if wire := decodeHandoff(t, data); wire.TargetSession != agent || wire.RoleToken != role || wire.OriginalTopic != subject || wire.Project != "infra" {
+		t.Fatalf("the stored hand-off is %+v, want the send to %s handed off on the role token %s under the project infra", wire, agent, role)
+	}
+	assertNothingKept(t, client, role)
+	if held := rig.storedOn(t, subject); held != 0 {
+		t.Fatalf("the stream holds %d messages on %s, want none: the send was handed off", held, subject)
+	}
+
+	running := finished
+	running.Finished = false
+	putLegionAgent(t, agents, running)
+	kept := sendMarkedByDispatch(t, rig, principal, agent, role, "the next round starts at abc123")
+	if kept.status != http.StatusAccepted || !kept.Kept || kept.KeptUntil == 0 || kept.Recipient != agent {
+		t.Fatalf("control: the same send once the role's issue runs: status %d, body %s; want 202 kept for the role's next holder",
+			kept.status, kept.raw)
+	}
+	waitForKeptRoleMessage(t, client, role, kept.EventID)
+	if count, _ := handoffs(t, client, agent); count != 1 {
+		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the first send's", count, agent)
 	}
 }

@@ -38,11 +38,12 @@ func isLegionHandoffSubject(subject string) bool {
 
 // legionHandoffTarget is one message no session took, which handOffToLegion may hand off: its
 // envelope, and whom it is for, a session (a send, or an agent subject on the bus) or a role token
-// (a role publish). stampSender is a send, whose envelope gets its sender stamp (senderStamp) only
-// when it is handed off, as it would have before its delivery; a role publish stamps the sender
-// before it resolves the holder (sendToRole) and a bus message already carries the stamp its
-// publishing listener gave it. optedOut is a publish or send body that carried "handoff": false,
-// as every one the daemon makes does.
+// (a role publish, or a send marked with a role whose claim does not name its target). stampSender
+// is a send, whose envelope gets its sender stamp (senderStamp) only when it is handed off, as it
+// would have before its delivery; a role publish stamps the sender before it resolves the holder
+// (sendToRole) and a bus message already carries the stamp its publishing listener gave it.
+// optedOut is a publish or send body that carried "handoff": false, as every one the daemon makes
+// does.
 type legionHandoffTarget struct {
 	envelope    contracts.Envelope
 	session     string
@@ -161,9 +162,10 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // (INFRA-514's 202, roleSend.noHolder), which is what it was before the hand-off existed. A
 // session addressed by id is answered for whether its issue is finished or not: that session has
 // stopped, and the message is for it. A send that carries a role's mark (Dispatch's send to a
-// `role:` route) is held to that role's claim before it reaches this (#4387's keep for the next
-// holder); Dispatch sends a role's message it redirected to a stopped agent's session unmarked
-// (sendResolvedDelivery), so it reaches this as a message for that session.
+// `role:` route) is held to that role's claim before it reaches this, and one whose claim does not
+// name its target is offered here on its role token, so it is answered for by this rule rather
+// than the session's (handOffOrKeepRoleSend): a finished role's message reaches its daemon, and a
+// running role's is kept for its next holder (#4387's keep).
 //
 // Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
 // released that session's idle issue pod and keeps its claim to resume, so the message is a wake

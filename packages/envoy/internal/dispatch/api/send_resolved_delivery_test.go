@@ -141,7 +141,7 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"service starting"}`))
 		}, failure: listenerUnreachablePrefix + "listener returned 503: service starting"},
-		{name: "a keep the listener could not confirm stored", answer: func(w http.ResponseWriter, _ *http.Request) {
+		{name: "a publish the listener could not confirm stored", answer: func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"code":"maybe_stored","error":"envoy: the message bus did not answer: publish unacknowledged"}`))
@@ -189,10 +189,12 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 // is queued as ever ("the listener stored the send for a stopped session" above).
 //
 // Each send is made on its own route, a role's included, and carries no role mark: the registry
-// names a role's session only once the role's issue has finished, and the listener keeps a send
-// marked with a role whose claim does not name its target for the role's next holder rather than
-// hand it to the stopped agent's daemon (answerRoleSend in cmd/listener). A client that presents
-// no identity, as this one, refuses a marked send outright (envoy.ErrNoListenerIdentity).
+// names a role's session only once the role's issue has finished, and the listener hands a send to
+// that session to the agent's daemon on its session id, which needs no Dispatch identity. A client
+// that presents no identity, as this one, refuses a marked send outright
+// (envoy.ErrNoListenerIdentity). A recheck that finds the listener's record of that session names
+// no redirect, and its send is marked; the listener hands that one off on the role token
+// (handOffOrKeepRoleSend in cmd/listener).
 func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
 	stopped := "stopped-2"
 	registered := func(answer ResolvedMention) ResolvedMention {

@@ -188,9 +188,14 @@ type sendOutcome struct {
 // such a session that the listener only stores (dispatchenvoy.SendStateStopped) settles the same
 // way. Such a send carries no role mark, whatever its route: the registry names a role's session
 // only once the role's issue has finished (registeredAgent), so no next holder of the role is
-// coming, and the listener keeps a marked send whose role's claim does not name its target for
-// that next holder (answerRoleSend in cmd/listener) rather than hand it to the stopped agent's
-// daemon.
+// coming, and the listener hands the send to the agent's daemon on its session id, which needs no
+// Dispatch identity. The send is marked whenever the target was not redirected, and that includes
+// a role's stopped session the registry named: a recheck of the session pinned on the attempt
+// (mentionResolutionFor, messageDeliveryRoute, renewMessageDeliveryClaim) that finds the
+// listener's own record of it, a known-session record among them, names no redirect. The listener
+// then offers the marked send to the role's daemon on the role token before it keeps anything
+// (handOffOrKeepRoleSend in cmd/listener), so a finished role's message reaches the daemon either
+// way.
 //
 // A role kept for its next holder (target.redirect.keepForRole) is published on the role's topic
 // rather than sent (publishForRole).

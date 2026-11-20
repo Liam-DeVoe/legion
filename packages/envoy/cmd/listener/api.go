@@ -724,10 +724,12 @@ const senderStampReadTimeout = 1 * time.Second
 // from Dispatch's own verified principal (refuseRoleMark): any other caller carrying it is the
 // 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
 // role's claim is read before the target (answerRoleSend): a claim naming the target sends as
-// above, and a claim naming another session, or none, keeps the message for the role's next live
-// holder and answers 202 kept, so the role's message never lands on the subject of a session that
-// no longer holds the role, unless the send asked connected_only, which is the 409 a stopped
-// target gives, with nothing kept. A claim read that did not answer is the bus-unavailable 503.
+// above, and a claim naming another session, or none, hands the message to a finished Legion
+// role's daemon and answers 200 with its newest session as recipient (handOffToLegion on the role
+// token), or else keeps it for the role's next live holder and answers 202 kept, so the role's
+// message never lands on the subject of a session that no longer holds the role, unless the send
+// asked connected_only, which is the 409 a stopped target gives, with nothing kept. A claim read
+// that did not answer is the bus-unavailable 503.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
