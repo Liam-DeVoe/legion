@@ -157,7 +157,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
     required: ["op"],
   })
   expect(definition.description).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`
+    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
   expect(definition.description).toContain(
     "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. What a later phase needs",

@@ -5349,7 +5349,9 @@ The commit is taken with `git archive` into a directory of the run's own and giv
 Three things are stood in for, beside what [`step-records.sh`](#step-recordssh) stands in for:
 
 - the package's test config leaves `review_round_cap` at 0, which the plugin's client refuses in the state's settings, so the driver sets 3, the default the config loader gives every deployment;
+
 - no daemon of the release before registers the older pane: this daemon refuses a registration at any contract but its own and relaunches a pane of another contract once its turn ends, so the pane is one registered here whose claim the store records at the release before's contract, as that release leaves it;
+
 - the older client's read of the state once an issue is held for a new reason is printed, not asserted: the daemon narrows the state for an older caller only in a pod (`stateFor` in `internal/api/server.go`), the fake runtime runs none, and `TestAnOlderCallerIsServedNoNewHoldReason` (`internal/api/hold_reason_test.go`) holds the pod's path.
 
 `OWNER_STEPS_CLIENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.

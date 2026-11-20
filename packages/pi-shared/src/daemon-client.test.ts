@@ -607,6 +607,7 @@ test("a completion naming returnTo without the verdict fail is refused before it
       .catch((caught: unknown) => caught);
     expect(refused, `verdict ${JSON.stringify(verdict)} with returnTo`).toBeInstanceOf(Error);
   }
+  expect(requests).toHaveLength(0);
 });
 // A refused pause or resume carries more than a code and a sentence: the pause that stands, or
 // the last pause (`LegionPauseFailureResponse`). The client reads the refusal through the plain
