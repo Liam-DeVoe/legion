@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/duty/dutytest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -91,10 +92,10 @@ func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 }
 
 // startProcess runs an outbox on database's own outbox pool, publishing through a client of its own
-// connected to url, until the test ends or stop is called.
-func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter) *process {
+// connected to url with options, until the test ends or stop is called.
+func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, options ...bus.ConnectOption) *process {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{url})
+	client, err := bus.ConnectOwningStream([]string{url}, options...)
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
 	}
@@ -584,107 +585,45 @@ func (h *killedHolder) wait() {
 }
 
 // A publisher killed at the moment of a renewal is replaced by a standby within six seconds of the
-// kill, on the database's clock. The holder is a process of its own, a child of this test binary
-// (runKilledHolder), which takes the publisher hold and renews it; the standby runs here. A
-// trigger on duty_holds records each write of the hold's row - its statement's own now(), when
-// the statement started, and clock_timestamp(), when the row changed - and notifies, and the row
-// kills the holder with SIGKILL as soon as it is told of a renewal made since the standby started:
-// the worst moment a kill has, since the row that renewal left lapses a whole TTL after it. The
-// take is read at the moment the row changed, so the reading holds all of the take's statement,
-// a statement that waited included; the renewal at the moment its statement started, which is
-// before the kill, so take - renewal is at or above take - kill, and the row fails on it.
+// kill, on the database's clock, and the standby becomes the publisher within six seconds of it on
+// this process's clock. The holder is a process of its own, a child of this test binary
+// (runKilledHolder), which takes the publisher hold and renews it; the standby runs here. The
+// hold's writes are recorded (dutytest.Record): each statement's own now(), when the statement
+// started, and the moment the write could first be seen committed. The row kills the holder with
+// SIGKILL the moment a renewal committed since the standby started is read: the worst moment a
+// kill has, since the row that renewal left lapses a whole TTL after it. The take is read at the
+// moment it could be seen committed, so the reading holds all of the take's statement and its
+// commit; the renewal at the moment its statement started, which is before the kill, so the
+// reading is at or above take - kill, and the row fails on it. Of the writes since that renewal,
+// only those that change the row's holder are takes, and there is one: the standby's own
+// renewals after its take are not takes.
 func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.T) {
 	database := storetest.Open(t)
-	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `
-		create table hold_writes (holder uuid not null, started timestamptz not null, changed timestamptz not null);
-		create function record_hold_write() returns trigger language plpgsql as $$
-		begin
-			insert into hold_writes (holder, started, changed) values (new.holder, now(), clock_timestamp());
-			perform pg_notify('hold_writes', new.holder::text);
-			return null;
-		end $$;
-		create trigger record_hold_write after insert or update on duty_holds for each row
-			when (new.name = 'dispatch-outbox') execute function record_hold_write();
-	`); err != nil {
-		t.Fatalf("record each write of the publisher hold: %v", err)
-	}
-	listener, err := database.Pool.Listener(ctx)
-	if err != nil {
-		t.Fatalf("connect the listener: %v", err)
-	}
-	defer listener.Close(ctx)
-	if _, err := listener.Exec(ctx, `listen hold_writes`); err != nil {
-		t.Fatalf("listen for the writes of the publisher hold: %v", err)
-	}
-	// writeOf waits for the next write of the hold's row by holder.
-	writeOf := func(holder uuid.UUID, what string) {
-		t.Helper()
-		for {
-			waitCtx, cancel := context.WithTimeout(ctx, outboxHangGuard)
-			note, err := listener.WaitForNotification(waitCtx)
-			cancel()
-			if err != nil {
-				t.Fatalf("wait for %s: %v", what, err)
-			}
-			if note.Payload == holder.String() {
-				return
-			}
-		}
-	}
+	writes := dutytest.Record(t, database.Pool, database.Pool.Listener, publisherHold)
 
 	holder := startKilledHolder(t, database)
-	writeOf(holder.instance, "the holder taking the publisher hold")
+	writes.WaitForRenewal(t, holder.instance, outboxHangGuard)
 	standby := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener})
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { standby.Run(runCtx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	// The first renewal told of can be one made before the standby started; the second is not.
-	writeOf(holder.instance, "a renewal of the publisher hold")
-	writeOf(holder.instance, "a renewal of the publisher hold")
+	writes.WaitForRenewal(t, holder.instance, outboxHangGuard)
+	killed := time.Now()
 	holder.kill(t)
-	var killedBy time.Time
-	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&killedBy); err != nil {
-		t.Fatalf("read the database's clock after the kill: %v", err)
-	}
-	waitFor(t, outboxHangGuard, "the standby taking the publisher hold", standby.Publishing)
+	killedBy := writes.Now(t)
+	waitFor(t, outboxHangGuard, "the standby publishing", standby.Publishing)
+	publishing := time.Since(killed)
 
-	var renewal time.Time
-	var after int
-	if err := database.Pool.QueryRow(ctx, `
-		select max(started) filter (where changed <= $2), count(*) filter (where changed > $2)
-		from hold_writes where holder = $1
-	`, holder.instance, killedBy).Scan(&renewal, &after); err != nil {
-		t.Fatalf("read the killed holder's last renewal: %v", err)
+	take := writes.RequireTakeWithin(t, holder.instance, killedBy, "the kill", standbyTakesWithin, outboxHangGuard)
+	t.Logf("the standby was read publishing %v after the kill was sent, on this process's clock", publishing.Round(time.Millisecond))
+	if take.Took.Holder != standby.instance || take.Changes != 1 {
+		t.Fatalf("the hold was taken by %s and changed hands %d times since the killed holder's last renewal (%+v), want once, by the standby %s",
+			take.Took.Holder, take.Changes, writes.All(), standby.instance)
 	}
-	rows, err := database.Pool.Query(ctx, `select holder, changed from hold_writes where holder <> $1 order by changed`, holder.instance)
-	if err != nil {
-		t.Fatalf("read the takes of the hold: %v", err)
-	}
-	type take struct {
-		holder uuid.UUID
-		at     time.Time
-	}
-	takes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (take, error) {
-		var each take
-		return each, row.Scan(&each.holder, &each.at)
-	})
-	if err != nil {
-		t.Fatalf("read the takes of the hold: %v", err)
-	}
-	if len(takes) != 1 || takes[0].holder != standby.instance {
-		t.Fatalf("the hold was taken %v, want once, by the standby %s", takes, standby.instance)
-	}
-	if !takes[0].at.After(killedBy) {
-		t.Fatalf("the standby took the publisher hold at %s, before the holder was killed (by %s)", takes[0].at, killedBy)
-	}
-	upper, lower := takes[0].at.Sub(renewal), takes[0].at.Sub(killedBy)
-	t.Logf("the standby took the publisher hold %v after the renewal the kill followed (at or above the time from the kill) and %v after a read of the database's clock made after the kill (at or below it); the killed holder wrote the row %d times after that read",
-		upper, lower, after)
-	if upper > standbyTakesWithin {
-		t.Fatalf("the standby took the publisher hold %v after the killed holder's last renewal, on the database's clock, past the %v bound: the hold lasts %v after a renewal",
-			upper, standbyTakesWithin, publisherHoldOptions.TTL)
+	if publishing > standbyTakesWithin {
+		t.Fatalf("the standby was read publishing %v after the kill, past the %v bound: the hold lasts %v after a renewal",
+			publishing.Round(time.Millisecond), standbyTakesWithin, publisherHoldOptions.TTL)
 	}
 }
 
@@ -744,6 +683,42 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 				publishing(silent, working))
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// An idle holder whose NATS connection goes silent at the worst moment - right after the server
+// answered one of the client's own pings, so the client's pings find the silence
+// bus.SilentCutFoundWithin later, the latest they can - gives the hold up for NATS lost once its
+// grace has run out, and the other process, whose NATS works, becomes the publisher within six
+// seconds of the silence: the finding, natsLossGrace, the two bounded reads of the client's status
+// and the hand-over (releaseToServe) sum to takeOverWithin, and nothing the holder sends finds the
+// silence earlier, since it sends nothing. The holder's client finds silent cuts as cmd/dispatch's
+// does (bus.WithSilentCutDetection).
+func TestAnIdleHolderSilencedAtItsLatestFindingIsReplacedWithinSixSeconds(t *testing.T) {
+	_, url := testnats.Start(t)
+	proxy := testnats.StartProxy(t, url)
+	database := storetest.Open(t)
+	counter := &sendCounter{}
+	silent := startProcess(t, "silent", database, proxy.URL(), counter, bus.WithSilentCutDetection())
+	waitFor(t, outboxHangGuard, "the first process taking the publisher hold", silent.outbox.Publishing)
+	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
+	t.Cleanup(proxy.Restore)
+
+	var frozen time.Time
+	select {
+	case frozen = <-proxy.FreezeAfterServer("PONG\r\n"):
+	case <-time.After(outboxHangGuard):
+		t.Fatalf("the server answered no ping of the silent process's client within %v", outboxHangGuard)
+	}
+	waitFor(t, outboxHangGuard, "the working process publishing", working.outbox.Publishing)
+	took := time.Since(frozen)
+	t.Logf("the working process was read publishing %v after the silent process's client last heard its server", took.Round(time.Millisecond))
+	if silent.outbox.Publishing() {
+		t.Errorf("the silent process still publishes beside the working one")
+	}
+	if took > standbyTakesWithin {
+		t.Errorf("the working process became the publisher %v after the silence, past the %v bound: the client finds the silence up to %v in, and the holder's grace is %v",
+			took.Round(time.Millisecond), standbyTakesWithin, bus.SilentCutFoundWithin, natsLossGrace)
 	}
 }
 
@@ -972,44 +947,70 @@ func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T)
 // the probe of the connection that follows is the batch's one wait for it. So a holder whose loss
 // a batch finds gives the publisher hold up in the time its grace allows (natsLossGrace), inside
 // the six seconds a standby takes over in, rather than once a send has waited out a reconnect.
+//
+// It holds for both ways a connection is lost. A cut connection's reconnect is refused at once. A
+// silent one, found by the client's own pings (bus.WithSilentCutDetection, the client
+// cmd/dispatch runs), reconnects through a path that answers nothing, and each attempt holds
+// nats.go's lock of the connection across its dial and handshake, up to the client's connect
+// timeout: a read of the connection's status that waited on that lock held the batch up to 6 s.
+// The bound is probeTimeout, one bounded status read past it (bus's connectionReadBound, 250 ms),
+// and the batch's own two statements, its read of the events and its release of what it did not
+// send, which the rest of the second covers.
 func TestABatchBegunWhileItsClientReconnectsEndsForNATSLostWithinTheProbe(t *testing.T) {
-	_, url := testnats.Start(t)
-	proxy := testnats.StartProxy(t, url)
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	seedIssue(t, database, "T-1", nil)
-	appendEvent(t, database, broker, model.Event{
-		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
-		Payload: model.Message{ID: "message-reconnecting", IssueKey: new("T-1"), Body: "sent while the client reconnects"},
-	})
-	client, err := bus.ConnectOwningStream([]string{proxy.URL()})
-	if err != nil {
-		t.Fatalf("connect the holder's NATS client: %v", err)
-	}
-	t.Cleanup(client.Close)
-	holder := New(Deps{Store: database, Publisher: client})
-	hold, _ := holder.tryHold(context.Background())
-	if hold == nil {
-		t.Fatal("the outbox did not take the publisher hold")
-	}
-	t.Cleanup(func() { _ = hold.Release(context.Background()) })
-	proxy.Cut()
-	t.Cleanup(proxy.Restore)
-	waitFor(t, outboxHangGuard, "the client reading its connection lost", func() bool { return !client.Connected() })
+	for _, row := range []struct {
+		name    string
+		silent  bool
+		options []bus.ConnectOption
+	}{
+		{"a cut connection", false, nil},
+		{"a silent connection", true, []bus.ConnectOption{bus.WithSilentCutDetection()}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, url := testnats.Start(t)
+			proxy := testnats.StartProxy(t, url)
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			seedIssue(t, database, "T-1", nil)
+			appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+				Payload: model.Message{ID: "message-reconnecting", IssueKey: new("T-1"), Body: "sent while the client reconnects"},
+			})
+			client, err := bus.ConnectOwningStream([]string{proxy.URL()}, row.options...)
+			if err != nil {
+				t.Fatalf("connect the holder's NATS client: %v", err)
+			}
+			t.Cleanup(client.Close)
+			holder := New(Deps{Store: database, Publisher: client})
+			hold, _ := holder.tryHold(context.Background())
+			if hold == nil {
+				t.Fatal("the outbox did not take the publisher hold")
+			}
+			t.Cleanup(func() { _ = hold.Release(context.Background()) })
+			cut := time.Now()
+			if row.silent {
+				proxy.Freeze()
+			} else {
+				proxy.Cut()
+			}
+			t.Cleanup(proxy.Restore)
+			waitFor(t, outboxHangGuard, "the client reading its connection lost", func() bool { return !bus.ConnectedWithin(client, statusReadBound) })
+			found := time.Now()
 
-	batch, err := scanBatch(context.Background(), holder.deps, hold, holder.instance)
-	took := time.Since(batch.started)
-	if err != nil {
-		t.Fatalf("scan the batch: %v", err)
-	}
-	t.Logf("the batch begun while its client reconnected ended %v after its start: natsLost %v, fenced %v, sent %d, published %d",
-		took.Round(time.Millisecond), batch.natsLost, batch.fenced, batch.sent, batch.published)
-	if !batch.natsLost || batch.fenced || batch.published != 0 {
-		t.Fatalf("the batch begun while its client reconnected ended %+v, want it ended for NATS lost, unfenced, with nothing published", batch)
-	}
-	if bound := probeTimeout + time.Second; took > bound {
-		t.Fatalf("the batch begun while its client reconnected ended for NATS lost %v after its start, past %v: probeTimeout and a second",
-			took.Round(time.Millisecond), bound)
+			batch, err := scanBatch(context.Background(), holder.deps, hold, holder.instance)
+			took := time.Since(batch.started)
+			if err != nil {
+				t.Fatalf("scan the batch: %v", err)
+			}
+			t.Logf("the loss was read %v after the cut; the batch begun then ended %v after its start: natsLost %v, fenced %v, sent %d, published %d",
+				found.Sub(cut).Round(time.Millisecond), took.Round(time.Millisecond), batch.natsLost, batch.fenced, batch.sent, batch.published)
+			if !batch.natsLost || batch.fenced || batch.published != 0 {
+				t.Fatalf("the batch begun while its client reconnected ended %+v, want it ended for NATS lost, unfenced, with nothing published", batch)
+			}
+			if bound := probeTimeout + time.Second; took > bound {
+				t.Fatalf("the batch begun while its client reconnected ended for NATS lost %v after its start, past %v: probeTimeout and a second",
+					took.Round(time.Millisecond), bound)
+			}
+		})
 	}
 }
 

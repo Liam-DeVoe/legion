@@ -159,7 +159,7 @@ type Pool struct {
 	pool *pgxpool.Pool
 	// identity is the server process's identity (process_identity.go), which every connection of
 	// this pool and of the separate pools opened from it names at the end of its
-	// application_name; uuid.Nil for a pool NewPool wrapped.
+	// application_name; uuid.Nil for a pool NewPool wrapped whose connections name none.
 	identity uuid.UUID
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
@@ -184,10 +184,13 @@ type Pool struct {
 	healthClosed bool
 }
 
-// NewPool wraps an open pgx pool. It names no identity (Identity): its connections carry whatever
-// application_name the pool's own configuration gives them.
+// NewPool wraps an open pgx pool. Its identity (Identity) is the one its connections name at the
+// end of their application_name (identityNamedBy): a pool opened from a copy of an opened store's
+// configuration, as a test's traced or reopened pool is, names that store's process, and one whose
+// connections name no identity has none (uuid.Nil). The identity is read from the name, never
+// given, so a pool's identity is always the one its sessions carry.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
+	return &Pool{pool: pool, identity: identityNamedBy(pool.Config().ConnConfig.RuntimeParams["application_name"])}
 }
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,

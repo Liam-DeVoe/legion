@@ -765,7 +765,6 @@ func main() {
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
 			Store:            &store.Store{Pool: outboxPool},
-			Instance:         database.Pool.Identity(),
 			Publisher:        natsClient,
 			Broker:           broker,
 			Listen:           database.Pool.Listener,

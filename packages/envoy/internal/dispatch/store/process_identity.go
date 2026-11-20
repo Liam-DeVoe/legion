@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -29,28 +28,55 @@ const defaultApplicationName = "dispatch"
 // to NAMEDATALEN - 1 bytes, which would cut the identity off its end.
 const maxApplicationName = 63
 
-// applicationName is base followed by one space and identity, with base cut, on a rune boundary,
-// so the whole fits in maxApplicationName and the identity stays whole at its end. A nil identity
-// (a pool NewPool wrapped) leaves base as it is.
+// applicationName is base followed by one space and identity, with base written in printable
+// ASCII and cut so the whole fits in maxApplicationName and the identity stays whole at its end.
+// A nil identity (a pool NewPool wrapped) leaves base as it is.
+//
+// Postgres keeps an application_name in printable ASCII alone: it writes every other byte as \x
+// and two hex digits (pg_clean_ascii, Postgres 16 and later) and then cuts the name to 63 bytes,
+// so a base of non-ASCII letters taken as it is would grow past what this cut left room for and
+// lose the identity's end, and EndSessionsOf would not find the session. The base is written in
+// that same form here, before the cut, so the name Postgres shows is the name this builds, and the
+// cut falls between two bytes' forms, never inside one.
 func applicationName(base string, identity uuid.UUID) string {
 	if identity == uuid.Nil {
 		return base
 	}
 	suffix := " " + identity.String()
-	if room := maxApplicationName - len(suffix); len(base) > room {
-		base = base[:room]
-		for !utf8.ValidString(base) {
-			base = base[:len(base)-1]
+	room := maxApplicationName - len(suffix)
+	var name strings.Builder
+	for i := range len(base) {
+		form := base[i : i+1]
+		if base[i] < ' ' || base[i] > '~' {
+			form = fmt.Sprintf(`\x%02x`, base[i])
 		}
+		if name.Len()+len(form) > room {
+			break
+		}
+		name.WriteString(form)
 	}
-	return base + suffix
+	return name.String() + suffix
 }
 
 // Identity is the identity every connection of this pool names at the end of its
 // application_name: the one Open minted for it, shared by every separate pool opened from it
-// (Outbox, TextTrees and the rest). A pool NewPool wrapped has none (uuid.Nil): its connections
-// carry whatever name their own configuration gives them.
+// (Outbox, TextTrees and the rest), or the one a pool NewPool wrapped names (identityNamedBy),
+// and uuid.Nil for a pool whose connections name none.
 func (p *Pool) Identity() uuid.UUID { return p.identity }
+
+// identityNamedBy is the identity an application_name ends with, after one space, as
+// applicationName writes it, or uuid.Nil when the name ends with none.
+func identityNamedBy(name string) uuid.UUID {
+	const width = 36
+	if len(name) < width+1 || name[len(name)-width-1] != ' ' {
+		return uuid.Nil
+	}
+	identity, err := uuid.Parse(name[len(name)-width:])
+	if err != nil || identity.String() != name[len(name)-width:] {
+		return uuid.Nil
+	}
+	return identity
+}
 
 // EndedSession is one database session EndSessionsOf ended: the backend's process id, its
 // application_name, and whether pg_terminate_backend signalled it (false when the backend had
@@ -96,6 +122,16 @@ func (p *Pool) EndSessionsOf(ctx context.Context, identity uuid.UUID) ([]EndedSe
 // pg_terminate_backend, or a server shutdown, ended its session.
 const sessionEndedCode = "57P01"
 
+// SessionEndedCode and SessionEndedMessage are what a request whose database session was ended
+// under it (SessionEnded) answers, from the API and the document socket alike: 503 with this code
+// and message, and Retry-After: 1.
+const (
+	SessionEndedCode    = "DATABASE_SESSION_ENDED"
+	SessionEndedMessage = "the database ended a session this request was using before the request finished, " +
+		"and rolled back what that session had not committed: another server process took over this one's work, " +
+		"or the database is shutting down. Read back what the request was to change, and make the request again if it is not there"
+)
+
 // SessionEnded reports whether err is a statement whose database session was ended under it
 // (SQLSTATE 57P01): by a standby that took the publisher hold over from this process
 // (EndSessionsOf), by an operator, or by the server shutting down. What the session had not
@@ -132,11 +168,19 @@ func (p *Pool) onSessionEnded(next pgconn.PgErrorHandler) pgconn.PgErrorHandler 
 // the next caller of each is handed a connection dialled afresh.
 func (p *Pool) resetAll() {
 	p.mu.Lock()
-	pools := []*pgxpool.Pool{p.pool, p.rooms, p.roomAppends, p.health, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
+	pools := p.pools()
 	p.mu.Unlock()
 	for _, pool := range pools {
 		if pool != nil {
 			pool.Reset()
 		}
 	}
+}
+
+// pools is the shared pool and every separate pool opened from it, each nil until it is opened.
+// Its caller holds mu. Every pgx pool field of Pool is listed here: resetAll drops each one's
+// connections, and TestAStoreWhoseSessionsWereEndedFailsOneStatementAndDialsAfresh fails for a
+// field this leaves out.
+func (p *Pool) pools() []*pgxpool.Pool {
+	return []*pgxpool.Pool{p.pool, p.rooms, p.roomAppends, p.health, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
 }

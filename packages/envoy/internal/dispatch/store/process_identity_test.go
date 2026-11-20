@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	neturl "net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,18 +17,22 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// An application_name is the base, one space and the identity, with the base cut on a rune
-// boundary so the whole fits the 63 bytes Postgres keeps and the identity is whole at its end.
+// An application_name is the base, one space and the identity, with the base written in printable
+// ASCII as Postgres writes it (\x and two hex digits for every other byte) and cut between two
+// bytes' forms, so the whole fits the 63 bytes Postgres keeps and the identity is whole at its end.
 func TestAnApplicationNameEndsWithTheWholeIdentity(t *testing.T) {
 	identity := uuid.New()
 	for _, row := range []struct{ name, base, want string }{
 		{"a short base is kept", "dispatch-rooms", "dispatch-rooms " + identity.String()},
 		{"a long base is cut to 26 bytes", strings.Repeat("b", 40), strings.Repeat("b", 26) + " " + identity.String()},
-		{"a base cut inside a rune loses the rune", strings.Repeat("b", 25) + "é" + "tail", strings.Repeat("b", 25) + " " + identity.String()},
+		{"a byte that is not printable ASCII is written as Postgres shows it", "dispatch-süd", `dispatch-s\xc3\xbcd ` + identity.String()},
+		{"a control byte is too", "dis\tpatch", `dis\x09patch ` + identity.String()},
+		{"a base cut inside a byte's form loses that form", strings.Repeat("b", 25) + "é" + "tail", strings.Repeat("b", 25) + " " + identity.String()},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := applicationName(row.base, identity)
-			if got != row.want || len(got) > maxApplicationName || !utf8.ValidString(got) {
+			printable := !strings.ContainsFunc(got, func(r rune) bool { return r < ' ' || r > '~' })
+			if got != row.want || len(got) > maxApplicationName || !printable {
 				t.Fatalf("applicationName(%q) = %q (%d bytes), want %q", row.base, got, len(got), row.want)
 			}
 		})
@@ -37,14 +42,18 @@ func TestAnApplicationNameEndsWithTheWholeIdentity(t *testing.T) {
 	}
 }
 
-// Every connection a store opens names its identity at the end of its application_name: the
-// shared pool's, under the connection string's name or "dispatch", and each separate pool's,
-// under its own name or the shared pool's. A connection string's own name is kept before it.
+// Every connection a store opens names its identity at the end of its application_name, as
+// pg_stat_activity shows it, which is what EndSessionsOf matches: the shared pool's, under the
+// connection string's name or "dispatch", and each separate pool's, under its own name or the
+// shared pool's. A connection string's own name is kept before it, in the printable ASCII form
+// Postgres keeps it in: a name of non-ASCII letters, which Postgres 18 escapes and cuts at 63
+// bytes, still ends with the whole identity.
 func TestEveryConnectionOfAStoreNamesItsIdentity(t *testing.T) {
 	ctx := context.Background()
 	for _, row := range []struct{ name, url, base string }{
 		{"no name in the connection string", testDatabaseURL(t), defaultApplicationName},
 		{"a name in the connection string", withParam(testDatabaseURL(t), "application_name", "dispatch-previous-build"), "dispatch-previous-build"},
+		{"a name of non-ASCII letters in the connection string", withParam(testDatabaseURL(t), "application_name", neturl.QueryEscape("dispatch-münchen-süd")), `dispatch-m\xc3\xbcnchen-s`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			database, err := Open(ctx, row.url)
@@ -62,7 +71,7 @@ func TestEveryConnectionOfAStoreNamesItsIdentity(t *testing.T) {
 			}) string {
 				t.Helper()
 				var name string
-				if err := q.QueryRow(ctx, `select current_setting('application_name')`).Scan(&name); err != nil {
+				if err := q.QueryRow(ctx, `select application_name from pg_stat_activity where pid = pg_backend_pid()`).Scan(&name); err != nil {
 					t.Fatalf("read the application_name: %v", err)
 				}
 				return name
@@ -162,11 +171,11 @@ func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
 	}
 	planted := map[string]*pgx.Conn{}
 	for _, name := range []string{
-		"psql " + identity,                // a session of no store naming the identity: ended
-		"dispatch " + identity + "0",      // one character more: kept
-		"dispatch " + identity[:35],       // one character less: kept
-		"dispatch " + uuid.NewString(),    // another identity: kept
-		"dispatch-planted" + identity[1:], // no space before a 35-byte tail of it: kept
+		"psql " + identity,             // a session of no store naming the identity: ended
+		"dispatch " + identity + "0",   // one character more: kept
+		"dispatch " + identity[:35],    // one character less: kept
+		"dispatch " + uuid.NewString(), // another identity: kept
+		"dispatch-planted-" + identity, // the whole identity with no space before it: kept
 	} {
 		config, err := pgx.ParseConfig(testDatabaseURL(t))
 		if err != nil {
@@ -238,32 +247,84 @@ func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
 }
 
 // A store whose sessions were all ended while idle in its pools fails at most the first statement
-// handed one of them: that statement finds its session ended (SessionEnded), and the store's pools
-// then drop every connection they hold, so each later statement runs on a connection dialled
-// afresh. The four connections are ended while the test holds them, released at once and used
+// handed one of them, in any of its pools: that statement finds its session ended
+// (SessionEnded), and every pool of the store - the shared one and each separate one - then drops
+// every connection it holds, so each later statement, in whichever pool, runs on a connection
+// dialled afresh. Every pool is opened and holds connections of its own: four of the shared pool,
+// one of each separate pool. They are ended while the test holds them, released at once and used
 // within the second after which pgxpool pings an idle connection before it hands it out, so
-// without the drop each of them would fail a statement of its own.
+// without the drop each pool would fail a statement of its own. Every pgx pool field of Pool is
+// among the pools used (Pool.pools), so a pool added later and left out of the drop fails here.
 func TestAStoreWhoseSessionsWereEndedFailsOneStatementAndDialsAfresh(t *testing.T) {
 	ctx := context.Background()
 	ended := openTestStore(t)
 	ending := openTestStore(t)
-	const held = 4
-	conns := make([]*pgxpool.Conn, 0, held)
-	pids := make([]int32, 0, held)
-	for range held {
-		conn, err := ended.Pool.Acquire(ctx)
-		if err != nil {
-			t.Fatalf("acquire a connection: %v", err)
+	opened := map[string]func() error{
+		"rooms":        func() error { _, err := ended.Pool.Rooms(); return err },
+		"room appends": func() error { _, err := ended.Pool.RoomAppends(); return err },
+		"health probe": func() error { _, err := ended.Pool.healthPool(); return err },
+		"listener": func() error {
+			conn, err := ended.Pool.Listener(ctx)
+			if err == nil {
+				err = conn.Close(ctx)
+			}
+			return err
+		},
+		"loop leases":         func() error { _, err := ended.Pool.Leases(); return err },
+		"events outbox":       func() error { _, err := ended.Pool.Outbox(); return err },
+		"document compaction": func() error { _, err := ended.Pool.Compaction(); return err },
+		"display tree fill":   func() error { _, err := ended.Pool.TextTrees(); return err },
+		"event horizon":       func() error { _, err := ended.Pool.Horizon(); return err },
+	}
+	for what, open := range opened {
+		if err := open(); err != nil {
+			t.Fatalf("open the %s pool: %v", what, err)
 		}
-		var pid int32
-		if err := conn.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
-			t.Fatalf("read the connection's backend: %v", err)
+	}
+	ended.Pool.mu.Lock()
+	pools := ended.Pool.pools()
+	ended.Pool.mu.Unlock()
+	listed := map[uintptr]bool{}
+	for _, pool := range pools {
+		if pool == nil {
+			t.Fatal("a pool of the store is still unopened after every pool was opened")
 		}
-		conns, pids = append(conns, conn), append(pids, pid)
+		listed[reflect.ValueOf(pool).Pointer()] = true
+	}
+	fields := reflect.ValueOf(ended.Pool).Elem()
+	for i := range fields.NumField() {
+		field := fields.Field(i)
+		if field.Type() != reflect.TypeFor[*pgxpool.Pool]() {
+			continue
+		}
+		if name := fields.Type().Field(i).Name; field.IsNil() || !listed[field.Pointer()] {
+			t.Fatalf("the pool field %s is unopened or not among Pool.pools, which resetAll drops", name)
+		}
+	}
+
+	const sharedHeld = 4
+	var conns []*pgxpool.Conn
+	var pids []int32
+	for index, pool := range pools {
+		held := 1
+		if index == 0 {
+			held = sharedHeld
+		}
+		for range held {
+			conn, err := pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection of pool %d: %v", index, err)
+			}
+			var pid int32
+			if err := conn.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+				t.Fatalf("read the connection's backend: %v", err)
+			}
+			conns, pids = append(conns, conn), append(pids, pid)
+		}
 	}
 	sessions, err := ending.Pool.EndSessionsOf(ctx, ended.Pool.Identity())
-	if err != nil || len(sessions) < held {
-		t.Fatalf("end the store's sessions: %d ended, %v; want at least %d", len(sessions), err, held)
+	if err != nil || len(sessions) < len(conns) {
+		t.Fatalf("end the store's sessions: %d ended, %v; want at least %d", len(sessions), err, len(conns))
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var live int
@@ -282,14 +343,22 @@ func TestAStoreWhoseSessionsWereEndedFailsOneStatementAndDialsAfresh(t *testing.
 	}
 	released := time.Now()
 	var failed []error
-	for range held + 1 {
-		var one int
-		if err := ended.Pool.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
-			failed = append(failed, err)
+	statements := 0
+	for index, pool := range pools {
+		used := 1
+		if index == 0 {
+			used = sharedHeld + 1
+		}
+		for range used {
+			statements++
+			var one int
+			if err := pool.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
+				failed = append(failed, fmt.Errorf("pool %d: %w", index, err))
+			}
 		}
 	}
-	t.Logf("%d statements after the release, %v after it: %d failed", held+1, time.Since(released).Round(time.Millisecond), len(failed))
+	t.Logf("%d statements over %d pools after the release, %v after it: %d failed", statements, len(pools), time.Since(released).Round(time.Millisecond), len(failed))
 	if len(failed) > 1 || (len(failed) == 1 && !SessionEnded(failed[0])) {
-		t.Fatalf("after its sessions were ended, the store failed %d of %d statements (%v); want at most the first, with its session ended", len(failed), held+1, failed)
+		t.Fatalf("after its sessions were ended, the store failed %d of %d statements (%v); want at most the first, with its session ended", len(failed), statements, failed)
 	}
 }

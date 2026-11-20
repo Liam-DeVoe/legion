@@ -213,6 +213,8 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // for the client to have one, and no longer than the window's ctx lasts; at every later one it
 // answers ErrUnavailable unless that connection is still connected and has not reconnected. A wait
 // that ctx ended answers ctx's end alone, so the caller reads it as its own stop, not as NATS lost.
+// Every read of the connection's status it makes is bounded (readConnection), so a reconnect
+// attempt holding nats.go's lock of the connection holds no send and no probe past its own wait.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
 	defer w.pinning.Unlock()
@@ -226,9 +228,13 @@ func (w *window) pin(wait time.Duration) error {
 			return fmt.Errorf("bus: %w: no connection within %s: %w", ErrUnavailable, wait, err)
 		}
 		w.client.mu.Lock()
-		w.conn, w.js = w.client.Conn, w.client.js
+		conn, js := w.client.Conn, w.client.js
 		w.client.mu.Unlock()
-		w.reconnects = w.conn.Stats().Reconnects
+		state, read := readConnection(conn)
+		if !read {
+			return fmt.Errorf("bus: %w: the client's connection is reconnecting", ErrUnavailable)
+		}
+		w.conn, w.js, w.reconnects = conn, js, state.reconnects
 	}
 	if !w.current() {
 		return fmt.Errorf("bus: %w: the window's connection was lost or reconnected since its first send", ErrUnavailable)
@@ -260,9 +266,11 @@ func (w *window) pinToSend() error {
 }
 
 // current reports whether the window's connection is connected and has not reconnected since the
-// window pinned it.
+// window pinned it. A read of its status that a reconnect attempt holds past connectionReadBound
+// reads as not current, which a connection being reconnected is not.
 func (w *window) current() bool {
-	return w.conn.IsConnected() && w.conn.Stats().Reconnects == w.reconnects
+	state, read := readConnection(w.conn)
+	return read && state.connected() && state.reconnects == w.reconnects
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as

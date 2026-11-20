@@ -25,16 +25,9 @@ const (
 	codeDocNewerContent       = "DOC_NEWER_CONTENT"
 	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
 	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
-	codeDatabaseSessionEnded  = "DATABASE_SESSION_ENDED"
+	codeDatabaseSessionEnded  = store.SessionEndedCode
 	codeInternal              = "INTERNAL"
 )
-
-// databaseSessionEndedMessage is the 503 DATABASE_SESSION_ENDED body's error: a database session
-// the request was using was ended under it (store.SessionEnded), which rolled back whatever that
-// session had not committed yet.
-const databaseSessionEndedMessage = "the database ended a session this request was using before the request finished, " +
-	"and rolled back what that session had not committed: another server process took over this one's work, " +
-	"or the database is shutting down. Read back what the request was to change, and make the request again if it is not there"
 
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
@@ -278,10 +271,12 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// hold over from this process when this process's row of it lapsed (outbox's
 	// endReplacedSessions), by an operator, or by a database shutdown. It is no fault of this
 	// request or of this server's code, and it rolled back what that session had not committed.
+	// The line names the answer's code and logs nothing taken from err: the statement's error can
+	// carry what the request sent, and every such error is the same 57P01.
 	if store.SessionEnded(err) {
 		w.Header().Set("Retry-After", "1")
-		writeError(w, codeDatabaseSessionEnded, http.StatusServiceUnavailable, databaseSessionEndedMessage)
-		slog.Warn("dispatch: API request's database session was ended", "error", err)
+		writeError(w, codeDatabaseSessionEnded, http.StatusServiceUnavailable, store.SessionEndedMessage)
+		slog.Warn("dispatch: API request's database session was ended", "code", codeDatabaseSessionEnded)
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")

@@ -842,6 +842,43 @@ func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) 
 	}
 }
 
+// connectionReadBound bounds each read of a connection's status that a publish window and
+// ensureConnWithContext make before they decide (readConnection). nats.go reads the status under
+// its lock of the connection, which it holds for microseconds around each write, and across each
+// reconnect attempt's dial and handshake, up to connectTimeout. A read held longer than this
+// bound is held by such an attempt, and so reads as not connected, which it is: a send then
+// answers at once and a probe waits out its own timeout, rather than either waiting out an
+// attempt through a path a silent cut left dead.
+const connectionReadBound = 250 * time.Millisecond
+
+// connectionState is what readConnection reads of a connection: its status and how often it has
+// reconnected.
+type connectionState struct {
+	status     nats.Status
+	reconnects uint64
+}
+
+// connected reports what nats.Conn.IsConnected does: connected, or draining.
+func (s connectionState) connected() bool {
+	return s.status == nats.CONNECTED || s.status == nats.DRAINING_SUBS || s.status == nats.DRAINING_PUBS
+}
+
+// readConnection reads conn's status and reconnect count within connectionReadBound, and answers
+// false when the read has not answered by then. The read it starts is left to end on its own,
+// when nats.go lets the lock go.
+func readConnection(conn *nats.Conn) (connectionState, bool) {
+	answer := make(chan connectionState, 1)
+	go func() { answer <- connectionState{status: conn.Status(), reconnects: conn.Stats().Reconnects} }()
+	timer := time.NewTimer(connectionReadBound)
+	defer timer.Stop()
+	select {
+	case state := <-answer:
+		return state, true
+	case <-timer.C:
+		return connectionState{}, false
+	}
+}
+
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
 // package is opened on it (OpenKeyValue, roles.Buckets), and so is re-opened on the replacement
 // after a connection event.
@@ -1613,6 +1650,10 @@ const reconnectRecheck = time.Second
 // close before then, so a caller waits for that first connection as for a reconnect, and nothing
 // here dials beside nats.go before it; a connection dialled later to replace a closed one is an
 // ordinary one, connected before it is installed.
+//
+// Each read of the connection's status is bounded (readConnection): a read a reconnect attempt
+// holds is a connection being reconnected, which is waited for as one, so the wait ends with ctx
+// within one connectionReadBound rather than when the attempt lets nats.go's lock go.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -1621,15 +1662,20 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		// lands between the read and the wait below closes the channel the wait is on.
 		changed := c.connChangedLocked()
 		c.mu.Unlock()
+		var state connectionState
+		read := false
+		if conn != nil {
+			state, read = readConnection(conn)
+		}
 		// A live connection serves even a stopped client: deliveries still in their handlers during
 		// Drain publish their forwards and exceptions through it.
-		if conn != nil && (conn.IsConnected() || conn.IsDraining()) {
+		if read && state.connected() {
 			return nil
 		}
 		if c.stopped() {
 			return errStopped
 		}
-		if conn != nil && !conn.IsClosed() {
+		if conn != nil && (!read || state.status != nats.CLOSED) {
 			c.reconnectWaits.Add(1)
 			if c.reconnectWaitTick != nil {
 				c.reconnectWaitTick()

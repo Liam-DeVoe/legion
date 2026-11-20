@@ -52,10 +52,11 @@ type HoldOptions struct {
 // so each is on the database's clock.
 const (
 	// takeHold inserts the row, or takes it over when it has lapsed or is already this holder's,
-	// in one statement, and answers whether it took the name and the holder the row named before
-	// it (null for no row). A live row of another holder leaves the statement taking nothing. Two
-	// processes taking one name at once queue on the row: the second re-reads the first's row
-	// once it commits and finds it live.
+	// in one statement, and answers whether it took the name, the holder the row named before it
+	// (null for no row), and how long before the statement's now() that row had lapsed, in
+	// seconds on the database's clock. A live row of another holder leaves the statement taking
+	// nothing. Two processes taking one name at once queue on the row: the second re-reads the
+	// first's row once it commits and finds it live.
 	//
 	// previous locks the row (for update) before the insert, since the insert reads its one row
 	// from previous: a lock that waited on another transaction's change of the row reads the
@@ -65,7 +66,7 @@ const (
 	// is not used because a Dispatch stack may still run Postgres 16 (gcp:Dispatch's
 	// databaseVersion).
 	takeHold = `with previous as (
-			select holder from duty_holds where name = $1 for update
+			select holder, expires_at from duty_holds where name = $1 for update
 		), taken as (
 			insert into duty_holds (name, holder, token, expires_at)
 			select $1, $2, $3, now() + make_interval(secs => $4)
@@ -75,7 +76,8 @@ const (
 				where duty_holds.expires_at <= now() or duty_holds.holder = excluded.holder
 			returning holder
 		)
-		select exists (select 1 from taken), (select holder from previous)`
+		select exists (select 1 from taken), (select holder from previous),
+			(select extract(epoch from now() - expires_at)::float8 from previous)`
 	renewHold = `update duty_holds set expires_at = now() + make_interval(secs => $3)
 		where name = $1 and holder = $2`
 	setHoldToken = `update duty_holds set token = $3 where name = $1 and holder = $2`
@@ -127,8 +129,10 @@ type Hold struct {
 	holder uuid.UUID
 	opts   HoldOptions
 	// replaced is the other holder whose row the take replaced, uuid.Nil when it replaced none
-	// (Replaced).
-	replaced uuid.UUID
+	// (Replaced), and replacedLapse the moment that row lapsed, on this process's clock, at or
+	// before the real one (ReplacedLapse).
+	replaced      uuid.UUID
+	replacedLapse time.Time
 
 	// stop ends the renewal goroutine, which closes done when it returns.
 	stop context.CancelFunc
@@ -155,27 +159,33 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 	sent := time.Now()
 	var taken bool
 	var previous pgtype.UUID
-	if err := db.QueryRow(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds()).Scan(&taken, &previous); err != nil {
+	var lapsedFor pgtype.Float8
+	if err := db.QueryRow(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds()).Scan(&taken, &previous, &lapsedFor); err != nil {
 		return nil, fmt.Errorf("take hold %q: %w", name, err)
 	}
 	if !taken {
 		return nil, nil
 	}
 	var replaced uuid.UUID
+	var replacedLapse time.Time
 	if previous.Valid && uuid.UUID(previous.Bytes) != holder {
 		replaced = previous.Bytes
+		// The row lapsed lapsedFor before the statement's now(), which came after sent, so
+		// lapsedFor before sent is at or before the real lapse.
+		replacedLapse = sent.Add(-time.Duration(lapsedFor.Float64 * float64(time.Second)))
 	}
 	renewing, stop := context.WithCancel(context.Background())
 	h := &Hold{
-		db:       db,
-		name:     name,
-		holder:   holder,
-		opts:     opts,
-		replaced: replaced,
-		stop:     stop,
-		done:     make(chan struct{}),
-		deadline: sent.Add(opts.TTL - opts.Margin),
-		lost:     make(chan struct{}),
+		db:            db,
+		name:          name,
+		holder:        holder,
+		opts:          opts,
+		replaced:      replaced,
+		replacedLapse: replacedLapse,
+		stop:          stop,
+		done:          make(chan struct{}),
+		deadline:      sent.Add(opts.TTL - opts.Margin),
+		lost:          make(chan struct{}),
 	}
 	h.mu.Lock()
 	h.timer = time.AfterFunc(time.Until(h.deadline), h.expire)
@@ -193,6 +203,15 @@ func (h *Hold) Lost() <-chan struct{} { return h.lost }
 // replaced another's row took the name from a process that stopped renewing without releasing
 // it, which may still hold whatever else it held when it stopped.
 func (h *Hold) Replaced() (uuid.UUID, bool) { return h.replaced, h.replaced != uuid.Nil }
+
+// ReplacedLapse is when the row this hold's take replaced lapsed (Replaced), on this process's
+// monotonic clock, and the zero time when the take replaced none. It is at or before the real
+// moment: the take's statement reads, on the database's clock, how long the row had lapsed when
+// the statement began, and this subtracts that from the moment the statement was sent, which is
+// no later than its beginning. So a caller that must act within some time of the lapse - a
+// standby that must serve within a bound of the stop of the holder it replaced - acts in time by
+// that reading, at the cost of the statement's own trip to the database.
+func (h *Hold) ReplacedLapse() time.Time { return h.replacedLapse }
 
 // Deadline is the current loss deadline: the send time of the last confirmed renewal (or the
 // take), plus TTL - Margin, or the moment Lost closed if that came first. It carries the monotonic

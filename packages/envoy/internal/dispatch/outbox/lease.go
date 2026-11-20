@@ -25,13 +25,33 @@ const (
 	// eventsChannel is the channel migration 0107's trigger notifies once per statement that
 	// inserts events, whichever process committed it.
 	eventsChannel = "dispatch_events"
+	// takeOverWithin is level one's promise for the outbox: whatever stopped the publisher - a
+	// kill, a freeze, a cut from the database or from NATS - a standby becomes the publisher
+	// (publish stores its hold, so Publishing turns true) within six seconds of it. The hold's TTL
+	// (publisherHoldOptions) and the NATS loss grace are each derived from it, so each path to a
+	// take-over sums to it.
+	takeOverWithin = 6 * time.Second
+	// lapseToServe is the part of takeOverWithin left after the row of a holder that stopped
+	// renewing lapses: a kill or a freeze at the moment of a renewal leaves a row that lapses
+	// publisherHoldOptions.TTL later. In this second a standby takes the hold - it arms a timer to
+	// the lapse on the database's clock and takes the hold when it fires (duty's
+	// TestHoldTakesOverWithinASecondAfterTheLapse) - and ends the replaced holder's sessions within
+	// what the take left of it (tryHold).
+	lapseToServe = time.Second
 	// natsLossGrace is how long the holder's NATS connection may stay down before the holder gives
-	// the hold up, so that a process whose NATS works can publish instead. A standby takes the hold
-	// within six seconds of what stopped the holder, a loss of NATS included, and a connection
-	// that goes silent is found lost only by the client's own pings, two to three seconds into the
-	// silence (bus.WithSilentCutDetection): the grace and that detection, with statusReadBound at
-	// the grace's end, must fit in those six seconds, which 3 s did not.
-	natsLossGrace = 2 * time.Second
+	// the hold up, so that a process whose NATS works can publish instead. It is what
+	// takeOverWithin leaves once a connection that went silent has been found lost, which only
+	// the client's own pings do, bus.SilentCutFoundWithin (3 s) into the silence at the latest;
+	// once the two status reads that open and close the grace have each had statusReadBound; and
+	// once the hand-over after the release has had releaseToServe: 6 - 3 - 0.5 - 0.5 = 2 s. A
+	// grace of 3 s passes on a connection whose silence is found early, and at the latest finding
+	// it reaches 3 + 3 + 0.25 = 6.25 s before the release has even begun.
+	natsLossGrace = takeOverWithin - bus.SilentCutFoundWithin - 2*statusReadBound - releaseToServe
+	// releaseToServe is the part of takeOverWithin a NATS loss leaves for the hand-over once the
+	// holder gives the hold up for it: the release statement, the notification that wakes a
+	// standby (duty.HoldReleasedChannel) and the standby's take, which replaces no row and so ends
+	// no session. Each is one statement or one notification, milliseconds on a healthy database.
+	releaseToServe = 500 * time.Millisecond
 	// statusReadBound bounds each of the holder's reads of its client's connection status
 	// (bus.ConnectedWithin). nats.go holds a connection's lock across each reconnect attempt's dial
 	// and handshake, up to the client's connect timeout (5 s), and a status read waits on that
@@ -43,9 +63,10 @@ const (
 	// server still answers, after a batch's sends failed for the connection (scanBatch), and is the
 	// one wait a batch makes for a connection it does not have: its sends wait for none
 	// (bus.Client.WindowUntil), so a batch begun while its client reconnects ends for NATS lost
-	// within it, inside natsLossGrace, and a reconnect slower than it ends the batch and gives the
-	// hold up where a send used to wait for the reconnect.
-	probeTimeout = 2 * time.Second
+	// within it, and a reconnect slower than it ends the batch and gives the hold up where a send
+	// used to wait for the reconnect. It is natsLossGrace: a batch whose sends fail once the
+	// client found its connection lost takes the place of the grace in the six seconds.
+	probeTimeout = natsLossGrace
 	// holdRetry is how long a standby waits to try the hold again after the database failed to
 	// answer the take or the read of the current hold's lapse, or after a probe of its own NATS
 	// connection went unanswered (answering).
@@ -62,16 +83,19 @@ const (
 // publisherHoldOptions are the publisher hold's parameters: it lasts 5 s on the database's clock
 // after each renewal, is renewed every 1 s, and reports itself lost 1 s before it lapses. A
 // process that is killed at the moment of a renewal leaves a row that lapses 5 s later, and a
-// standby takes the hold within a second of the lapse (duty's
-// TestHoldTakesOverWithinASecondAfterTheLapse), so a standby takes the hold within 6 s of a kill
-// (TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill).
+// standby takes the hold within lapseToServe of the lapse, so a standby becomes the publisher
+// within takeOverWithin of a kill
+// (TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill): TTL is what takeOverWithin
+// leaves once lapseToServe is taken out of it.
 //
 // TTL is 5 s, not 6 s, and Margin 1 s, not 2 s, so that a take-over meets those 6 s while the
 // window a renewal has, TTL - Margin, stays the 4 s measured below. What that costs: Margin is
 // how long a holder whose renewal is late has stopped publishing before its row lapses and a
 // standby may take the hold. A lost holder now stops 1 s, not 2 s, before its row lapses, so a
 // send it made just before its deadline has 1 s, not 2 s, to reach NATS before a standby may
-// publish beside it.
+// publish beside it. A renewal the database begins later than a kill moves the row's lapse, and
+// the take-over with it, later by as much; one begun more than lapseToServe after the kill puts
+// the take-over past takeOverWithin, and nothing a standby reads tells it when the kill came.
 //
 // Renew is 1 s, not 2 s, because the window a renewal has is TTL - Margin, 4 s from the last
 // confirmed renewal, and each renewal's own wait for an answer is bounded at Renew. At 2 s the
@@ -99,7 +123,7 @@ const (
 // standby out until its release deletes the row, or for Margin after the deadline when that
 // release cannot reach the database first. That gap is the product's, and the two-process row
 // holds it to the take-over bound rather than to nothing.
-var publisherHoldOptions = duty.HoldOptions{TTL: 5 * time.Second, Renew: time.Second, Margin: time.Second}
+var publisherHoldOptions = duty.HoldOptions{TTL: takeOverWithin - lapseToServe, Renew: time.Second, Margin: time.Second}
 
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
@@ -164,20 +188,30 @@ type Outbox struct {
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
 	probeBeforeHold bool
+	// unended is the holder whose lapsed row this process's take replaced and whose sessions
+	// tryHold did not end within what takeOverWithin left it, uuid.Nil when there is none:
+	// publish ends them once this process publishes, before its first scan. Only Run's goroutine
+	// reads and writes it.
+	unended uuid.UUID
 }
 
-// New returns an outbox for deps, holding the publisher hold under deps.Instance, or an id of its
-// own when that is zero. Run starts it. It makes the record of the fallback copies its passes find
-// held behind an earlier event (heldCopies) and registers that record's gauges on deps.Metrics
-// when it is set.
+// New returns an outbox for deps, holding the publisher hold under the identity of its store's pool
+// (store.Pool.Identity), the one every database session of the process names. Run starts it. It
+// makes the record of the fallback copies its passes find held behind an earlier event
+// (heldCopies) and registers that record's gauges on deps.Metrics when it is set.
+//
+// It panics on a store whose pool names no identity: an outbox there would hold the publisher hold
+// under an identity none of its sessions carries, and a standby taking the hold over from it would
+// end none of them (endReplacedSessions). store.Open names one; so does a pool opened from a copy
+// of an opened store's configuration (store.NewPool).
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "unknown-host"
 	}
-	instance := deps.Instance
+	instance := deps.Store.Pool.Identity()
 	if instance == uuid.Nil {
-		instance = uuid.New()
+		panic("outbox.New: the store's pool names no process identity (store.Pool.Identity), so a standby that took the publisher hold over could end none of this process's sessions")
 	}
 	if deps.held == nil {
 		deps.held = newHeldCopies()
@@ -383,9 +417,16 @@ func (o *Outbox) answering(ctx context.Context) bool {
 
 // tryHold takes the publisher hold, or returns how long until the current holder's hold lapses on
 // the database's clock: zero when it already has (it was released or lapsed between the two
-// statements), and holdRetry when the database did not answer. A take that replaced another
-// holder's lapsed row ends that holder's database sessions before it returns, and so before the
-// first batch (endReplacedSessions).
+// statements), and holdRetry when the database did not answer.
+//
+// A take that replaced another holder's lapsed row ends that holder's database sessions
+// (endReplacedSessions) before it returns, and so before this process publishes, within what
+// takeOverWithin leaves of the lapse: lapseToServe after it, on this process's clock, read no
+// later than the real lapse (duty.Hold.ReplacedLapse). A holder that stopped at the moment of a
+// renewal is the latest stop that row's lapse allows, so publishing by then is publishing within
+// takeOverWithin of the stop, whenever it came. The ending is given no more than that: when the
+// take left nothing of it, or the ending did not answer within it, the take stands, and publish
+// ends those sessions once this process publishes, before its first batch (unended).
 func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
@@ -393,7 +434,14 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
 		if previous, replaced := hold.Replaced(); replaced {
-			o.endReplacedSessions(ctx, previous)
+			o.unended = previous
+			left := time.Until(hold.ReplacedLapse().Add(lapseToServe))
+			if left > 0 && o.endReplacedSessions(ctx, previous, left) {
+				o.unended = uuid.Nil
+			} else {
+				slog.Warn("dispatch outbox: the previous holder's sessions were not ended within what the take-over's six seconds left; they are ended once this process publishes",
+					"instance", o.instance, "previous", previous, "left", left.Round(time.Millisecond).String())
+			}
 		}
 		return hold, 0
 	}
@@ -415,8 +463,8 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 }
 
 // endReplacedSessions ends every database session of previous, the process whose lapsed row of
-// the publisher hold this process's take just replaced (store.Pool.EndSessionsOf), and logs each
-// one it ended.
+// the publisher hold this process's take just replaced (store.Pool.EndSessionsOf), within bound,
+// logs each one it ended, and reports whether the ending answered.
 //
 // A holder's row lapses without a release only when the holder could not send one: it was killed,
 // frozen (SIGSTOP, a VM paused), or cut off from the database. A frozen process still holds every
@@ -430,16 +478,16 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // connection they hold (store.Pool.onSessionEnded), and it stands by for the hold like any other
 // process.
 //
-// It is bounded by recordTimeout, as a record is. A failure is logged and the take stands: the
-// process holds the hold, and a session it could not end is the frozen process's alone.
-func (o *Outbox) endReplacedSessions(ctx context.Context, previous uuid.UUID) {
-	ending, cancel := context.WithTimeout(ctx, recordTimeout)
+// A failure is logged and the take stands: the process holds the hold, and a session it could not
+// end is the frozen process's alone until the ending is made again (tryHold, publish).
+func (o *Outbox) endReplacedSessions(ctx context.Context, previous uuid.UUID, bound time.Duration) bool {
+	ending, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	ended, err := o.deps.Store.Pool.EndSessionsOf(ending, previous)
 	if err != nil {
 		slog.Error("dispatch outbox: end the sessions of the publisher hold's previous holder",
-			"instance", o.instance, "previous", previous, "error", err)
-		return
+			"instance", o.instance, "previous", previous, "bound", bound.Round(time.Millisecond).String(), "error", err)
+		return false
 	}
 	for _, session := range ended {
 		slog.Info(endedSessionLine, "instance", o.instance, "previous", previous,
@@ -447,6 +495,7 @@ func (o *Outbox) endReplacedSessions(ctx context.Context, previous uuid.UUID) {
 	}
 	slog.Info("dispatch outbox: replaced the publisher hold's lapsed row and ended its holder's sessions",
 		"instance", o.instance, "previous", previous, "sessions_ended", len(ended))
+	return true
 }
 
 // endedSessionLine is the line endReplacedSessions logs for each session of the previous holder it
@@ -458,6 +507,11 @@ const endedSessionLine = "dispatch outbox: ended a database session of the publi
 // lost when a record found the hold another's with the loss deadline still ahead, and the release
 // is what stops that hold's renewal before the next take starts another. Its delete and notify are
 // guarded on this holder, so a hold another process has taken is left alone.
+//
+// The store of hold is the moment this process becomes the publisher, the moment takeOverWithin
+// is counted to. When tryHold left the sessions of the holder this take replaced unended
+// (unended), they are ended right after it, within recordTimeout as a record is, and before the
+// first scan.
 //
 // The line that ends the turn is written before the release, and carries two bounds on the moment
 // this process stopped publishing, stopped and stopped_by. The order matters to a reader of the
@@ -530,6 +584,10 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
+	if o.unended != uuid.Nil {
+		o.endReplacedSessions(ctx, o.unended, recordTimeout)
+		o.unended = uuid.Nil
+	}
 	end := o.serve(ctx, hold)
 	returned := time.Now()
 	o.hold.Store(nil)

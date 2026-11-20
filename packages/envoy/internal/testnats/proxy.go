@@ -33,6 +33,10 @@ type Proxy struct {
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
+	// freezeAfter, while set (FreezeAfterServer), is the text whose next write to a client
+	// freezes the proxy, and frozenAt where the moment of that freeze is sent.
+	freezeAfter []byte
+	frozenAt    chan time.Time
 }
 
 // ProxyOption configures a Proxy.
@@ -110,6 +114,32 @@ func (p *Proxy) Freeze() {
 	}
 }
 
+// FreezeAfterServer freezes the proxy (Freeze) right after it has written to a client the next
+// chunk from the server that holds text, and sends the moment it froze on the channel it returns.
+// With text "PONG\r\n" a client's silence begins just after a ping of its own was answered, which
+// is the latest moment its own pings find the silence after (bus.SilentCutFoundWithin).
+func (p *Proxy) FreezeAfterServer(text string) <-chan time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.freezeAfter = []byte(text)
+	p.frozenAt = make(chan time.Time, 1)
+	return p.frozenAt
+}
+
+// wrote freezes the proxy when data, written to a client, holds the text FreezeAfterServer armed.
+func (p *Proxy) wrote(data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.freezeAfter == nil || !bytes.Contains(data, p.freezeAfter) {
+		return
+	}
+	p.freezeAfter = nil
+	if p.gate == nil {
+		p.gate = make(chan struct{})
+	}
+	p.frozenAt <- time.Now()
+}
+
 // Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
 // freeze held move on.
 func (p *Proxy) Restore() {
@@ -147,8 +177,8 @@ func (p *Proxy) join(client net.Conn) {
 		p.untrack(client)
 		return
 	}
-	go p.relay(server, client)
-	p.relay(client, server)
+	go p.relay(server, client, false)
+	p.relay(client, server, true)
 }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
@@ -187,7 +217,7 @@ const proxyReadBuffer = 64 << 10
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
 // too.
-func (p *Proxy) relay(dst, src net.Conn) {
+func (p *Proxy) relay(dst, src net.Conn, toClient bool) {
 	defer p.untrack(dst, src)
 	type chunk struct {
 		data []byte
@@ -217,6 +247,9 @@ func (p *Proxy) relay(dst, src net.Conn) {
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
+		}
+		if toClient {
+			p.wrote(c.data)
 		}
 	}
 	_ = src.Close()
