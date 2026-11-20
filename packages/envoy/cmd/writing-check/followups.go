@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 )
 
@@ -168,6 +169,10 @@ func runDatasetFollowups(args []string, stdout, stderr io.Writer) int {
 	}
 	if *from == "" || *casesPath == "" || *out == "" || flags.NArg() > 0 {
 		fmt.Fprintln(stderr, "writing-check dataset followups: --from, --cases and --out are required, and nothing else")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset followups: %v\n", err)
 		return 2
 	}
 	fail := func(err error) int {

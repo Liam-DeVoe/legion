@@ -21,14 +21,14 @@
 //	writing-check regress --cases <cases.jsonl> --repeat-bound <share> <reader flags>
 //	writing-check reading --in <cases.jsonl> --after <event id> --through <event id> [--exclude <manifest>]... --out <dir> <reader flags>
 //	writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
-//	writing-check dataset fetch --end <RFC 3339 time> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
+//	writing-check dataset fetch --end <RFC 3339 time> --owner <login> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
 //	writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
 //	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) [--to-development <file>] --out <dir>
 //	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
 //	writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 //	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 //	writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
-//	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
+//	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --owner <login> --out <dir>
 //	writing-check dataset lists --cases <build dir> --verdicts <file> --plain-labels <file> --out <dir>
 //	writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
 //	writing-check harness probe|score|grader-test|compare|phrases-labels|asked-words|local|load [flags]

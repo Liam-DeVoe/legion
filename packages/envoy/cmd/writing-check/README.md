@@ -23,14 +23,14 @@ go run ./cmd/writing-check reproduce --outputs <outputs.jsonl> --labels <labels.
 go run ./cmd/writing-check regress --cases <cases.jsonl> --repeat-bound <share> <reader flags>
 go run ./cmd/writing-check reading --in <cases.jsonl> --after <event id> --through <event id> [--exclude <manifest>]... --out <dir> <reader flags>
 go run ./cmd/writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
-go run ./cmd/writing-check dataset fetch --end <RFC 3339 time> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
+go run ./cmd/writing-check dataset fetch --end <RFC 3339 time> --owner <login> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
 go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
 go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) [--to-development <file>] --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
-go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
+go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --owner <login> --out <dir>
 go run ./cmd/writing-check dataset lists --cases <build dir> --verdicts <file> --plain-labels <file> --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
@@ -119,9 +119,13 @@ times, waiting 0.5s, 1s, 2s, 4s and 8s.
 At the end it prints the count of cases by surface on stdout. On stderr it prints the exempted
 writes, and by surface the fields Dispatch would not serve whole.
 
-`--resume` continues a cases file that an earlier run did not finish. It drops a line cut short,
-and the lines of the last event the file holds, because that event's cases may be incomplete.
-Then it reads again from that event. Each event's cases are written in one write.
+`fetch` writes the cases to `<out>.partial`, and renames that file to `--out` once it has read
+through `--through` or the end of the log. So a run that stops leaves `--out` as it was, and the
+cases it read in `<out>.partial`; `group`, `readers`, `label` and `plant` never read a short file as
+a whole one. `--resume` continues `<out>.partial`, or, when there is none, `--out` itself, which
+it moves there first. It drops a line cut short, and the lines of the last event the file holds,
+because that event's cases may be incomplete. Then it reads again from that event. Each event's
+cases are written in one write.
 
 `DISPATCH_URL` names the Dispatch server. `DISPATCH_TOKEN_FILE` names the file that holds the
 bearer token. The command reads the token file on every request and never prints the token.
@@ -303,7 +307,12 @@ keeps:
 
 `--state` names a file for that state. When the file exists and was replayed from the same
 `--log-after`, `readers` reads it and pages the log only after the last event it holds, so a
-second run over the same window reads no log. A case outside the replayed window is refused.
+second run over the same window reads no log. The state is saved after a replay that stopped too,
+through the last event it applied: an event whose payload does not decode is not applied, so the
+next run reads it again. A case outside the replayed window is refused.
+
+`--out` is refused when it names the `--in` file. The cases go to a file beside `--out`, renamed
+over it once every case is written, so a refused run leaves `--out` as it was.
 
 Some history is not in the log:
 
@@ -469,7 +478,7 @@ Output, in `--out`:
 | `--titles` | A cases file to read issue titles from (default `--in`). For planted copies, give the corpus. |
 | `--definition` | The definition file. The command sends it to the model as the rubric. Keep it out of the repository. |
 | `--out` | The labels file. The command refuses a file that exists, unless `--resume` is given. |
-| `--resume` | Keep the writes the labels file holds with no error, and label the others. |
+| `--resume` | Keep the writes the labels file holds with no error, and label the others. The kept lines go to a file beside the labels file, renamed over it once they are written whole, so a resume that stops before then leaves the file as it was. |
 | `--concurrency` | The calls in flight at once (default 4). |
 | `--kind` | The endpoint's protocol (default `anthropic-messages`). |
 | `--endpoint` | The model gateway's base URL. |
@@ -735,7 +744,8 @@ Output, in `--out`: `manifest.jsonl` (`event_id`, `source_id`, `project`, `famil
 read) and `manifest.sha256`; `results.jsonl` (each write's sentences, candidates, detector
 outcome, whether the rules refused it, and its bytes; no text); `report.json` and `report.md`,
 with the window, the excluded manifests and their SHA-256, the projects, the manifest's SHA-256
-and the bundle digest.
+and the bundle digest. The manifest and the results are written once every write is read, so a
+reading that stops writes none of them.
 
 ## validate
 
@@ -793,11 +803,15 @@ text. The work has these steps:
 8. `followups` writes what the owner did after the text that each case reads, from the bundle and
    the cases. It also writes the question cases' explanations as answer cases.
 
-The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
+The dataset is a file artifact of INFRA-3231. It is never a file of this repository, and every
+step refuses an output path inside a repository, as the harness does.
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
-`build --from <bundle>` prints the SHA-256 of the snapshot and the verdicts it read, the end and
-the owner of the snapshot's header, and the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and
-`cases.jsonl.gz`, so a rebuild compares with `DATASET` on its inputs and those three outputs.
+`build --from <bundle>` prints the SHA-256 of the snapshot and the verdicts it read, the end of
+the snapshot's header and `owner_sha256`, the SHA-256 of its owner, and the SHA-256 of
+`documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`, so a rebuild compares with `DATASET`
+on its inputs and those three outputs. `owner_sha256` is the SHA-256 of the owner's login as the
+header holds it (lower case, no blank around it), so neither `DATASET` nor the build's output
+names an address; a reader who holds the login checks it with `printf %s <login> | sha256sum`.
 `build` does not read `DATASET`.
 
 `named` is not one of these steps. It builds cases from document versions and asks that it reads
@@ -815,7 +829,7 @@ plain check (see "lists").
 | `--out` | The snapshot file, gzipped JSONL. |
 | `--labelled` | The labelled sets (`writing-check-sets-and-labels-tar-gz`), as the tarball or the directory it was extracted to. |
 | `--work` | The work directory (default `<out>.work`). |
-| `--owner` | The person whose texts select the cases (default `sami@theorem.dev`). |
+| `--owner` | The person whose texts select the cases, by login (required; no default). |
 | `--concurrency` | The reads in flight at once (default 4). |
 
 `fetch` does these steps:
@@ -926,8 +940,11 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 
 `build` refuses a verdicts file that has no verdict for one of the owner's texts. It refuses a
 snapshot that holds an event created after the `end` of its header, and a header `end` or an
-event time that is no RFC 3339 time; the error gives the first such event's id and time. It makes
-the four groups of R1:
+event time that is no RFC 3339 time; the error gives the first such event's id and time.
+`classify`, `owner-texts` and `followups`, which read the same snapshot, refuse it too. `build`
+writes its four files into a directory under `--out` and moves them into `--out` only once the
+whole build has passed, so a refused build leaves `--out` as it was, the files of an earlier
+build in it included. It makes the four groups of R1:
 
 - **question**: each owner text with the verdict `asks_word_meaning`, `cannot_understand` or
   `jargon_complaint`, with the agent text it answers.
@@ -1008,8 +1025,9 @@ With `--confirmed`, `counts.json` also holds `confirmed_sample`: the cases the r
 ask about words, the cases it read, the seed, the draw (`python3
 random.Random(<seed>).sample(sorted question cases by id, <total>)`, which drew the sample), the
 reader, and the result file's SHA-256. `build` refuses a result whose counts do not match its
-items, a case read twice, a case that is not a question case of this build, and items that are
-not that draw in its order; the error gives the first item that differs. `build` draws the sample
+items, a read of other than 50 cases (R1's draw), a case read twice, a case that is not a question
+case of this build, and items that are not that draw in its order; the error gives the first
+item that differs. `build` draws the sample
 itself as CPython's `random` draws it (`pyRandom.sample`, in `calibrate.go`): MT19937 seeded by
 `init_by_array` from the seed's 32-bit words, `getrandbits`, `_randbelow_with_getrandbits`, and
 `sample`'s pool and set branches, from the question case ids sorted as Python sorts them (byte
@@ -1022,9 +1040,10 @@ and by case group. It holds no key. The counts of the groups and of the parts ar
 move.
 
 `build` prints the SHA-256 of the snapshot (`snapshot sha256`) and of the verdicts file
-(`verdicts sha256`) it read, the `end` and the `owner` of the snapshot's header, and the SHA-256
-of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`: `DATASET`'s `snapshot_sha256`,
-`verdicts_sha256`, `end`, `owner`, `documents_sha256`, `sessions_sha256` and `cases_sha256`. With
+(`verdicts sha256`) it read, the `end` of the snapshot's header, the SHA-256 of its owner
+(`owner_sha256`), and the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`:
+`DATASET`'s `snapshot_sha256`, `verdicts_sha256`, `end`, `owner_sha256`, `documents_sha256`,
+`sessions_sha256` and `cases_sha256`. With
 `--to-development`, it also prints the split groups and cases that the list moved and, for each
 case group, the held-out share the split gave and the share after the move.
 
@@ -1041,7 +1060,8 @@ same inputs write the same bytes. A bundle larger than `--part-size` (default 24
 Dispatch's 25 MiB file limit) is also written as parts, `<bundle>.part-000` and on, with
 `<bundle>.manifest.json`. The manifest gives each part's size and SHA-256, and the bundle's.
 `build --from` the manifest joins the parts. It refuses a part or a joined bundle whose SHA-256
-differs from the manifest.
+differs from the manifest. `pack` first removes the manifest and the parts that an earlier pack
+to the same `--out` left, so `build --from` the directory never joins an earlier bundle's parts.
 
 `TestDatasetFlippedVerdictChangesTheDigest` is the negative control of
 `TestDatasetBuildIsDeterministic`: the same inputs build the same SHA-256, and one changed verdict
@@ -1095,7 +1115,10 @@ the export.
 part that differs, naming it. It also refuses an export made from another session list: a
 session the export holds that no case names, or a count of the cases' sessions absent from the
 export other than the manifest's `sessions_left_out`. It refuses parts whose rows of a session
-differ from the manifest's count.
+differ from the manifest's count, and a case whose `write_time` is no time. Its three files go to
+a directory under `--out` and move into `--out` only once every check has passed, so a refused
+export leaves `--out` as it was: an earlier export's files stay, and an `--out` that did not exist
+is not made.
 
 A case's place in its writer session is the last row, in the export's order, whose `ts` is at
 or before the case's `write_time`. Each case gets one status:
@@ -1235,11 +1258,11 @@ it changes no file of the dataset.
 | `--doc` | `<issue>/<document>@<version>[,<version>...]`: versions of one document of an issue. `<document>` is the document's slug or its file name. Give the flag once for each document. |
 | `--ask` | `<issue>/<ask id>`: an ask of an issue. Give the flag once for each ask. Give `--doc`, `--ask` or both. |
 | `--out` | The directory for the output files. |
-| `--owner` | The person the texts are written to (default `sami@theorem.dev`). `harness load` gives each case a reader in his place. |
+| `--owner` | The person the texts are written to, by login (required; no default). `harness load` gives each case a reader in his place. |
 
 ```sh
-go run ./cmd/writing-check dataset named --doc INFRA-3577/open-items-md@30,32,33 --out $TMPDIR/named-3577
-go run ./cmd/writing-check dataset named --ask INFRA-3231/5cfc36a0-1965-46b1-a60e-104869be6c62 --out $TMPDIR/named-ask
+go run ./cmd/writing-check dataset named --doc INFRA-3577/open-items-md@30,32,33 --owner <login> --out $TMPDIR/named-3577
+go run ./cmd/writing-check dataset named --ask INFRA-3231/5cfc36a0-1965-46b1-a60e-104869be6c62 --owner <login> --out $TMPDIR/named-ask
 ```
 
 Each version and each ask is one case:
@@ -1738,6 +1761,9 @@ its size, seed, cases, split groups, and each stratum's cases, target and draw.
 
 A run of the held-out part appends one line to the exposure log before it scores a case: the
 commit, the time, the changes, the models by role and the output directory, as an absolute path.
+It checks the log first, and appends the line just before it scores, after every refusal of its
+own that needs no model call (the session parts, the gateway, the key, the prices, the local
+instance): a run refused there read no text of the part and writes no line.
 The held-out part is scored once at a commit for each cell of the grid: a change with one
 candidate, or a change that calls none. A line's cells are its changes with each candidate that
 its `models.candidate` names. A lockstep run (see "Lockstep") names all its models there,
@@ -1861,8 +1887,10 @@ needs, `question`, `original`, `marker` (the planted fault a wrong list output h
 grader fails a wrong answer or definition, passes a right one, finds a harder text harder, lists
 an item that holds the marker for a wrong list output and nothing for a right one, and finds the
 answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
-each judgement, the wrong and the right outputs it marked correctly, then the cost of every call,
-refused calls included, with its prompt, cache write and cache read tokens. The planted outputs
+each judgement, the wrong and the right outputs it marked correctly, of those it graded, and the
+outputs whose call failed and gave no grade, counted apart; then the cost of every call, refused
+calls included, with its prompt, cache write and cache read tokens. A test with an output that has
+no grade, or one stopped, exits 1: it is not complete. The planted outputs
 are written by hand from development cases and hold Dispatch text, so they are kept under
 `$TMPDIR` and never in the repository.
 `--grader-inputs` sets the grader's input modes, as `score` takes them. `--grader` names the
@@ -2144,7 +2172,11 @@ the phrases judgement and places each finding in the labelled sentence that hold
 and addresses as the labels write them, `CODE` and `URL`). It reports the precision (found
 sentences labelled vacuous), the recall (vacuous sentences found) and the findings no sentence
 holds, each share with its interval over the writes' groups. A run continues the writes it holds
-no result for.
+no result for. `run.json` in `--out` records the grader, the prompts' digest (`Prompts SHA-256`)
+and the labels directory, and a run of another of them is refused there, so no result of another
+grading is read as this one's. A result line that is not written stops the grading and fails the
+run. The agreement files are written only once every write has a result; a run with a write left
+ungraded writes none and exits 1.
 
 `asked-words` reads a score run's `undefined` grades of the question cases and reports the recall
 of the words the owner asked about (`owner_reply.verdict.words`) that the agent text uses: an
@@ -2159,8 +2191,11 @@ dispatch:local` on it. `--setting NAME=VALUE` and `--pass-through NAME,...` give
 server, and with any of them it starts the server with no stand-in model, so a real model group
 is not refused beside it. `--database <name> --keep` starts again on a database whose cases are
 loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). Once the instance is up,
-`local.json` in `--out` holds its URL, its fake Envoy, its database and the settings; the file
-goes when the instance stops.
+`local.json` in `--out` holds its URL, its fake Envoy, its database, the settings and `seeded`: a
+start that reset and seeded the database writes a new mark on it (`COMMENT ON DATABASE`), and a
+`--keep` start reads that mark back. The file goes when the instance stops. `local` refuses an
+`--out` whose `local.json` exists, which another instance holds, and removes the file only when it
+wrote it.
 
 `--test-models` sets the server up for `score`: every candidate a test model at the gateway or
 the Foundry account the model flags name (with the Foundry sign-in), each by its name, so a
@@ -2187,7 +2222,11 @@ written before the case's text (plan Decision 19), never the case's own question
 Dispatch writes a word record, so `load` writes those rows into the database that `local` made. A
 document the instance refuses (`INVALID_MARKDOWN`, for a block that points at a text of production
 it does not hold) is left out and named in the case's line. `loaded.jsonl` holds where each record
-stands, and a load continues the cases it holds no line for. Write times and authors differ from
+stands, each line with the database and the `seeded` mark of `local.json`, and a load continues
+the cases it holds no line for. It refuses a `loaded.jsonl` of another database or mark, before it
+reaches the database, since those records are not in the instance; a `--keep` restart keeps both,
+so a load continues there. A line that is not written stops the load and fails it. Write times
+and authors differ from
 production, so the grader reads the record from the dataset, never from the local instance.
 `load --sample N --sample-seed S --groups G` loads the cases
 `score --sample N --sample-seed S --groups G` scores.

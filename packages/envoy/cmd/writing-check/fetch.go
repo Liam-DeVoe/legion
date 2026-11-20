@@ -46,13 +46,24 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	c := newClient(base, tokenFile)
 	x := newExtractor(newLiveSource(c))
+	// The cases go to <out>.partial, which becomes --out once the fetch has read through
+	// --through: a fetch that stops leaves --out as it was, and --resume continues the partial
+	// file (or, when there is none, --out itself, which it moves there first).
+	partial := *out + ".partial"
 	start := *after
 	var file *os.File
 	var err error
 	if *resume {
-		file, start, err = resumeCases(*out, *after, x)
+		if _, statErr := os.Stat(partial); errors.Is(statErr, os.ErrNotExist) {
+			if err = os.Rename(*out, partial); errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
+		if err == nil {
+			file, start, err = resumeCases(partial, *after, x)
+		}
 	} else {
-		file, err = os.Create(*out)
+		file, err = os.Create(partial)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
@@ -61,9 +72,16 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	defer file.Close()
 	stats, err := fetchCases(ctx, c, x, start, *through, file, stderr)
 	writeFetchStats(stdout, stderr, stats, x.unread, c.requests)
+	if err == nil {
+		err = file.Close()
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
-		fmt.Fprintf(stderr, "writing-check fetch: rerun with --resume to continue after event %d\n", stats.last)
+		fmt.Fprintf(stderr, "writing-check fetch: %s holds the cases through event %d; rerun with --resume to continue after it\n", partial, stats.last)
+		return 1
+	}
+	if err := os.Rename(partial, *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 1
 	}
 	return 0

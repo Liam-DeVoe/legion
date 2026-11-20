@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // dsIssueLogPage is the events one read of an issue's log asks for, the route's most.
@@ -127,7 +129,7 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.Var(&docs, "doc", "versions of one document of an issue, <issue>/<document>@<version>[,<version>...], the document by its slug or its file name (repeatable; give --doc, --ask or both)")
 	flags.Var(&asks, "ask", "an ask of an issue, <issue>/<ask id>: the ask as its writer opened it, its question and its options (repeatable; give --doc, --ask or both)")
 	out := flags.String("out", "", "the directory for cases.jsonl.gz, documents.jsonl.gz, sessions.tsv and counts.json (required; keep it under $TMPDIR)")
-	owner := flags.String("owner", dsDefaultOwner, "the person the texts are written to: harness load gives each case a reader in his place")
+	owner := flags.String("owner", "", "the person the texts are written to, by login: harness load gives each case a reader in his place (required)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -136,11 +138,15 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	case flags.NArg() > 0:
 		fmt.Fprintf(stderr, "writing-check dataset named: unexpected argument %q\n", flags.Arg(0))
 		return 2
-	case len(docs) == 0 && len(asks) == 0 || *out == "":
-		fmt.Fprintln(stderr, "writing-check dataset named: --doc or --ask, and --out, are required")
+	case len(docs) == 0 && len(asks) == 0 || *out == "" || strings.TrimSpace(*owner) == "":
+		fmt.Fprintln(stderr, "writing-check dataset named: --doc or --ask, --out and --owner are required")
 		return 2
 	case base == "" || tokenFile == "":
 		fmt.Fprintln(stderr, "writing-check dataset named: DISPATCH_URL and DISPATCH_TOKEN_FILE must be set")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
 		return 2
 	}
 	started := time.Now()

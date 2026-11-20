@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -144,6 +145,22 @@ func TestReadingCoversTheWindowLessTheExcludedManifests(t *testing.T) {
 	}
 	if none["status"] != noReading || none["detector_failure_share"] != nil || none["quote_or_fenced_byte_share"] != nil {
 		t.Errorf("an empty window's report: %v", none)
+	}
+
+	// A reading stopped before every write is read writes no manifest: the manifest names the
+	// writes a reading read.
+	stopped := filepath.Join(dir, "stopped")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var stoppedOut, stoppedErr strings.Builder
+	code = run(ctx, append([]string{"reading", "--in", in, "--after", "200", "--through", "300", "--out", stopped, "--root", "../.."}, stub.args(t, dir)...), &stoppedOut, &stoppedErr)
+	if code != 1 || !strings.Contains(stoppedErr.String(), "interrupted before every write was read") {
+		t.Errorf("a stopped reading: exit %d: %s", code, stoppedErr.String())
+	}
+	for _, name := range []string{"manifest.jsonl", "manifest.sha256"} {
+		if _, err := os.Stat(filepath.Join(stopped, name)); !os.IsNotExist(err) {
+			t.Errorf("the stopped reading wrote %s (%v)", name, err)
+		}
 	}
 }
 

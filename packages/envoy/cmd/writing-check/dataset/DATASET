@@ -1,11 +1,14 @@
 # The dataset of INFRA-3231's R1. Its files are artifacts of INFRA-3231, never files of this
 # repository. From packages/envoy, `go run ./cmd/writing-check dataset build --from <bundle> --out <dir>`
-# prints snapshot_sha256, verdicts_sha256, end and owner below, of the inputs it reads, and
+# prints snapshot_sha256, verdicts_sha256, end and owner_sha256 below, of the inputs it reads, and
 # cases_sha256, documents_sha256 and sessions_sha256, of the files it writes; it does not read
-# this file. It refuses a snapshot that holds an event created after its end, and a confirmed.json
-# whose items are not the confirmed_draw below in its order. README.md, "dataset", says how.
+# this file. owner_sha256 is the SHA-256 of the owner's login as the snapshot's header holds it
+# (lower case, no blank around it), so this file names no address: a reader who holds it checks it
+# with `printf %s <login> | sha256sum`. The build refuses a snapshot that holds an event created
+# after its end, and a confirmed.json that is not the confirmed_draw below, of 50 cases in its
+# order; a refused build writes none of its files. README.md, "dataset", says how.
 end: 2026-11-15T03:27:14Z
-owner: sami@theorem.dev
+owner_sha256: 8169ce6a3de25cec74d3a16a206656b57cf57dbf0592476da330a5e4eb5da4d6
 seed: 20261115
 classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused)
 select_prompt_sha256: 696fd463e734ff1b0cc6cf0cb35796751c9ad1e9998cc34b575d0aed0e27315d

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -804,14 +805,14 @@ func TestDatasetOwnerTextsAreHisOwnWithTheirTimes(t *testing.T) {
 }
 
 // build --from the bundle pack wrote, whole or as parts, prints the digest the direct build
-// prints, and the SHA-256 of the snapshot and the verdicts it read with the header's end and
-// owner; its counts carry the confirmation read the bundle holds, whose items are the draw. The
-// read leaves the cases as they were, and one that names a case that is not a question case is
-// refused.
+// prints, and the SHA-256 of the snapshot and the verdicts it read with the header's end and the
+// SHA-256 of its owner; its counts carry the confirmation read the bundle holds, whose items are
+// the draw. The read leaves the cases as they were, and one that names a case that is not a
+// question case is refused.
 func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	snapshot, verdicts := standardFixture().write(t, dir)
+	snapshot, verdicts := confirmedFixture().write(t, dir)
 	plain, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(dir, "plain"))
 	if err != nil {
 		t.Fatal(err)
@@ -837,7 +838,7 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	}
 	sorted := slices.Sorted(slices.Values(questions))
 	var drawn []string
-	for _, j := range newPyRandom(77).sample(len(sorted), 3) {
+	for _, j := range newPyRandom(77).sample(len(sorted), dsConfirmedSize) {
 		drawn = append(drawn, sorted[j])
 	}
 	in := dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed, Confirmed: confirm("confirm.json", drawn...), ConfirmedSeed: 77}
@@ -845,8 +846,8 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := direct.counts.ConfirmedSample; direct.casesSHA != plain.casesSHA || s == nil || s.Confirmed != 2 || s.Total != 3 || s.Seed != 77 || s.Reader != "StandIn" || s.ResultSHA256 == "" ||
-		s.Draw != "python3 random.Random(77).sample(sorted question cases by id, 3)" {
+	if s := direct.counts.ConfirmedSample; direct.casesSHA != plain.casesSHA || s == nil || s.Confirmed != dsConfirmedSize-1 || s.Total != dsConfirmedSize || s.Seed != 77 || s.Reader != "StandIn" || s.ResultSHA256 == "" ||
+		s.Draw != "python3 random.Random(77).sample(sorted question cases by id, 50)" {
 		t.Fatalf("with the confirmation read: cases %s (without it %s), sample %+v", direct.casesSHA, plain.casesSHA, direct.counts.ConfirmedSample)
 	}
 	bad := in
@@ -885,7 +886,7 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 			t.Fatalf("build --from %s: exit %d: %s", from, code, stderr.String())
 		}
 		for _, want := range []string{"\nsnapshot sha256: " + snapshotSHA + "\n", "\nverdicts sha256: " + verdictsSHA + "\n",
-			"\nend: " + fixtureEnd + "\n", "\nowner: " + fixtureOwner + "\n", "\ncases.jsonl.gz sha256: " + direct.casesSHA + "\n"} {
+			"\nend: " + fixtureEnd + "\n", "\nowner_sha256: " + sha256Hex([]byte(fixtureOwner)) + "\n", "\ncases.jsonl.gz sha256: " + direct.casesSHA + "\n"} {
 			if !strings.Contains(stdout.String(), want) {
 				t.Errorf("build --from %s printed:\n%s\nwant %q", from, stdout.String(), want)
 			}
@@ -907,14 +908,101 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 	}
 }
 
+// confirmedFixture is standardFixture with 50 trees more, each with an agent comment the owner
+// asks the meaning of: question cases enough for the draw of R1's confirmation read.
+func confirmedFixture() *dsFixture {
+	f := standardFixture()
+	rng := rand.New(rand.NewPCG(13, 17))
+	for i := range dsConfirmedSize {
+		issue := fmt.Sprintf("MORE-%d", i)
+		f.issue(issue, "", "More "+fixtureWords(rng, 4), fixtureWords(rng, 30))
+		agent := f.comment(fmt.Sprintf("m-%d", i), issue, fixtureAgent, fixtureWords(rng, 40), "")
+		f.owner(fmt.Sprintf("mo-%d", i), issue, "What does "+fixtureWords(rng, 2)+" mean here?", agent, wordrecords.WordMeaning)
+	}
+	return f
+}
+
+// A build refused on its confirmation read writes none of its files: a reused --out keeps the
+// files of the build before it, counts.json included, and a fresh one stays empty.
+func TestDatasetBuildRefusedOnTheConfirmationReadLeavesOutAsItWas(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := confirmedFixture().write(t, dir)
+	plain := filepath.Join(dir, "plain")
+	if _, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, plain); err != nil {
+		t.Fatal(err)
+	}
+	var questions []string
+	for _, c := range readDatasetCases(t, plain) {
+		if c.Group == dsGroupQuestion {
+			questions = append(questions, c.ID)
+		}
+	}
+	sorted := slices.Sorted(slices.Values(questions))
+	var items []map[string]any
+	for i, j := range newPyRandom(77).sample(len(sorted), dsConfirmedSize) {
+		items = append(items, map[string]any{"n": i + 1, "case_id": sorted[j], "about_words": true})
+	}
+	// Two items in the other order: every case is a question case of the draw, and the order is
+	// not the draw's.
+	items[3], items[4] = items[4], items[3]
+	data, _ := json.Marshal(map[string]any{"reader": "StandIn", "confirmed": len(items), "total": len(items), "items": items})
+	swapped := filepath.Join(dir, "swapped.json")
+	if err := os.WriteFile(swapped, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reused := filepath.Join(dir, "reused")
+	if err := os.MkdirAll(reused, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cases.jsonl.gz", "documents.jsonl.gz", "sessions.tsv", "counts.json"} {
+		if err := os.WriteFile(filepath.Join(reused, name), []byte("the build before: "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := dirFiles(t, reused)
+	for _, out := range []string{reused, filepath.Join(dir, "fresh")} {
+		var stdout, stderr bytes.Buffer
+		code := run(t.Context(), []string{"dataset", "build", "--snapshot", snapshot, "--verdicts", verdicts, "--seed", strconv.Itoa(fixtureSeed),
+			"--confirmed", swapped, "--confirmed-seed", "77", "--out", out}, &stdout, &stderr)
+		if says := ": item 4 is " + items[3]["case_id"].(string) + ", and the draw python3 random.Random(77).sample(sorted question cases by id, 50) gives "; code != 1 || !strings.Contains(stderr.String(), says) {
+			t.Errorf("build --out %s with two items of the draw swapped: exit %d: %s", out, code, stderr.String())
+		}
+	}
+	if after := dirFiles(t, reused); !maps.Equal(after, before) {
+		t.Errorf("the refused build changed the reused --out: %v, want %v", slices.Sorted(maps.Keys(after)), slices.Sorted(maps.Keys(before)))
+	}
+	if after := dirFiles(t, filepath.Join(dir, "fresh")); len(after) != 0 {
+		t.Errorf("the refused build left %v in a fresh --out", slices.Sorted(maps.Keys(after)))
+	}
+}
+
+// dirFiles is each entry of dir by name, with a file's bytes.
+func dirFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, e := range entries {
+		data, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		files[e.Name()] = string(data)
+	}
+	return files
+}
+
 // build reads a snapshot whose last event is created at its header's end, and refuses one that
-// holds an event created after it, naming the first such event's id and time.
+// holds an event created after it, naming the first such event's id and time; owner-texts and
+// followups, which read the snapshot build reads, refuse it too (as classify does: each reads it
+// by loadIndex).
 func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	t.Parallel()
 	f := standardFixture()
 	f.events[len(f.events)-1]["created_at"] = fixtureEnd
 	snapshot, verdicts := f.write(t, t.TempDir())
-	if _, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out")); err != nil {
+	built := filepath.Join(t.TempDir(), "out")
+	if _, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, built); err != nil {
 		t.Fatalf("a snapshot whose last event is created at its end: %v", err)
 	}
 	f.comment("late-1", "TREE-1", fixtureAgent, "Written half a second after the end.", "")
@@ -922,10 +1010,25 @@ func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	f.events[len(f.events)-1]["created_at"] = "2026-11-01T00:00:00.5Z"
 	f.comment("late-2", "TREE-1", fixtureAgent, "Written a day after the end.", "")
 	f.events[len(f.events)-1]["created_at"] = "2026-11-02T00:00:00Z"
-	snapshot, verdicts = f.write(t, t.TempDir())
+	dir := t.TempDir()
+	snapshot, verdicts = f.write(t, dir)
 	_, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out"))
-	if want := fmt.Sprintf("holds event %d, created at 2026-11-01T00:00:00.5Z, after its end %s", late, fixtureEnd); err == nil || !strings.Contains(err.Error(), want) {
+	want := fmt.Sprintf("holds event %d, created at 2026-11-01T00:00:00.5Z, after its end %s", late, fixtureEnd)
+	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("a snapshot with events after its end: %v, want a refusal saying %q", err, want)
+	}
+	bundle := filepath.Join(dir, "late.tar.gz")
+	if _, _, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, bundle, dsPartSize); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"owner-texts", "--snapshot", snapshot, "--out", filepath.Join(dir, "owner-texts")},
+		{"followups", "--from", bundle, "--cases", built, "--out", filepath.Join(dir, "followups")},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(t.Context(), append([]string{"dataset"}, args...), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), want) {
+			t.Errorf("dataset %s over a snapshot with events after its end: exit %d, %s; want 1 saying %q", args[0], code, stderr.String(), want)
+		}
 	}
 }
 
@@ -945,7 +1048,8 @@ func TestDatasetBuildSaysTheTextsWithNoVerdictForAMissingVerdictsFile(t *testing
 // readConfirmed takes the items python3 drew, random.Random(3231051).sample of the 729 question
 // cases sorted by id, 50 (confirmedDraw), whatever order the build lists the cases in. It refuses
 // those items with one case swapped for a question case the draw does not hold, and with two
-// cases in the other order, naming the first item that differs.
+// cases in the other order, naming the first item that differs, and a draw of 3 cases or of none,
+// each the draw of its own size, since R1's read is of 50.
 func TestReadConfirmedRefusesItemsThatAreNotTheDraw(t *testing.T) {
 	t.Parallel()
 	const seed = 3231051
@@ -987,6 +1091,8 @@ func TestReadConfirmedRefusesItemsThatAreNotTheDraw(t *testing.T) {
 	}{
 		{"swapped.json", swapped, fmt.Sprintf("item 7 is %s, and the draw python3 random.Random(3231051).sample(sorted question cases by id, 50) gives %s there", ids[notDrawn], ids[confirmedDraw[6]])},
 		{"reordered.json", reordered, fmt.Sprintf("item 11 is %s, and the draw python3 random.Random(3231051).sample(sorted question cases by id, 50) gives %s there", ids[confirmedDraw[11]], ids[confirmedDraw[10]])},
+		{"three.json", newPyRandom(seed).sample(len(ids), 3), "reads 3 question cases, and R1's confirmation read draws 50"},
+		{"none.json", nil, "reads 0 question cases, and R1's confirmation read draws 50"},
 	} {
 		if _, err := readConfirmed(write(c.name, c.draw), seed, questions); err == nil || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: %v, want a refusal saying %q", c.name, err, c.says)
@@ -1247,12 +1353,119 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 		t.Errorf("the session rows are %+v, want the three rows of the session with rows, in order", sessionRows)
 	}
 
+	// A manifest that counts another number of rows for a session is refused after the rows are
+	// read, and the refused export writes none of the three files: a reused --out keeps those of
+	// the export before it.
+	miscount := m
+	miscount.RowsBySession = maps.Clone(m.RowsBySession)
+	miscount.RowsBySession[withRows]++
+	miscounted := filepath.Join(export, "miscounted.json")
+	if data, err := json.Marshal(miscount); err != nil || os.WriteFile(miscounted, data, 0o644) != nil {
+		t.Fatalf("the miscounted manifest: %v", err)
+	}
+	reused := filepath.Join(dir, "reused")
+	if err := os.MkdirAll(reused, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{dsSessionRowsFile, dsPlacesFile, dsSessionCountsFile} {
+		if err := os.WriteFile(filepath.Join(reused, name), []byte("the export before: "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := dirFiles(t, reused)
+	var refusal bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "sessions", "--manifest", miscounted, "--cases", casesPath, "--out", reused}, &bytes.Buffer{}, &refusal); code != 1 ||
+		!strings.Contains(refusal.String(), "the parts hold 3 rows of session "+withRows+", and the manifest says 4") {
+		t.Errorf("dataset sessions over a miscounted manifest: exit %d: %s", code, refusal.String())
+	}
+	if after := dirFiles(t, reused); !maps.Equal(after, before) {
+		t.Errorf("the refused export changed the reused --out: %v", after)
+	}
+
 	// The negative control: a part whose bytes changed is refused, naming the part.
 	part[len(part)/2] ^= 0xff
 	if err := os.WriteFile(filepath.Join(export, m.Parts[0].Name), part, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, errText := ingest(filepath.Join(dir, "refused")); code == 0 || !strings.Contains(errText, "part-000.jsonl.gz") {
+	refused := filepath.Join(dir, "refused")
+	if code, _, errText := ingest(refused); code == 0 || !strings.Contains(errText, "part-000.jsonl.gz") {
 		t.Fatalf("dataset sessions over a changed part: exit %d: %s", code, errText)
+	}
+	if _, err := os.Stat(refused); !os.IsNotExist(err) {
+		t.Errorf("the refused export made its --out (%v)", err)
+	}
+}
+
+// A pack to the name of an earlier, larger pack removes that pack's manifest and parts, so build
+// --from the directory reads the new bundle and not the earlier inputs.
+func TestDatasetPackOverALargerBundleRemovesItsParts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	bundle := filepath.Join(dir, "bundle", "dataset.tar.gz")
+	if err := os.MkdirAll(filepath.Dir(bundle), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, bundle, 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the larger pack wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, bundle, dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the smaller pack wrote %v (%v), want the bundle alone", parts, err)
+	}
+	if left := slices.Sorted(maps.Keys(dirFiles(t, filepath.Dir(bundle)))); !slices.Equal(left, []string{"dataset.tar.gz"}) {
+		t.Errorf("the bundle's directory holds %v, want the new bundle alone", left)
+	}
+	out := filepath.Join(dir, "out")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "build", "--from", filepath.Dir(bundle), "--out", out}, &stdout, &stderr); code != 0 {
+		t.Fatalf("build --from the directory: exit %d: %s", code, stderr.String())
+	}
+	var counts dsCounts
+	if data, err := os.ReadFile(filepath.Join(out, "counts.json")); err != nil || json.Unmarshal(data, &counts) != nil || counts.Seed != fixtureSeed+1 {
+		t.Errorf("build --from the directory read the seed %d (%v), want the new bundle's %d", counts.Seed, err, fixtureSeed+1)
+	}
+}
+
+// Every dataset step refuses an --out inside a repository, as the harness does, and makes no
+// directory there: each writes Dispatch or session text. fetch and named need --owner: they
+// hold no default owner.
+func TestDatasetStepsRefuseAnOutInsideARepository(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".jj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(repo, "out")
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", filepath.Join(repo, "token"))
+	outside := t.TempDir()
+	for _, args := range [][]string{
+		{"fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", inside},
+		{"fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", filepath.Join(outside, "snapshot.jsonl.gz"), "--work", inside},
+		{"classify", "--snapshot", "snapshot.jsonl.gz", "--out", inside},
+		{"build", "--snapshot", "snapshot.jsonl.gz", "--verdicts", "verdicts.jsonl", "--seed", "1", "--out", inside},
+		{"build", "--from", "bundle.tar.gz", "--out", inside},
+		{"pack", "--snapshot", "snapshot.jsonl.gz", "--verdicts", "verdicts.jsonl", "--seed", "1", "--out", inside},
+		{"sessions", "--manifest", "manifest.json", "--cases", "build", "--out", inside},
+		{"owner-texts", "--snapshot", "snapshot.jsonl.gz", "--out", inside},
+		{"followups", "--from", "bundle.tar.gz", "--cases", "build", "--out", inside},
+		{"named", "--doc", "NAMED-2/notes-md@2", "--owner", fixtureOwner, "--out", inside},
+		{"lists", "--cases", "build", "--verdicts", "verdicts.jsonl", "--plain-labels", "labels.jsonl", "--out", inside},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(t.Context(), append([]string{"dataset"}, args...), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "is inside the repository at "+repo) {
+			t.Errorf("dataset %v: exit %d: %s; want 2 and the refusal", args, code, stderr.String())
+		}
+	}
+	if _, err := os.Stat(inside); !os.IsNotExist(err) {
+		t.Errorf("a refused step made %s (%v)", inside, err)
+	}
+	for _, args := range [][]string{
+		{"fetch", "--end", fixtureEnd, "--out", filepath.Join(outside, "snapshot.jsonl.gz")},
+		{"named", "--doc", "NAMED-2/notes-md@2", "--out", filepath.Join(outside, "named")},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(t.Context(), append([]string{"dataset"}, args...), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--owner are required") {
+			t.Errorf("dataset %v with no --owner: exit %d: %s; want 2 and the refusal", args, code, stderr.String())
+		}
 	}
 }

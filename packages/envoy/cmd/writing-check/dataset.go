@@ -40,6 +40,7 @@ import (
 	xrate "golang.org/x/time/rate"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -48,8 +49,6 @@ import (
 const (
 	// dsFormat is the snapshot's format, written in its header.
 	dsFormat = 1
-	// dsDefaultOwner is the person whose texts select the cases (R1's "the owner").
-	dsDefaultOwner = "sami@theorem.dev"
 	// dsNamingIssue is the issue whose owner texts name cases by their links.
 	dsNamingIssue = "INFRA-3231"
 	// dsHeldOutShare is the share of each case group that goes to the held-out part.
@@ -64,6 +63,8 @@ const (
 	dsStoreLastLoad = "2026-11-12T18:05:37Z"
 	// dsPartSize is the largest part pack writes, under Dispatch's 25 MiB artifact bound.
 	dsPartSize = 24 << 20
+	// dsConfirmedSize is the size of R1's confirmation read: the draw reads 50 question cases.
+	dsConfirmedSize = 50
 )
 
 // Bounds of classify's calls. The parts of each call's user message are cut at
@@ -479,7 +480,8 @@ type dsIndex struct {
 	versionBytes            int64
 	// endAt is the end of a snapshot's header, which loadIndex reads, and endFault the first
 	// fault loadIndex finds against it: an end that is no RFC 3339 time, or an event created
-	// after it or at no such time. build refuses a snapshot with one.
+	// after it or at no such time. loadIndex refuses a snapshot with one, so every step that
+	// reads a snapshot does.
 	endAt    time.Time
 	endFault error
 
@@ -1358,9 +1360,10 @@ func dsNewBlocks(previous, current string) string {
 }
 
 // loadIndex reads a snapshot into an index: its header, events, bodies and labels, and which
-// versions it holds, and the first fault against its end (dsIndex.endFault). Version Markdown is
-// read by loadVersions. raw, when not nil, gets every byte of the snapshot file on the same pass,
-// so build hashes the snapshot without reading it again.
+// versions it holds. It refuses a snapshot with a fault against its end (dsIndex.endFault), so
+// build, classify, owner-texts and followups each refuse one. Version Markdown is read by
+// loadVersions. raw, when not nil, gets every byte of the snapshot file on the same pass, so
+// build hashes the snapshot without reading it again.
 func loadIndex(path string, raw io.Writer) (*dsIndex, error) {
 	var ix *dsIndex
 	err := eachGzipLineTo(path, raw, func(line []byte) error {
@@ -1426,6 +1429,9 @@ func loadIndex(path string, raw io.Writer) (*dsIndex, error) {
 	}
 	if ix == nil {
 		return nil, fmt.Errorf("%s holds no header", path)
+	}
+	if ix.endFault != nil {
+		return nil, fmt.Errorf("%s: %w", path, ix.endFault)
 	}
 	ix.applyBodies()
 	return ix, nil
@@ -1663,7 +1669,7 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	out := flags.String("out", "", "the snapshot file, gzipped JSONL (required; keep it under $TMPDIR)")
 	work := flags.String("work", "", "the work directory a stopped fetch continues from (default <out>.work)")
 	labelled := flags.String("labelled", "", "the labelled sets: writing-check-sets-and-labels-tar-gz, as the tarball or its extracted directory")
-	owner := flags.String("owner", dsDefaultOwner, "the person whose texts select the cases")
+	owner := flags.String("owner", "", "the person whose texts select the cases, by login (required)")
 	concurrency := flags.Int("concurrency", 4, "reads in flight at once, all within one limit of requests a second")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -1674,8 +1680,8 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	case flags.NArg() > 0:
 		fmt.Fprintf(stderr, "writing-check dataset fetch: unexpected argument %q\n", flags.Arg(0))
 		return 2
-	case *out == "" || err != nil:
-		fmt.Fprintln(stderr, "writing-check dataset fetch: --out and an RFC 3339 --end are required")
+	case *out == "" || err != nil || strings.TrimSpace(*owner) == "":
+		fmt.Fprintln(stderr, "writing-check dataset fetch: --out, an RFC 3339 --end and --owner are required")
 		return 2
 	case *concurrency < 1:
 		fmt.Fprintln(stderr, "writing-check dataset fetch: --concurrency must be above 0")
@@ -1691,6 +1697,12 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	if *work == "" {
 		*work = *out + ".work"
+	}
+	for _, path := range [][2]string{{"--out", *out}, {"--work", *work}} {
+		if err := harness.OutsideRepository(path[0], path[1]); err != nil {
+			fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
+			return 2
+		}
 	}
 	if err := os.MkdirAll(*work, 0o700); err != nil {
 		return fail(err)
@@ -2245,6 +2257,10 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 		fmt.Fprintln(stderr, "writing-check dataset classify: --snapshot and --out are required, --concurrency must be above 0, and nothing else")
 		return 2
 	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset classify: %v\n", err)
+		return 2
+	}
 	model, err := probeModel(string(agentloop.AnthropicMessages), *endpoint, *modelID, "", *keyFile, embed.EntraConfig{})
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset classify: %v\n", err)
@@ -2590,10 +2606,11 @@ type dsConfirmedSample struct {
 
 // readConfirmed reads the result of the confirmation read: {"reader", "confirmed", "total",
 // "items": [{"case_id", "about_words"}...]}. questions are the build's question case ids, in any
-// order. It refuses a result whose counts do not match its items, a case read twice, a case that
-// is not a question case of this build, and items that are not the draw in its order, naming the
-// first item that differs. The draw is python3's random.Random(seed).sample of the question case
-// ids sorted as Python sorts strings, by code point, which is their byte order (pyRandom.sample).
+// order. It refuses a result whose counts do not match its items, a draw of other than
+// dsConfirmedSize cases, a case read twice, a case that is not a question case of this build, and
+// items that are not the draw in its order, naming the first item that differs. The draw is
+// python3's random.Random(seed).sample of the question case ids sorted as Python sorts strings, by
+// code point, which is their byte order (pyRandom.sample).
 func readConfirmed(path string, seed uint64, questions []string) (*dsConfirmedSample, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2628,6 +2645,9 @@ func readConfirmed(path string, seed uint64, questions []string) (*dsConfirmedSa
 	}
 	if len(r.Items) != r.Total || confirmed != r.Confirmed || r.Reader == "" {
 		return nil, fmt.Errorf("%s says %d of %d by %q, and its items give %d of %d", path, r.Confirmed, r.Total, r.Reader, confirmed, len(r.Items))
+	}
+	if r.Total != dsConfirmedSize {
+		return nil, fmt.Errorf("%s reads %d question cases, and R1's confirmation read draws %d", path, r.Total, dsConfirmedSize)
 	}
 	// The items are distinct question cases, so the sample is no larger than its population.
 	draw := fmt.Sprintf("python3 random.Random(%d).sample(sorted question cases by id, %d)", seed, r.Total)
@@ -2699,6 +2719,10 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check dataset build: give --confirmed and --confirmed-seed together")
 		return 2
 	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
 		return 1
@@ -2761,11 +2785,12 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "wall time: %s\n", time.Since(started).Round(time.Second))
 	// What the build read, beside what it wrote: dataset/DATASET's snapshot_sha256,
-	// verdicts_sha256, end and owner, then its documents_sha256, sessions_sha256 and cases_sha256.
+	// verdicts_sha256, end and owner_sha256 (the SHA-256 of the header's owner, so the output
+	// names no address), then its documents_sha256, sessions_sha256 and cases_sha256.
 	fmt.Fprintf(stdout, "snapshot sha256: %s\n", result.snapshotSHA)
 	fmt.Fprintf(stdout, "verdicts sha256: %s\n", result.verdictsSHA)
 	fmt.Fprintf(stdout, "end: %s\n", c.End)
-	fmt.Fprintf(stdout, "owner: %s\n", c.Owner)
+	fmt.Fprintf(stdout, "owner_sha256: %s\n", sha256Hex([]byte(c.Owner)))
 	fmt.Fprintf(stdout, "documents.jsonl.gz sha256: %s\n", result.documentSHA)
 	fmt.Fprintf(stdout, "sessions.tsv sha256: %s\n", result.sessionsSHA)
 	fmt.Fprintf(stdout, "cases.jsonl.gz sha256: %s\n", result.casesSHA)
@@ -2802,20 +2827,60 @@ func correctionShapes(owner, agent string) []string {
 
 // buildDataset builds the dataset from its inputs into out, and answers its counts and digests.
 // It reads nothing else, so the same inputs write the same bytes. It refuses a snapshot that
-// holds an event created after its header's end.
+// holds an event created after its header's end, and a confirmation read that is not the draw.
+// Its four files reach out only once the whole build has passed (dsStaged), so a refused build
+// leaves out as it was, a reused out's earlier files included.
 func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	var res dsBuildResult
+	err := dsStaged(out, func(dir string) error {
+		var err error
+		res, err = writeDataset(in, dir)
+		return err
+	})
+	return res, err
+}
+
+// dsStaged runs write with a new directory under out, then moves each file write left there
+// into out, over a file of the same name. A write that fails moves nothing: out is as it was,
+// and an out that did not exist is removed again. The directory is removed either way.
+func dsStaged(out string, write func(dir string) error) error {
+	_, err := os.Stat(out)
+	made := errors.Is(err, os.ErrNotExist)
 	if err := os.MkdirAll(out, 0o755); err != nil {
-		return res, err
+		return err
 	}
+	dir, err := os.MkdirTemp(out, ".staged-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	if err := write(dir); err != nil {
+		if os.RemoveAll(dir) == nil && made {
+			os.Remove(out)
+		}
+		return err
+	}
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := os.Rename(filepath.Join(dir, f.Name()), filepath.Join(out, f.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeDataset is buildDataset's work: it builds the dataset and writes its four files to out,
+// the directory dsStaged gives it.
+func writeDataset(in dsInputs, out string) (dsBuildResult, error) {
+	var res dsBuildResult
 	snapshotPath, verdictsPath, seed := in.Snapshot, in.Verdicts, in.Seed
 	snapshotHash := sha256.New()
 	ix, err := loadIndex(snapshotPath, snapshotHash)
 	if err != nil {
 		return res, err
-	}
-	if ix.endFault != nil {
-		return res, fmt.Errorf("%s: %w", snapshotPath, ix.endFault)
 	}
 	res.snapshotSHA = hex.EncodeToString(snapshotHash.Sum(nil))
 	verdicts, verdictsSHA, err := readVerdicts(verdictsPath)
@@ -3533,6 +3598,10 @@ func runDatasetOwnerTexts(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check dataset owner-texts: give --snapshot or --from, and --out, and nothing else")
 		return 2
 	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
 		return 1
@@ -3628,6 +3697,10 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check dataset pack: --snapshot, --verdicts, --seed and --out are required, --confirmed and --confirmed-seed go together, and nothing else")
 		return 2
 	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset pack: %v\n", err)
+		return 2
+	}
 	in := dsInputs{Snapshot: *snapshot, Verdicts: *verdicts, Seed: *seed, Confirmed: *confirmed, ConfirmedSeed: *confirmedSeed}
 	sum, parts, err := packBundle(in, *out, *partSize)
 	if err != nil {
@@ -3644,7 +3717,9 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 // packBundle writes the bundle: a gzipped tarball of seeds.json, the snapshot, the verdicts and,
 // when given, the confirmation read, with no time, owner or mode of the files in it, so the same
 // inputs write the same bytes. A bundle larger than partSize is also written as parts with a
-// manifest. It answers the bundle's SHA-256 and the paths of the parts and the manifest.
+// manifest. It first removes the manifest and the parts an earlier pack to out left, which build
+// --from a directory would read before the bundle. It answers the bundle's SHA-256 and the paths
+// of the parts and the manifest.
 func packBundle(in dsInputs, out string, partSize int64) (string, []string, error) {
 	s := dsSeeds{Seed: &in.Seed}
 	files := []struct{ name, path string }{{dsBundleSnapshot, in.Snapshot}, {dsBundleVerdicts, in.Verdicts}}
@@ -3654,6 +3729,9 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	}
 	seeds, err := json.Marshal(s)
 	if err != nil {
+		return "", nil, err
+	}
+	if err := removeParts(out); err != nil {
 		return "", nil, err
 	}
 	tmp := out + ".tmp"
@@ -3712,6 +3790,26 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	}
 	parts, err := splitBundle(out, sum, info.Size(), partSize)
 	return sum, parts, err
+}
+
+// removeParts removes <bundle>.manifest.json and each <bundle>.part-NNN beside bundle.
+func removeParts(bundle string) error {
+	dir, base := filepath.Dir(bundle), filepath.Base(bundle)
+	files, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if name := f.Name(); name == base+".manifest.json" || strings.HasPrefix(name, base+".part-") {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // splitBundle writes a bundle as parts of at most partSize bytes beside it, <bundle>.part-000 and
@@ -3941,6 +4039,10 @@ func runDatasetSessions(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check dataset sessions: --manifest, --cases and --out are required, and nothing else")
 		return 2
 	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset sessions: %v\n", err)
+		return 2
+	}
 	c, err := ingestSessions(*manifest, *casesPath, *out)
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset sessions: %v\n", err)
@@ -3986,9 +4088,22 @@ func dsCasesFile(path string) string {
 // ingestSessions checks every part of the session export against its manifest, joins the rows
 // to the cases by writer session, and writes each case's place in its session: the last row at
 // or before the case's write time. It refuses a part whose SHA-256 differs from the manifest, an
-// export made from another session list than the cases', and a session whose rows the manifest
-// counts otherwise.
+// export made from another session list than the cases', a session whose rows the manifest
+// counts otherwise, and a case whose write time is no time. Its three files reach out only once
+// every check has passed (dsStaged), so a refused export leaves out as it was.
 func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error) {
+	var counts dsSessionCounts
+	err := dsStaged(out, func(dir string) error {
+		var err error
+		counts, err = writeSessions(manifestPath, casesPath, dir)
+		return err
+	})
+	return counts, err
+}
+
+// writeSessions is ingestSessions' work: it checks the export and writes its three files to out,
+// the directory dsStaged gives it.
+func writeSessions(manifestPath, casesPath, out string) (dsSessionCounts, error) {
 	var counts dsSessionCounts
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -4060,9 +4175,6 @@ func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error
 		return counts, fmt.Errorf("%d sessions of the cases are not in the export, and its manifest leaves out %d: it was made from another session list", absent, m.SessionsLeftOut)
 	}
 
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return counts, err
-	}
 	rowsFile, err := os.Create(filepath.Join(out, dsSessionRowsFile))
 	if err != nil {
 		return counts, err

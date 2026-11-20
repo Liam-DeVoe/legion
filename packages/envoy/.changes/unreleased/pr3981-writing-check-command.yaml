@@ -8,7 +8,10 @@ body: |-
   not read, and of texts they read with no trouble, from a snapshot of the event log.
   `writing-check harness` scores the reviewer, Rewrite and Define and the other changes on that
   dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
-  score's interval, wait and cost. The harness refuses to write its output inside a repository.
+  score's interval, wait and cost. The harness and the dataset steps refuse to write their output
+  inside a repository, and a refused `dataset build` or `dataset sessions` leaves its output files
+  as they were. `dataset fetch` and `dataset named` take the owner as a required `--owner`, and
+  `dataset/DATASET` records the owner's SHA-256 (`owner_sha256`), not the address.
   `writing-check dataset followups` reads what the person did after each text (their next texts
   and their acts) and writes the agents' explanations of their words as answer cases, so the
   harness's score can be held against what the person did. `harness score --grader` takes a model

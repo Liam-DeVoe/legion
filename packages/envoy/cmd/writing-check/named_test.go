@@ -216,7 +216,7 @@ func TestDatasetNamedRecordsAPersonAsTheAuthor(t *testing.T) {
 	standInDispatch(t, f, versions)
 	out := filepath.Join(t.TempDir(), "named")
 	var stdout, stderr bytes.Buffer
-	if code := run(t.Context(), []string{"dataset", "named", "--doc", "NAMED-2/notes-md@4", "--out", out}, &stdout, &stderr); code != 0 {
+	if code := run(t.Context(), []string{"dataset", "named", "--doc", "NAMED-2/notes-md@4", "--out", out, "--owner", fixtureOwner}, &stdout, &stderr); code != 0 {
 		t.Fatalf("named: exit %d: %s", code, stderr.String())
 	}
 	ds, err := harness.LoadDataset(out, harness.PartDevelopment, 0)
@@ -323,7 +323,7 @@ func TestDatasetNamedRefusals(t *testing.T) {
 	} {
 		out := filepath.Join(t.TempDir(), "named")
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"dataset", "named", tc.flag, tc.value, "--out", out}, &stdout, &stderr)
+		code := run(t.Context(), []string{"dataset", "named", tc.flag, tc.value, "--out", out, "--owner", fixtureOwner}, &stdout, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), tc.want) {
 			t.Errorf("%s: exit %d, stderr %q; want exit %d and %q", tc.name, code, stderr.String(), tc.code, tc.want)
 		}
@@ -332,12 +332,12 @@ func TestDatasetNamedRefusals(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	if code := run(t.Context(), []string{"dataset", "named", "--out", filepath.Join(t.TempDir(), "named")}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--doc or --ask, and --out, are required") {
+	if code := run(t.Context(), []string{"dataset", "named", "--out", filepath.Join(t.TempDir(), "named"), "--owner", fixtureOwner}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--doc or --ask, --out and --owner are required") {
 		t.Errorf("with neither --doc nor --ask: exit %d, stderr %q; want exit 2", code, stderr.String())
 	}
 	stderr.Reset()
 	t.Setenv("DISPATCH_TOKEN_FILE", "")
-	if code := run(t.Context(), []string{"dataset", "named", "--doc", "NAMED-2/notes-md@2", "--out", filepath.Join(t.TempDir(), "named")}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "DISPATCH_URL and DISPATCH_TOKEN_FILE must be set") {
+	if code := run(t.Context(), []string{"dataset", "named", "--doc", "NAMED-2/notes-md@2", "--out", filepath.Join(t.TempDir(), "named"), "--owner", fixtureOwner}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "DISPATCH_URL and DISPATCH_TOKEN_FILE must be set") {
 		t.Errorf("with no token file named: exit %d, stderr %q; want exit 2", code, stderr.String())
 	}
 }

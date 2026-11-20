@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,30 @@ func TestThePhrasesOfLabelledWrites(t *testing.T) {
 	calls := len(stand.Requests())
 	if code, _, stderr := runHarness("phrases-labels", "--labels", dir, "--out", out, "--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50"); code != 0 || len(stand.Requests()) != calls {
 		t.Errorf("a second run graded again: %d, %d calls after %d: %s", code, len(stand.Requests()), calls, stderr)
+	}
+	// The results of --out are another grading's for other labels: a run is refused there.
+	other := t.TempDir()
+	for _, name := range []string{"cases.jsonl", "labels.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || os.WriteFile(filepath.Join(other, name), data, 0o600) != nil {
+			t.Fatalf("copying %s: %v", name, err)
+		}
+	}
+	if code, _, stderr := runHarness("phrases-labels", "--labels", other, "--out", out, "--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50"); code != 1 || !strings.Contains(stderr, "holds a run of other parameters") {
+		t.Errorf("a run of other labels in the first run's --out = %d: %s", code, stderr)
+	}
+	// A run with a write left ungraded writes no agreement, which would read as one of every write.
+	refused := modeltest.Rule{Contains: "This names the problem.", Reply: modeltest.Reply{Status: http.StatusBadRequest, Text: "the stand-in refuses to grade this write"}}
+	failing := modeltest.New(t, append([]modeltest.Rule{refused}, graderRules(t)...)...)
+	partial := t.TempDir()
+	code, stdout, stderr = runHarness("phrases-labels", "--labels", dir, "--out", partial, "--gateway", failing.URL, "--gateway-key-file", keyFile(t), "--draws", "50")
+	if code != 1 || !strings.Contains(stderr, "1 of 2 writes have no result, so no agreement is written") || stdout != "" {
+		t.Errorf("a run with a write ungraded = %d:\n%s\n%s", code, stdout, stderr)
+	}
+	for _, name := range []string{"agreement.json", "agreement.md"} {
+		if _, err := os.Stat(filepath.Join(partial, name)); !os.IsNotExist(err) {
+			t.Errorf("the run with a write ungraded wrote %s (%v)", name, err)
+		}
 	}
 }
 

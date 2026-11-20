@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // The lists that lists writes, one case id on each line, in id order.
@@ -173,6 +175,10 @@ func runDatasetLists(args []string, stdout, stderr io.Writer) int {
 	}
 	if *casesPath == "" || *verdictsPath == "" || *labelsPath == "" || *out == "" || flags.NArg() > 0 {
 		fmt.Fprintln(stderr, "writing-check dataset lists: --cases, --verdicts, --plain-labels and --out are required, and nothing else")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset lists: %v\n", err)
 		return 2
 	}
 	fail := func(err error) int {

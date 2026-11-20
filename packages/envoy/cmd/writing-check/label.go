@@ -243,7 +243,7 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
-	file, err := os.Create(*out)
+	file, err := startLabels(*out, done)
 	if err != nil {
 		return fail(err)
 	}
@@ -252,9 +252,6 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	labelled := map[writeKey]bool{}
 	for _, r := range done {
 		labelled[r.key()] = true
-		if err := writeRecord(w, r); err != nil {
-			return fail(err)
-		}
 	}
 	var todo []labelJob
 	for _, j := range jobs {
@@ -309,6 +306,32 @@ feeding:
 		return fail(fmt.Errorf("stopped: %w; rerun with --resume", ctx.Err()))
 	}
 	return 0
+}
+
+// startLabels writes keep, the records --resume keeps, to a file beside path and renames it over
+// path, so path holds its old lines until the kept ones are written whole, and answers that file
+// open to take the run's records. With nothing kept it starts an empty file.
+func startLabels(path string, keep []labelRecord) (*os.File, error) {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return nil, err
+	}
+	w := bufio.NewWriter(f)
+	for _, r := range keep {
+		if err = writeRecord(w, r); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return nil, err
+	}
+	return f, nil
 }
 
 // writeRecord writes one record as one line and flushes it, so a stopped run loses only the

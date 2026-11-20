@@ -368,6 +368,14 @@ func TestAHeldOutRunWritesTheExposureLogAndIsRefusedAtTheSameCommit(t *testing.T
 		code, _, stderr := runHarness(args...)
 		return code, stderr
 	}
+	// A held-out run that one of its own refusals stops before any model call, here no gateway,
+	// read no text of the part, so it writes no line and the next run at its commit is no second.
+	if code, stderr := score(t.TempDir(), "--commit", "c0ffee", "--gateway", ""); code != 2 || !strings.Contains(stderr, "no model gateway") || len(stand.Requests()) != 0 {
+		t.Fatalf("a held-out run with no gateway = %d after %d calls:\n%s", code, len(stand.Requests()), stderr)
+	}
+	if logged, err := ReadExposures(exposure); err != nil || len(logged) != 0 {
+		t.Fatalf("the held-out run refused before any call wrote the exposure log: %+v (%v)", logged, err)
+	}
 	if code, stderr := score(t.TempDir(), "--commit", "c0ffee"); code != 0 {
 		t.Fatalf("the first held-out run = %d:\n%s", code, stderr)
 	}
@@ -494,7 +502,7 @@ func TestAnOutputInsideARepositoryIsRefused(t *testing.T) {
 	if _, err := os.Stat(inside); !os.IsNotExist(err) {
 		t.Errorf("the refused run made its directory: %v", err)
 	}
-	if err := outsideRepository("--out", filepath.Join(t.TempDir(), "run")); err != nil {
+	if err := OutsideRepository("--out", filepath.Join(t.TempDir(), "run")); err != nil {
 		t.Errorf("a directory outside a repository: %v", err)
 	}
 }

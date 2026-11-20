@@ -107,7 +107,7 @@ done
 
 # Mask secrets. Each row is decoded, and every string value is read as text: tq's JSONEachRow
 # writes `/` as `\/`, so a pattern run over the raw bytes would miss a URL. Every match of a
-# pattern of transcript_store/redact.py (theorem-labs/agent-infra) becomes a fixed marker naming
+# pattern of transcript_store/redact.py (in the deployment repository) becomes a fixed marker naming
 # the pattern, and the masks are counted per session and per pattern for the manifest. The rows
 # are written again with every character as itself, and `/` is no longer escaped.
 python3 - "$work/wanted.tsv" "$work/rows.jsonl" "$work/masked.jsonl" "$work/masks.json" <<'PY'

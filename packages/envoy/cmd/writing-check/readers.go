@@ -60,6 +60,9 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	case *in == "" || *out == "":
 		fmt.Fprintln(stderr, "writing-check readers: --in and --out are required")
 		return 2
+	case sameFile(*in, *out):
+		fmt.Fprintln(stderr, "writing-check readers: --out names the --in file: give another --out")
+		return 2
 	case *logThrough <= *logAfter:
 		fmt.Fprintln(stderr, "writing-check readers: --log-through must be above --log-after")
 		return 2
@@ -94,6 +97,13 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	stats.print(stdout)
 	return 0
+}
+
+// sameFile is whether a and b name one file that exists, by one path or two.
+func sameFile(a, b string) bool {
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
 }
 
 // change is a value a record took at an event, in force from that event on.
@@ -304,24 +314,30 @@ func (a eventActor) person() (string, bool) {
 	return "", false
 }
 
-// apply learns what ev changes, and moves s.Through to it.
+// apply learns what ev changes, and moves s.Through to it. An event whose payload does not decode
+// changes nothing and leaves s.Through and s.Events where they were, so a state saved after the
+// refusal replays that event again.
 func (s *replayState) apply(ev event) error {
-	s.Events++
-	s.Through = ev.ID
+	var err error
 	switch {
 	case strings.HasPrefix(ev.Type, "issue."):
-		return s.applyIssue(ev)
+		err = s.applyIssue(ev)
 	case ev.Type == "settings.project_default_assignee.updated":
-		return s.applyProjectDefault(ev)
+		err = s.applyProjectDefault(ev)
 	case strings.HasPrefix(ev.Type, "ask."):
-		return s.applyAsk(ev)
+		err = s.applyAsk(ev)
 	case ev.Type == "comment.created" || ev.Type == "comment.answered":
-		return s.applyComment(ev)
+		err = s.applyComment(ev)
 	case ev.Type == "message.created" || ev.Type == "message.answered":
-		return s.applyMessage(ev)
+		err = s.applyMessage(ev)
 	case ev.Type == "artifact.created":
-		return s.applyArtifact(ev)
+		err = s.applyArtifact(ev)
 	}
+	if err != nil {
+		return err
+	}
+	s.Events++
+	s.Through = ev.ID
 	return nil
 }
 
@@ -871,16 +887,19 @@ func (st *readerStats) print(w io.Writer) {
 
 // writeReaders writes every case of in to out with its reader and reader rule, and counts them.
 // Every case of one write has one reader. A case outside the replayed window is refused: the
-// replay holds no record it wrote.
+// replay holds no record it wrote. The cases go to a file beside out, renamed over it once every
+// case is written, so a refused run leaves out as it was.
 func writeReaders(in, out string, s *replayState, logAfter, logThrough int64) (*readerStats, error) {
 	r := &resolver{s: s, missing: map[string]int{}}
 	through := min(logThrough, s.Through)
 	index := map[writeKey]*readerWrite{}
 	var writes []*readerWrite
-	f, err := os.Create(out)
+	tmp := out + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(tmp)
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	err = eachLine(in, func(line []byte, _ int) error {
@@ -926,6 +945,9 @@ func writeReaders(in, out string, s *replayState, logAfter, logThrough int64) (*
 		return nil, err
 	}
 	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, out); err != nil {
 		return nil, err
 	}
 	return newReaderStats(writes, r.missing), nil

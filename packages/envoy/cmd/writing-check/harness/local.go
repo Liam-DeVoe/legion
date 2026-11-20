@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
@@ -35,6 +37,9 @@ type LocalInstance struct {
 	Settings []string          `json:"settings"`
 	Values   map[string]string `json:"values,omitempty"`
 	Started  string            `json:"started"`
+	// Seeded is the mark of the start that last reset and seeded the database (databaseSeeded),
+	// which a start with --keep keeps: `harness load` continues a load only in records of one mark.
+	Seeded string `json:"seeded"`
 }
 
 // localAgentToken is the agent bearer e2e/run-server.sh pins.
@@ -91,6 +96,35 @@ func createDatabase(ctx context.Context, dsn, name string) error {
 	return nil
 }
 
+// databaseSeeded is the mark of the start that last reset and seeded the database name at
+// dbURL. A start without keep reset and seeded it, so it writes a new mark on the database
+// (COMMENT ON DATABASE, which the reset of its tables keeps) and answers it; a start with keep
+// left its records as they were and answers the mark it holds, "" for a database no start marked.
+func databaseSeeded(ctx context.Context, dbURL, name string, keep bool) (string, error) {
+	conn, err := pgx.Connect(ctx, dbURL)
+	if err != nil {
+		return "", fmt.Errorf("the instance's database: %w", err)
+	}
+	defer conn.Close(context.Background())
+	if keep {
+		var mark *string
+		err := conn.QueryRow(ctx, "select shobj_description(oid, 'pg_database') from pg_database where datname = $1", name).Scan(&mark)
+		if err != nil {
+			return "", fmt.Errorf("the mark of database %s: %w", name, err)
+		}
+		if mark == nil {
+			return "", nil
+		}
+		return *mark, nil
+	}
+	// The mark is a time, digits and "-:.TZ" alone, so it stands in the literal as it is.
+	mark := "seeded " + time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := conn.Exec(ctx, "comment on database "+pgx.Identifier{name}.Sanitize()+" is '"+mark+"'"); err != nil {
+		return "", fmt.Errorf("marking database %s: %w", name, err)
+	}
+	return mark, nil
+}
+
 // settingsFlag is --setting NAME=VALUE, given once for each setting.
 type settingsFlag []string
 
@@ -135,8 +169,13 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *keep && *database == "":
 		return usage("--keep starts again on a database made before: give --database")
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
+	}
+	// local.json names the instance that holds --out; a second instance there would take it.
+	localJSON := filepath.Join(*out, "local.json")
+	if _, err := os.Stat(localJSON); err == nil {
+		return usage(fmt.Sprintf("%s exists: another `harness local` holds this --out; stop it, give another --out, or remove the file if no instance runs", localJSON))
 	}
 	env := map[string]string{}
 	for _, kv := range settings {
@@ -233,14 +272,23 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		// last.
 		if !up && inst.BaseURL != "" && strings.Contains(line, localReadyLine) {
 			up = true
-			if err := writeJSON(filepath.Join(*out, "local.json"), inst); err != nil {
+			// The instance reset and seeded its database while it started, unless --keep.
+			seeded, err := databaseSeeded(ctx, dbURL, name, *keep)
+			if err != nil {
 				return fail(err)
 			}
-			fmt.Fprintf(stdout, "local Dispatch at %s on database %s; %s holds it. Stop it with Ctrl-C or SIGTERM.\n", inst.BaseURL, name, filepath.Join(*out, "local.json"))
+			inst.Seeded = seeded
+			if err := writeJSON(localJSON, inst); err != nil {
+				return fail(err)
+			}
+			fmt.Fprintf(stdout, "local Dispatch at %s on database %s; %s holds it. Stop it with Ctrl-C or SIGTERM.\n", inst.BaseURL, name, localJSON)
 		}
 	}
 	err = cmd.Wait()
-	os.Remove(filepath.Join(*out, "local.json"))
+	// Only this process wrote local.json, and only once its instance was up.
+	if up {
+		os.Remove(localJSON)
+	}
 	if ctx.Err() != nil {
 		return 0
 	}

@@ -106,9 +106,20 @@ type Loaded struct {
 	// message to answer in the writer session's conversation.
 	LeftOut []string `json:"left_out,omitempty"`
 	// ReaderWords is the word records written for the reader.
-	ReaderWords int    `json:"reader_words"`
-	Error       string `json:"error,omitempty"`
-	Time        string `json:"time"`
+	ReaderWords int `json:"reader_words"`
+	// Instance is the records the case was loaded into: a load continues only there.
+	Instance LoadedInstance `json:"instance"`
+	Error    string         `json:"error,omitempty"`
+	Time     string         `json:"time"`
+}
+
+// LoadedInstance names the records of the local Dispatch a line of loaded.jsonl was loaded into:
+// its database and the start of `harness local` that last reset and seeded it (LocalInstance's
+// Database and Seeded). A restart with --keep keeps both, so a load continues there; a start that
+// made the database or reset it has another, so a load does not take its records for loaded.
+type LoadedInstance struct {
+	Database string `json:"database"`
+	Seeded   string `json:"seeded"`
 }
 
 // LoadedDocument is one document of a record in the local Dispatch.
@@ -512,7 +523,7 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *part != PartDevelopment && *part != PartHeldOut {
 		return usage("--part is development or held_out")
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
 	data, err := os.ReadFile(*localPath)
@@ -539,24 +550,22 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *sampleSize > 0 {
 		cases, _ = drawSample(cases, *sampleSize, *sampleSeed)
 	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(err)
+	}
+	// The lines of loaded.jsonl are records of one database as one start seeded it: a load into
+	// other records is refused before it reaches the database.
+	path := filepath.Join(*out, "loaded.jsonl")
+	lines, done, err := openLoadedLog(path, LoadedInstance{Database: inst.Database, Seeded: inst.Seeded})
+	if err != nil {
+		return fail(err)
+	}
+	defer lines.f.Close()
 	db, err := pgx.Connect(ctx, inst.DatabaseURL)
 	if err != nil {
 		return fail(fmt.Errorf("the local instance's database: %w", err))
 	}
 	defer db.Close(context.Background())
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return fail(err)
-	}
-	path := filepath.Join(*out, "loaded.jsonl")
-	done := map[string]bool{}
-	if prior, err := os.ReadFile(path); err == nil {
-		for _, line := range bytes.Split(prior, []byte("\n")) {
-			var l Loaded
-			if json.Unmarshal(line, &l) == nil && l.Error == "" && l.CaseID != "" {
-				done[l.CaseID] = true
-			}
-		}
-	}
 	var todo []*Case
 	for _, c := range cases {
 		if !done[c.ID] {
@@ -564,12 +573,11 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stderr, "writing-check harness load: %d cases, %d loaded before, %d to load into %s\n", len(cases), len(cases)-len(todo), len(todo), inst.BaseURL)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fail(err)
-	}
-	defer f.Close()
 	ld := &loader{ds: ds, client: newLocalClient(inst), db: db, owner: owner, records: records, projects: map[string]bool{}}
+	// A line that is not written leaves a case loaded that the file does not name, so the load
+	// stops at the first.
+	loadCtx, stop := context.WithCancel(ctx)
+	defer stop()
 	var mu sync.Mutex
 	loaded, failed := 0, 0
 	feed := make(chan *Case)
@@ -579,10 +587,11 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		go func() {
 			defer wg.Done()
 			for c := range feed {
-				l := ld.load(ctx, c)
-				line, _ := json.Marshal(l)
+				l := ld.load(loadCtx, c)
 				mu.Lock()
-				f.Write(append(line, '\n'))
+				if err := lines.add(l); err != nil {
+					stop()
+				}
 				loaded++
 				if l.Error != "" {
 					failed++
@@ -596,17 +605,98 @@ feeding:
 	for _, c := range todo {
 		select {
 		case feed <- c:
-		case <-ctx.Done():
+		case <-loadCtx.Done():
 			break feeding
 		}
 	}
 	close(feed)
 	wg.Wait()
 	fmt.Fprintf(stdout, "loaded %d cases (%d failed) into %s; %s holds where each record stands\n", loaded-failed, failed, inst.BaseURL, path)
+	if err := lines.close(); err != nil {
+		return fail(fmt.Errorf("%w: the local instance may hold cases that loaded.jsonl does not list, so load them again into a new instance (`harness local`) with a new --out", err))
+	}
 	if failed > 0 || ctx.Err() != nil {
 		return 1
 	}
 	return 0
+}
+
+// loadedLog is loaded.jsonl as a load appends to it: each line names the instance of the load.
+type loadedLog struct {
+	*lineFile
+	instance LoadedInstance
+}
+
+// openLoadedLog reads the cases the loaded.jsonl at path holds as loaded with no error, and opens
+// it to append. It refuses a file that holds a line of another instance than inst, or of none: a
+// case loaded there is not in inst's database.
+func openLoadedLog(path string, inst LoadedInstance) (*loadedLog, map[string]bool, error) {
+	prior, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	done := map[string]bool{}
+	for _, line := range bytes.Split(prior, []byte("\n")) {
+		var l Loaded
+		if json.Unmarshal(line, &l) != nil || l.CaseID == "" {
+			continue
+		}
+		if l.Instance != inst {
+			return nil, nil, fmt.Errorf("%s holds case %s loaded into database %q as seeded %q, and this load is into database %s as seeded %q: a load continues only in the records it began in, so give another --out",
+				path, l.CaseID, l.Instance.Database, l.Instance.Seeded, inst.Database, inst.Seeded)
+		}
+		if l.Error == "" {
+			done[l.CaseID] = true
+		}
+	}
+	lines, err := appendLines(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &loadedLog{lineFile: lines, instance: inst}, done, nil
+}
+
+// add appends l's line, naming the log's instance, and answers the first write that failed.
+func (lg *loadedLog) add(l Loaded) error {
+	l.Instance = lg.instance
+	return lg.lineFile.add(l)
+}
+
+// lineFile is a JSONL file a run appends to one line at a time. It answers the first line it did
+// not write, so a run counts no result that the file does not hold. One goroutine at a time adds.
+type lineFile struct {
+	path string
+	f    *os.File
+	err  error
+}
+
+// appendLines opens the JSONL file at path to append lines, making it when it does not exist.
+func appendLines(path string) (*lineFile, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	return &lineFile{path: path, f: f}, nil
+}
+
+// add appends v as one line, and answers the first write that failed, this one or an earlier one.
+func (lf *lineFile) add(v any) error {
+	line, err := json.Marshal(v)
+	if err == nil {
+		_, err = lf.f.Write(append(line, '\n'))
+	}
+	if err != nil && lf.err == nil {
+		lf.err = fmt.Errorf("%s: %w", lf.path, err)
+	}
+	return lf.err
+}
+
+// close closes the file, and answers the first write that failed, or the close's own failure.
+func (lf *lineFile) close() error {
+	if err := lf.f.Close(); err != nil && lf.err == nil {
+		lf.err = fmt.Errorf("%s: %w", lf.path, err)
+	}
+	return lf.err
 }
 
 // datasetOwner is the owner counts.json of a build names: the person whose texts the dataset reads.

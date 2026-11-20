@@ -218,7 +218,7 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	if *outPath != "" {
-		if err := outsideRepository("--out", *outPath); err != nil {
+		if err := OutsideRepository("--out", *outPath); err != nil {
 			fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)
 			return 2
 		}

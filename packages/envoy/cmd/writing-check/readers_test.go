@@ -322,11 +322,44 @@ func TestReadersReplaysTheLogOnceAndWritesEveryCaseWithItsReader(t *testing.T) {
 	if want := []string{dave + "/comment", "/none", zed + "/issue", zed + "/issue"}; !slices.Equal(readers, want) {
 		t.Errorf("readers = %v, want %v", readers, want)
 	}
-	// A case past the replayed window is refused.
+	// A case past the replayed window is refused, and the refused run leaves --out as the run
+	// before wrote it.
+	written, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := writeJSONL(in, []Case{{EventID: 44, EventType: "comment.created", Surface: surfaceComment, SourceID: "c-x"}}); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, stderr := runCmd(t, args...); code != 1 || !strings.Contains(stderr, "outside the replayed window") {
 		t.Errorf("a case past the window = %d: %s", code, stderr)
+	}
+	if after, err := os.ReadFile(out); err != nil || string(after) != string(written) {
+		t.Errorf("the refused run changed --out (%v):\n%s", err, after)
+	}
+	// --out may not be the --in file, which the run would read as it writes it.
+	same := slices.Clone(args)
+	same[slices.Index(same, "--out")+1] = in
+	input, _ := os.ReadFile(in)
+	if code, _, stderr := runCmd(t, same...); code != 2 || !strings.Contains(stderr, "--out names the --in file") {
+		t.Errorf("--out the --in file = %d: %s", code, stderr)
+	}
+	if after, _ := os.ReadFile(in); string(after) != string(input) {
+		t.Errorf("--out the --in file changed it:\n%s", after)
+	}
+}
+
+// An event whose payload does not decode is refused and moves the replay nowhere, so a state
+// saved after the refusal replays that event again.
+func TestAnEventThatDoesNotDecodeLeavesTheReplayWhereItWas(t *testing.T) {
+	s := newReplayState(0)
+	if err := s.apply(ev(3, "issue.created", agentA, "PROJ-1", issuePayload("PROJ-1", "PROJ", alice))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.apply(ev(4, "comment.created", agentA, "PROJ-1", `{"id": 7}`)); err == nil {
+		t.Fatal("a comment whose id is a number was applied")
+	}
+	if s.Through != 3 || s.Events != 1 {
+		t.Errorf("after the refused event the replay is through %d with %d events, want through 3 with 1", s.Through, s.Events)
 	}
 }

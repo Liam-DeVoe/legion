@@ -624,7 +624,7 @@ func writeJSON(path string, v any) error {
 }
 
 // checkParams writes params to run.json in out, or refuses a run.json of other parameters.
-func checkParams(out string, params RunParams) error {
+func checkParams[P any](out string, params P) error {
 	path := filepath.Join(out, "run.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -633,7 +633,7 @@ func checkParams(out string, params RunParams) error {
 	if err != nil {
 		return err
 	}
-	var prior RunParams
+	var prior P
 	if err := json.Unmarshal(data, &prior); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -801,7 +801,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *dryRun && *figuresOnly:
 		return usage("give --dry-run or --figures-only, not both")
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
 	inputs, err := ParseGraderInputs(*inputsFlag)
@@ -1075,9 +1075,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 		}
 	}
-	// A held-out run is in the exposure log before it scores a case of the part: no model has
-	// read one before this line, so a run that stops after it, for any reason, still counts as
-	// one that read the part. A dry run calls no model, so the log does not hold it.
+	// A held-out run is checked against the exposure log here, so a run the log refuses calls no
+	// model, and is claimed in the log just before it scores a case of the part (below): no model
+	// has read one before that line, so a run that stops after it, for any reason, still counts as
+	// one that read the part, and a run that stops before it on a refusal of its own read none.
+	// A dry run calls no model, so the log does not hold it.
+	var heldOut *Exposure
+	finished := open+retry == 0
 	if *part == PartHeldOut && !*figuresOnly && !*dryRun {
 		c := *commit
 		if c == "" {
@@ -1098,14 +1102,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: logged, Reason: *newRun, Out: dir, Retried: retry}
-		if e, err = ClaimHeldOut(*exposureLog, e, open+retry == 0); err != nil {
+		if _, err := checkHeldOut(*exposureLog, e, finished); err != nil {
 			return fail(err)
 		}
-		if e.Continues != "" {
-			fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this run as a continuation of the held-out run begun %s at %s\n", *exposureLog, e.Continues, c)
-		} else {
-			fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this held-out run at %s\n", *exposureLog, c)
-		}
+		heldOut = &e
 	}
 	var todo []*Case
 	for _, l := range lanes {
@@ -1207,6 +1207,17 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 			for i, l := range lanes {
 				l.change = runs[i]
+			}
+		}
+		if heldOut != nil {
+			e, err := ClaimHeldOut(*exposureLog, *heldOut, finished)
+			if err != nil {
+				return fail(err)
+			}
+			if e.Continues != "" {
+				fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this run as a continuation of the held-out run begun %s at %s\n", *exposureLog, e.Continues, e.Commit)
+			} else {
+				fmt.Fprintf(stderr, "writing-check harness score: the exposure log %s records this held-out run at %s\n", *exposureLog, e.Commit)
 			}
 		}
 		s := &scorer{ds: ds, reader: reader, grader: grader, sessions: sessions, places: places, readersFrom: priorReaders,

@@ -193,6 +193,15 @@ func placeQuote(quote string, sentences []LabelledSentence) string {
 	return ""
 }
 
+// phrasesRun is the run.json phrases-labels writes in its --out: the grader, the prompts'
+// digest (PromptsDigest, which holds candidates.yaml) and the labels directory its results were
+// graded with, so a rerun reuses them only for the same three.
+type phrasesRun struct {
+	Grader        string `json:"grader"`
+	PromptsSHA256 string `json:"prompts_sha256"`
+	Labels        string `json:"labels"`
+}
+
 // LabelResult is one labelled write the phrases judgement graded: the grade, the sentences its
 // findings fall in, and the findings no sentence holds.
 type LabelResult struct {
@@ -310,7 +319,7 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	if *labelsDir == "" || *out == "" || fs.NArg() > 0 || *draws < 1 {
 		return fail(2, errors.New("--labels and --out are required, and nothing else"))
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return fail(2, err)
 	}
 	cfg, err := LoadConfig()
@@ -322,6 +331,15 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 		return fail(1, err)
 	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(1, err)
+	}
+	labels, err := filepath.Abs(*labelsDir)
+	if err != nil {
+		return fail(1, err)
+	}
+	// The results of --out are reused write by write, so a run of another grader, other prompts
+	// or other labels is refused there.
+	if err := checkParams(*out, phrasesRun{Grader: cfg.Models.Roles.Grader.ID, PromptsSHA256: PromptsDigest(), Labels: labels}); err != nil {
 		return fail(1, err)
 	}
 	path := filepath.Join(*out, "results.jsonl")
@@ -345,10 +363,14 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 		if err != nil {
 			return fail(2, err)
 		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		lines, err := appendLines(path)
 		if err != nil {
 			return fail(1, err)
 		}
+		// A result its line does not hold is graded again by the next run, so the grading stops
+		// at the first line that is not written.
+		gradeCtx, stop := context.WithCancel(ctx)
+		defer stop()
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		feed := make(chan labelledWrite)
@@ -358,8 +380,8 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 			go func() {
 				defer wg.Done()
 				for w := range feed {
-					g := grader.Grade(ctx, GradeInput{Judgement: JPhrases, Text: w.Text})
-					if ctx.Err() != nil {
+					g := grader.Grade(gradeCtx, GradeInput{Judgement: JPhrases, Text: w.Text})
+					if gradeCtx.Err() != nil {
 						return
 					}
 					r := LabelResult{Key: w.key(), Family: w.Family, Group: w.Group, Grade: g, Time: time.Now().UTC().Format(time.RFC3339)}
@@ -370,9 +392,10 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 							r.Unplaced = append(r.Unplaced, it.Quote)
 						}
 					}
-					line, _ := json.Marshal(r)
 					mu.Lock()
-					_, _ = f.Write(append(line, '\n'))
+					if err := lines.add(r); err != nil {
+						stop()
+					}
 					done++
 					if g.Error != "" {
 						failed++
@@ -389,14 +412,14 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 		for _, w := range todo {
 			select {
 			case feed <- w:
-			case <-ctx.Done():
+			case <-gradeCtx.Done():
 				break feeding
 			}
 		}
 		close(feed)
 		wg.Wait()
-		if err := f.Close(); err != nil {
-			return fail(1, err)
+		if err := lines.close(); err != nil {
+			return fail(1, fmt.Errorf("%w: the writes graded after it have no result, so run it again to grade them", err))
 		}
 		if results, err = readLabelResults(path); err != nil {
 			return fail(1, err)
@@ -404,6 +427,11 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	a := phrasesAgreement(*labelsDir, writes, results, *seed, *draws)
 	a.WallSeconds = time.Since(started).Seconds()
+	// An agreement over some of the writes is no figure of the judgement: it is written once
+	// every write has a result.
+	if a.Writes < len(writes) {
+		return fail(1, fmt.Errorf("%d of %d writes have no result, so no agreement is written; run it again to grade them", len(writes)-a.Writes, len(writes)))
+	}
 	if err := writeJSON(filepath.Join(*out, "agreement.json"), a); err != nil {
 		return fail(1, err)
 	}
@@ -412,9 +440,6 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 		return fail(1, err)
 	}
 	fmt.Fprint(stdout, md)
-	if a.Writes < len(writes) {
-		return fail(1, fmt.Errorf("%d of %d writes have no result; run it again to grade them", len(writes)-a.Writes, len(writes)))
-	}
 	return 0
 }
 
@@ -515,7 +540,7 @@ func runAskedWords(args []string, stdout, stderr io.Writer) int {
 	if *run == "" || *casesDir == "" || *out == "" || fs.NArg() > 0 || *draws < 1 {
 		return fail(2, errors.New("--run, --cases and --out are required, and nothing else"))
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return fail(2, err)
 	}
 	var params RunParams

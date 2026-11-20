@@ -6,9 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -335,5 +339,51 @@ func TestResumeDropsTheLastEventAndACutLine(t *testing.T) {
 	}
 	if !x.broadcasts["b-1"] || x.broadcasts["b-2"] {
 		t.Errorf("broadcasts %v, want b-1 taken and b-2, dropped with its event, not", x.broadcasts)
+	}
+}
+
+// fetch writes its cases to <out>.partial and renames that over --out once it has read through
+// --through, so a fetch that stops leaves --out as it was, which group, readers, label and plant
+// would read as whole; --resume continues the partial file.
+func TestAFetchThatStopsLeavesTheCasesFileAsItWas(t *testing.T) {
+	var refuse atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refuse.Load() {
+			http.Error(w, "the credential may not read the log", http.StatusForbidden)
+			return
+		}
+		w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("stand-in\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_URL", srv.URL)
+	t.Setenv("DISPATCH_TOKEN_FILE", token)
+	out := filepath.Join(dir, "cases.jsonl")
+	line, _ := json.Marshal(Case{EventID: 3, Surface: surfaceComment, SourceID: "c-before"})
+	before := string(line) + "\n"
+	if err := os.WriteFile(out, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refuse.Store(true)
+	args := []string{"fetch", "--after", "0", "--through", "10", "--out", out}
+	if code, _, stderr := runCmd(t, args...); code != 1 || !strings.Contains(stderr, out+".partial holds the cases through event 0") {
+		t.Errorf("a fetch the log refuses = %d: %s", code, stderr)
+	}
+	if data, err := os.ReadFile(out); err != nil || string(data) != before {
+		t.Errorf("the stopped fetch left --out as %q (%v), want it as it was", data, err)
+	}
+	refuse.Store(false)
+	if code, _, stderr := runCmd(t, append(args, "--resume")...); code != 0 {
+		t.Fatalf("the resumed fetch = %d: %s", code, stderr)
+	}
+	if data, err := os.ReadFile(out); err != nil || len(data) != 0 {
+		t.Errorf("the resumed fetch left --out as %q (%v), want the stopped fetch's cases, none", data, err)
+	}
+	if _, err := os.Stat(out + ".partial"); !os.IsNotExist(err) {
+		t.Errorf("the finished fetch left its partial file (%v)", err)
 	}
 }

@@ -139,14 +139,6 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return fail(err)
 	}
 	if len(writes) > 0 {
-		sum, err := writeJSONL(filepath.Join(*out, "manifest.jsonl"), writes)
-		if err != nil {
-			return fail(err)
-		}
-		report.ManifestSHA256 = sum
-		if err := os.WriteFile(filepath.Join(*out, "manifest.sha256"), []byte(sum+"  manifest.jsonl\n"), 0o644); err != nil {
-			return fail(err)
-		}
 		rules := writingcheck.New(writingcheck.Config{Enabled: true, Rules: writingcheck.EnabledRules})
 		results := make([]readingResult, len(writes))
 		done := make([]bool, len(writes))
@@ -160,6 +152,15 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			})
 		if ctx.Err() != nil || slices.Contains(done, false) {
 			return fail(errors.New("interrupted before every write was read"))
+		}
+		// The manifest names the writes a reading read, so it is written once each one is read.
+		sum, err := writeJSONL(filepath.Join(*out, "manifest.jsonl"), writes)
+		if err != nil {
+			return fail(err)
+		}
+		report.ManifestSHA256 = sum
+		if err := os.WriteFile(filepath.Join(*out, "manifest.sha256"), []byte(sum+"  manifest.jsonl\n"), 0o644); err != nil {
+			return fail(err)
 		}
 		if _, err := writeJSONL(filepath.Join(*out, "results.jsonl"), results); err != nil {
 			return fail(err)

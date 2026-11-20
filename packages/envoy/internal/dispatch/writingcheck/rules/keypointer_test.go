@@ -52,11 +52,11 @@ func TestKeyPointer(t *testing.T) {
 		// The other pointers and openings.
 		{name: "a link subject", body: "<https://github.com/o/r/pull/3> adds review-change.md.", pattern: keyPointerSubject, text: "URL adds review-change.md.",
 			rewrite: "Say in words what the link delivers. Put the key or the link after those words."},
-		{name: "a pull request of a named repository", body: "theorem-labs/agent-infra#3315 put the gateway below the daemons.", pattern: keyPointerSubject},
+		{name: "a pull request of a named repository", body: "acme/infra#3315 put the gateway below the daemons.", pattern: keyPointerSubject},
 		{name: "a pull request number", body: "#3710 merges first.", pattern: keyPointerSubject},
 		{name: "a possessive pull request number", body: "The fix follows #3981's review.", pattern: keyPointerPossessive,
 			rewrite: "Say in words what #3981 delivers. Put the key or the link after those words."},
-		{name: "a possessive pull request of a named repository", body: "Then theorem-labs/agent-infra#3445's checks pass.", pattern: keyPointerPossessive},
+		{name: "a possessive pull request of a named repository", body: "Then acme/infra#3445's checks pass.", pattern: keyPointerPossessive},
 		{name: "three keys joined by commas and and", body: "INFRA-4, INFRA-47 and INFRA-48 wait on the review.", pattern: keyPointerSubject},
 		{name: "an opening word", body: "So INFRA-481 waits on the review.", pattern: keyPointerSubject},
 		{name: "an opening word and a comma", body: "Also, #3840 conflicts with the lane.", pattern: keyPointerSubject},

@@ -2,6 +2,8 @@ package harness
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 )
+
+// A grading call that fails gives no grade, which marks nothing of the grader: the report counts
+// those outputs apart from the ones it graded, and the test exits 1, since it is not complete.
+func TestGraderTestCountsAFailedCallApartAndFails(t *testing.T) {
+	build, sessions := writeFixture(t)
+	refused := modeltest.Rule{Contains: markDefinition, Reply: modeltest.Reply{Status: http.StatusBadRequest, Text: "the stand-in refuses to grade the definition"}}
+	stand := modeltest.New(t, append([]modeltest.Rule{refused}, allJudgementRules(t)...)...)
+	code, stdout, stderr := runHarness("grader-test", "--planted", writePlanted(t), "--cases", build, "--sessions", sessions, "--out", t.TempDir(),
+		"--gateway", stand.URL, "--gateway-key-file", keyFile(t))
+	if want := fmt.Sprintf("2 of %d planted outputs have no grade", 2*len(Judgements)); code != 1 || !strings.Contains(stderr, want) {
+		t.Errorf("grader-test with the definition's calls refused = %d, want 1 saying %q:\n%s", code, want, stderr)
+	}
+	if !strings.Contains(stdout, "| define | 0 of 0 | 0 of 0 | 2 | 0 / 0 |\n") {
+		t.Errorf("the report does not count the two outputs with no grade apart:\n%s", stdout)
+	}
+}
 
 // The judgements graderRules leaves out, which grader-test gives: change 1 gives none of them.
 const (

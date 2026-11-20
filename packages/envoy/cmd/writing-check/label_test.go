@@ -1,14 +1,59 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
 )
+
+// --resume writes the records it keeps to a file beside the labels file, and renames it over the
+// labels file once they are written whole: a resume stopped while it writes them leaves the file
+// as it was. Written whole, they stand in its place, and the file takes the run's records.
+func TestResumeLeavesTheLabelsFileUntilTheKeptRecordsAreWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "labels.jsonl")
+	old := `{"event_id":1,"source_id":"a","family":"comment","write_label":"pass","sentences":[],"calls":[]}` + "\n" +
+		`{"event_id":2,"source_id":"b","family":"comment","write_label":"error","sentences":[],"calls":[],"error":"a 429"}` + "\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := keepLabelled(path)
+	if err != nil || len(kept) != 1 {
+		t.Fatalf("the kept records: %+v, %v", kept, err)
+	}
+	// A record that does not encode stops the write part way.
+	unwritable := labelRecord{EventID: 3, SourceID: "c", Family: "comment", Calls: []labelCall{{Reply: json.RawMessage("{")}}}
+	if f, err := startLabels(path, append(kept, unwritable)); err == nil {
+		f.Close()
+		t.Fatal("a kept record that does not encode was written")
+	}
+	if data, _ := os.ReadFile(path); string(data) != old {
+		t.Errorf("the stopped resume left the labels file as\n%s\nwant it as it was\n%s", data, old)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("the stopped resume left its file beside the labels file (%v)", err)
+	}
+	f, err := startLabels(path, kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := bufio.NewWriter(f)
+	if err := writeRecord(w, labelRecord{EventID: 2, SourceID: "b", Family: "comment", WriteLabel: writePass}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := keepLabelled(path); err != nil || len(again) != 2 || again[0].EventID != 1 || again[1].EventID != 2 || again[1].WriteLabel != writePass {
+		t.Errorf("after the resume the labels file keeps %+v (%v), want write 1 and write 2 labelled again", again, err)
+	}
+}
 
 func TestWriteLabel(t *testing.T) {
 	s := func(verdicts ...string) []sentenceLabel {

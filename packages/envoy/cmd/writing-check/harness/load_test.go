@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Every text below is written for these tests; none comes from Dispatch.
@@ -201,5 +206,143 @@ func TestLoadOpensAConversationThatStartsWithTheWritersText(t *testing.T) {
 	}
 	if !slices.Equal(got.Thread, []string{"m2", "m3", "m4", "m5"}) || got.Opened != "m1" || got.ReplyTo != "m4" || !slices.Equal(got.LeftOut, []string{"message:x3"}) {
 		t.Errorf("loaded = %+v, want the thread m2 to m5 opened by m1, replying to m4, with message:x3 left out", got)
+	}
+}
+
+// loaded.jsonl names the records each case was loaded into: the database and the start that
+// seeded it. A load continues the cases loaded with no error into the same records, as a
+// `harness local --keep` restart keeps them, and refuses the file for a database a start made or
+// reset since, which does not hold them.
+func TestLoadedLinesHoldTheCasesOfOneSeeding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loaded.jsonl")
+	first := LoadedInstance{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T10:00:00Z"}
+	lines, done, err := openLoadedLog(path, first)
+	if err != nil || len(done) != 0 {
+		t.Fatalf("a new loaded.jsonl: %v, %v", done, err)
+	}
+	for _, l := range []Loaded{{CaseID: "plain/a"}, {CaseID: "plain/b", Error: "refused"}} {
+		if err := lines.add(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := lines.close(); err != nil {
+		t.Fatal(err)
+	}
+	lines, done, err = openLoadedLog(path, first)
+	if err != nil || !done["plain/a"] || len(done) != 1 {
+		t.Fatalf("the records of a --keep restart continue %v (%v), want plain/a alone", done, err)
+	}
+	lines.close()
+	for _, other := range []LoadedInstance{
+		{Database: "dispatch_harness_2", Seeded: "seeded 2026-11-20T11:00:00Z"},
+		{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z"},
+	} {
+		if _, _, err := openLoadedLog(path, other); err == nil || !strings.Contains(err.Error(), "a load continues only in the records it began in") {
+			t.Errorf("a load into %+v with the same --out = %v, want the refusal", other, err)
+		}
+	}
+}
+
+// A line a run does not write is an error of the run, not a result: add answers it, and so do
+// every later add and close. `harness load` and `harness phrases-labels` append their lines so.
+func TestALineThatIsNotWrittenIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.jsonl")
+	lines, err := appendLines(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lines.add(LabelResult{Key: "1/a"}); err != nil {
+		t.Fatal(err)
+	}
+	lines.f.Close()
+	if err := lines.add(LabelResult{Key: "2/b"}); err == nil || !strings.Contains(err.Error(), path) {
+		t.Errorf("a line that was not written = %v, want its failure", err)
+	}
+	if err := lines.add(LabelResult{Key: "3/c"}); err == nil {
+		t.Error("a line after a failed one was answered as written")
+	}
+	if err := lines.close(); err == nil || !strings.Contains(err.Error(), path) {
+		t.Errorf("close after a failed write = %v, want the write's failure", err)
+	}
+}
+
+// `harness load` with the --out of a load into records a start has reset since refuses before it
+// reaches the instance's database.
+func TestLoadRefusesTheOutOfOtherRecords(t *testing.T) {
+	build, _ := writeFixture(t)
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local.json")
+	writeJSONFile(t, local, LocalInstance{BaseURL: "http://127.0.0.1:4200", Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z",
+		DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"})
+	verdicts := filepath.Join(dir, "verdicts.jsonl")
+	if err := os.WriteFile(verdicts, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "load")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(out, "loaded.jsonl"), Loaded{CaseID: "question/comment:q1@11", Instance: LoadedInstance{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T10:00:00Z"}})
+	code, _, stderr := runHarness("load", "--local", local, "--cases", build, "--verdicts", verdicts, "--out", out)
+	if code != 1 || !strings.Contains(stderr, "a load continues only in the records it began in") {
+		t.Errorf("a load into reset records with the --out of the load before = %d:\n%s", code, stderr)
+	}
+}
+
+// A start of `harness local` with --keep answers the mark the start that seeded its database
+// wrote, so a load continues there; a start without it reset the records and marks them anew.
+func TestAKeepRestartKeepsTheDatabasesSeedMark(t *testing.T) {
+	dsn := os.Getenv("DISPATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DISPATCH_TEST_DATABASE_URL names no Postgres server")
+	}
+	ctx := context.Background()
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(ctx)
+	name := "dispatch_harness_seed_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if _, err := admin.Exec(ctx, "create database "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec(context.Background(), "drop database if exists "+pgx.Identifier{name}.Sanitize()) })
+	dbURL, err := databaseURL(dsn, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark, err := databaseSeeded(ctx, dbURL, name, true); err != nil || mark != "" {
+		t.Fatalf("a database no start marked: %q, %v", mark, err)
+	}
+	seeded, err := databaseSeeded(ctx, dbURL, name, false)
+	if err != nil || seeded == "" {
+		t.Fatalf("the seeding start's mark: %q, %v", seeded, err)
+	}
+	kept, err := databaseSeeded(ctx, dbURL, name, true)
+	if err != nil || kept != seeded {
+		t.Errorf("a --keep restart answers %q (%v), want the seeding start's %q", kept, err, seeded)
+	}
+	reset, err := databaseSeeded(ctx, dbURL, name, false)
+	if err != nil || reset == "" || reset == seeded {
+		t.Errorf("a start that reset the database answers %q (%v), want a mark other than %q", reset, err, seeded)
+	}
+}
+
+// A second `harness local` with the --out whose local.json a running instance wrote refuses it
+// before it starts anything, and leaves the running instance's local.json in place.
+func TestLocalRefusesAnOutWhoseLocalJSONExists(t *testing.T) {
+	out := t.TempDir()
+	held := filepath.Join(out, "local.json")
+	writeJSONFile(t, held, LocalInstance{BaseURL: "http://127.0.0.1:4100", Database: "dispatch_harness_1", DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"})
+	before, err := os.ReadFile(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runHarness("local", "--out", out, "--pg-dsn", "postgres://harness@127.0.0.1:1/postgres")
+	if code != 2 || !strings.Contains(stderr, "another `harness local` holds this --out") {
+		t.Errorf("harness local over a held --out = %d:\n%s", code, stderr)
+	}
+	if after, err := os.ReadFile(held); err != nil || string(after) != string(before) {
+		t.Errorf("the refused start changed or removed the running instance's local.json (%v)", err)
 	}
 }

@@ -210,7 +210,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if !slices.Contains(AddedGraders, *addedGrader) {
 		return usage("--added-grader is " + strings.Join(AddedGraders, ", "))
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
 	inputs, err := ParseGraderInputs(*inputsFlag)
@@ -299,19 +299,29 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return fail(err)
 	}
 	fmt.Fprint(stdout, report)
+	errored := 0
 	for _, r := range results {
 		if r.Grade.Error != "" {
+			errored++
 			fmt.Fprintf(stderr, "writing-check harness grader-test: %s: %s\n", r.Planted.ID, r.Grade.Error)
 		}
+	}
+	// A grade the call did not give marks nothing of the grader, so the test is not complete.
+	if err := ctx.Err(); err != nil {
+		return fail(fmt.Errorf("stopped (%w): %d of %d planted outputs have no grade, so the test is not complete; run it again", err, errored, len(results)))
+	}
+	if errored > 0 {
+		return fail(fmt.Errorf("%d of %d planted outputs have no grade, as their calls failed, so the test is not complete; run it again", errored, len(results)))
 	}
 	return 0
 }
 
 // graderReport is the grader test's table: for each judgement, the wrong and the right outputs
-// it marked correctly, then each output with what a correct grader answers and what it answered,
-// then what the calls cost. candidate says the grader is a candidate of candidates.yaml. Under
-// them the report names the grader's input modes and its added grader's variant, whatever they
-// are, defaults included, and promptsSHA, the prompts' digest as scores.md names it (PromptsDigest).
+// it marked correctly, of those it graded, and the outputs whose call failed and gave no grade,
+// then each output with what a correct grader answers and what it answered, then what the calls
+// cost. candidate says the grader is a candidate of candidates.yaml. Under them the report names
+// the grader's input modes and its added grader's variant, whatever they are, defaults included,
+// and promptsSHA, the prompts' digest as scores.md names it (PromptsDigest).
 func graderReport(results []PlantedResult, graderID string, candidate bool, grader *Grader, promptsSHA string, elapsed time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Grader test: %s\n\n", graderID)
@@ -319,20 +329,22 @@ func graderReport(results []PlantedResult, graderID string, candidate bool, grad
 		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", graderID)
 	}
 	fmt.Fprintf(&b, "The grader's inputs are %s (--grader-inputs). The added grader is %s (--added-grader). Prompts SHA-256 %s.\n\n", grader.Inputs, grader.Added, promptsSHA)
-	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n")
-	all, allCorrect := 0, 0
+	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | No grade (the call failed) | Correct / graded |\n| --- | ---: | ---: | ---: | ---: |\n")
+	all, allCorrect, allErrored := 0, 0, 0
 	for _, j := range Judgements {
-		var wrong, wrongOK, right, rightOK int
+		var wrong, wrongOK, right, rightOK, errored int
 		for _, r := range results {
-			if r.Planted.Judgement != j {
+			switch {
+			case r.Planted.Judgement != j:
 				continue
-			}
-			if r.Planted.Planted == PlantedWrong {
+			case r.Grade.Error != "":
+				errored++
+			case r.Planted.Planted == PlantedWrong:
 				wrong++
 				if r.Correct {
 					wrongOK++
 				}
-			} else {
+			default:
 				right++
 				if r.Correct {
 					rightOK++
@@ -341,9 +353,10 @@ func graderReport(results []PlantedResult, graderID string, candidate bool, grad
 		}
 		all += wrong + right
 		allCorrect += wrongOK + rightOK
-		fmt.Fprintf(&b, "| %s | %d of %d | %d of %d | %d / %d |\n", j, wrongOK, wrong, rightOK, right, wrongOK+rightOK, wrong+right)
+		allErrored += errored
+		fmt.Fprintf(&b, "| %s | %d of %d | %d of %d | %d | %d / %d |\n", j, wrongOK, wrong, rightOK, right, errored, wrongOK+rightOK, wrong+right)
 	}
-	fmt.Fprintf(&b, "| all | | | %d / %d |\n\n| Output | Judgement | Planted | A correct grader | The grader | Correct |\n| --- | --- | --- | --- | --- | --- |\n", allCorrect, all)
+	fmt.Fprintf(&b, "| all | | | %d | %d / %d |\n\n| Output | Judgement | Planted | A correct grader | The grader | Correct |\n| --- | --- | --- | --- | --- | --- |\n", allErrored, allCorrect, all)
 	var total Call
 	for _, r := range results {
 		for _, c := range r.Grade.ownCalls() {

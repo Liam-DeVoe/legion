@@ -181,7 +181,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check harness compare: --a, --b and --out are required, and nothing else")
 		return 2
 	}
-	if err := outsideRepository("--out", *out); err != nil {
+	if err := OutsideRepository("--out", *out); err != nil {
 		fmt.Fprintf(stderr, "writing-check harness compare: %v\n", err)
 		return 2
 	}

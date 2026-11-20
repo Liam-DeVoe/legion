@@ -83,14 +83,41 @@ func ReadExposures(path string) ([]Exposure, error) {
 	return out, scanner.Err()
 }
 
-// ClaimHeldOut appends e to the exposure log at path before a run scores a case of the held-out
-// part, and answers e as the log holds it. A run with no reason is refused where an earlier line
-// at e's commit scored one of e's cells, unless e continues that run: the latest such line is in
-// e's directory, of e's very cells, and the run has a case left to score (finished is false: a
-// case with no line, or one whose line holds an error). Then e's line names the run it continues.
-// A continuation scores no case that holds a result; the cases it retries hold no score, and at
-// one commit nothing that decides a score has changed. ClaimHeldOut also refuses e with no commit.
+// ClaimHeldOut appends e to the exposure log at path just before a run scores a case of the
+// held-out part, and answers e as the log holds it. It refuses what checkHeldOut refuses, reading
+// the log again, so a line another process appended since the run's own check counts too.
 func ClaimHeldOut(path string, e Exposure, finished bool) (Exposure, error) {
+	e, err := checkHeldOut(path, e, finished)
+	if err != nil {
+		return e, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return e, err
+	}
+	line, err := json.Marshal(e)
+	if err != nil {
+		return e, err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return e, err
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return e, err
+	}
+	return e, f.Close()
+}
+
+// checkHeldOut decides whether e may read the held-out part, and answers e as ClaimHeldOut would
+// log it; it writes nothing, so a run checks first and claims only once nothing it refuses
+// itself is left. A run with no reason is refused where an earlier line at e's commit scored one
+// of e's cells, unless e continues that run: the latest such line is in e's directory, of e's
+// very cells, and the run has a case left to score (finished is false: a case with no line, or
+// one whose line holds an error). Then e names the run it continues. A continuation scores no
+// case that holds a result; the cases it retries hold no score, and at one commit nothing that
+// decides a score has changed. checkHeldOut also refuses e with no commit.
+func checkHeldOut(path string, e Exposure, finished bool) (Exposure, error) {
 	if strings.TrimSpace(e.Commit) == "" {
 		return e, errors.New("a run that reads the held-out part names its commit (--commit)")
 	}
@@ -118,22 +145,7 @@ func ClaimHeldOut(path string, e Exposure, finished bool) (Exposure, error) {
 			e.Continues = cmp.Or(last.Continues, last.Time)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return e, err
-	}
-	line, err := json.Marshal(e)
-	if err != nil {
-		return e, err
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return e, err
-	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		f.Close()
-		return e, err
-	}
-	return e, f.Close()
+	return e, nil
 }
 
 // headCommit is the commit git names HEAD in the working directory: in a jj workspace colocated
@@ -147,10 +159,10 @@ func headCommit() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// outsideRepository refuses an output path inside a repository: a directory at or above it that
-// holds a .git or a .jj. Every file the harness writes holds Dispatch or session text, which
-// goes under $TMPDIR and never into a working copy.
-func outsideRepository(flag, path string) error {
+// OutsideRepository refuses an output path inside a repository: a directory at or above it that
+// holds a .git or a .jj. Every file the harness and the dataset steps write holds Dispatch or
+// session text, which goes under $TMPDIR and never into a working copy.
+func OutsideRepository(flag, path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
