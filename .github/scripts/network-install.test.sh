@@ -224,6 +224,12 @@ run_install "stale lockfile" bun -- "$standin" "$work/stale.count" stale
 check "exits 1" "$(is "$status" 1)"
 check "ran once" "$(is "$(count "$work/stale.count")" 1)"
 check "says it is the command's own" "$(contains "$out" "Exit 1 is the command's own")"
+# Yarn 1.22.22's own fault, a lockfile that disagrees under --frozen-lockfile, names no network fault.
+: > "$work/yarn-stale.count"
+run_install "Yarn's stale lockfile" yarn -- "$standin" "$work/yarn-stale.count" says \
+  'error Your lockfile needs to be updated, but yarn was run with `--frozen-lockfile`.'
+check "Yarn's stale lockfile: ran once" "$(is "$(count "$work/yarn-stale.count")" 1)"
+check "Yarn's stale lockfile: says it is the command's own" "$(contains "$out" "Exit 1 is the command's own")"
 
 echo "case: a command's own exit 124 or 137, before the bound, is neither a timeout nor a kill"
 run_install "exits 124 itself" apt -- "$standin" "$work/own124.count" own124

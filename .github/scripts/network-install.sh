@@ -134,6 +134,14 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #   npm         npm ci of a project's lockfile. The worker image's toolchain RUN, which holds its
 #               one npm ci beside seven downloads: 43.2 s at its slowest of 40 green builds, job
 #               136004778019. 2 × 43.2 s is 86.4 s, so 120 s an attempt.
+#   yarn        yarn install (bare `yarn` too) and yarn add from the npm registry. No required job
+#               installs with Yarn today, so no green run measures it; it reads the same registry as
+#               npm ci, so it takes npm's 120 s an attempt until a job that installs with it gives a
+#               measurement. Yarn 1.22.22's words for the network's faults, measured on 2026-11-20
+#               against a closed port and a registry that answered 503 or 429: `connect
+#               ECONNREFUSED`, `There appears to be trouble with the npm registry` then `Request
+#               failed "503 Service Unavailable"`, and `returned a 429`; its own fault, a lockfile
+#               that disagrees under --frozen-lockfile, says `Your lockfile needs to be updated`.
 #   uv          uv making a virtual environment of a managed Python and installing into it. The
 #               worker image's azure-cli RUN, which holds both: 33.5 s at its slowest of 40 green
 #               builds, job 136046630907. 2 × 33.5 s is 67 s, so 120 s an attempt.
@@ -156,7 +164,7 @@ set -eu
 ATTEMPTS=3
 DEFAULT_PAUSE=10
 DEFAULT_KILL_AFTER=15
-KINDS="apt bun bun-image docker playwright go elan apk npm uv gcloud"
+KINDS="apt bun bun-image docker playwright go elan apk npm yarn uv gcloud"
 
 # bound_of <kind>: the kind's bound per attempt in seconds, from THE KINDS above, or nothing.
 bound_of() {
@@ -170,6 +178,7 @@ bound_of() {
     elan) echo 60 ;;
     apk) echo 60 ;;
     npm) echo 120 ;;
+    yarn) echo 120 ;;
     uv) echo 120 ;;
     gcloud) echo 120 ;;
   esac
