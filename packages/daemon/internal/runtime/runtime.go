@@ -42,7 +42,9 @@ type Runtime interface {
 	// Spawn starts an agent and returns the locator that identifies the process it started —
 	// including the incarnation, captured at spawn, that later observations are fenced against.
 	// On an error the caller owns stopping any previous process of the claim, and Spawn has
-	// stopped any process it started itself.
+	// stopped any process it started itself. A store the start must ask before it starts anything
+	// that could not answer is ErrSessionStore, as for Resume, having started nothing: in the
+	// Sandbox runtime, the daemon's store, asked for the pod's saved workspace bundle.
 	Spawn(ctx context.Context, spec SpawnSpec) (Locator, error)
 	// Resume starts the same agent again from the session file the spec names, after waiting
 	// for the previous incarnation to be Gone. prev is the incarnation the caller recorded, nil

@@ -1405,8 +1405,9 @@ type Machine struct {
 	// a suspension cancelled one, read once by that suspension's own row (stoppedAStart). startMu
 	// is their own lock, held only to set, clear or call them, so a suspension can reach them
 	// while the decision that started the launch holds mu for minutes (stopStart, startable).
-	// storeFaultTold is when the issue and the controller were last told the session store could
-	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore).
+	// storeFaultTold is when the issue and the controller were last told a store the start must
+	// ask could not answer, so a start that retries every minute reports once an hour
+	// (startWaitsForStore).
 	startMu        sync.Mutex
 	cancelStart    context.CancelFunc
 	startStopped   bool
@@ -2550,8 +2551,8 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // It is also where the process a relaunch replaces is let go, for cause, and what that process
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
-// failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
-// claim that records no process any more, so they pass noEnd.
+// failed write's here, and a start's whose store could not answer (startWaitsForStore) — launch
+// a claim that records no process any more, so they pass noEnd.
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
@@ -2751,7 +2752,7 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 	return errors.Join(err, m.persist(ctx))
 }
 
-// tellStoreFault reports the session store fault to the issue and the controller, at the first
+// tellStoreFault reports the store fault to the issue and the controller, at the first
 // start that met it and at most once an hour after that (Deps.SessionStoreFault). The hour is
 // counted from the last report rather than from the first fault, so an outage that ends and
 // returns is reported again.
