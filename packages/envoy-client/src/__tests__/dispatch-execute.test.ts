@@ -27,7 +27,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { z } from "zod";
 import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
-
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
@@ -5389,7 +5388,7 @@ describe("executeDispatchTool", () => {
       (request: string) =>
         `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
         "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key.",
+        "effect: check whether it did before retrying it.",
       1,
     ],
     [

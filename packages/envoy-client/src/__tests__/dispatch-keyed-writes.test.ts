@@ -574,7 +574,7 @@ describe("DispatchClient's writes", () => {
     expect(timeout.message).toBe(
       "POST http://dispatch.test/api/v1/issues/DSP-1/comments had no definitive answer when its " +
         "deadline ended it (its only attempt), and an attempt of the write may have reached " +
-        "Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key."
+        "Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
     );
     expect(hung.sent).toHaveLength(1);
 

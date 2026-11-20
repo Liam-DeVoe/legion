@@ -1,4 +1,3 @@
-import { routeAnswer } from "../../test/route-answers";
 // packages/envoy-client/src/__tests__/dispatch-dead-token.test.ts
 //
 // T3 (the review of 34f3f6ae57), the Dispatch client's half of red team 3, on the real broker
@@ -11,6 +10,7 @@ import { routeAnswer } from "../../test/route-answers";
 // token traded again for nothing, and the dead one kept for the next call.
 
 import { expect, test } from "bun:test";
+import { routeAnswer } from "../../test/route-answers";
 import { brokerCredential } from "../broker-credential";
 import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";

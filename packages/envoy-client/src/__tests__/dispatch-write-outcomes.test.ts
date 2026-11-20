@@ -1,4 +1,3 @@
-import { routeAnswer } from "../../test/route-answers";
 // packages/envoy-client/src/__tests__/dispatch-write-outcomes.test.ts
 //
 // Every way a Dispatch write can go, against the rule the client states: once an attempt may have
@@ -36,6 +35,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -566,16 +566,14 @@ const UNSETTLED: Ending = { as: "unsettled" };
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
- * broker say each is (`Kind`), and the write's state, the keyed layer it has seen, and the limits
- * it has spent.
+ * broker say each is (`Kind`), and the write's state, its last attempt's own ending, and the
+ * limits it has spent.
  */
 function oracle(events: readonly Kind[]): Decision[] {
   let landed = false;
-  // Whether this call has seen the keyed layer: an answer that echoed its key, or a `/healthz`
-  // that said so, which the client asks before a paced resend once an attempt may have landed
-  // (the harness's says yes); a resend before that asks nothing. What the call saw it keeps
-  // (`WriteProgress.sawKeyedLayer`): Dispatch's own refusal with no echo sets aside only what
-  // the process remembers, which the harness starts afresh for each run.
+  // The last attempt's own ending, where it had one: where the deadline ends a pause before
+  // anything of the write may have landed, the write stands at it, which says why nothing was
+  // stored. Every Dispatch runs the keyed layer, so a resend asks nothing else first.
   let lastOwn: Ending | undefined;
   let running = false;
   let pauses = 0;
@@ -599,8 +597,9 @@ function oracle(events: readonly Kind[]): Decision[] {
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
     switch (event.role) {
       case "applied":
-        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
-        // the key from a Dispatch known to answer every keyed write with it.
+        // A 2xx that does not name the key back is no answer of Dispatch's, whose keyed layer
+        // names it on every answer to a keyed write; one that does is a landing, whose body gives
+        // the row or is an answer lost.
         if (!event.echoed) return end(UNSETTLED);
         if (event.notJson || event.name === "204" || event.name === "205")
           return end({ as: "landed" });

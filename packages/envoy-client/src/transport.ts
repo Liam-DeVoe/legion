@@ -784,16 +784,16 @@ export class EnvoyApiError extends Error {
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
-    const redirect = details.status >= 300 && details.status < 400;
-    const redirected = shown.redirectTo === undefined ? "" : `, redirecting to ${shown.redirectTo}`;
+    const redirected =
+      shown.redirectTo === undefined
+        ? ""
+        : ` (a redirect to ${shown.redirectTo}, which this client does not follow)`;
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
-      redirect
-        ? `${details.method} ${details.url} failed with ${details.status}${redirected}`
-        : parsed === undefined
-          ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
-          : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+      parsed === undefined
+        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
+        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
     this.code = parsed?.code;
@@ -1044,10 +1044,6 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           { cause: unminted }
         ),
       };
-    }
-    if (response.status >= 300 && response.status < 400) {
-      void response.body?.cancel().catch(() => undefined);
-      return { response, body: "" };
     }
     // The body is read under the same deadline. A refusal whose body does not arrive is still the
     // listener's refusal; any other answer whose body does not arrive is no answer.
