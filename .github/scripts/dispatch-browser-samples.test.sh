@@ -49,6 +49,38 @@ run_report() {
   set -e
 }
 
+# await_tick <pid>: waits until the sampler <pid> has written a whole tick, that is until the
+# command it runs is its `sleep 5`, which it starts only once both files hold that tick, or until
+# it is gone; sets `child` to that sleep's pid, or to nothing when the sampler is gone. A tick
+# reads every process of the machine (`ps -eo`), which takes seconds on a devbox that runs 15,000
+# of them and longer under load, so the wait is for the tick itself, not for a time a tick is
+# assumed to take, and the case that calls it checks `child` by name. Its one bound, 300 s, is for
+# a sampler that hangs before its sleep. It reads /proc with builtins alone.
+await_tick() {
+  local pid=$1 c comm stat state i
+  local -a kids
+  child=
+  for ((i = 0; i < 3000; i++)); do
+    stat=
+    { IFS= read -r stat <"/proc/$pid/stat"; } 2>/dev/null || true
+    state=${stat##*) }
+    state=${state%% *}
+    # Gone, or a zombie its parent has not reaped yet: it writes nothing more.
+    { [ -n "$stat" ] && [ "$state" != Z ]; } || return 0
+    kids=()
+    { read -r -a kids <"/proc/$pid/task/$pid/children"; } 2>/dev/null || true
+    for c in ${kids[@]+"${kids[@]}"}; do
+      comm=
+      { read -r comm <"/proc/$c/comm"; } 2>/dev/null || true
+      if [ "$comm" = sleep ]; then
+        child=$c
+        return 0
+      fi
+    done
+    sleep 0.1
+  done
+}
+
 echo "case: the lowest MemAvailable, over the samples that are numbers"
 dir=$(fixture memory-low)
 # A tick writes one number per line. The blank line is the short write of a sampler killed
@@ -143,8 +175,8 @@ check "CPU" "$(contains "$out" 'took no CPU sample$')"
 
 echo "case: the sampler writes both files, over this machine's own /proc"
 # The one case that runs the sampler itself: the fixtures above stand in for what it writes, so
-# the shape it writes is worth holding. It is started as the browser steps start it, left to
-# take at least one tick, and killed as their trap kills it.
+# the shape it writes is worth holding. It is started as the browser steps start it, left until it
+# has written a whole tick (await_tick), and killed as their trap kills it.
 dir=$(fixture sampler-runs)
 # What a previous run left behind. The sampler truncates both files, so neither line survives
 # into the reading.
@@ -152,7 +184,8 @@ printf 'stale\n' > "$dir/memory-samples.txt"
 printf 'machine 999999999\n' > "$dir/cpu-samples.txt"
 "$samples_script" sample "$dir" &
 sampler=$!
-sleep 2
+await_tick "$sampler"
+check "it wrote a whole tick and reached its sleep" "$(is "${child:+yes}" yes)"
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
 check "the memory samples are numbers of kB" \
@@ -216,14 +249,7 @@ for i in 0 1; do
   dir=$(fixture "stop-$i")
   "$samples_script" sample "$dir" &
   sampler=$!
-  child=
-  for _ in $(seq 1 200); do
-    for c in $(cat "/proc/$sampler/task/"*/children 2>/dev/null || true); do
-      if [ "$(cat "/proc/$c/comm" 2>/dev/null || true)" = sleep ]; then child=$c; fi
-    done
-    [ -z "$child" ] || break
-    sleep 0.05
-  done
+  await_tick "$sampler"
   check "step $((i + 1))'s sampler reached its sleep" "$(is "${child:+yes}" yes)"
   eval "${stops[$i]}"
   check "step $((i + 1))'s stop leaves no sampler" "$(is "$(kill -0 "$sampler" 2>/dev/null && echo alive || echo gone)" gone)"
