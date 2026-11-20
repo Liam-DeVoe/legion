@@ -15,11 +15,12 @@ import (
 )
 
 // The listener's stop (stopListener, every step of shutdownListener but its exit) ends the roles'
-// handovers and waits for each to return before it drains the main client. A handover is under way
-// with its forward held: the forward returns only once its context has ended and the row has let it
-// go. The row lets it go only once the stop has begun its wait for the handovers
-// (roleKeepGuards.awaiting), and then wants the stop to return after the handover has, with no
-// handover left running and no warning that one was. Every wait ends only at the test's deadline.
+// handovers and waits for each to return before it drains the role lane and the main client. A
+// handover is under way with its forward held: the forward returns only once its context has ended
+// and the row has let it go. The row lets it go only once the stop has begun its wait for the
+// handovers (roleKeepGuards.awaiting), and then wants the stop to return after the handover has,
+// with no handover left running and no warning that one was. Every wait ends only at the test's
+// deadline.
 //
 // The controls are the stop with either step taken out of main.go. With the end taken out, the
 // forward's context never ends, the handover never returns, and the stop's wait gives up at its 10 s

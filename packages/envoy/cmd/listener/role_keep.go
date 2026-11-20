@@ -393,9 +393,11 @@ func roleKeepWriteFailed(err error) (roleKeepDrainEnd, error) {
 // one (drainKeptRole, handOverSweptLane) and settles it after each release of the guard.
 //
 // A report the reporter reaches once the listener's stop has given up its wait for the handovers
-// (roleKeepGuards.await, gone) is not run: the stop drains the main client next, and a publish into
-// a draining client reaches nothing. It is dropped with a warning that names the stop, so the loss
-// is seen.
+// (roleKeepGuards.await, gone) is not run: the stop has spent the handovers' share of its budget,
+// and goes on to drain the role lane (stopLaneDrain and the handed-over forwards' wait) and then the
+// main client the report publishes through (stopListener), so a report started then races that
+// drain and the process's exit, and may reach nothing. It is dropped with a warning that names the
+// stop, so the loss is seen.
 type keptRoleOwed struct {
 	// ctx is the caller's context with its cancellation taken off, which every report and read-back
 	// runs under.
@@ -584,8 +586,8 @@ func (g *roleKeepGuards) done() {
 // await waits, within ctx, for every handover start ran to return, and reports whether each did. A
 // handover the shutdown ended (end) returns once its walk has ended and its reporter has run what
 // it owes (keptRoleOwed.settle), each report within its own publish's bound. A wait ctx ends first
-// marks the set gone, so a report a handover still owes is dropped rather than run into the main
-// client the stop drains next (keptRoleOwed.report).
+// marks the set gone, so a report a handover still owes is dropped rather than started against the
+// drains that follow, the role lane's and then the main client's (keptRoleOwed.report).
 func (g *roleKeepGuards) await(ctx context.Context) bool {
 	g.mu.Lock()
 	if g.running == 0 {

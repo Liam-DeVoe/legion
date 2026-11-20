@@ -27,6 +27,31 @@ import (
 // ends with the first copy, reports the confirm's time-out as a failed drain, and the row fails at
 // its check that the second copy was forwarded.
 func TestAHandoverWhoseConfirmCouldNotBeReadBackGoesOnToTheLanesNextCopy(t *testing.T) {
+	goesOnAfterAnUnreadableConfirm(t, "kept-settle-goes-on", func(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) error {
+		return drainKeptRole(ctx, cfg, role, time.Now)
+	})
+}
+
+// The same, for a handover the keep sweep started (handOverSweptLane): once the confirm is settled
+// with the guard given back, the sweep's handover takes the guard again and runs again, so the
+// lane's next copy is forwarded in the same pass of the sweep rather than the next one, five
+// minutes on. The pass ends once every handover it started has (sweepOnce).
+//
+// The control is E1b, the sweep's run again after a settle taken out (role_keep_sweep.go, the
+// `owed.settle(cfg)` branch that sets again): the sweep's handover ends with the first copy, and
+// the row fails at its check that the second copy was forwarded.
+func TestASweptHandoverWhoseConfirmCouldNotBeReadBackGoesOnToTheLanesNextCopy(t *testing.T) {
+	goesOnAfterAnUnreadableConfirm(t, "kept-settle-sweep-goes-on", func(ctx context.Context, cfg listenerDeliveryHandlerConfig, _ string) error {
+		sweepOnce(ctx, cfg)
+		return nil
+	})
+}
+
+// goesOnAfterAnUnreadableConfirm keeps two copies for a live holder of role, makes the first
+// forward's confirm unreadable as the rows above say, hands the lane over through handOver, and
+// wants both copies forwarded in order, each reported once, and nothing logged at ERROR.
+func goesOnAfterAnUnreadableConfirm(t *testing.T, role string, handOver func(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) error) {
+	t.Helper()
 	hold := testnats.StartReplyHold(t, testnats.URL(t))
 	client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
 	if err != nil {
@@ -35,10 +60,7 @@ func TestAHandoverWhoseConfirmCouldNotBeReadBackGoesOnToTheLanesNextCopy(t *test
 	t.Cleanup(client.Close)
 	harness := newListenerDeliveryHarnessOn(t, client)
 	cfg := harness.config
-	const (
-		role   = "kept-settle-goes-on"
-		holder = "ses_kept_settle_goes_on"
-	)
+	holder := "ses_" + strings.ReplaceAll(role, "-", "_")
 	first := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
 	second := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-2")
 	for _, item := range []contracts.Envelope{first, second} {
@@ -75,7 +97,7 @@ func TestAHandoverWhoseConfirmCouldNotBeReadBackGoesOnToTheLanesNextCopy(t *test
 
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
-	if err := drainKeptRole(ctx, cfg, role, time.Now); err != nil {
+	if err := handOver(ctx, cfg, role); err != nil {
 		t.Fatalf("the handover answered %v; log:\n%s", err, harness.logs.String())
 	}
 
@@ -98,10 +120,11 @@ func TestAHandoverWhoseConfirmCouldNotBeReadBackGoesOnToTheLanesNextCopy(t *test
 }
 
 // A report the handover owes once the listener's stop has given up its wait for the handovers
-// (roleKeepGuards.await ended by its deadline) is not run: the stop drains the main client next,
-// and the report's publish would reach a draining client. It is dropped with a warning that names
-// the stop. Here a handover the stop waits for never returns, the stop's wait ends at a deadline
-// already past, and a report owed afterwards must not run.
+// (roleKeepGuards.await ended by its deadline) is not run: the stop goes on to drain the role lane
+// and then the main client the report publishes through, so a report started then races those
+// drains. It is dropped with a warning that names the stop. Here a handover the stop waits for
+// never returns, the stop's wait ends at a deadline already past, and a report owed afterwards
+// must not run.
 //
 // The control is the reporter at 263ef43b50, which ran every report it was owed whatever the stop
 // had done, so the report runs and the row fails at its check.
@@ -123,7 +146,7 @@ func TestAReportOwedAfterTheStopGaveUpItsWaitIsDropped(t *testing.T) {
 	owed.owe(func(context.Context) { ran.Store(true) })
 	owed.settle(cfg)
 	if ran.Load() {
-		t.Fatal("a report owed after the stop gave up its wait ran, into the client the stop drains next")
+		t.Fatal("a report owed after the stop gave up its wait ran, against the drains the stop makes next")
 	}
 	if !strings.Contains(harness.logs.String(), "listener kept role report dropped: the listener's stop gave up its wait") {
 		t.Fatalf("the dropped report was not logged; log:\n%s", harness.logs.String())
