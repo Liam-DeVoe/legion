@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,7 +97,7 @@ func newEdgeRepositories(brokerURL string, account brokertoken.Account, projects
 	return &edgeRepositories{
 		brokerURL: strings.TrimSuffix(brokerURL, "/"),
 		account:   account,
-		projects:  slices.Clone(projects),
+		projects:  projects,
 		client:    &http.Client{Timeout: edgeRepositoryReadTimeout},
 		now:       time.Now,
 		withheld:  withheld,

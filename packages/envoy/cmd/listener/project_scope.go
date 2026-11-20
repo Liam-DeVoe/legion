@@ -11,7 +11,7 @@ package main
 //
 //   - E1, admission: a broker token alone, whose projects are all among the ones the edge serves,
 //     of project scope named or person (EdgeAdmits), decided in apiAuth before any handler. The
-//     admitted request carries its token's projects (withHeldProjects), and every rule below
+//     admitted request is marked held to its token's projects (withEdgeHold), and every rule below
 //     reads them there (heldProjects), so a request that is not held is one this listener
 //     serves as every listener does.
 //   - E2, the topics a session follows: its own agent subject, a topic of one of its projects, or
@@ -20,7 +20,7 @@ package main
 //     reaches the session only while a fresh answer names its repository (sessionRelays.relayNATS),
 //     and the refresh removes an interest in a repository that left (pruneEdgeInterests). What a
 //     session publishes is narrower: a role subject of its project in the form that names it
-//     (edgePublishRefusal).
+//     (edgePublishRefusal). A refused registration names every topic it refused (EdgeRefusal).
 //   - E3, roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal).
 //   - E4, sends: the target session's token lists one of the token's projects, else the send is
@@ -31,9 +31,9 @@ package main
 //   - E6, the start: refused beside every other credential, beside webhooks, and without the
 //     broker-token settings (validateEdgeMode).
 //
-// A project is one of the token's by the bus's rule for a broker token (access.BrokerTokenAdmits,
-// projectHeld), read as for a private project so that a token listing none, which E1 never
-// admits here, holds no project at all.
+// A project is one of the token's by the bus's rule for a broker token
+// (projectscope.BrokerTokenAdmits, projectHeld), read as for a private project so that a token
+// listing none, which E1 never admits here, holds no project at all.
 
 import (
 	"context"
@@ -110,20 +110,24 @@ func refuseEdge(status int, reason, message string, expected ...string) *edgeRef
 
 func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.body) }
 
-// heldProjectsKey is the context key an edge admission carries its token's projects under.
-type heldProjectsKey struct{}
+// edgeHoldKey is the context key that marks a request an edge listener admitted.
+type edgeHoldKey struct{}
 
-// withHeldProjects marks a request an edge listener admitted: every rule here holds it to
-// projects, the projects of the token apiAuth admitted it on.
-func withHeldProjects(ctx context.Context, projects []string) context.Context {
-	return context.WithValue(ctx, heldProjectsKey{}, slices.Clone(projects))
+// withEdgeHold marks a request an edge listener admitted (apiAuth): every rule here holds it to
+// the projects of the broker token it was admitted on, which its broker caller carries.
+func withEdgeHold(ctx context.Context) context.Context {
+	return context.WithValue(ctx, edgeHoldKey{}, true)
 }
 
-// heldProjects is the projects r is held to, and whether it is held at all: true only for a
-// request an edge listener admitted (apiAuth), false on every other listener.
+// heldProjects is the projects r is held to, its broker token's (brokertoken.Caller.Projects, the
+// caller's own copy), and whether it is held at all: true only for a request an edge listener
+// admitted, false on every other listener.
 func heldProjects(r *http.Request) ([]string, bool) {
-	projects, held := r.Context().Value(heldProjectsKey{}).([]string)
-	return projects, held
+	if held, _ := r.Context().Value(edgeHoldKey{}).(bool); !held {
+		return nil, false
+	}
+	caller, _ := brokerCaller(r)
+	return caller.Projects, true
 }
 
 // projectHeld reports whether project is one of projects, by the bus's rule for a broker token
@@ -161,7 +165,7 @@ func legionAgentOfProjects(agent legionagents.Agent, projects []string) bool {
 
 // legionAgentsOfProjects is agents with only projects' entries, in their order.
 func legionAgentsOfProjects(agents []legionagents.Agent, projects []string) []legionagents.Agent {
-	return slices.DeleteFunc(slices.Clone(agents), func(agent legionagents.Agent) bool { return !legionAgentOfProjects(agent, projects) })
+	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !legionAgentOfProjects(agent, projects) })
 }
 
 // unknownSession is the 404 a session the edge does not show gets: the answer of a session no
@@ -340,11 +344,12 @@ func edgeLegionWriteRefusal(r *http.Request) *edgeRefusal {
 }
 
 // registeringProjects is the projects the registration r makes records on its session's entry
-// (K6): its broker token's list, sorted and each once as the broker answers it, and [] for a
-// registration that presented no broker token or one listing none.
+// (K6): its broker token's list, sorted and each once as the broker answers it (the caller's own
+// copy, brokertoken.Caller.Projects), and [] for a registration that presented no broker token or
+// one listing none.
 func registeringProjects(r *http.Request) []string {
 	if caller, ok := brokerCaller(r); ok && len(caller.Projects) > 0 {
-		return slices.Clone(caller.Projects)
+		return caller.Projects
 	}
 	return []string{}
 }
