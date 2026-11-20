@@ -127,11 +127,14 @@ pass
 
 begin store
 docker run -d --name "$pg" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
-for _ in $(seq 1 60); do
-  docker exec "$pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null 2>&1 && break
+# Waited for as long as its container runs: the caller's own deadline (the e2e job's timeout)
+# bounds the wait, and a fixed count of tries would fail a Docker that starts it slowly. A
+# container that stops will never answer, so that ends the wait, naming its state.
+until docker exec "$pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null 2>&1; do
+  state=$(docker inspect -f '{{.State.Status}}' "$pg" 2>&1) || state="unknown: $state"
+  [ "$state" = running ] || fail "Postgres $pg stopped before it accepted TCP connections (state: $state): $(docker logs --tail 20 "$pg" 2>&1)"
   sleep 1
 done
-docker exec "$pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null || fail "Postgres $pg did not accept TCP connections within 60s"
 note "Postgres $pg on the kind network: $(docker exec "$pg" postgres --version)"
 pass
 

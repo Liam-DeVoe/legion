@@ -15,7 +15,10 @@
 #
 # It holds no number of its own: internal/dispatch/store/cmd/connections prints
 # testlimits.ServerConnections, and this script adds only the server's own
-# superuser_reserved_connections.
+# superuser_reserved_connections. Nor does it bound its wait for the restarted service: the job's
+# timeout-minutes bounds the step, and a fixed count of tries would end the wait while Docker is
+# still starting a server that will answer. A service that stops running will never answer, so
+# that ends the wait at once, naming the container's state.
 set -euo pipefail
 
 container=${1:?the service container id}
@@ -28,17 +31,17 @@ want=$((server + reserved))
 echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.ServerConnections) + ${reserved} reserved for superusers = ${want}"
 docker exec "$container" psql -U postgres -c "alter system set max_connections = ${want}"
 docker restart "$container" >/dev/null
-for _ in $(seq 1 30); do
-  if docker exec "$container" pg_isready -U postgres >/dev/null 2>&1; then
-    allowed=$(docker exec "$container" psql -U postgres -Atc "show max_connections")
-    echo "pg-connection-ceiling: the service allows ${allowed}"
-    [ "$allowed" -ge "$want" ] || {
-      echo "pg-connection-ceiling: the service allows ${allowed}, want at least ${want}" >&2
-      exit 1
-    }
-    exit 0
+until docker exec "$container" pg_isready -U postgres >/dev/null 2>&1; do
+  state=$(docker inspect -f '{{.State.Status}}' "$container" 2>&1) || state="unknown: $state"
+  if [ "$state" != running ]; then
+    echo "pg-connection-ceiling: the service stopped after its restart, before it accepted connections (state: ${state})" >&2
+    exit 1
   fi
   sleep 1
 done
-echo "pg-connection-ceiling: the service did not come back after its restart" >&2
-exit 1
+allowed=$(docker exec "$container" psql -U postgres -Atc "show max_connections")
+echo "pg-connection-ceiling: the service allows ${allowed}"
+[ "$allowed" -ge "$want" ] || {
+  echo "pg-connection-ceiling: the service allows ${allowed}, want at least ${want}" >&2
+  exit 1
+}

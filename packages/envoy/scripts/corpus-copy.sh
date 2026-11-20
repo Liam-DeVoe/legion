@@ -54,13 +54,17 @@ if ! docker container inspect "$container" >/dev/null 2>&1; then
 else
   docker start "$container" >/dev/null
 fi
-for _ in $(seq 1 120); do
-  if psql --quiet "$admin_url" -c 'select 1' >/dev/null 2>&1; then
-    break
+# Waited for as long as its container runs, with no count of tries: a loaded machine starts it
+# slowly, and the person who started this copy is the one deadline it has. A container that stops
+# will never answer, so that ends the wait, naming its state.
+until psql --quiet "$admin_url" -c 'select 1' >/dev/null 2>&1; do
+  state=$(docker inspect -f '{{.State.Status}}' "$container" 2>&1) || state="unknown: $state"
+  if [[ "$state" != running ]]; then
+    printf '%s stopped before it accepted connections (state: %s)\n' "$container" "$state" >&2
+    exit 1
   fi
   sleep 1
 done
-psql --quiet "$admin_url" -c 'select 1' >/dev/null
 
 DISPATCH_ADMIN_URL="$admin_url" bash "$(dirname "$0")/restore-dispatch-dump.sh" "$dump" "$database" >/dev/null
 printf 'restored %s into %s; the downloaded dump is deleted\n' "$newest" "$container" >&2

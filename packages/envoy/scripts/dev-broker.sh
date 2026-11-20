@@ -283,19 +283,20 @@ echo "dev-broker: workdir $WORK_DIR" >&2
 
 if [ -z "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   # --- Postgres: dev-postgres.sh creates, starts or reuses dispatch-pg, and refuses one on an
-  # image other than its pinned one before this run creates anything. ---
+  # image other than its pinned one before this run creates anything. It is waited for as long as
+  # its container runs, with no count of tries: a loaded machine starts it slowly, and the person
+  # who started this run is the one deadline it has. A container that stops will never answer, so
+  # that ends the wait, naming its state. ---
   echo "dev-broker: Postgres via dev-postgres.sh..." >&2
   "$SCRIPT_DIR/dev-postgres.sh" >&2
-  for _ in $(seq 1 30); do
-    if docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
-      break
+  until docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; do
+    state=$(docker inspect -f '{{.State.Status}}' "$POSTGRES_CONTAINER" 2>&1) || state="unknown: $state"
+    if [ "$state" != running ]; then
+      echo "dev-broker: $POSTGRES_CONTAINER stopped before it accepted connections (state: $state)" >&2
+      exit 1
     fi
     sleep 1
   done
-  if ! docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
-    echo "dev-broker: $POSTGRES_CONTAINER never became ready" >&2
-    exit 1
-  fi
 fi
 
 # --- Create this instance's own isolated database (never the shared "dispatch" database). ---

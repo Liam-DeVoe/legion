@@ -150,8 +150,10 @@ jobs:
       # arguments, so `alter system` writes the three, as .github/scripts/pg-connection-ceiling.sh
       # writes max_connections on a service, and a reload applies them: max_connections needs that
       # script's restart, and these three need only the reload, synchronous_commit reaching every
-      # session that starts after it. The step reads them back from a new session and fails unless
-      # each is off.
+      # session that starts after it. The step reads them back from a new session until each is off:
+      # its own timeout-minutes bounds that wait, and a fixed count of reads would end it while
+      # Postgres still answers. A service that stops running will never answer, so that ends the
+      # wait at once, naming the container's state.
       - name: Turn crash safety off on the screenshots' Postgres
         timeout-minutes: 2
         run: |
@@ -161,14 +163,17 @@ jobs:
             -c 'alter system set full_page_writes = off' \
             -c 'alter system set synchronous_commit = off' \
             -c 'select pg_reload_conf()'
-          for _ in $(seq 1 20); do
+          settings=
+          until [ "$settings" = "off off off" ]; do
+            if [ -n "$settings" ]; then
+              state=$(docker inspect -f '{{.State.Status}}' "$container" 2>&1) || state="unknown: $state"
+              [ "$state" = running ] || { echo "::error::the service stopped after the reload, before its settings read 'off off off' (state: $state; last read: $settings)"; exit 1; }
+              sleep 0.5
+            fi
             settings=$(docker exec "$container" psql -U postgres -Atc \
-              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')")
-            [ "$settings" = "off off off" ] && break
-            sleep 0.5
+              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')") || settings="no answer"
           done
           echo "fsync, full_page_writes, synchronous_commit: $settings"
-          [ "$settings" = "off off off" ] || { echo "::error::the service's fsync, full_page_writes and synchronous_commit read '$settings' after the reload, not 'off off off'"; exit 1; }
       - name: Take the screenshots
         run: bun run docs:media
         # A step of the run that hangs fails it within two minutes (STEP_TIMEOUT_MS in

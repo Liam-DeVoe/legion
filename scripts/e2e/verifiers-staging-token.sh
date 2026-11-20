@@ -141,19 +141,23 @@ docker run -d --name "$pg_name" --cpus 2 --memory 2g --mount type=tmpfs,destinat
   -e POSTGRES_DB=dispatch -p 127.0.0.1::5432 mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
 docker run -d --name "$nats_name" --cpus 1 --memory 512m -p 127.0.0.1::4222 -p 127.0.0.1::8222 "$nats_image" -js -m 8222 >/dev/null
 # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
-# socket while nothing listens on 5432 yet, and a client that connects then is reset.
-for i in $(seq 1 60); do
-  docker exec "$pg_name" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch >/dev/null 2>&1 && break
-  [ "$i" = 60 ] && fail "postgres never became ready"
+# socket while nothing listens on 5432 yet, and a client that connects then is reset. Waited for as
+# long as its container runs: the caller's own deadline bounds the wait, and a fixed count of tries
+# would fail a Docker that starts it slowly. A container that stops will never answer, so that ends
+# the wait, naming its state.
+until docker exec "$pg_name" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch >/dev/null 2>&1; do
+  state=$(docker inspect -f '{{.State.Status}}' "$pg_name" 2>&1) || state="unknown: $state"
+  [ "$state" = running ] || fail "postgres stopped before it accepted TCP connections (state: $state)"
   sleep 0.5
 done
 pg_port=$(docker port "$pg_name" 5432/tcp | head -1 | sed 's/.*://')
 nats_port=$(docker port "$nats_name" 4222/tcp | head -1 | sed 's/.*://')
 nats_monitor=$(docker port "$nats_name" 8222/tcp | head -1 | sed 's/.*://')
-for i in $(seq 1 60); do
+# The same for NATS's container: waited for as long as it runs.
+until curl -fs -o /dev/null --max-time 5 "http://127.0.0.1:$nats_monitor/healthz"; do
   # -fs, not -fsS: a refused connection is this loop's expected state, not an error to print.
-  curl -fs -o /dev/null --max-time 5 "http://127.0.0.1:$nats_monitor/healthz" && break
-  [ "$i" = 60 ] && fail "nats never became ready"
+  state=$(docker inspect -f '{{.State.Status}}' "$nats_name" 2>&1) || state="unknown: $state"
+  [ "$state" = running ] || fail "nats stopped before its monitor answered (state: $state)"
   sleep 0.5
 done
 echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"

@@ -180,13 +180,13 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
     -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
-  # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
-  for i in $(seq 1 40); do
-    docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion >/dev/null && break
-    [ "$i" = 40 ] && {
-      echo "postgres never became ready"
-      exit 1
-    }
+  # socket while nothing listens on 5432 yet, and a daemon that connects then is reset. Waited for
+  # as long as its container runs: the caller's own deadline bounds the wait, and a fixed count of
+  # tries would fail a Docker that starts it slowly. A container that stops will never answer, so
+  # that ends the wait, naming its state.
+  until docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion >/dev/null; do
+    state=$(docker inspect -f '{{.State.Status}}' "$container" 2>&1) || state="unknown: $state"
+    [ "$state" = running ] || fail "postgres stopped before it accepted TCP connections (state: $state)"
     sleep 0.5
   done
   pgport=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
