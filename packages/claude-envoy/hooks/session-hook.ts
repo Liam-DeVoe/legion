@@ -99,6 +99,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -549,8 +550,12 @@ async function answers(text: string): Promise<never> {
     // Never to the model: a Dispatch with no answers route is the operator's to know of.
     if (notice !== undefined) process.stderr.write(`envoy: ${notice}\n`)
     if (message !== undefined) {
-      await Bun.write(
-        Bun.stdout,
+      // Through the stream, never `Bun.write(Bun.stdout, ...)`: the scrub above read
+      // `process.stdout`, which leaves the pipe non-blocking, and on such a pipe that a late
+      // reader has not drained Bun.write writes its first page twice (204,096 bytes reached a
+      // one-page pipe read 3 s late for 200,000 written, 3 runs of 3). The exit below waits for
+      // the stream to drain.
+      process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: input.hook_event_name,
@@ -575,8 +580,9 @@ async function answers(text: string): Promise<never> {
       // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
     }
   }
-  // Exits rather than returns: a read still running would hold the process open.
-  process.exit(0)
+  // Exits rather than ending by itself: a read still running would hold the process open. The exit
+  // waits first for what it wrote to reach the pipe, which `process.exit` alone would drop.
+  return exitProcess(0)
 }
 
 /** The answers-refresh mode, which the answers hook starts detached with the session id and the

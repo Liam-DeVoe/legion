@@ -12,6 +12,8 @@ import {
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { skipWithout } from "@legion/test-fixtures/host-tools"
+import { readThroughLatePipe } from "@legion/test-fixtures/late-pipe"
 import { buildBundles } from "../scripts/build"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
@@ -545,6 +547,51 @@ test("a list past the cap stays under 8,000 characters with the left-out line", 
     /\n\n\d+ older items left out to stay under 8,000 characters: run `dispatch answers` to read every one in full\.$/,
   )
 }, 20_000)
+
+// Claude Code reads the hook's stdout through a pipe, and a loaded machine reads it late. The hook
+// has read `process.stdout` (its scrub of held secrets), which leaves the pipe non-blocking, and on
+// such a pipe Bun's `Bun.write(Bun.stdout, ...)` writes its first page twice once the pipe is full:
+// the hook writes through the stream instead and waits for it to drain before it exits.
+test.skipIf(skipWithout("python3"))(
+  "a list past a page reaches a one-page pipe read late as the hook's one JSON, whole",
+  async () => {
+    const dispatch = standinDispatch()
+    const items = Array.from({ length: 12 }, (_, index) =>
+      answer(`ask-${index}`, `${index}: ${"word ".repeat(180)}`, index + 1),
+    )
+    dispatch.route = { kind: "list", items }
+    const { home, state } = await scratch()
+    const env = {
+      PATH: process.env["PATH"],
+      CLAUDE_PLUGIN_ROOT: packageRoot,
+      HOME: home,
+      DISPATCH_STATE_DIR: state,
+      DISPATCH_URL: dispatch.base,
+      DISPATCH_TOKEN,
+    }
+    // A hook whose read missed its wait prints the one short failure line, which no pipe cuts;
+    // the runs go on until one prints the list, the output this case is about.
+    let shown: string | undefined
+    for (const source of ["startup", "resume", "clear", "compact"]) {
+      const run = await readThroughLatePipe([process.execPath, bundle, "answers"], {
+        env,
+        stdin: JSON.stringify(sessionStart(source, home)),
+      })
+      expect(run.pipeBytes).toBe(4_096)
+      expect(run.exitCode).toBe(0)
+      const output = JSON.parse(new TextDecoder().decode(run.stdout))
+      const context: string = output.hookSpecificOutput.additionalContext
+      if (allowedOutcome(context, items, READ_MISSED) !== "failure") {
+        expect(run.stdout.length).toBeGreaterThan(4_096)
+        shown = context
+        break
+      }
+    }
+    expect(shown).toBeDefined()
+    expect(shown).toContain("0: word word")
+  },
+  40_000,
+)
 
 test("adds nothing when the list is empty or Dispatch is not configured", async () => {
   const dispatch = standinDispatch()
