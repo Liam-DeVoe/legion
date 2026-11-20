@@ -736,8 +736,51 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           sent: SUBAGENT_TOOLS,
           missing: [],
           extra: [],
+          leftOut: [],
         });
       }
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a subagent case whose recorded tools include one nothing the capture loads defines is captured, that tool left out of --tools and recorded",
+    async () => {
+      await captures();
+      const base = f1Case("subagent-2");
+      const recorded = [...SUBAGENT_TOOLS, "acme_absent_tool"];
+      const c: Case = {
+        ...base,
+        context: "subagent:task",
+        profile: {
+          ...base.profile,
+          contextFiles: [],
+          systemPrompt: SUBAGENT_PROMPT,
+          tools: recorded,
+        },
+      };
+      const { body, record } = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+        }
+      );
+      expect(record.tools?.recorded).toEqual(recorded);
+      expect(record.tools?.sent).toEqual(SUBAGENT_TOOLS);
+      expect(record.tools?.missing).toEqual(["acme_absent_tool"]);
+      expect(record.tools?.leftOut.map((tool) => tool.name)).toEqual(["acme_absent_tool"]);
+      expect(record.tools?.leftOut[0]?.reason).toContain("defines it");
+      expect(record.pluginTools.leftOut.some((line) => line.startsWith("acme_absent_tool: "))).toBe(
+        true
+      );
+      expect(systemBlocks(body)).toHaveLength(SUBAGENT_PROMPT.length);
     },
     ROW_TIMEOUT_MS
   );

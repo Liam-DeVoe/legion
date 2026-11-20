@@ -269,13 +269,16 @@ export interface CaptureRecord {
     readonly line: ListingLine;
     readonly file: string;
   } | null;
-  /** For a case whose profile carries recorded tool names: those names, the body's, each recorded
-   *  one the body does not define, and each the body defines beyond them; or null. */
+  /** For a case whose profile carries recorded tool names: those names, the ones `--tools` named
+   *  (`sent`, the body's), each recorded one the body does not define, each the body defines
+   *  beyond them, and each recorded one left out of `--tools` because nothing the capture loads
+   *  defines it (Oh My Pi refuses a run that names one); or null. */
   readonly tools: {
     readonly recorded: readonly string[];
     readonly sent: readonly string[];
     readonly missing: readonly string[];
     readonly extra: readonly string[];
+    readonly leftOut: readonly { readonly name: string; readonly reason: string }[];
   } | null;
   /** Each installed skill's hint: the runner's cache key, Oh My Pi's key, and whether this
    *  capture had it written. */
@@ -805,10 +808,14 @@ export async function captureBody(
     ENVOY_URL: `${recorder.url}/envoy`,
     ENVOY_NATS_URL: `nats://127.0.0.1:${nats.port}`,
   };
-  // The pane environment a Legion role's Oh My Pi has, each value made up for this capture.
+  // The pane environment a Legion role's Oh My Pi has, each value made up for this capture. A
+  // subagent runs inside its parent's process, whose Envoy plugin is on: its capture gets the
+  // stand-in Envoy listener alone, so the plugin defines its tools, and no Legion claim.
   const paneEnvironment: Record<string, string> =
     pane === undefined
-      ? {}
+      ? c.context.startsWith("subagent:")
+        ? { ENVOY_URL: endpoints.ENVOY_URL }
+        : {}
       : {
           LEGION_ROLE: pane.role,
           LEGION_TREE: CAPTURE_TREE,
@@ -825,6 +832,9 @@ export async function captureBody(
   // A recorded prompt and tools (a subagent's case): the capture run sends the arm's blocks and
   // only the recorded tools. The blocks file is written once the arm's hint is known.
   const recordedTools = c.profile.tools;
+  // What `--tools` names: the recorded tools less each one no loaded part defines.
+  let sentToolNames = recordedTools;
+  const toolsLeftOut: { readonly name: string; readonly reason: string }[] = [];
   let promptFile: string | undefined;
   /** One Oh My Pi run. The hint run holds no pane environment: the skill listing does not depend
    *  on it, and its role claim would end the run before the hints are written. It holds no
@@ -862,7 +872,7 @@ export async function captureBody(
         ...(context.appendSystemPrompt === undefined
           ? []
           : ["--append-system-prompt", context.appendSystemPrompt]),
-        ...(recordedTools === undefined || hintRun ? [] : ["--tools", recordedTools.join(",")]),
+        ...(sentToolNames === undefined || hintRun ? [] : ["--tools", sentToolNames.join(",")]),
         PLACEHOLDER,
       ],
       {
@@ -970,16 +980,33 @@ export async function captureBody(
       await writeWhole(promptFile, JSON.stringify(recorded.blocks));
     }
     // A Legion pane's run can end before its turn's request (its role claim exits the process
-    // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all.
+    // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all. A run Oh
+    // My Pi refuses for naming a tool no loaded part defines is made again without those names,
+    // each recorded as left out; that refusal names the tools and counts as no try.
     let captureRunMs = 0;
-    for (let attempt = 1; ; attempt++) {
+    for (let attempt = 1; ; ) {
       try {
         captureRunMs = await runOmp(true);
         break;
       } catch (error) {
-        if (!(error instanceof RunEnded) || pane === undefined || attempt >= CAPTURE_TRIES) {
-          throw error;
+        if (!(error instanceof RunEnded)) throw error;
+        // Oh My Pi 18.18.6's own words: "Unknown tool in --tools: a." or "Unknown tools in
+        // --tools: a, b."
+        const unknown = /Unknown tools? in --tools: ([^\n]*?)\.?\n/.exec(stderr)?.[1]?.split(", ");
+        const dropped = unknown?.filter((name) => sentToolNames?.includes(name)) ?? [];
+        if (sentToolNames !== undefined && dropped.length > 0) {
+          sentToolNames = sentToolNames.filter((name) => !dropped.includes(name));
+          toolsLeftOut.push(
+            ...dropped.map((name) => ({
+              name,
+              reason:
+                "neither this Oh My Pi nor a plugin the capture loads defines it, and Oh My Pi refuses a run whose --tools names it",
+            }))
+          );
+          continue;
         }
+        attempt += 1;
+        if (pane === undefined || attempt > CAPTURE_TRIES) throw error;
       }
     }
     const turn = turns[0];
@@ -1026,6 +1053,7 @@ export async function captureBody(
     }
     const sentTools = bodyToolNames(body);
 
+    const defined = pluginTools(body, context.record, pane !== undefined, role, stderr);
     const record: CaptureRecord = {
       case: c.id,
       arm: arm.name,
@@ -1053,6 +1081,7 @@ export async function captureBody(
               sent: sentTools,
               missing: recordedTools.filter((name) => !sentTools.includes(name)),
               extra: sentTools.filter((name) => !recordedTools.includes(name)),
+              leftOut: toolsLeftOut,
             },
       hints: hints.map(({ skill, key, cached, written: was }) => ({
         skill: skill.name,
@@ -1080,7 +1109,13 @@ export async function captureBody(
         http: recorder.requests.map((request) => `${request.method} ${request.path.split("?")[0]}`),
         nats: natsConnections,
       },
-      pluginTools: pluginTools(body, context.record, pane !== undefined, role, stderr),
+      pluginTools: {
+        ...defined,
+        leftOut: [
+          ...defined.leftOut,
+          ...toolsLeftOut.map(({ name, reason }) => `${name}: ${reason}`),
+        ],
+      },
       hookDropped: hookCounts(hookLog),
       exit,
       runs,
