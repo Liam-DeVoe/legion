@@ -15,6 +15,20 @@
 //	pattern	<variable>	<expression>	<file>	each regular expression of patternVars the wrapper
 //						declares (optionalPatterns), and the file under the
 //						module it is declared in
+//	read-leaf	<leaf path>	every leaf of ghReadLeaves, whose call may write nothing
+//	read	<leaf path>	<spelling>	<takes>	each option spelling ghReadLeaves gives that leaf, 1
+//						where it takes a value and 0 where it stands alone
+//	api-read	<spelling>	<takes>	each of ghAPIReadOptions, a `gh api` read's options
+//	graphql-read	<spelling>	<takes>	each of ghGraphQLReadOptions, a `gh api graphql`
+//						query's (main's since #4035, none before:
+//						optionalReads)
+//	override-header	<name>	each header ghMethodOverrideHeaders reads as a method
+//
+// The read lines are the grammar of the wrapper's ghWritesNothing and ghGraphQLQueryRead
+// (gh_reads.go), by which main's wrapper since #4035 runs a call that writes nothing and names
+// only owners it holds no directory for with the pane's own GH_CONFIG_DIR (the world's
+// gh-pane-token.ts). Each set of options is a call of ghReadOptions over string constants,
+// literals and their sums, as the wrapper writes them.
 //
 // It is the world's reading of the wrapper as daemon-routes.go is of the daemon's API: a program
 // of its own that imports the standard library alone and belongs to no module, which
@@ -75,10 +89,17 @@ var patternVars = []string{
 // quirk reading it both, or neither.
 var optionalPatterns = map[string]bool{"ghRepositoryNumber": true}
 
+// optionalReads are the read options one shape of the wrapper declares and another does not:
+// ghGraphQLReadOptions, the options of a `gh api graphql` query that writes nothing, which main's
+// wrapper declares since #4035 (cac1693d) and declared nowhere before. A source that does not
+// declare it prints no line for it.
+var optionalReads = map[string]bool{"ghGraphQLReadOptions": true}
+
 // table is every line of the wrapper's table, read from the package-level declarations of the
-// packages of the daemon module at module (their non-test files): the four maps and the patterns,
-// each found by its name, each pattern with the file it is declared in, under module, so a reader
-// that refuses one names where it was read.
+// packages of the daemon module at module (their non-test files): the four maps, the patterns and
+// the read grammar, each found by its name, each pattern with the file it is declared in, under
+// module, so a reader that refuses one names where it was read. The constants are read too, which
+// the read grammar's options are summed from.
 func table(module string) ([]string, error) {
 	values := map[string]ast.Expr{}
 	files := map[string]string{}
@@ -97,7 +118,7 @@ func table(module string) ([]string, error) {
 			}
 			for _, decl := range file.Decls {
 				gen, isGen := decl.(*ast.GenDecl)
-				if !isGen || gen.Tok != token.VAR {
+				if !isGen || (gen.Tok != token.VAR && gen.Tok != token.CONST) {
 					continue
 				}
 				for _, spec := range gen.Specs {
@@ -161,6 +182,39 @@ func table(module string) ([]string, error) {
 			return nil, fmt.Errorf("the wrapper's %s: %w", name, err)
 		}
 		add("pattern", name, pattern, files[name])
+	}
+	if err := eachEntry(values, "ghReadLeaves", func(path string, value ast.Expr) error {
+		options, err := readOptions(values, value)
+		add("read-leaf", path)
+		for spelling, takes := range options {
+			add("read", path, spelling, takes)
+		}
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"ghAPIReadOptions", "ghGraphQLReadOptions"} {
+		if values[name] == nil && optionalReads[name] {
+			continue
+		}
+		options, err := readOptions(values, values[name])
+		if err != nil {
+			return nil, fmt.Errorf("the wrapper's %s: %w", name, err)
+		}
+		kind := map[string]string{"ghAPIReadOptions": "api-read", "ghGraphQLReadOptions": "graphql-read"}[name]
+		for spelling, takes := range options {
+			add(kind, spelling, takes)
+		}
+	}
+	if err := eachEntry(values, "ghMethodOverrideHeaders", func(name string, value ast.Expr) error {
+		set, err := boolOf(value)
+		if err == nil && !set {
+			err = fmt.Errorf("is false, which names no header the wrapper reads as a method")
+		}
+		add("override-header", name)
+		return err
+	}); err != nil {
+		return nil, err
 	}
 	if len(unprintable) > 0 {
 		return nil, fmt.Errorf("the wrapper's table holds %q, which a line of this printout cannot carry (a tab or a newline)", unprintable)
@@ -314,4 +368,58 @@ func patternOf(value ast.Expr) (string, error) {
 		return "", fmt.Errorf("is not declared as regexp.MustCompile of one expression")
 	}
 	return stringOf(call.Args[0])
+}
+
+// readOptions is the options `ghReadOptions(<values>, <switches>)` declares, each spelling "1"
+// where it takes a value and "0" where it stands alone, as that function builds its map: the
+// spellings of the first argument, then of the second, a spelling in both standing alone.
+func readOptions(values map[string]ast.Expr, value ast.Expr) (map[string]string, error) {
+	call, isCall := value.(*ast.CallExpr)
+	if value == nil || !isCall || len(call.Args) != 2 {
+		return nil, fmt.Errorf("is not declared as ghReadOptions of two string expressions")
+	}
+	if fun, isIdent := call.Fun.(*ast.Ident); !isIdent || fun.Name != "ghReadOptions" {
+		return nil, fmt.Errorf("is not declared as ghReadOptions of two string expressions")
+	}
+	options := map[string]string{}
+	for i, takes := range []string{"1", "0"} {
+		text, err := constantString(values, call.Args[i], 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, spelling := range strings.Fields(text) {
+			options[spelling] = takes
+		}
+	}
+	return options, nil
+}
+
+// constantString is the string value spells: a string literal, a package-level name declared as
+// one, or a sum of them, parenthesized or not.
+func constantString(values map[string]ast.Expr, value ast.Expr, depth int) (string, error) {
+	if depth > 16 {
+		return "", fmt.Errorf("names constants more than 16 deep")
+	}
+	switch v := value.(type) {
+	case *ast.BasicLit:
+		return stringOf(v)
+	case *ast.ParenExpr:
+		return constantString(values, v.X, depth+1)
+	case *ast.Ident:
+		named, found := values[v.Name]
+		if !found {
+			return "", fmt.Errorf("names %s, which no package-level declaration of the wrapper gives a value", v.Name)
+		}
+		return constantString(values, named, depth+1)
+	case *ast.BinaryExpr:
+		if v.Op == token.ADD {
+			left, err := constantString(values, v.X, depth+1)
+			if err != nil {
+				return "", err
+			}
+			right, err := constantString(values, v.Y, depth+1)
+			return left + right, err
+		}
+	}
+	return "", fmt.Errorf("is no string literal, constant or sum of them")
 }

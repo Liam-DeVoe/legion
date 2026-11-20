@@ -415,10 +415,13 @@ export function labelGhTable(checkout: string): GhTable {
 
 /** The gh selectors of the daemon of `checkout` (gh-selectors.ts's `GhSelectors`): its gh
  * wrapper's table (`labelGhTable`) joined with the gh help that checkout saves for the wrapper's
- * own tests (cmd/legion/testdata/gh-help), which is what the wrapper's table is held to there.
+ * own tests (cmd/legion/testdata/gh-help), which is what the wrapper's table is held to there,
+ * and whether that wrapper runs a read naming only owners it holds no directory for with the
+ * pane's own GH_CONFIG_DIR (`PANE_TOKEN_READ`, main's since #4035) or refuses it
+ * (`OWNER_ALWAYS_REFUSED`, main's before), read off its source as `labelShapes` reads the daemon's.
  * rig.sh's label_facts reads them at services_up and its worker_boot writes them into each run,
  * which the gh stand-in reads them from; health reads the run's label's here. Throws what the
- * reading refused. */
+ * reading refused, a wrapper of neither shape among it. */
 export function labelGhSelectors(checkout: string): GhSelectors {
   const table = labelGhTable(checkout);
   const helps = path.join(daemonOf(checkout), "cmd", "legion", "testdata", "gh-help");
@@ -431,8 +434,51 @@ export function labelGhSelectors(checkout: string): GhSelectors {
       .filter((name) => name.endsWith(".txt") && name !== "reference.txt")
       .map((name) => [name, readFileSync(path.join(helps, name), "utf8")])
   );
-  return selectorsOf(table, saved, readFileSync(path.join(helps, "reference.txt"), "utf8"));
+  const paneToken = sourceShape(
+    checkout,
+    "the gh wrapper's answer to a read naming only owners it holds no directory for",
+    [
+      { name: "main's wrapper since #4035", markers: PANE_TOKEN_READ, value: true },
+      {
+        name: "main's wrapper before #4035, which refuses every such call",
+        markers: OWNER_ALWAYS_REFUSED,
+        value: false,
+      },
+    ]
+  );
+  return selectorsOf(
+    table,
+    saved,
+    readFileSync(path.join(helps, "reference.txt"), "utf8"),
+    paneToken
+  );
 }
+
+const GH_SELECTORS_GO = "daemon/cmd/legion/gh_selectors.go";
+const GH_GO = "daemon/cmd/legion/gh.go";
+/** The wrapper since #4035 (cac1693d): its selectors' `dir` takes a fallback, GH_CONFIG_DIR's for a
+ * call that writes nothing or is a GraphQL query read, and runs a call whose every item is an
+ * owner the bundle holds no directory for with it. */
+const PANE_TOKEN_READ: readonly Marker[] = [
+  {
+    file: GH_SELECTORS_GO,
+    text: "func (s *selectors) dir(dirFor func(owner, name string) (string, error), fallback string) (string, error) {",
+  },
+  {
+    file: GH_GO,
+    text: 'if writesNothing || ghGraphQLQueryRead(argv) {\n\t\tfallback = env["GH_CONFIG_DIR"]',
+  },
+  { file: GH_GO, text: "dir, err := sel.dir(dirFor, fallback)" },
+];
+/** The wrapper before #4035: its selectors' `dir` takes no fallback, and refuses the first item the
+ * bundle holds no directory for. */
+const OWNER_ALWAYS_REFUSED: readonly Marker[] = [
+  {
+    file: GH_SELECTORS_GO,
+    text: "func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string, error) {",
+  },
+  { file: GH_GO, text: "dir, err := sel.dir(dirFor)\n" },
+];
 
 /** Each refusal `labelDaemon` met in this process, by the daemon module and the bytes of the two
  * sources it read. The facts cache keeps no failed read (`cachedRead`), so without this a source

@@ -188,6 +188,14 @@ export function methodOf(argv: readonly string[]): string {
   return carries(argv, BODY_FLAGS) ? "POST" : "GET";
 }
 
+/** Every method `argv` names, as written and in order, in each spelling `methodOf` reads: the
+ * Legion gh wrapper admits a `gh api` read only where each is exactly `GET` (gh_reads.go's
+ * ghAPIReadValue, gh-selectors.ts's `readGrammar`), which the verb gh sends, the last of them in
+ * any case, does not say. */
+export function methodsOf(argv: readonly string[]): string[] {
+  return [...argv.keys()].flatMap((index) => valueAt(argv, index, METHOD_FLAGS) ?? []);
+}
+
 /** Whether `argv` is a POST, which is the call that submits something rather than reading it
  * (`methodOf`). */
 export function isPost(argv: readonly string[]): boolean {

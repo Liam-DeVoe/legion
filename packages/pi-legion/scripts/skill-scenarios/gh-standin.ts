@@ -87,6 +87,10 @@ import {
   valueAt,
   worldOf,
 } from "./gh-call";
+// The Legion gh wrapper's reading of the owners a call names, by its own selector table, and of
+// the calls it runs on the pane's own token: one reading for this stand-in's refusal and health's
+// judgement of it.
+import { runsOnPaneToken } from "./gh-pane-token";
 // The GraphQL reader the sweep of the role texts reads their queries with, and the executor that
 // answers a query from the world's graph: one reading of a query for the texts and the world.
 import {
@@ -96,8 +100,6 @@ import {
   isObject,
   type Operation,
 } from "./gh-routes";
-// The Legion gh wrapper's reading of the owners a call names, by its own selector table: one
-// reading for this stand-in's refusal and health's judgement of it.
 import {
   type GhSelectors,
   ghTargetOf,
@@ -464,9 +466,13 @@ function exit(status: number): never {
  * run) and refused with the line the wrapper prints for that form of naming it (`ownerRefusal`),
  * exit 2, for every role, whatever the route behind it. The pane's GH_REPO is read where the
  * wrapper reads it. A pane that names no LEGION_GH_OWNERS_DIR is given the wrapper's refusal of
- * that, its first line, exit 2 too. A run with no world names no project; a world whose
- * selectors cannot be read is the rig's fault, and the call ends with 2, naming the file, as a
- * world.json that is no world ends it. */
+ * that, its first line, exit 2 too. Where the label's wrapper runs such a call on the pane's own
+ * token instead (main's since #4035: a call that writes nothing, naming only owners outside the
+ * project, from a pane that names its GH_CONFIG_DIR, gh-pane-token.ts's `runsOnPaneToken`), the
+ * call goes on to the world's GitHub as any other does, and gets what it answers for that owner:
+ * GitHub's 404 for a repository the world does not hold, as GitHub answers a token that cannot see
+ * it. A run with no world names no project; a world whose selectors cannot be read is the rig's
+ * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it. */
 if (as === "gh" && world !== undefined) {
   handler = "wrapper";
   let selectors: GhSelectors | undefined;
@@ -484,12 +490,14 @@ if (as === "gh" && world !== undefined) {
   }
   const owners = process.env.LEGION_GH_OWNERS_DIR;
   const refusal = ownerRefusal(ghTargetOf(args, selectors, process.env), world.repo, owners ?? "");
-  if (refusal !== undefined) {
+  if (refusal !== undefined && !owners) {
     process.stderr.write(
-      owners
-        ? refusal
-        : "legion gh: LEGION_GH_OWNERS_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh\n"
+      "legion gh: LEGION_GH_OWNERS_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh\n"
     );
+    exit(2);
+  }
+  if (refusal !== undefined && !runsOnPaneToken(args, selectors, world.repo, process.env)) {
+    process.stderr.write(refusal);
     exit(2);
   }
   handler = "unrouted";

@@ -415,7 +415,7 @@ kill_frozen() {
 # while it is still the process that started at START and its environment still gives one of the
 # NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
 # the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
-# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
+# run_marks) and the skill-scenario rig's stop_env_processes (with HOME, under the run) end their
 # walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
 # tree's processes could not all be read (kill_frozen).
 kill_held() {

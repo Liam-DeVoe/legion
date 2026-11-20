@@ -703,9 +703,10 @@ does not declare for the scenario and the calling role (a call no route of the w
 never is, nor a read the world refused as one it does not model, recorded `unrouted`; the
 refusals production gives for a workflow run the world holds none of, GitHub's 404 for its jobs
 and gh's for `gh run view` and `gh run watch`, are, for every role, and so are gh's refusals of a
-pull request, a branch, a repository or a `--json` field GitHub or gh has not got, and the
+pull request, a branch, a repository or a `--json` field GitHub or gh has not got, the
 Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
-project; the world answers
+project, and the world's 404 to a read of such an owner's repository that the label's wrapper runs
+on the pane's own token (`OWNER_UNHELD`, below); the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
 rig's tests pin against both checkouts); no `gh` write (a GraphQL mutation, a `gh api` call sent
 with a verb other than GET, a `gh pr`, `gh run` or `gh auth` command that writes) went unanswered by
@@ -1216,6 +1217,27 @@ world's owner beside it, its own repository read from the pane's `GH_REPO` where
 gets the wrapper's `the command names more than one owner, …`. A form the label's wrapper holds
 that this reading does not model fails the batch at `services_up`, naming it, and so does the
 pin in `gh-standin.test.ts`, which runs every form the table holds through the world.
+
+A wrapper of main's since #4035 (cac1693d) refuses fewer of these calls: a call that writes nothing
+(`ghWritesNothing`, or a `gh api graphql` query `ghGraphQLQueryRead` admits, in `gh_reads.go`),
+names only owners the pane's bundle holds no gh directory for, and reads no working-directory
+remote for its own repository, runs with the pane's own `GH_CONFIG_DIR` (gh.go's `fallback`,
+gh_selectors.go's `dir`). The world reads which shape the label's wrapper is off its source, by
+marker, as it reads the daemon's (`daemon-pane.ts`'s `PANE_TOKEN_READ` and
+`OWNER_ALWAYS_REFUSED`; a source of neither shape fails the batch, naming both), and reads the
+wrapper's read grammar out of the same checkout with its selector table (`gh-selectors.go`'s
+`read`, `api-read`, `graphql-read` and `override-header` lines). On a wrapper of that shape, from a
+pane that names its `GH_CONFIG_DIR`, as every worker pane does, such a call is no refusal: it goes
+on to the world's GitHub as any call does and gets what the world answers for that owner
+(`gh-pane-token.ts`'s `runsOnPaneToken`). The world holds the repository of its own project alone,
+so a read of another owner's repository gets GitHub's 404, exit 1, as GitHub answers a token
+that cannot see a repository (`gh repo view actions/checkout`, `gh api
+repos/actions/checkout/git/refs/tags/v7.0.1`, `gh search repos checkout --owner actions`, `gh repo
+list actions`), and a GraphQL query of such an owner its answer for one it does not hold
+(`repositoryOwner` null). A write naming such an owner, a read typed outside the wrapper's read
+grammar (`gh repo view actions/checkout --web`) and a call naming the world's owner beside another
+are refused as above, and so is every such call on a wrapper before #4035. Health declares that
+404 for every role as it declares the refusal (`OWNER_UNHELD`).
 
 The world's reads are held to production's own answers by `production-shapes.json`: for each
 read, the command it was made with (production's values written as placeholders: `<owner>`,
@@ -1836,10 +1858,11 @@ Stated limits, each known and kept so:
   a gh alias or an extension, a set `GH_TOKEN`, `GITHUB_TOKEN` or `GH_HOST`, an option or an
   argument the wrapper cannot place, the working directory's git remotes (a world's workspace's
   origin names the world's repository, and the world's gh reads the repository from the pane's
-  `GH_REPO`, never from a remote), and an option gh's help gives a command
-  that the label's saved help does not show (`gh variable list -R`: no saved help shows that
-  group's inherited `-R`). The world then answers such a call otherwise than production, health
-  calls the run unhealthy, and the run is replaced.
+  `GH_REPO`, never from a remote; a call for which the wrapper would read them is read as naming
+  the world's owner, so the world runs none of them on the pane's token), and an option gh's help
+  gives a command that the label's saved help does not show (`gh variable list -R`: no saved help
+  shows that group's inherited `-R`). The world then answers such a call otherwise than
+  production, health calls the run unhealthy, and the run is replaced.
 - Nor are the wrapper's refusals of a command, an option or a working directory whole, which it
   holds outside its selector table (`gh.go`'s `ghRefusedCommands` and `ghRefusedOptions`,
   `gh_gitconfig.go`'s `ghRepoGitConfigRefusal`, main's since #4424, fdce4e94d2): `gh agent-task`,

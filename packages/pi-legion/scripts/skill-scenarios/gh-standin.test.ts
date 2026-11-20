@@ -117,16 +117,20 @@ function git(dir: string, ...args: string[]): string {
 const PANE_OWNERS = "/run/state/secrets/LWEVAL-1-reviewer-gh";
 /** The environment the stand-in answers a call under in the run whose directory is `dir`
  * (GH_DATA_DIR), as the pane of the role `by` names (LEGION_ROLE): this process's own without
- * the role and the GH_REPO a Legion pod's environment may carry, so a call records `by` and no
- * other role and reads no repository of the pod's, with the pane's gh owners directory
- * (PANE_OWNERS) in place of the pod's, and `vars` over it (the GH_REPO a pane names). */
+ * the role and the GH_REPO and GH_CONFIG_DIR a Legion pod's environment may carry, so a call
+ * records `by` and no other role, reads no repository of the pod's and names no gh directory of
+ * its own, with the pane's gh owners directory (PANE_OWNERS) in place of the pod's, and `vars`
+ * over it (the GH_REPO a pane names, and the GH_CONFIG_DIR with which main's wrapper since #4035
+ * runs a read naming only owners outside the project, gh-pane-token.ts's `runsOnPaneToken`). */
 function callEnv(
   dir: string,
   by?: string,
   vars: Record<string, string> = {}
 ): Record<string, string | undefined> {
   const own = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name !== "LEGION_ROLE" && name !== "GH_REPO")
+    Object.entries(process.env).filter(
+      ([name]) => name !== "LEGION_ROLE" && name !== "GH_REPO" && name !== "GH_CONFIG_DIR"
+    )
   );
   return {
     ...own,
@@ -1749,6 +1753,121 @@ test("a call naming an owner outside the project beside the pane's GH_REPO is re
     expect(asked(dir, "reviewer", argv, pane)).toEqual([2, "", line]);
 }, 60_000);
 
+/** The pane's own gh directory under PANE_OWNERS, the world's owner's, as daemon-pane.go renders a
+ * role's claim: the GH_CONFIG_DIR with which main's wrapper since #4035 runs a read naming only
+ * owners outside the project (gh-pane-token.ts's `runsOnPaneToken`). */
+const PANE_GH = { GH_CONFIG_DIR: `${PANE_OWNERS}/example` };
+/** The reads that wrapper runs so: the reviewer's tag read and the four the tester measured. */
+const PANE_READS: readonly (readonly string[])[] = [TAG_READ, ...MEASURED.map(([argv]) => argv)];
+/** A GraphQL query naming the owner in a field, which that wrapper runs so too
+ * (gh_reads.go's ghGraphQLQueryRead). */
+const OWNER_QUERY = [
+  "api",
+  "graphql",
+  "-f",
+  "query=query($owner: String!) { repositoryOwner(login: $owner) { login } }",
+  "-F",
+  "owner=actions",
+];
+
+/** A checkout of this one's wrapper as main's before #4035 (cac1693d) wrote it: its selectors'
+ * `dir` takes no fallback, so every item the bundle holds no directory for is refused
+ * (daemon-pane.ts's OWNER_ALWAYS_REFUSED); with `half`, gh.go alone is left as it is, a wrapper of
+ * neither shape. */
+function olderWrapper(half = false): string {
+  const checkout = substituteCheckout((source) => source);
+  const legion = path.join(checkout, "packages", "daemon", "cmd", "legion");
+  const rewrite = (file: string, from: string, to: string) => {
+    const source = readFileSync(path.join(legion, file), "utf8");
+    if (!source.includes(from)) throw new Error(`${file} holds no ${JSON.stringify(from)}`);
+    writeFileSync(path.join(legion, file), source.replace(from, to));
+  };
+  rewrite(
+    "gh_selectors.go",
+    "func (s *selectors) dir(dirFor func(owner, name string) (string, error), fallback string) (string, error) {",
+    "func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string, error) {"
+  );
+  if (!half)
+    rewrite(
+      "gh.go",
+      'fallback := ""\n\tif writesNothing || ghGraphQLQueryRead(argv) {\n\t\tfallback = env["GH_CONFIG_DIR"]\n\t}\n\tdir, err := sel.dir(dirFor, fallback)\n',
+      "dir, err := sel.dir(dirFor)\n"
+    );
+  return checkout;
+}
+
+// Main's wrapper since #4035 (cac1693d) runs a call that writes nothing, names only owners the
+// pane's bundle holds no directory for, and reads no working-directory remote, with the pane's
+// own GH_CONFIG_DIR rather than refusing it (gh.go's ghTargetOf, `fallback`; gh_selectors.go's
+// dir), and this checkout's wrapper is of that shape. Catches: a world that still refuses such a
+// read, exit 2; one that runs a write so, a read typed outside the wrapper's read grammar
+// (`--web`), or a call naming the world's owner beside another, each of which that wrapper still
+// refuses; and one that runs such a read for a pane naming no GH_CONFIG_DIR, whose fallback is
+// none. Each read gets the world's GitHub's answer for a repository the world does not hold, as
+// GitHub answers a token that cannot see it: its 404, exit 1; and the GraphQL query its answer for
+// an owner it does not hold, which resolves to none.
+test("on main's wrapper since #4035, a read naming only owners outside the project runs on the pane's token and gets the world's 404", () => {
+  const { dir } = runDir({ fixture: true });
+  expect(labelGhSelectors(CHECKOUT).paneToken).toBeDefined();
+  for (const argv of PANE_READS) {
+    const [status, , err] = asked(dir, "reviewer", argv, PANE_GH);
+    expect([argv.join(" "), status, err]).toEqual([
+      argv.join(" "),
+      1,
+      "gh: Not Found (HTTP 404)\n",
+    ]);
+  }
+  expect(asked(dir, "reviewer", OWNER_QUERY, PANE_GH)).toEqual([
+    0,
+    '{"data":{"repositoryOwner":null}}',
+    "",
+  ]);
+  expect(
+    recordedCalls(dir).map((call) => [(call.argv as string[]).join(" "), call.handler])
+  ).toEqual([
+    ...PANE_READS.map((argv) => [argv.join(" "), "unrouted"]),
+    [OWNER_QUERY.join(" "), "graph"],
+  ]);
+  for (const [argv, line] of [
+    [
+      ["issue", "create", "-R", "actions/checkout", "--title", "t", "--body", "b"],
+      repositoryRefused("actions/checkout"),
+    ],
+    [
+      ["api", "-X", "POST", "repos/actions/checkout/issues", "-f", "title=t"],
+      repositoryRefused("actions/checkout"),
+    ],
+    [["repo", "view", "actions/checkout", "--web"], repositoryRefused("actions/checkout")],
+    [
+      ["search", "repos", "checkout", "--owner", "actions", "--owner", "example"],
+      "legion gh: the command names more than one owner, actions (--owner actions) and example (--owner example), so it sends no token; name one repository\n",
+    ],
+  ] as const)
+    expect(asked(dir, "reviewer", argv, PANE_GH)).toEqual([2, "", line]);
+  expect(asked(dir, "reviewer", TAG_READ)).toEqual([2, "", repositoryRefused("actions/checkout")]);
+}, 60_000);
+
+// Main's wrapper before #4035 refuses every call naming an owner outside the project, a read on a
+// pane that names its GH_CONFIG_DIR among them, and the world reads which shape a label's wrapper
+// is off its source (daemon-pane.ts's PANE_TOKEN_READ and OWNER_ALWAYS_REFUSED). Catches: a world
+// that runs such a read on the pane's token whatever the label's wrapper does; and one that takes a
+// source of neither shape for either.
+test("on main's wrapper before #4035, a read naming only owners outside the project is refused exit 2, as every such call", () => {
+  const { dir } = runDir({ fixture: true });
+  const older = labelGhSelectors(olderWrapper());
+  expect(older.paneToken).toBeUndefined();
+  writeFileSync(path.join(dir, "gh-selectors.json"), `${JSON.stringify(older)}\n`);
+  const cases: readonly (readonly [argv: string[], line: string])[] = [
+    [TAG_READ, repositoryRefused("actions/checkout")],
+    ...MEASURED,
+  ];
+  for (const [argv, line] of cases)
+    expect(asked(dir, "reviewer", argv, PANE_GH)).toEqual([2, "", line]);
+  expect(() => labelGhSelectors(olderWrapper(true))).toThrow(
+    "is no shape of the gh wrapper's answer to a read naming only owners it holds no directory for this rig reads"
+  );
+}, 120_000);
+
 // Catches: a world that answers a call of a world whose gh selectors are not there as though it
 // named no other owner, which is the rig having lost the label's table.
 test("a world whose gh selectors are not there answers no call, naming the file", () => {
@@ -1892,6 +2011,41 @@ test("health declares the wrapper's refusal of an owner outside the project for 
     "gh refusal: calls.jsonl:2, `gh repo view actions/checkout --json name` of the reviewer, exited 2: gh: Not Found (HTTP 404) (no route of the world answers it), which threads-closed does not declare for that role"
   );
 }, 60_000);
+
+// Main's wrapper since #4035 runs a read naming only owners outside the project on the pane's own
+// token, and the world answers it as any other call: GitHub's 404 for what it does not hold.
+// Catches: a health that reads that 404 as the world answering otherwise than production
+// (OWNER_NOT_REFUSED), so every run on such a label whose reviewer checks an action's pin is
+// unhealthy; one that declares it for a write, which that wrapper still refuses; and one that
+// declares it for a run whose label's wrapper refuses such a read (main's before #4035).
+test("health declares the world's 404 to a read the label's wrapper runs on the pane's token, for every role, and only where the wrapper runs it", () => {
+  const { dir } = runDir({ fixture: true });
+  const roles = ["reviewer", "implementer", "tester"];
+  for (const by of roles) for (const argv of PANE_READS) asked(dir, by, argv, PANE_GH);
+  expect(recordedCalls(dir).map((call) => [call.by, call.exit, call.handler])).toEqual(
+    roles.flatMap((by) => PANE_READS.map(() => [by, 1, "unrouted"]))
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  const calls = path.join(dir, "calls.jsonl");
+  const reads = readFileSync(calls, "utf8");
+  const write = ["issue", "create", "-R", "actions/checkout", "--title", "t", "--body", "b"];
+  appendFileSync(
+    calls,
+    `${JSON.stringify({ at: "t", as: "gh", by: "implementer", argv: write, files: {}, route: null, exit: 1 })}\n`
+  );
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    `gh refusal: calls.jsonl:17, \`gh ${write.join(" ")}\` of the implementer, exited 1: the refusal of an owner outside the project with another status than the Legion gh wrapper's 2, which threads-closed does not declare for that role`
+  );
+  writeFileSync(calls, reads);
+  writeFileSync(
+    path.join(dir, "gh-selectors.json"),
+    `${JSON.stringify(labelGhSelectors(olderWrapper()))}\n`
+  );
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    `gh refusal: calls.jsonl:2, \`gh ${TAG_READ.join(" ")}\` of the reviewer, exited 1: the refusal of an owner outside the project with another status than the Legion gh wrapper's 2, which threads-closed does not declare for that role`
+  );
+}, 120_000);
 
 // GitHub refuses every role App's read of `user` 403 (measured on 2026-11-17 from a Legion pod:
 // `gh api user`, exit 1, `Resource not accessible by integration`), and the world refuses it so

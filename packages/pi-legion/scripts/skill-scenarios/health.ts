@@ -49,7 +49,10 @@
  *      wrapper's refusal of a call naming an owner outside the project, exit 2, is declared for
  *      every role (GH_DECLARED_EVERY_ROLE), the owners a call names read by the selector table of
  *      the wrapper of the run's label, which the world refused it by (<run>/gh-selectors.json,
- *      gh-selectors.ts's `runSelectors`). A worker run with a refused call whose selectors cannot
+ *      gh-selectors.ts's `runSelectors`). Where that wrapper runs such a call on the pane's own
+ *      token instead (main's since #4035, gh-pane-token.ts's `runsOnPaneToken`), the world answered
+ *      it as any other, and its 404 for what it does not hold is declared for every role too
+ *      (OWNER_UNHELD). A worker run with a refused call whose selectors cannot
  *      be read is unhealthy, since which refusal it was is unknown. A write the stand-in refused
  *      as one nothing of the world models is rule 20's. Rules 7 and 20 read only a call an agent
  *      of the run made itself (`typedBy`: its first word stands after a `gh` the agent ran), so
@@ -277,6 +280,7 @@ import {
   serves,
 } from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, runNamed, submitsReview } from "./gh-call";
+import { runsOnPaneToken } from "./gh-pane-token";
 import { isObject } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
 import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } from "./gh-threads";
@@ -597,6 +601,13 @@ const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
 const OWNER_REFUSED = 'legion gh: "<owner>" is not an owner of this project (exit 2)';
 const OWNER_NOT_REFUSED =
   "the refusal of an owner outside the project with another status than the Legion gh wrapper's 2";
+/** The world's GitHub's 404 to a read of another owner's repository that the label's Legion gh
+ * wrapper runs on the pane's own token rather than refusing it (main's since #4035,
+ * gh-pane-token.ts's `runsOnPaneToken`): the world holds its own project's repository alone, and
+ * answers what it does not hold as GitHub answers a token that cannot see it. Read back from the
+ * call by the owners it names and the record's `unrouted`. */
+const OWNER_UNHELD =
+  "gh: Not Found (HTTP 404) (a read of another owner's repository, which the pane's own token runs and the world does not hold)";
 /** GitHub's answer to a role App's read of the user its token is (`gh api user`), which the
  * world's user route gives every role (rig.sh's fixture_write): an installation token is no
  * user's, and GitHub refuses it 403 (measured on 2026-11-17 from a Legion pod: `gh api user`, exit
@@ -616,14 +627,16 @@ const PULL_MISSING =
   "GraphQL: Could not resolve to a PullRequest or a Repository, or no pull requests found for branch (gh's refusal of one GitHub has not got)";
 const FIELD_UNKNOWN = "Unknown JSON field (gh's refusal of a --json field it does not take)";
 /** The refusals every role of every scenario may meet, since production refuses each so for every
- * role: OWNER_REFUSED, since a correct agent of any role may read a repository of another owner
- * (a reviewer reading the tag an action of the world's workflow is pinned to from that action's
- * own repository, in the rehearsal of 2026-11-16); USER_403, since any role may ask GitHub who its
+ * role: OWNER_REFUSED and OWNER_UNHELD, since a correct agent of any role may read a repository of
+ * another owner (a reviewer reading the tag an action of the world's workflow is pinned to from
+ * that action's own repository, in the rehearsal of 2026-11-16), which the label's wrapper refuses
+ * or runs on the pane's token as its shape does; USER_403, since any role may ask GitHub who its
  * token is; and PULL_MISSING and FIELD_UNKNOWN, since any role may read a pull request, and
  * production gives every role that names one, a branch, a repository or a field it has not got
  * gh's own refusal (the architect's ruling of 2026-11-17). */
 const GH_DECLARED_EVERY_ROLE: readonly string[] = [
   OWNER_REFUSED,
+  OWNER_UNHELD,
   USER_403,
   PULL_MISSING,
   FIELD_UNKNOWN,
@@ -683,6 +696,12 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 /** The refusal the gh stand-in gave `call`, which exited with a status other than 0, or undefined
  * when that status is no refusal of the world's. The record keeps the status and not the text, so
  * the refusal is read back from the call the way the stand-in decided it:
+ *   - a call naming an owner outside the project (`outside`) is the wrapper's refusal of it, exit 2
+ *     (OWNER_REFUSED), and with any other status the world answering otherwise than production
+ *     (OWNER_NOT_REFUSED); but where the label's wrapper runs it on the pane's own token
+ *     (`paneToken`) and the world answered it (its record names what answered, and no `wrapper`),
+ *     it is read as every other call below, the world's 404 of no answer of its own being GitHub's
+ *     for what it does not hold of that owner (OWNER_UNHELD);
  *   - a read of the pull request gh refused (`gh pr view`, `list` or `diff` of one, a branch or a
  *     repository GitHub has not got, or a `--json` field gh does not take) is the refusal the
  *     record names it by (PULL_MISSING, FIELD_UNKNOWN); another such read that exited non-zero
@@ -713,10 +732,14 @@ function ghRefusal(
   call: RecordedCall,
   routes: readonly Route[],
   repo: string | undefined,
-  outside: boolean
+  outside: boolean,
+  paneToken: boolean
 ): string | undefined {
   const argv = call.argv ?? [];
-  if (outside) return call.exit === 2 ? OWNER_REFUSED : OWNER_NOT_REFUSED;
+  const answered =
+    paneToken && call.exit !== 2 && call.handler !== undefined && call.handler !== "wrapper";
+  if (outside && !answered) return call.exit === 2 ? OWNER_REFUSED : OWNER_NOT_REFUSED;
+  if (answered && call.handler === "unrouted") return OWNER_UNHELD;
   // gh's own refusals of a read of the pull request, which the record names (gh-view.ts).
   if (call.handler === PULL_NOT_FOUND) return PULL_MISSING;
   if (call.handler === FIELD_REFUSED) return FIELD_UNKNOWN;
@@ -841,7 +864,18 @@ export function ghUndeclared(
       selectors !== null &&
       selectors !== undefined &&
       namesOwnerOutside(ghTargetOf(call.argv ?? [], selectors, {}), repo);
-    const refusal = ghRefusal(call, routes, repo, outside);
+    // Every worker pane that names its gh owners directory names its own GH_CONFIG_DIR, and the
+    // pane's GH_REPO the world's repository (daemon-pane.go's pane), which the record keeps
+    // neither of.
+    const paneToken =
+      outside &&
+      selectors !== null &&
+      selectors !== undefined &&
+      runsOnPaneToken(call.argv ?? [], selectors, repo ?? "", {
+        GH_CONFIG_DIR: "<the pane's own>",
+        GH_REPO: repo,
+      });
+    const refusal = ghRefusal(call, routes, repo, outside, paneToken);
     if (refusal === undefined) continue;
     const declared = [
       ...GH_DECLARED_EVERY_ROLE,

@@ -1,8 +1,9 @@
 // Which owners and which repository a gh call names, read as the Legion gh wrapper reads them
 // (`legion gh`, packages/daemon/cmd/legion's ghTargetOf) by that wrapper's own selector table, and
-// the refusal it prints for a call naming an owner outside the project. The world's gh refuses
-// such a call so (gh-standin.ts), and health holds each refused call to that same reading
-// (health.ts's rule 7), so the world and its judge read a call one way.
+// the refusal it prints for a call naming an owner outside the project, or, for a wrapper of main's
+// since #4035, whether it runs such a call on the pane's own token instead (gh-pane-token.ts). The
+// world's gh answers such a call so (gh-standin.ts), and health holds each such call to that same
+// reading (health.ts's rule 7), so the world and its judge read a call one way.
 //
 // The table is the wrapper's, read out of the run's own label checkout (daemon-pane.ts's
 // `labelGhSelectors`, which runs gh-selectors.go over its source and keeps the printout in the
@@ -87,6 +88,19 @@ interface ArgKind {
   readonly many: boolean;
 }
 
+/** The wrapper's grammar of a call that writes nothing (gh_reads.go's ghWritesNothing and
+ * ghGraphQLQueryRead), as gh-selectors.go prints it: the options each leaf of ghReadLeaves may be
+ * given, a `gh api` read's (ghAPIReadOptions) and a `gh api graphql` query's
+ * (ghGraphQLReadOptions, main's since #4035), each spelling true where it takes a value, and the
+ * headers the wrapper reads as a method (ghMethodOverrideHeaders). */
+export const ReadGrammar = z.object({
+  leaves: z.record(z.string(), z.record(z.string(), z.boolean())),
+  api: z.record(z.string(), z.boolean()),
+  graphql: z.record(z.string(), z.boolean()),
+  overrides: z.array(z.string()),
+});
+export type ReadGrammar = z.infer<typeof ReadGrammar>;
+
 /** The wrapper's table as gh-selectors.go prints it. */
 export interface GhTable {
   readonly slots: Readonly<Record<string, ArgKind>>;
@@ -101,6 +115,9 @@ export interface GhTable {
   readonly patterns: Patterns;
   /** The file each pattern is declared in, under the daemon module the table was read from. */
   readonly declared: Patterns;
+  /** Its read grammar, a `gh api graphql` query's options none (`{}`) where the wrapper declares
+   * none, as main's before #4035. */
+  readonly reads: ReadGrammar;
 }
 
 /** The table gh-selectors.go printed as `printed` over the daemon module `module`, every kind and
@@ -116,6 +133,7 @@ export function tableOf(printed: string, module: string): GhTable {
   const ranks: Record<string, number> = {};
   const patterns: Partial<Record<PatternName, string>> = {};
   const declared: Partial<Record<PatternName, string>> = {};
+  const reads: ReadGrammar = { leaves: {}, api: {}, graphql: {}, overrides: [] };
   const quirkOf = (leaf: string) => {
     quirks[leaf] ??= { fields: {}, slots: {} };
     return quirks[leaf];
@@ -155,7 +173,16 @@ export function tableOf(printed: string, module: string): GhTable {
     ) {
       patterns[a as PatternName] = b;
       declared[a as PatternName] = path.join(module, c);
-    } else
+    } else if (type === "read-leaf" && fields.length === 1) reads.leaves[a] ??= {};
+    else if (type === "read" && fields.length === 3 && ["0", "1"].includes(c)) {
+      reads.leaves[a] ??= {};
+      reads.leaves[a][b] = c === "1";
+    } else if (type === "api-read" && fields.length === 2 && ["0", "1"].includes(b))
+      reads.api[a] = b === "1";
+    else if (type === "graphql-read" && fields.length === 2 && ["0", "1"].includes(b))
+      reads.graphql[a] = b === "1";
+    else if (type === "override-header" && fields.length === 1) reads.overrides.push(a);
+    else
       throw new Error(
         `gh-selectors printed ${JSON.stringify(line)}, which is no line of its table`
       );
@@ -166,6 +193,14 @@ export function tableOf(printed: string, module: string): GhTable {
   if (missing.length > 0 || Object.keys(slots).length === 0 || Object.keys(options).length === 0)
     throw new Error(
       `gh-selectors printed no ${missing.length > 0 ? `pattern ${missing.join(", ")}` : "argument or option kinds"}, so the wrapper's table is not read whole`
+    );
+  if (
+    Object.keys(reads.leaves).length === 0 ||
+    Object.keys(reads.api).length === 0 ||
+    reads.overrides.length === 0
+  )
+    throw new Error(
+      "gh-selectors printed no read grammar (ghReadLeaves, ghAPIReadOptions and ghMethodOverrideHeaders), so which call writes nothing is not read"
     );
   const reading = Object.entries(quirks)
     .filter(([, { fields }]) => fields.readsRepositoryNumber === "true")
@@ -183,6 +218,7 @@ export function tableOf(printed: string, module: string): GhTable {
     ranks,
     patterns: patterns as Patterns,
     declared: declared as Patterns,
+    reads,
   };
 }
 
@@ -232,9 +268,13 @@ const Leaf = z.object({
 type Leaf = z.infer<typeof Leaf>;
 
 /** A label's selectors: every command of its gh, a group or a leaf, by its path's words joined
- * by a space; every cobra alias its helps list, by its spelling, the path it stands for; and the
+ * by a space; every cobra alias its helps list, by its spelling, the path it stands for; the
  * wrapper's patterns of a value, OWNER/REPO#N's only where its wrapper declares it
- * (`REPOSITORY_NUMBER`). This is the file rig.sh writes into a run (RUN_SELECTORS). */
+ * (`REPOSITORY_NUMBER`); and, where the wrapper runs a call that writes nothing and names only
+ * owners it holds no directory for with the pane's own GH_CONFIG_DIR rather than refusing it
+ * (main's since #4035, read off the label's source by daemon-pane.ts's `labelGhSelectors`), its
+ * grammar of such a call (`paneToken`, gh-pane-token.ts); absent for a wrapper that refuses every
+ * such call, main's before #4035. This is the file rig.sh writes into a run (RUN_SELECTORS). */
 export const GhSelectors = z.object({
   groups: z.array(z.string()),
   leaves: z.record(z.string(), Leaf),
@@ -246,6 +286,7 @@ export const GhSelectors = z.object({
     ghPlaceholder: z.string(),
     ownerLogin: z.string(),
   }),
+  paneToken: ReadGrammar.optional(),
 });
 export type GhSelectors = z.infer<typeof GhSelectors>;
 
@@ -538,12 +579,21 @@ function flagsOf(
  * saved help is read from it whole, as the wrapper reads gh's; any other from its reference
  * section, its options and `--help`, with the options of its nearest parent group that has a
  * saved help or lists options in the reference (gh's persistent `-R`). A gh alias or an extension
- * gh's own help lists is no command here: the wrapper refuses it before reading anything. */
+ * gh's own help lists is no command here: the wrapper refuses it before reading anything.
+ * `paneToken` says whether the wrapper runs a call that writes nothing and names only owners it
+ * holds no directory for with the pane's own GH_CONFIG_DIR (main's since #4035), and its read
+ * grammar is then carried whole; a wrapper of that shape that declares no `gh api graphql` query's
+ * options is refused, since it reads such a query by them (gh_reads.go's ghGraphQLQueryRead). */
 export function selectorsOf(
   table: GhTable,
   saved: Readonly<Record<string, string>>,
-  reference: string
+  reference: string,
+  paneToken: boolean
 ): GhSelectors {
+  if (paneToken && Object.keys(table.reads.graphql).length === 0)
+    throw new Error(
+      "the wrapper runs a read naming only owners it holds no directory for with the pane's own GH_CONFIG_DIR, and declares no ghGraphQLReadOptions, which it reads a `gh api graphql` query by"
+    );
   const word = compiled(table.patterns.ghCommandWord);
   const flagLine = compiled(table.patterns.ghFlagLine);
   const option = optionLines(flagLine, table.declared.ghFlagLine);
@@ -616,6 +666,7 @@ export function selectorsOf(
       ghPlaceholder: table.patterns.ghPlaceholder,
       ownerLogin: table.patterns.ownerLogin,
     },
+    ...(paneToken ? { paneToken: table.reads } : {}),
   };
 }
 
@@ -883,6 +934,18 @@ export function ghTargetOf(
   selectors: GhSelectors,
   env: Readonly<Record<string, string | undefined>>
 ): GhTarget | undefined {
+  return ghCallOf(argv, selectors, env)?.target;
+}
+
+/** `ghTargetOf`'s reading of a call, with the path of the leaf its words resolved to and whether
+ * the wrapper reads the working directory's git remotes for it (gh_selectors.go's
+ * fromWorkingDirectory), which in a world name the world's repository (`ghTargetOf`), which
+ * gh-pane-token.ts's `runsOnPaneToken` reads a call by. */
+export function ghCallOf(
+  argv: readonly string[],
+  selectors: GhSelectors,
+  env: Readonly<Record<string, string | undefined>>
+): { target: GhTarget; path: readonly string[]; remotes: boolean } | undefined {
   const rest: string[] = [];
   let leafPath: string[] = [];
   let leaf: Leaf | undefined;
@@ -918,16 +981,21 @@ export function ghTargetOf(
   };
   const api = leafPath.join(" ") === "api";
   const s = new Selected(patterns);
+  let remotes = false;
   try {
     const parsed = parseArgs(leaf, rest);
     if (parsed.help) return undefined;
     fromCommand(s, leaf, parsed, api, selectors);
-    fromOwnRepository(s, leaf, parsed, api, env);
+    remotes = fromOwnRepository(s, leaf, parsed, api, env);
   } catch (error) {
     if (error instanceof Unplaced) return undefined;
     throw error;
   }
-  return { owners: [...s.owners], repo: s.owners.size === 1 ? s.onlyRepository() : "" };
+  return {
+    target: { owners: [...s.owners], repo: s.owners.size === 1 ? s.onlyRepository() : "" },
+    path: leafPath,
+    remotes,
+  };
 }
 
 /** gh_selectors.go's fromCommand: the owners the leaf's arguments and options name. */
@@ -1061,15 +1129,17 @@ function fromOptions(s: Selected, leaf: Leaf, parsed: Parsed, api: boolean) {
 
 /** gh_selectors.go's fromOwnRepository: the command's own repository, where gh resolves it, which
  * here is GH_REPO's for a leaf that reads it (or gh api's base placeholders), the working
- * directory's remotes naming none. */
+ * directory's remotes naming none. True where the wrapper reads the working directory's remotes
+ * for it (fromWorkingDirectory): a leaf whose quirk reads every remote, and a call reading its own
+ * repository, or naming no owner, that GH_REPO does not answer. */
 function fromOwnRepository(
   s: Selected,
   leaf: Leaf,
   parsed: Parsed,
   api: boolean,
   env: Readonly<Record<string, string | undefined>>
-) {
-  if (leaf.readsAllRemotes) return;
+): boolean {
+  if (leaf.readsAllRemotes) return true;
   const n = parsed.positionals.length;
   const indexes = slotIndexes(leaf, n) ?? [];
   const readsOwn =
@@ -1080,10 +1150,13 @@ function fromOwnRepository(
         !indexes.includes(index)
     );
   const reads = api ? s.readsBase : !s.targeted && readsOwn;
-  if (!reads && s.owners.size > 0) return;
+  if (!reads && s.owners.size > 0) return false;
   const repo = env.GH_REPO ?? "";
-  if (repo !== "" && (leaf.readsGHRepo || (api && s.readsBase)))
+  if (repo !== "" && (leaf.readsGHRepo || (api && s.readsBase))) {
     s.repository(repo, `GH_REPO ${repo}`);
+    return false;
+  }
+  return true;
 }
 
 /** Whether `target` names an owner other than the owner of the world's repository `repo`: the

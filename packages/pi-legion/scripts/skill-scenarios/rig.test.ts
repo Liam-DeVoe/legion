@@ -8640,9 +8640,9 @@ describe("the issue workspace's remote", () => {
   );
 });
 
-// run_env_pids names each process whose environment carries a run under DIR, with its start time,
-// for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
-// whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
+// run_env_pids names each process whose HOME is under a run's directory under DIR, with its start
+// time, for the exit handlers' stop_env_processes. It walks every process's environment, so a
+// machine whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
 // arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
 // perl: each row's processes and harness start through ownGroup (scripts/e2e/lib/own-group.ts).
 const withoutPerl = skipWithout("perl");
@@ -8661,7 +8661,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
-      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
+      env: { PATH: process.env.PATH ?? "", HOME: path.join(dir, "run-1", "home") },
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -8686,7 +8686,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       const scratch = freshDir("env-pids-scratch");
       const run = runProcess(dir);
       try {
-        const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
+        const old = 'grep -lzsF -e "HOME=$2/" "$proc_root"/[0-9]*/environ';
         const forced = groupBash(
           `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
           [scratch, dir],
@@ -8722,6 +8722,70 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       run.kill("SIGKILL");
     }
   });
+
+  // Catches: a walk or a stop that misses an agent in the PID namespace of its own every run's agent
+  // starts in (rig.sh's launch: `unshare -Urm -p --fork --mount-proc`, the agent's command in a
+  // second user namespace, under `env -i` and the pane's variables), or that names it by the pid
+  // that namespace gives it, where it is the namespace's first process. The rig reads its own
+  // /proc, where the agent has the pid and the start time the rig's namespace gives it, and every
+  // pid it names and signals is that one. The agent here is the namespace's first process, its
+  // parent the unshare, which carries no HOME; it says `started` on stdout before it execs the
+  // agent, so by then the unshare has it for its one child.
+  test.skipIf(withoutNamespace)(
+    "names and ends an agent in a PID namespace of its own by the pid the rig's own /proc gives it",
+    async () => {
+      const dir = freshDir("env-namespace");
+      const agent = Bun.spawn(
+        ownGroup([
+          "env",
+          "-i",
+          `PATH=${process.env.PATH ?? ""}`,
+          "unshare",
+          "-Urm",
+          "-p",
+          "--fork",
+          "--mount-proc",
+          "sh",
+          "-c",
+          'echo started && exec unshare -U --map-user="$1" --map-group="$2" env -i HOME="$3" sleep 60',
+          "-",
+          String(process.getuid?.() ?? 0),
+          String(process.getgid?.() ?? 0),
+          path.join(dir, "run-1", "home"),
+        ]),
+        { stdout: "pipe", stderr: "ignore" }
+      );
+      try {
+        await agent.stdout.getReader().read();
+        const inner = Number(
+          readdirSync(`/proc/${agent.pid}/task`)
+            .flatMap((task) =>
+              readFileSync(`/proc/${agent.pid}/task/${task}/children`, "utf8").trim().split(/\s+/)
+            )
+            .find((child) => child !== "")
+        );
+        await untilRunning(inner, "sleep");
+        const procRoot = procRootOf(dir, [agent.pid, inner]);
+        const named = groupBash(
+          `set -euo pipefail\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\nrun_env_pids "$1"`,
+          [dir],
+          procRoot
+        );
+        expect(named).toEqual({ code: 0, stdout: `${inner} ${start(inner)}\n`, stderr: "" });
+        const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+        const stopped = groupBash(
+          `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+          [dir],
+          procRoot
+        );
+        expect(stopped).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+        expect(await agent.exited).not.toBe(0);
+        expect(existsSync(`/proc/${inner}`)).toBe(false);
+      } finally {
+        agent.kill("SIGKILL");
+      }
+    }
+  );
 });
 
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.
