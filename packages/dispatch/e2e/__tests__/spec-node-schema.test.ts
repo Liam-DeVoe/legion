@@ -1,5 +1,5 @@
 // The schema of a node of The Spec, and the YAML of the spec files, read the same in TypeScript as
-// in Go (R5 of dispatch://INFRA-4083). ajv reads the one schema of the repository and the one table
+// in Go (R5 of the specification). ajv reads the one schema of the repository and the one table
 // of its cases that the Go test TestSchemaCases reads; the yaml library reads the YAML nodes of
 // specgraph's testdata/nodes, each as the data of the .decoded.json file beside it, which a person
 // wrote and which the Go test TestNodesDecodeToTheirData holds yaml.v3 to; and it reads each YAML
