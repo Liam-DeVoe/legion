@@ -5950,13 +5950,16 @@ function commentBox(page: Page): Locator {
   return page.getByTestId("margin-sheet").getByRole("form", { name: "Comment composer" });
 }
 
-/** Waits until the caret is in the margin's comment box, under the quote of `word`. */
+/** Waits until the caret is in the margin's comment box, under the quote of `word`: the box's own
+ *  quote, never the text of a kept draft the box offers beside its field, which it draws inside a
+ *  `role="status"` block (`DraftOffer`). */
 async function expectCaretInBox(page: Page, word: string, message: string): Promise<void> {
   const box = commentBox(page);
   await expect(box.getByLabel("Comment"), message).toBeFocused();
-  await expect(box.locator("blockquote"), `${message}, under the quote of "${word}"`).toHaveText(
-    word
-  );
+  await expect(
+    box.locator("blockquote:not([role='status'] blockquote)"),
+    `${message}, under the quote of "${word}"`
+  ).toHaveText(word);
 }
 
 /** Selects `word` in the document and presses Ctrl+Alt+M: the caret is in the comment box. */
@@ -6057,7 +6060,7 @@ test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin
 });
 
 // SLOW(>=2s): the spec opened and connected at a sheet's width, three comments started on it, the
-// sheet closed and opened four times, and one comment sent.
+// sheet opened and closed three times, and one comment sent.
 test("k-comment-focus: at 1024x768, where the margin is a sheet, each new comment puts the caret in the box, and Escape in the empty box and a send close the sheet and put it back in the commented word", async ({
   page,
 }) => {
@@ -6090,11 +6093,31 @@ test("k-comment-focus: at 1024x768, where the margin is a sheet, each new commen
     "data-expanded",
     "true"
   );
-  const field = commentBox(page).getByLabel("Comment");
-  await expect(field, step("the box keeps its draft under the closed sheet")).toHaveValue(draft);
-  await page.keyboard.press("Control+A");
-  await page.keyboard.press("Backspace");
-  await expect(field, step("the draft is cleared")).toHaveValue("");
+  // The second comment draws a box of its own with an empty field, and the first box's draft
+  // waits beside it (`KeptDraftOffers`) until the reader takes it into the field or drops it.
+  const box = commentBox(page);
+  await expect(box.getByLabel("Comment"), step("the second comment's field is empty")).toHaveValue(
+    ""
+  );
+  const offer = box.getByRole("status").filter({ hasText: `for other words: “${FIRST_WORD}”` });
+  await expect(
+    offer.locator("blockquote"),
+    step("the first box's draft is kept beside the field")
+  ).toHaveText(draft);
+  await expect(
+    box.getByRole("button", { name: "Use my draft" }),
+    step("the kept draft has the press that takes it into the field")
+  ).toBeVisible();
+  // Escape over a kept draft asks `Discard draft?` rather than closing the box (`closeOrAsk`), and
+  // a close keeps the draft for the next comment, whose field it holds read-only, so the row drops
+  // it first. The focus stays in the box, where the box's Escape listener reads the key.
+  await box.getByRole("button", { name: "Discard my draft" }).press("Enter");
+  await expect(offer, step("Discard my draft drops the kept draft")).toHaveCount(0);
+  await expect
+    .poll(() => box.evaluate((form) => form.contains(document.activeElement)), {
+      message: step("the focus stays in the box once the kept draft is dropped"),
+    })
+    .toBe(true);
   await page.keyboard.press("Escape");
   await expect(sheet, step("Escape in the empty box closes the sheet")).toHaveAttribute(
     "data-expanded",
