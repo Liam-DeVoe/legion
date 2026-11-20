@@ -265,7 +265,7 @@ What a stubbed row may assert, and what only a real-stack row may:
   reads its own write, because a recording answers the second read with the state from before the
   write, so the row would pass and prove nothing; when it needs a frame that the server sends (a
   delivery, a turn that streams, the live document); or when it reads a clock that the server
-  keeps moving. `packages/dispatch/AGENTS.md`, "The stubbed layer", says how a stubbed row is
+  keeps moving. `packages/dispatch/README.md`, "The stubbed layer", says how a stubbed row is
   declared and recorded, and what a new spec file needs.
 
 The clock of a unit test:
@@ -427,9 +427,10 @@ and each command runs there.
   `bun run test:harness e2e/__tests__/<file> --seed=<n>`. Add `--rerun-each=<k>` for a row that
   first failed on run k, which the report of `bun run test:repeat` names. The order of the tests in
   a file depends only on the seed and on that file, so this repeats the order the row failed in. A
-  row that failed from the lane's load, such as one that times a real process, or from another file
-  that ran beside it, can pass alone: run it with the files that ran beside it, or under the same
-  load.
+  row of a leg that ran one shard of its lane (`--shard`) is run again by the same command, with no
+  `--shard`: the shard picks which files run and leaves each file's order to the seed. A row that
+  failed from the lane's load, such as one that times a real process, or from another file that ran
+  beside it, can pass alone: run it with the files that ran beside it, or under the same load.
 
 - No flag of `bun test` turns random order off: `--randomize=false` is refused, and
   `--no-randomize` still shuffles. `bun --config=<file> test …` reads that file in place of
@@ -440,11 +441,14 @@ and each command runs there.
 - Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
   from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
 
-- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
-  one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
-  a report of every row that failed, with how many of its runs failed, its seed and the command
-  that runs it again, and of every failure that belongs to no row.
-  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] [--shard <i>/<n>]
+  --out <dir>` runs one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is
+  left out, and writes a report of every row that failed, with how many of its runs failed, its
+  seed and the command that runs it again, and of every failure that belongs to no row. With
+  `--shard <i>/<n>` it runs only the i-th of n shards of the lane's files, as Bun's own `--shard`
+  deals them, and the report names the shard. `.github/workflows/dispatch-unit-repeat.yaml` runs
+  it weekly, each lane in three rounds under a seed for each round, and the web lane's round as two
+  legs, its shards 1/2 and 2/2, under that round's one seed.
 
 - `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
   its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows
