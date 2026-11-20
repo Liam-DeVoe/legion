@@ -2189,6 +2189,12 @@ func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim
 
 func (*supervisedSandboxStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+func (*supervisedSandboxStore) OweResume(context.Context, supervise.Claim) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (*supervisedSandboxStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
 	return nil

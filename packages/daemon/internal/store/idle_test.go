@@ -280,7 +280,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		t.Fatalf("outbox rows = %d, want the first release's three alone", rows)
 	}
 
-	if err := st.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
+	if err := st.ClearIssueRelease(ctx, "legion", rootIssue, RowLease{}); err != nil {
 		t.Fatal(err)
 	}
 	if cleared := idleViewOf(t, st, rootIssue); cleared.Releasing {
@@ -371,7 +371,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
 	}
 
-	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}, RowLease{})
 	if err != nil || !cancelled.SuspendsNoRole || len(cancelled.Resumed) != 0 {
 		t.Fatalf("the cancel = %+v, %v; want no role resumed and the release named as the one that suspends none",
 			cancelled, err)
@@ -504,7 +504,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 	done := make(chan cancelled, 1)
 	go func() {
-		answer, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+		answer, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}, RowLease{})
 		done <- cancelled{roles: answer.Resumed, err: err}
 	}()
 

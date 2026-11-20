@@ -373,8 +373,13 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // refuse. Under the lock the two commit in a line, and neither order leaves that state — a cancel
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
+//
+// A mark that carries a take (IssueRelease, issue_releases.taken_pod) is cancelled only while
+// lease, the lease the cancel's own run holds its outbox row by, still holds that row
+// (RowLease): the cancel ends the take with the mark, so a run whose lease lapsed cancels nothing
+// and answers ErrRowLeaseLost, and the run that holds the row now decides the release.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
-	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause, lease RowLease) (ReleaseCancelled, error) {
 	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
 		return ReleaseCancelled{}, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
@@ -383,7 +388,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 	}
 	var cancelled ReleaseCancelled
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+		cancelled = ReleaseCancelled{}
+		if err := takeHeldByLease(ctx, tx, project, issue, lease); err != nil {
 			return err
 		}
 		cancelled = ReleaseCancelled{}
@@ -589,20 +595,51 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 	return roles, rows.Err()
 }
 
-// ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:
-// the teardown's own call, outside any transaction. A cancel forgets its mark itself, in the
-// transaction that queues its resumes (CancelIssueRelease). A mark already gone is success, so a
-// retried finish finishes.
-func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) error {
-	if err := deleteIssueRelease(ctx, s.pool, project, issue); err != nil {
+// ClearIssueRelease forgets the mark of issue's release once the release finished: the teardown's
+// own call, with the lease its run holds the teardown's row by. A cancel forgets its mark itself,
+// in the transaction that queues its resumes (CancelIssueRelease). A mark already gone is
+// success, so a retried finish finishes. A mark that carries a take is forgotten only while lease
+// still holds its row (RowLease), since the take ends with it: a run whose lease lapsed changes
+// nothing and answers ErrRowLeaseLost, and leaves the mark to the run that holds the row now.
+func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string, lease RowLease) error {
+	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := takeHeldByLease(ctx, tx, project, issue, lease); err != nil {
+			return err
+		}
+		return deleteIssueRelease(ctx, tx, project, issue)
+	}); err != nil {
 		return fmt.Errorf("clear the release mark of %s: %w", issue, err)
 	}
 	return nil
 }
 
-// deleteIssueRelease forgets the mark of issue's release through db, which is the pool for the
-// teardown's own call and the caller's transaction for the cancel that queues the resumes of
-// the claims the release suspended (CancelIssueRelease). One mark, one delete, whichever runs it.
+// takeHeldByLease is nil where a write may end issue's release mark, inside tx: always where the
+// mark carries no take, and where it carries one, only while lease still holds its outbox row
+// (holdsRowLease), which it then locks until tx ends; ErrRowLeaseLost where it does not. It takes
+// the shared serializer first, as every read and write of the take does.
+func takeHeldByLease(ctx context.Context, tx pgx.Tx, project, issue string, lease RowLease) error {
+	if err := treelifecycle.Serialize(ctx, tx); err != nil {
+		return err
+	}
+	release, _, taken, err := readTake(ctx, tx, project, issue)
+	if err != nil || !taken {
+		return err
+	}
+	held, err := holdsRowLease(ctx, tx, lease)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return fmt.Errorf("the take of %s's pod by release %d ends only under the lease of the run that holds outbox row %d: %w",
+			issue, release, lease.Row, ErrRowLeaseLost)
+	}
+	return nil
+}
+
+// deleteIssueRelease forgets the mark of issue's release through db, the transaction of the
+// teardown's finish (ClearIssueRelease) or of the cancel that queues the resumes of the claims the
+// release suspended (CancelIssueRelease), each of which has read the take under the row's lease
+// first (takeHeldByLease). One mark, one delete, whichever runs it.
 func deleteIssueRelease(ctx context.Context, db execer, project, issue string) error {
 	_, err := db.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
 	return err

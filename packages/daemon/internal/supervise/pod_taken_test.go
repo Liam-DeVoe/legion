@@ -103,11 +103,15 @@ func TestALaunchTheStoreRefusesForATakenPodLeavesTheClaimAsItWas(t *testing.T) {
 		store := &takeRefusingStore{memStore: h.store, refusing: true}
 		h.deps.Store = store
 		second := h.machineFor(wakeClaim(secondToken, StateQueued))
+		live := h.clock.Live()
 
 		err := h.postTo(second, RequestSpawn{Claim: secondToken})
 		var refused *PodTakenLaunchError
 		if !errors.As(err, &refused) || !errors.Is(err, wait.ErrWaiting) {
 			t.Fatalf("the parked spawn while a release takes the pod = %v, want the launch's wait", err)
+		}
+		if armed := h.clock.Live() - live; armed != 0 {
+			t.Fatalf("the refused parked launch left %d timers armed, want none: the wake its gate armed goes with the wake", armed)
 		}
 		if got := second.View(); got.Claim.State != StateQueued || got.WakeWaiting != nil {
 			t.Fatalf("the parked claim after the refusal is %s waiting %+v, want it queued with no wake", got.Claim.State, got.WakeWaiting)

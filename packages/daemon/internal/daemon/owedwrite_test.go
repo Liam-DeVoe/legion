@@ -105,6 +105,14 @@ func (s *switchStore) CheckLaunch(ctx context.Context, c supervise.Claim) error 
 	return s.now().CheckLaunch(ctx, c)
 }
 
+func (s *switchStore) OweResume(ctx context.Context, c supervise.Claim) (int64, string, error) {
+	return s.now().OweResume(ctx, c)
+}
+
+func (s *switchStore) ForgetResume(ctx context.Context, token claim.Token) (bool, error) {
+	return s.now().ForgetResume(ctx, token)
+}
+
 func (s *switchStore) PutClaim(ctx context.Context, c supervise.Claim) error {
 	return s.now().PutClaim(ctx, c)
 }

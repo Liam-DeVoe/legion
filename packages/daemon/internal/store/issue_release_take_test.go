@@ -24,20 +24,10 @@ var takenSandbox = "legion-" + strings.ToLower(rootIssue)
 
 // storedReleasedArchitect is the root issue's architect claim an earlier release left
 // `released`, stored: the suspended claim an operator's suspend takes over (supervise's
-// suspendedAgain).
+// suspendedAgain). It is storedReleasedArchitectOf for the root issue.
 func storedReleasedArchitect(t *testing.T, st *Store) supervise.Claim {
 	t.Helper()
-	issue, role := rootIssue, claim.RoleArchitect
-	token, err := claim.NewToken("legion", issue, role)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: issue, Role: role, TreeEpoch: 1,
-		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}
-	if err := st.PutClaim(context.Background(), c); err != nil {
-		t.Fatalf("store the released %s claim of %s: %v", role, issue, err)
-	}
-	return c
+	return storedReleasedArchitectOf(t, st, rootIssue)
 }
 
 // takenOver is c as the operator's take-over writes it: suspended by the operator.
@@ -63,18 +53,32 @@ func markOfKind(t *testing.T, st *Store, issue, kind string) {
 }
 
 // teardownRead is the teardown's read of the rig's release at row 10, the runtime's last read
-// when last is set.
+// when last is set, made under the lease the teardown's run holds that row by (teardownLease).
 func teardownRead(t *testing.T, st *Store, last bool) ReleaseDecision {
 	t.Helper()
 	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
 	if last {
-		release.Takes, release.Sandbox = true, takenSandbox
+		release.Takes, release.Sandbox, release.Lease = true, takenSandbox, teardownLease(t, st).Token
 	}
 	decision, err := st.IssueRelease(context.Background(), "legion", release, record.OutOfWorkflow)
 	if err != nil {
 		t.Fatalf("the teardown's read (last %t): %v", last, err)
 	}
 	return decision
+}
+
+// teardownLease is the lease a run of the rig's teardown row, row 10, holds it by: the row is
+// queued once and leased to that run, so every write of the take made under it lands
+// (RowLease).
+func teardownLease(t *testing.T, st *Store) RowLease {
+	t.Helper()
+	const token = "the-teardown-run's-lease"
+	if _, err := st.Pool().Exec(context.Background(), `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+		values (10, 'issue_release', $1, '{}', 0, now(), '', $2, now() + interval '30 seconds')
+		on conflict (id) do update set lease_token = excluded.lease_token, lease_until = excluded.lease_until`, rootIssue, token); err != nil {
+		t.Fatalf("lease the teardown's row: %v", err)
+	}
+	return RowLease{Row: 10, Token: token}
 }
 
 // storedSource is the state and suspension source the store holds for c.
@@ -246,7 +250,7 @@ func TestTheTeardownsLastReadTakesThePodFromAnOperatorsTakeOver(t *testing.T) {
 			t.Fatalf("the last read = %s (cause %s), want acts", got.Act, got.Cause)
 		}
 
-		if err := st.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
+		if err := st.ClearIssueRelease(ctx, "legion", rootIssue, teardownLease(t, st)); err != nil {
 			t.Fatalf("finish the release: %v", err)
 		}
 		if err := st.PutClaim(ctx, takenOver(architect)); err != nil {
@@ -312,13 +316,14 @@ func TestTheLastReadAndATakeOverWaitForEachOther(t *testing.T) {
 			t.Fatalf("write the take-over: %v", err)
 		}
 
+		lease := teardownLease(t, st)
 		done := make(chan struct{})
 		var decision ReleaseDecision
 		var readErr error
 		go func() {
 			defer close(done)
 			decision, readErr = st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue,
-				IssueGeneration: 1, TreeGeneration: 1, Row: 10, Takes: true, Sandbox: takenSandbox}, record.OutOfWorkflow)
+				IssueGeneration: 1, TreeGeneration: 1, Row: 10, Takes: true, Sandbox: takenSandbox, Lease: lease.Token}, record.OutOfWorkflow)
 		}()
 		if !waitedOnTheSerializer(t, st, done) {
 			t.Fatalf("the last read finished (%s, cause %s, %v) while the take-over held the serializer", decision.Act, decision.Cause, readErr)
@@ -385,13 +390,14 @@ func TestTheLastReadAndATakeOverWaitForEachOther(t *testing.T) {
 			t.Fatalf("write the launch: %v", err)
 		}
 
+		lease := teardownLease(t, st)
 		done := make(chan struct{})
 		var decision ReleaseDecision
 		var readErr error
 		go func() {
 			defer close(done)
 			decision, readErr = st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue,
-				IssueGeneration: 1, TreeGeneration: 1, Row: 10, Takes: true, Sandbox: takenSandbox}, record.OutOfWorkflow)
+				IssueGeneration: 1, TreeGeneration: 1, Row: 10, Takes: true, Sandbox: takenSandbox, Lease: lease.Token}, record.OutOfWorkflow)
 		}()
 		if !waitedOnTheSerializer(t, st, done) {
 			t.Fatalf("the last read finished (%s, cause %s, %v) while the launch held the serializer", decision.Act, decision.Cause, readErr)
@@ -557,7 +563,9 @@ func TestEveryClaimWriteRefusesWhatTheTakeOfAPodForbids(t *testing.T) {
 	})
 }
 
-// storedReleasedArchitectOf is storedReleasedArchitect for issue, a child of the root issue's tree.
+// storedReleasedArchitectOf is the architect claim of issue an earlier release left `released`,
+// stored: the one released-architect fixture, for the root issue (storedReleasedArchitect) and for
+// a child of the root issue's tree.
 func storedReleasedArchitectOf(t *testing.T, st *Store, issue string) supervise.Claim {
 	t.Helper()
 	token, err := claim.NewToken("legion", issue, claim.RoleArchitect)
@@ -572,95 +580,168 @@ func storedReleasedArchitectOf(t *testing.T, st *Store, issue string) supervise.
 	return c
 }
 
-// A launch the store writes meets the database's rule as an insert, before its upsert locks the
-// claim's row, so it takes the shared serializer before that row, as a fact does: a fact that
-// holds the serializer and then writes the same claim runs to its end while the launch waits, and
-// neither is aborted as a deadlock.
-func TestAClaimWriteTakesTheSerializerBeforeTheClaimsRow(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	openRunningTree(t, st)
-	architect := storedReleasedArchitect(t, st)
+// publications are the two stores a claim write runs on: the role-holder publication off, where
+// the store's write is one upsert, and on, as every daemon with a workflow runs it
+// (st.PublishRoleHolders, daemon.go), where the store reads the stored holder under the claim's
+// row lock first (putClaim).
+var publications = []struct {
+	name string
+	on   bool
+}{{"the role-holder publication off", false}, {"the role-holder publication on, as production runs", true}}
 
-	fact, err := st.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		t.Fatal(err)
+// publishing is a migrated store with the role-holder publication on where on is set.
+func publishing(t *testing.T, on bool) *Store {
+	t.Helper()
+	st := migratedStore(t)
+	if on {
+		st.PublishRoleHolders(nil)
 	}
-	defer func() { _ = fact.Rollback(ctx) }()
-	if err := treelifecycle.Serialize(ctx, fact); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	var launchErr error
-	go func() {
-		defer close(done)
-		launchErr = st.PutClaim(ctx, launched(architect))
-	}()
-	if !waitedOnTheSerializer(t, st, done) {
-		t.Fatalf("the launch finished (%v) while the fact held the serializer", launchErr)
-	}
-	if _, err := fact.Exec(ctx, `update claims set updated_at = now() where token = $1`, string(architect.Token)); err != nil {
-		t.Fatalf("the fact's write of the claim, while the launch waits: %v", err)
-	}
-	if err := fact.Commit(ctx); err != nil {
-		t.Fatalf("the fact's commit: %v", err)
-	}
-	<-done
-	if launchErr != nil {
-		t.Fatalf("the launch after the fact = %v, want it written", launchErr)
-	}
+	return st
 }
 
-// A write that starts nothing — a launch's next try, a write of any other state, a rewrite of a
-// claim the operator's already — takes no serializer in the database's rule:
-// it is written while another transaction holds the serializer, so the claim writes a daemon makes
-// all day wait on no fact. The control is a launch's start, which waits for the serializer.
-func TestAClaimWriteThatStartsNothingTakesNoSerializer(t *testing.T) {
+// A transaction that takes both the shared serializer and a claim's row takes the serializer
+// first, as a fact does, so a fact that holds the serializer and then writes the same claim runs
+// to its end while the launch waits, and neither is aborted as a deadlock: the store's launch
+// meets the database's rule as an insert before its upsert locks the row, and where the
+// role-holder publication is on the store takes the serializer before it reads the row under its
+// lock (putClaim). The control is a write planted in the reverse order — the claim's row locked,
+// then the serializer — which meets the same fact in a deadlock (40P01), so the test can see one.
+func TestAClaimWriteTakesTheSerializerBeforeTheClaimsRow(t *testing.T) {
 	ctx := context.Background()
-	st := migratedStore(t)
-	openRunningTree(t, st)
-	architect := storedReleasedArchitect(t, st)
-	launching := launched(architect)
-	if err := st.PutClaim(ctx, launching); err != nil {
-		t.Fatal(err)
+	for _, p := range publications {
+		t.Run(p.name, func(t *testing.T) {
+			st := publishing(t, p.on)
+			openRunningTree(t, st)
+			architect := storedReleasedArchitect(t, st)
+			if st.queuesRoleHolders(launched(architect)) != p.on {
+				t.Fatalf("setup: the launch queues a publication %t, want %t", !p.on, p.on)
+			}
+			fact, err := st.BeginTx(ctx, pgx.TxOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = fact.Rollback(ctx) }()
+			if err := treelifecycle.Serialize(ctx, fact); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			var launchErr error
+			go func() {
+				defer close(done)
+				launchErr = st.PutClaim(ctx, launched(architect))
+			}()
+			if !waitedOnTheSerializer(t, st, done) {
+				t.Fatalf("the launch finished (%v) while the fact held the serializer", launchErr)
+			}
+			factCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			_, factErr := fact.Exec(factCtx, `update claims set updated_at = now() where token = $1`, string(architect.Token))
+			if factErr == nil {
+				factErr = fact.Commit(ctx)
+			}
+			<-done
+			if factErr != nil || launchErr != nil {
+				t.Fatalf("a fact holding the serializer and writing the claim, and the launch of that claim: fact %v, launch %v; want both written, neither aborted",
+					factErr, launchErr)
+			}
+		})
 	}
-	holding := func(t *testing.T, write func() error) (waited bool, err error) {
-		t.Helper()
-		held, beginErr := st.BeginTx(ctx, pgx.TxOptions{})
-		if beginErr != nil {
-			t.Fatal(beginErr)
-		}
-		defer func() { _ = held.Rollback(ctx) }()
-		if err := treelifecycle.Serialize(ctx, held); err != nil {
+	t.Run("control: a write that locks the claim's row before the serializer meets the fact in a deadlock", func(t *testing.T) {
+		st := migratedStore(t)
+		openRunningTree(t, st)
+		architect := storedReleasedArchitect(t, st)
+		planted, err := st.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		done := make(chan struct{})
+		defer func() { _ = planted.Rollback(ctx) }()
+		if _, err := planted.Exec(ctx, `select 1 from claims where token = $1 for update`, string(architect.Token)); err != nil {
+			t.Fatal(err)
+		}
+		fact, err := st.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = fact.Rollback(ctx) }()
+		if err := treelifecycle.Serialize(ctx, fact); err != nil {
+			t.Fatal(err)
+		}
+		factDone := make(chan error, 1)
 		go func() {
-			defer close(done)
-			err = write()
+			_, err := fact.Exec(ctx, `update claims set updated_at = now() where token = $1`, string(architect.Token))
+			factDone <- err
 		}()
-		waited = waitedOnTheSerializer(t, st, done)
-		_ = held.Rollback(ctx)
-		<-done
-		return waited, err
-	}
-	next := launching
-	next.Generation++
-	if waited, err := holding(t, func() error { return st.PutClaim(ctx, next) }); waited || err != nil {
-		t.Fatalf("a launch's next try waited on the serializer %t, %v; want it written at once", waited, err)
-	}
-	idle := next
-	idle.State = supervise.StateIdle
-	if waited, err := holding(t, func() error { return st.PutClaim(ctx, idle) }); waited || err != nil {
-		t.Fatalf("a write of an idle claim waited on the serializer %t, %v; want it written at once", waited, err)
-	}
-	planner := storedOperatorsPlanner(t, st)
-	planner.Session = "ses-rewritten"
-	if waited, err := holding(t, func() error { return st.PutClaim(ctx, planner) }); waited || err != nil {
-		t.Fatalf("a rewrite of the operator's suspension waited on the serializer %t, %v; want it written at once", waited, err)
-	}
-	if waited, err := holding(t, func() error { return st.PutClaim(ctx, launched(planner)) }); !waited || err != nil {
-		t.Fatalf("control: a launch's start waited on the serializer %t, %v; want it to wait, then be written", waited, err)
+		time.Sleep(200 * time.Millisecond)
+		plantedErr := treelifecycle.Serialize(ctx, planted)
+		if plantedErr != nil {
+			_ = planted.Rollback(ctx)
+		}
+		factErr := <-factDone
+		var pgErr *pgconn.PgError
+		if !(errors.As(plantedErr, &pgErr) && pgErr.Code == "40P01") && !(errors.As(factErr, &pgErr) && pgErr.Code == "40P01") {
+			t.Fatalf("the reverse order against the fact: planted %v, fact %v; want one of them aborted as a deadlock (40P01)", plantedErr, factErr)
+		}
+	})
+}
+
+// The database's rule takes no serializer for a write that starts nothing — a launch's next try,
+// a write of any other state, a rewrite of a claim the operator's already — so on a store whose
+// role-holder publication is off it is written while another transaction holds the serializer,
+// and the claim writes a daemon makes all day wait on no fact. Where the publication is on, as
+// production runs, the store takes the serializer before the claim's row for every write the
+// rule's condition names (putClaim, takesTheTakeRule): a write of any other state still takes
+// none, and a launch's next try and a rewrite of the operator's suspension wait for it, as a
+// launch's start does. The control is a launch's start, which waits for the serializer on both.
+func TestAClaimWriteThatStartsNothingTakesNoSerializer(t *testing.T) {
+	ctx := context.Background()
+	for _, p := range publications {
+		t.Run(p.name, func(t *testing.T) {
+			st := publishing(t, p.on)
+			openRunningTree(t, st)
+			architect := storedReleasedArchitect(t, st)
+			launching := launched(architect)
+			if err := st.PutClaim(ctx, launching); err != nil {
+				t.Fatal(err)
+			}
+			holding := func(t *testing.T, write func() error) (waited bool, err error) {
+				t.Helper()
+				held, beginErr := st.BeginTx(ctx, pgx.TxOptions{})
+				if beginErr != nil {
+					t.Fatal(beginErr)
+				}
+				defer func() { _ = held.Rollback(ctx) }()
+				if err := treelifecycle.Serialize(ctx, held); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					err = write()
+				}()
+				waited = waitedOnTheSerializer(t, st, done)
+				_ = held.Rollback(ctx)
+				<-done
+				return waited, err
+			}
+			next := launching
+			next.Generation++
+			if waited, err := holding(t, func() error { return st.PutClaim(ctx, next) }); waited != p.on || err != nil {
+				t.Fatalf("a launch's next try waited on the serializer %t, %v; want %t, then written", waited, err, p.on)
+			}
+			idle := next
+			idle.State = supervise.StateIdle
+			if waited, err := holding(t, func() error { return st.PutClaim(ctx, idle) }); waited || err != nil {
+				t.Fatalf("a write of an idle claim waited on the serializer %t, %v; want it written at once", waited, err)
+			}
+			planner := storedOperatorsPlanner(t, st)
+			planner.Session = "ses-rewritten"
+			if waited, err := holding(t, func() error { return st.PutClaim(ctx, planner) }); waited != p.on || err != nil {
+				t.Fatalf("a rewrite of the operator's suspension waited on the serializer %t, %v; want %t, then written", waited, err, p.on)
+			}
+			if waited, err := holding(t, func() error { return st.PutClaim(ctx, launched(planner)) }); !waited || err != nil {
+				t.Fatalf("control: a launch's start waited on the serializer %t, %v; want it to wait, then be written", waited, err)
+			}
+		})
 	}
 }
 
@@ -882,7 +963,9 @@ func TestATakeEndsWithATeardownThatDidNotTouchThePod(t *testing.T) {
 			if tc.other {
 				release++
 			}
-			if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.ClearIssuePodTakeTx(ctx, tx, "legion", rootIssue, release) }); err != nil {
+			if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				return st.ClearIssuePodTakeTx(ctx, tx, "legion", rootIssue, release, teardownLease(t, st))
+			}); err != nil {
 				t.Fatalf("end the take: %v", err)
 			}
 			err := st.PutClaim(ctx, takenOver(architect))
@@ -919,17 +1002,28 @@ func TestTheTakesMigrationRunsUpAndDown(t *testing.T) {
 		_, err := st.Pool().Exec(ctx, "update claims set suspended_by = 'operator' where token = $1", string(architect.Token))
 		return err
 	}
+	// schema reads each object the migration adds in pairs: the two columns (issue_releases.taken_pod
+	// and claims.resume_owed_release), the two triggers and their two functions; each answer is
+	// true only where both of its pair stand, and false only where neither does (mixed answers
+	// fail the test as a way back that left half of a pair).
 	schema := func() (recorded, column, rule, function bool) {
 		t.Helper()
+		var columns, rules, functions int
 		if err := st.Pool().QueryRow(ctx, `select
 			exists (select 1 from schema_version where version = $1),
-			exists (select 1 from information_schema.columns where table_name = 'issue_releases' and column_name = 'taken_pod'),
-			exists (select 1 from pg_trigger where tgname = 'claims_refused_past_a_release_take'),
-			exists (select 1 from pg_proc where proname = 'claims_refused_past_a_release_take')`, takenPodVersion).Scan(
-			&recorded, &column, &rule, &function); err != nil {
+			(select count(*) from information_schema.columns where (table_name, column_name) in
+				(('issue_releases', 'taken_pod'), ('claims', 'resume_owed_release'))),
+			(select count(*) from pg_trigger where tgname in ('claims_refused_past_a_release_take', 'claims_owed_resume_ends')),
+			(select count(*) from pg_proc where proname in ('claims_refused_past_a_release_take', 'claims_owed_resume_ends'))`,
+			takenPodVersion).Scan(&recorded, &columns, &rules, &functions); err != nil {
 			t.Fatal(err)
 		}
-		return recorded, column, rule, function
+		for _, n := range []int{columns, rules, functions} {
+			if n == 1 {
+				t.Fatalf("the migration's objects stand in halves: columns %d, triggers %d, functions %d of 2 each", columns, rules, functions)
+			}
+		}
+		return recorded, columns == 2, rules == 2, functions == 2
 	}
 
 	if recorded, column, rule, function := schema(); !recorded || !column || !rule || !function {
@@ -968,4 +1062,196 @@ func TestTheTakesMigrationRunsUpAndDown(t *testing.T) {
 		t.Fatalf("the last read after the roll forward = %s (cause %s), want acts", got.Act, got.Cause)
 	}
 	refusedByTheDatabase(t, st, takeOver(), takenPodSuspensionCode)
+}
+
+// Every write that records a release's take of its pod or ends it names the lease the run that
+// makes it holds the teardown's row by (RowLease). Daemons of a rolling restart meet on one row
+// where a run's lease lapsed and another run claimed the row: the run that lost its lease records
+// no take, ends none — the clear after a teardown that left the pod standing, the finish's delete
+// of the mark, the cancel — and answers ErrRowLeaseLost, so the take the run holding the row
+// recorded stands and an operator's suspension stays refused. The control is the run that holds
+// the lease, whose own clear and finish end its take.
+func TestEveryWriteOfATakeNamesTheLeaseOfTheRunThatHoldsIt(t *testing.T) {
+	ctx := context.Background()
+	// lapsed is the rig with the take recorded by the run that now holds row 10, and the lease of
+	// the run before it, which lapsed.
+	lapsed := func(t *testing.T) (*Store, supervise.Claim, RowLease) {
+		t.Helper()
+		st := migratedStore(t)
+		openRunningTree(t, st)
+		markOfKind(t, st, rootIssue, releaseKindUnowned)
+		architect := storedReleasedArchitect(t, st)
+		stale := teardownLease(t, st)
+		if _, err := st.Pool().Exec(ctx, `update outbox set lease_token = 'the-run-that-claimed-the-row' where id = 10`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1,
+			Row: 10, Takes: true, Sandbox: takenSandbox, Lease: "the-run-that-claimed-the-row"}, record.OutOfWorkflow); err != nil {
+			t.Fatalf("the holding run's last read: %v", err)
+		}
+		return st, architect, stale
+	}
+	stands := func(t *testing.T, st *Store, architect supervise.Claim, after string) {
+		t.Helper()
+		if !releaseMarked(t, st) {
+			t.Fatalf("after %s the mark is gone, want it standing with the holding run's take", after)
+		}
+		refusedAsTaken(t, st, st.PutClaim(ctx, takenOver(architect)), architect)
+	}
+
+	t.Run("a last read under a lapsed lease records no take", func(t *testing.T) {
+		st := migratedStore(t)
+		openRunningTree(t, st)
+		markOfKind(t, st, rootIssue, releaseKindUnowned)
+		architect := storedReleasedArchitect(t, st)
+		stale := teardownLease(t, st)
+		if _, err := st.Pool().Exec(ctx, `update outbox set lease_token = 'the-run-that-claimed-the-row' where id = 10`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1,
+			Row: 10, Takes: true, Sandbox: takenSandbox, Lease: stale.Token}, record.OutOfWorkflow)
+		if !errors.Is(err, ErrRowLeaseLost) {
+			t.Fatalf("the lapsed run's last read = %v, want ErrRowLeaseLost", err)
+		}
+		if err := st.PutClaim(ctx, takenOver(architect)); err != nil {
+			t.Fatalf("the take-over after the lapsed run's last read = %v, want it written: that read recorded no take", err)
+		}
+	})
+	t.Run("the lapsed run's clear ends nothing", func(t *testing.T) {
+		st, architect, stale := lapsed(t)
+		release := takenRelease(t, st)
+		err := st.Tx(ctx, func(tx pgx.Tx) error { return st.ClearIssuePodTakeTx(ctx, tx, "legion", rootIssue, release, stale) })
+		if !errors.Is(err, ErrRowLeaseLost) {
+			t.Fatalf("the lapsed run's clear = %v, want ErrRowLeaseLost", err)
+		}
+		stands(t, st, architect, "the lapsed run's clear")
+	})
+	t.Run("the lapsed run's finish deletes no mark", func(t *testing.T) {
+		st, architect, stale := lapsed(t)
+		if err := st.ClearIssueRelease(ctx, "legion", rootIssue, stale); !errors.Is(err, ErrRowLeaseLost) {
+			t.Fatalf("the lapsed run's finish = %v, want ErrRowLeaseLost", err)
+		}
+		stands(t, st, architect, "the lapsed run's finish")
+	})
+	t.Run("the lapsed run's cancel deletes no mark", func(t *testing.T) {
+		st, architect, stale := lapsed(t)
+		_, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}, stale)
+		if !errors.Is(err, ErrRowLeaseLost) {
+			t.Fatalf("the lapsed run's cancel = %v, want ErrRowLeaseLost", err)
+		}
+		stands(t, st, architect, "the lapsed run's cancel")
+	})
+	t.Run("control: the run that holds the lease ends its own take", func(t *testing.T) {
+		st, architect, _ := lapsed(t)
+		holder := RowLease{Row: 10, Token: "the-run-that-claimed-the-row"}
+		release := takenRelease(t, st)
+		if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.ClearIssuePodTakeTx(ctx, tx, "legion", rootIssue, release, holder) }); err != nil {
+			t.Fatalf("the holding run's clear = %v, want it to end the take", err)
+		}
+		if err := st.PutClaim(ctx, takenOver(architect)); err != nil {
+			t.Fatalf("the take-over after the holding run's clear = %v, want it written", err)
+		}
+		if err := st.ClearIssueRelease(ctx, "legion", rootIssue, holder); err != nil || releaseMarked(t, st) {
+			t.Fatalf("the holding run's finish = %v, marked %t; want the mark gone", err, releaseMarked(t, st))
+		}
+	})
+}
+
+// A take is of one project's issue pod: a mark of another project's issue of the same key that
+// carries a take refuses no write of this project's claim, the operator's suspension and the
+// launch's start among them, and the launch check passes it.
+func TestATakeOfAnotherProjectsIssueOfTheSameKeyRefusesNothing(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	architect := storedReleasedArchitect(t, st)
+	if _, err := st.Pool().Exec(ctx, `insert into issue_releases
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, kind, suspended, marked_at, taken_pod)
+		values ('another-project', $1, 1, 10, 10, 10, 0, '', $2, '{}', now(), $3)`, rootIssue, releaseKindUnowned, takenSandbox); err != nil {
+		t.Fatalf("mark another project's release of %s with a take: %v", rootIssue, err)
+	}
+	if err := st.CheckLaunch(ctx, launched(architect)); err != nil {
+		t.Fatalf("the launch check beside another project's take = %v, want it passed", err)
+	}
+	if err := st.PutClaim(ctx, takenOver(architect)); err != nil {
+		t.Fatalf("the operator's take-over beside another project's take = %v, want it written", err)
+	}
+	if err := st.PutClaim(ctx, launched(architect)); err != nil {
+		t.Fatalf("the launch beside another project's take = %v, want it written", err)
+	}
+	if state, by := storedSource(t, st, architect); state != "launching" {
+		t.Fatalf("the stored architect is %s by %s, want launching", state, by)
+	}
+}
+
+// The operator's resume of a claim a release's take refused is owed while the take stands
+// (OweResume), naming the release and the Sandbox, and is read as owed only once the take has
+// ended (OwedResumes). A second owe changes nothing; the operator's later word ends it
+// (ForgetResume), and so does the write that changes the claim's state or its suspension's source
+// (the trigger claims_owed_resume_ends), the owed launch's own write among them. The control is an
+// owe with no take standing, which records nothing and leaves the caller to launch.
+func TestAnOwedResumeIsReadOnceTheTakeEndsAndEndsWithTheClaimsNextWrite(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	markOfKind(t, st, rootIssue, releaseKindUnowned)
+	architect := storedReleasedArchitect(t, st)
+	owed := func() int64 {
+		t.Helper()
+		var release *int64
+		if err := st.Pool().QueryRow(ctx, `select resume_owed_release from claims where token = $1`, string(architect.Token)).Scan(&release); err != nil {
+			t.Fatal(err)
+		}
+		if release == nil {
+			return 0
+		}
+		return *release
+	}
+	if release, _, err := st.OweResume(ctx, architect); err != nil || release != 0 || owed() != 0 {
+		t.Fatalf("control: the owe with no take = release %d, %v, stored %d; want nothing owed", release, err, owed())
+	}
+	if got := teardownRead(t, st, true); got.Act != ReleaseActs {
+		t.Fatalf("the last read = %s (cause %s), want acts", got.Act, got.Cause)
+	}
+	taken := takenRelease(t, st)
+	for range 2 {
+		if release, sandbox, err := st.OweResume(ctx, architect); err != nil || release != taken || sandbox != takenSandbox || owed() != taken {
+			t.Fatalf("the owe past the take = release %d, Sandbox %q, %v, stored %d; want release %d and %s", release, sandbox, err, owed(), taken, takenSandbox)
+		}
+	}
+	if tokens, err := st.OwedResumes(ctx, "legion", rootIssue); err != nil || len(tokens) != 0 {
+		t.Fatalf("the owed resumes while the take stands = %v, %v; want none", tokens, err)
+	}
+	if forgot, err := st.ForgetResume(ctx, architect.Token); err != nil || !forgot || owed() != 0 {
+		t.Fatalf("the forget = %t, %v, stored %d; want it forgotten", forgot, err, owed())
+	}
+	if forgot, err := st.ForgetResume(ctx, architect.Token); err != nil || forgot {
+		t.Fatalf("a second forget = %t, %v; want nothing forgotten", forgot, err)
+	}
+	if _, _, err := st.OweResume(ctx, architect); err != nil {
+		t.Fatal(err)
+	}
+	daemons := architect
+	daemons.SuspendedBy = supervise.SuspendedByDaemon
+	if err := st.PutClaim(ctx, daemons); err != nil || owed() != 0 {
+		t.Fatalf("the daemon's suspension = %v, stored owe %d; want it written and the owe ended", err, owed())
+	}
+	if err := st.PutClaim(ctx, architect); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.OweResume(ctx, architect); err != nil || owed() != taken {
+		t.Fatalf("the owe again = %v, stored %d", err, owed())
+	}
+	if err := st.ClearIssueRelease(ctx, "legion", rootIssue, teardownLease(t, st)); err != nil {
+		t.Fatalf("finish the release: %v", err)
+	}
+	if tokens, err := st.OwedResumes(ctx, "legion", rootIssue); err != nil || len(tokens) != 1 || tokens[0] != architect.Token {
+		t.Fatalf("the owed resumes once the release ended = %v, %v; want the architect", tokens, err)
+	}
+	if err := st.PutClaim(ctx, launched(architect)); err != nil || owed() != 0 {
+		t.Fatalf("the owed launch's write = %v, stored owe %d; want it written and the owe ended", err, owed())
+	}
+	if tokens, err := st.OwedResumes(ctx, "legion", rootIssue); err != nil || len(tokens) != 0 {
+		t.Fatalf("the owed resumes once the launch was written = %v, %v; want none", tokens, err)
+	}
 }

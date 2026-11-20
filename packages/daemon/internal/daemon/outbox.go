@@ -183,11 +183,11 @@ type outbox struct {
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions, the bundle it saves and the end of its
-// teardown's take of a pod it did not touch, a stop's wait for a stored claim's machine, a
-// workflow tree close's cleanup, a delivery wake and the open resume that refuses one, a project
-// pause's stop of a role and which pause stopped a role, and the end of a pause's hold of a pod a
-// deletion took.
+// suspension, an idle release's own two decisions, the bundle it saves, the end of its
+// teardown's take of a pod it did not touch and the resumes the take made owed, a stop's wait for
+// a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume
+// that refuses one, a project pause's stop of a role and which pause stopped a role, and the end
+// of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -195,9 +195,10 @@ type outboxTrees interface {
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
-		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
-	ClearIssueRelease(ctx context.Context, project, issue string) error
-	ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64) error
+		paused store.ReleaseCancelPause, lease store.RowLease) (store.ReleaseCancelled, error)
+	ClearIssueRelease(ctx context.Context, project, issue string, lease store.RowLease) error
+	ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64, lease store.RowLease) error
+	OwedResumes(ctx context.Context, project, issue string) ([]claim.Token, error)
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
@@ -738,7 +739,8 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 // text is logged where the failed attempt is settled (settle), not here: a deferral behind
 // another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
 // the error its cause wraps is the limited row's own, which that row's settle logged. A cause
-// that carries a write of row's own failed run (retryWrite) is written in the same transaction.
+// that carries a write of row's own failed run (retryWrite) is written in the same transaction,
+// and its after runs once that transaction commits.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	var also *retryWrite
 	if !errors.As(cause, &also) || also.row != row.ID {
@@ -754,17 +756,24 @@ func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
 	}
+	if also != nil && also.after != nil {
+		also.after(ctx)
+	}
 	return nil
 }
 
 // retryWrite is the failure of a row's run that carries a write of its own, which the
 // transaction that returns the row to the outbox makes with the row's retry (retryAt): what the
 // failed run must undo is undone exactly when the row is due again, and never apart from it. row
-// is the row whose run failed, so a deferral of another row behind it makes none.
+// is the row whose run failed, so a deferral of another row behind it makes none. The write
+// names the run's lease where it must (store.RowLease), so a run whose lease lapsed fails the
+// whole transaction and records nothing. after, where set, runs once that transaction has
+// committed: what the write made possible, which needs the write to have landed first.
 type retryWrite struct {
 	error
 	row   int64
 	write func(context.Context, pgx.Tx) error
+	after func(context.Context)
 }
 
 func (f *retryWrite) Unwrap() error { return f.error }
@@ -2772,7 +2781,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		case store.ReleaseCancel:
 			hold, why := releaseHold(decision.Cause)
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why, rowLease(row))
 		}
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
@@ -3148,30 +3157,30 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		// is cancelled before its save, whatever reached its roles first (decision 12 and
 		// departure 4 of dispatch://INFRA-3759).
 		hold, why := releaseHold(decision.Cause)
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why, rowLease(row))
 	}
 	bundler, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
 	if !ok {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace", rowLease(row))
 	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
 	if err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error(), rowLease(row))
 	}
 	switch size := bundle.Size(); {
 	case size > runtime.MaxWorkspaceBundleBytes:
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge,
-			fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes))
+			fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes), rowLease(row))
 	case size == 0:
 		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error(), rowLease(row))
 		}
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error(), rowLease(row))
 	}
 	return nil
 }
@@ -3211,6 +3220,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // that read and before the runtime touched the pod (runtime.PodUntouchedError) ends the take in
 // the transaction that records the row's failure (retryWrite): the pod stands as it stood and no
 // teardown holds it, so those writes land again, and the row's next run reads every claim again.
+// Every write of the take — its record at the last read, its end at such a failure, the finish
+// and the cancel that delete the mark — names the lease this run holds the row by
+// (store.RowLease): two runs of one row meet where a run's lease lapsed and another daemon of a
+// rolling restart claimed the row, and the run that lost its lease changes no take.
+//
+// The operator's resume of a claim of the issue that the take refused is owed to it
+// (supervise.ResumeOwedError), and the release's end starts it (resumeOwed): this row's finish,
+// its cancel, a teardown that fails before it touched the pod (once the transaction that ends the
+// take commits), and the start of every run of the row, which resumes whatever an earlier run
+// could not.
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
@@ -3224,8 +3243,12 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// A runtime with no shared issue resources has no pod to release.
 		return nil
 	}
+	lease := rowLease(row)
+	if err := r.resumeOwed(ctx, row.Issue); err != nil {
+		return err
+	}
 	releasing := store.IssueReleased{Issue: row.Issue, Tree: payload.Tree, IssueGeneration: payload.Generation,
-		TreeGeneration: payload.TreeGeneration, Row: row.ID}
+		TreeGeneration: payload.TreeGeneration, Row: row.ID, Lease: row.LeaseToken}
 	first, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 	if err != nil {
 		return err
@@ -3237,16 +3260,19 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return nil
 	case store.ReleaseCancel:
 		hold, why := releaseHold(first.Cause)
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+		if err := r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why, lease); err != nil {
+			return err
+		}
+		return r.resumeOwed(ctx, row.Issue)
 	}
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
 	// standing, which is the same release. The runtime reads the store no more after it, so that
 	// read records the take, naming the Sandbox, and an operator's suspension or a launch of a
-	// claim of the issue is refused from then until the release ends (store.Store.PutClaim's
-	// guard): a suspension that late would land on a claim whose pod is going, and a launch would
-	// stand live in it.
+	// claim of the issue is refused from then until the release ends (the database's refusal,
+	// claims_refused_past_a_release_take, and store.Store.CheckLaunch): a suspension that late
+	// would land on a claim whose pod is going, and a launch would stand live in it.
 	decision := first
 	taking := releasing
 	taking.Takes, taking.Sandbox = true, r.issueSandboxName(row.Issue)
@@ -3280,8 +3306,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		if errors.As(err, &untouched) && decision.Act == store.ReleaseActs {
 			release := decision.Release
 			return &retryWrite{error: err, row: row.ID, write: func(ctx context.Context, tx pgx.Tx) error {
-				return r.trees.ClearIssuePodTakeTx(ctx, tx, r.project, row.Issue, release)
-			}}
+				return r.trees.ClearIssuePodTakeTx(ctx, tx, r.project, row.Issue, release, lease)
+			}, after: func(ctx context.Context) { r.postOwedResumes(ctx, row.Issue) }}
 		}
 		return err
 	}
@@ -3292,7 +3318,10 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return nil
 	case store.ReleaseCancel:
 		hold, why := releaseHold(decision.Cause)
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+		if err := r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why, lease); err != nil {
+			return err
+		}
+		return r.resumeOwed(ctx, row.Issue)
 	}
 	// The pod is gone: the hold a project's pause had on it holds nothing now (decision 13 of
 	// dispatch://INFRA-3759).
@@ -3311,7 +3340,10 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
 		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
-		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+		if err := r.trees.ClearIssueRelease(ctx, r.project, row.Issue, lease); err != nil {
+			return err
+		}
+		return r.resumeOwed(ctx, row.Issue)
 	}
 	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",
 		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "bundle", savedBytes)
@@ -3326,7 +3358,72 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if err := r.armBackstops(ctx, issue); err != nil {
 		return err
 	}
-	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+	if err := r.trees.ClearIssueRelease(ctx, r.project, row.Issue, lease); err != nil {
+		return err
+	}
+	return r.resumeOwed(ctx, row.Issue)
+}
+
+// resumeOwed resumes each claim of issue whose operator's resume a release's take refused and made
+// owed (supervise.ResumeOwedError, store.Store.OweResume), once no release has taken the issue's
+// pod (store.Store.OwedResumes): the release that refused each launch has ended. Each runs as the
+// operator's own resume (supervise.RequestResume with Owe), so one that a later release's take
+// refuses again is owed again, to that release. A resume the machine refuses outright
+// (supervise.RefusedError) — a claim whose recorded session another claim holds, for one — and a
+// claim this daemon does not supervise owe nothing any more: the owed resume is ended
+// (Store.ForgetResume), as the operator's resume would have been refused, and the line says why.
+// Any other failure goes back to the row, whose next run resumes what is still owed.
+func (r *outbox) resumeOwed(ctx context.Context, issue string) error {
+	owed, err := r.trees.OwedResumes(ctx, r.project, issue)
+	if err != nil {
+		return err
+	}
+	var failed []error
+	for _, token := range owed {
+		machine, ok := r.supervisor.Machine(token)
+		if !ok {
+			r.log.Warn("outbox: a resume owed to a claim this daemon does not supervise is ended", "issue", issue, "claim", token)
+			failed = append(failed, r.forgetOwedResume(ctx, token))
+			continue
+		}
+		err := machine.Handle(ctx, supervise.RequestResume{Claim: token, Owe: true})
+		var again *supervise.ResumeOwedError
+		var refused *supervise.RefusedError
+		switch {
+		case err == nil:
+			r.log.Info("outbox: resumed a claim whose operator's resume waited for the release of its issue's pod", "issue", issue, "claim", token)
+		case errors.As(err, &again):
+			r.log.Info("outbox: the resume owed to a claim waits for another release of its issue's pod", "issue", issue, "claim", token, "release", again.Release)
+		case errors.As(err, &refused):
+			r.log.Warn("outbox: the resume owed to a claim was refused, so it is ended", "issue", issue, "claim", token, "error", err)
+			failed = append(failed, r.forgetOwedResume(ctx, token))
+		default:
+			failed = append(failed, fmt.Errorf("resume claim %s, owed since a release took its issue's pod: %w", token, err))
+		}
+	}
+	return errors.Join(failed...)
+}
+
+// postOwedResumes posts the resume of each claim of issue owed one (resumeOwed) to its machine,
+// once the transaction that ended the take of the issue's pod has committed and the pod stands,
+// so the claim resumes in that pod; the row's next run, which begins with resumeOwed, resumes
+// whatever this could not read or post.
+func (r *outbox) postOwedResumes(ctx context.Context, issue string) {
+	owed, err := r.trees.OwedResumes(ctx, r.project, issue)
+	if err != nil {
+		r.log.Warn("outbox: could not read the resumes owed to the claims of an issue whose teardown left the pod standing; the row's next run resumes them",
+			"issue", issue, "error", err)
+		return
+	}
+	for _, token := range owed {
+		r.supervisor.post(token, supervise.RequestResume{Claim: token, Owe: true})
+	}
+}
+
+// forgetOwedResume ends the resume owed to token (Store.ForgetResume).
+func (r *outbox) forgetOwedResume(ctx context.Context, token claim.Token) error {
+	_, err := r.supervisor.deps.Store.ForgetResume(ctx, token)
+	return err
 }
 
 // issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is
@@ -3368,10 +3465,11 @@ func (r *outbox) issueSandboxName(issue string) string {
 // had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
 // idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenPhaseRole).
-func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
+// (workflow.OpenPhaseRole). lease is the lease of the row whose run cancels, which a mark that
+// carries a take needs (store.RowLease): a run whose lease lapsed cancels nothing.
+func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string, lease store.RowLease) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole}, lease)
 	if err != nil {
 		return err
 	}
@@ -3392,6 +3490,12 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
+}
+
+// rowLease is the lease row's run holds it by, which every write of a release's take names
+// (store.RowLease).
+func rowLease(row record.OutboxRow) store.RowLease {
+	return store.RowLease{Row: row.ID, Token: row.LeaseToken}
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

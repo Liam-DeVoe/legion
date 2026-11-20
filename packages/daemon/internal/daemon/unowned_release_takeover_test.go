@@ -340,20 +340,46 @@ func TestAnOperatorsSuspensionAfterTheTeardownsLastReadIsRefused(t *testing.T) {
 
 // A start of a claim of the issue after the teardown's last read would stand live in the pod that
 // is going, and an operator's suspension of it would then answer success while the pod is deleted.
-// So the launch waits for the release instead, by name (supervise.PodTakenLaunchError, the store's
-// launch check), with nothing of the claim changed and nothing started, and the operator's
-// suspension that follows meets the release's refusal, as it does for a claim no start touched.
-// Both a resume an operator asks for and the resume a wake's rule makes wait. Once the release has
-// ended, the same resume launches the claim, in the issue's next pod.
+// So the launch changes nothing of the claim and starts nothing, and the operator's suspension
+// that follows meets the release's refusal, as it does for a claim no start touched. The
+// operator's own resume (supervise.RequestResume with Owe, as the route posts it) is owed
+// (supervise.ResumeOwedError, naming the release and the Sandbox), and the release's end resumes
+// the claim, in the issue's next pod, with no second request. A wake's rule resume waits by name
+// (supervise.PodTakenLaunchError) for its row to try again, which here the test does by hand once
+// the release has ended, and which then launches at once. The controls are an operator's
+// suspension and a stop after the owed resume: each ends it, and nothing starts the claim once the
+// release ends.
 func TestALaunchAfterTheTeardownsLastReadWaitsForTheRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		resume func(claim.Token) supervise.Event
+		owed   bool
+		// after is what the operator asks next, in the same window, or nil for nothing.
+		after func(*testing.T, *idleRig, *supervise.Machine, int64)
+		// startsOnItsOwn is the starts the release's end makes with no second request.
+		startsOnItsOwn int
 	}{
-		{"the operator's resume", func(token claim.Token) supervise.Event { return supervise.RequestResume{Claim: token} }},
-		{"a wake's rule resume", func(token claim.Token) supervise.Event {
+		{name: "the operator's resume is owed and runs once the release ends", owed: true, startsOnItsOwn: 1,
+			resume: func(token claim.Token) supervise.Event { return supervise.RequestResume{Claim: token, Owe: true} }},
+		{name: "a wake's rule resume waits for its row to ask again", resume: func(token claim.Token) supervise.Event {
 			return supervise.RequestRuleResume{Claim: token, Reason: "a notice for the role"}
 		}},
+		{name: "control: an operator's suspension after the owed resume ends it", owed: true,
+			resume: func(token claim.Token) supervise.Event { return supervise.RequestResume{Claim: token, Owe: true} },
+			after: func(t *testing.T, rig *idleRig, architect *supervise.Machine, release int64) {
+				suspended := suspendAsOperator(architect)
+				refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+				if !strings.Contains(suspended.Error(), "the resume owed to the claim is dropped") {
+					t.Fatalf("the refused suspension = %v, want it to say the owed resume is dropped", suspended)
+				}
+			}},
+		{name: "control: a stop after the owed resume ends it", owed: true,
+			resume: func(token claim.Token) supervise.Event { return supervise.RequestResume{Claim: token, Owe: true} },
+			after: func(t *testing.T, rig *idleRig, architect *supervise.Machine, _ int64) {
+				if err := architect.Handle(context.Background(), supervise.RequestStop{Claim: architect.Claim().Token}); err != nil {
+					t.Fatalf("the stop while the resume is owed = %v, want it taken", err)
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig, architect := stoppedPodForTakeover(t)
@@ -361,14 +387,20 @@ func TestALaunchAfterTheTeardownsLastReadWaitsForTheRelease(t *testing.T) {
 			release := rig.releaseID(t)
 			token := architect.Claim().Token
 			hooked, startsInWindow, startsBefore := false, 0, len(rig.rt.CallsOf("Resume"))+len(rig.rt.CallsOf("Spawn"))
-			var resumed, suspended error
+			var resumed error
 			var storedState, storedBy string
 			rig.rt.afterAuthorize = func() {
 				hooked = true
 				resumed = architect.Handle(context.Background(), tc.resume(token))
 				startsInWindow = len(rig.rt.CallsOf("Resume")) + len(rig.rt.CallsOf("Spawn")) - startsBefore
 				storedState, storedBy = rig.storedSuspension(t, architect)
-				suspended = suspendAsOperator(architect)
+				if tc.after != nil {
+					tc.after(t, rig, architect, release)
+				} else if tc.owed {
+					return
+				} else {
+					refusedWhileTheReleaseTakesThePod(t, suspendAsOperator(architect), rig, release)
+				}
 			}
 
 			rig.drain(t)
@@ -376,25 +408,44 @@ func TestALaunchAfterTheTeardownsLastReadWaitsForTheRelease(t *testing.T) {
 			if !hooked {
 				t.Fatal("the runtime's last read never answered that the pod goes, so the window was not reached")
 			}
-			var waits *supervise.PodTakenLaunchError
-			if !errors.As(resumed, &waits) || !errors.Is(resumed, wait.ErrWaiting) || waits.Release != release ||
-				waits.Sandbox != rig.rt.sandboxName {
-				t.Fatalf("the resume after the last read = %v, want the launch's wait naming release %d and the Sandbox %s",
-					resumed, release, rig.rt.sandboxName)
+			if tc.owed {
+				var owed *supervise.ResumeOwedError
+				if !errors.As(resumed, &owed) || owed.Release != release || owed.Sandbox != rig.rt.sandboxName {
+					t.Fatalf("the operator's resume after the last read = %v, want it owed, naming release %d and the Sandbox %s",
+						resumed, release, rig.rt.sandboxName)
+				}
+			} else {
+				var waits *supervise.PodTakenLaunchError
+				if !errors.As(resumed, &waits) || !errors.Is(resumed, wait.ErrWaiting) || waits.Release != release ||
+					waits.Sandbox != rig.rt.sandboxName {
+					t.Fatalf("the rule's resume after the last read = %v, want the launch's wait naming release %d and the Sandbox %s",
+						resumed, release, rig.rt.sandboxName)
+				}
 			}
 			if startsInWindow != 0 || storedState != "suspended" || storedBy != "released" {
 				t.Fatalf("in the window the runtime was asked %d starts and the stored architect is %s by %s; want none, and it released",
 					startsInWindow, storedState, storedBy)
 			}
-			refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
-			if state, by := rig.storedSuspension(t, architect); state != "suspended" || by != "released" || !architect.Claim().Released() {
-				t.Fatalf("the stored architect is %s by %s (in memory %s by %s), want it left released",
-					state, by, architect.Claim().State, architect.Claim().SuspendedBy)
-			}
 			if _, teardowns := rig.rt.reads(); teardowns != 1 || rig.marked(t) {
 				t.Fatalf("Sandbox teardowns = %d, marked %t; want the one the last read answered, and the release over", teardowns, rig.marked(t))
 			}
-
+			starts := len(rig.rt.CallsOf("Resume")) + len(rig.rt.CallsOf("Spawn")) - startsBefore
+			if starts != tc.startsOnItsOwn {
+				t.Fatalf("once the release ended, with no second request, the runtime was asked %d starts and the architect is %s by %s; want %d",
+					starts, architect.Claim().State, architect.Claim().SuspendedBy, tc.startsOnItsOwn)
+			}
+			if owedLeft := rig.owedResumes(t); owedLeft != 0 {
+				t.Fatalf("%d claims are still owed a resume once the release ended, want none", owedLeft)
+			}
+			if tc.owed && tc.startsOnItsOwn == 1 {
+				if architect.Claim().Released() {
+					t.Fatalf("the architect is %s by %s once its owed resume ran, want it launched", architect.Claim().State, architect.Claim().SuspendedBy)
+				}
+				return
+			}
+			if tc.after != nil {
+				return
+			}
 			if err := architect.Handle(context.Background(), tc.resume(token)); err != nil {
 				t.Fatalf("the resume once the release ended = %v, want it to launch", err)
 			}
@@ -404,6 +455,17 @@ func TestALaunchAfterTheTeardownsLastReadWaitsForTheRelease(t *testing.T) {
 			}
 		})
 	}
+}
+
+// owedResumes is how many claims of the rig's issue the store holds owed a resume.
+func (r *idleRig) owedResumes(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(), `select count(*) from claims where issue = $1 and resume_owed_release is not null`,
+		r.issue.Key).Scan(&n); err != nil {
+		t.Fatalf("count the owed resumes: %v", err)
+	}
+	return n
 }
 
 // takenPod is the Sandbox the rig's release mark records its teardown took, or "" for none.

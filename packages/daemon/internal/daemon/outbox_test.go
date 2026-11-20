@@ -2833,6 +2833,12 @@ func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (s
 
 func (s *outboxClaimStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+func (s *outboxClaimStore) OweResume(context.Context, supervise.Claim) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (s *outboxClaimStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+
 func (s *outboxClaimStore) PutDelivery(_ context.Context, token claim.Token, delivery supervise.Delivery) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

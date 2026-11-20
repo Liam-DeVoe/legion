@@ -292,9 +292,11 @@ func (e *PodTakenError) Error() string {
 // gives it first (Store.CheckLaunch), and the claim write gives it to a launch that came after
 // that check. A claim launched now would be live while that pod is deleted, and an operator's
 // suspension of it would hold nothing. It is a wait (errors.Is(err, wait.ErrWaiting)), the named
-// wait of a reserved cleanup's kind: the launch changes nothing and charges nothing, and the
-// caller's retry starts it once the release ends, in a new pod. No write it refused is owed
-// (writeOwed).
+// wait of a reserved cleanup's kind: the launch changes nothing and charges nothing. An outbox
+// row's caller tries it again on its backoff, which starts it once the release ends, in a new
+// pod; the operator's resume is recorded as owed instead (RequestResume.Owe, ResumeOwedError),
+// and an operator's other request is refused, to be asked again once the release ends. No write
+// it refused is owed (writeOwed).
 type PodTakenLaunchError struct {
 	Issue   string
 	Release int64
@@ -302,11 +304,27 @@ type PodTakenLaunchError struct {
 }
 
 func (e *PodTakenLaunchError) Error() string {
-	return fmt.Sprintf("the launch waits for release %d of %s, which is deleting %s: a claim launched now would stand in a pod that is going; the launch runs once the release ends, in a new pod",
+	return fmt.Sprintf("the launch waits for release %d of %s, which is deleting %s: a claim launched now would stand in a pod that is going, and a launch after the release ends starts it in a new pod",
 		e.Release, e.Issue, takenPod(e.Sandbox))
 }
 
 func (e *PodTakenLaunchError) Is(target error) bool { return target == wait.ErrWaiting }
+
+// ResumeOwedError is the operator's resume of a suspended claim whose launch a release's take
+// refused (PodTakenLaunchError), recorded as owed (Store.OweResume): the daemon resumes the claim
+// once that release ends, in a new pod, with no second request. It is no failure: the operator's
+// route answers it 202 with this sentence. A second resume while it is owed changes nothing, and
+// a suspension or a stop of the claim before the release ends drops it.
+type ResumeOwedError struct {
+	Issue   string
+	Release int64
+	Sandbox string
+}
+
+func (e *ResumeOwedError) Error() string {
+	return fmt.Sprintf("the resume waits for release %d of %s, which is deleting %s: the daemon resumes the claim once the release ends, in a new pod, and a suspension or a stop of the claim before then drops the resume",
+		e.Release, e.Issue, takenPod(e.Sandbox))
+}
 
 // takenPod names the pod a release's take is of: its Sandbox, where the runtime named one.
 func takenPod(sandbox string) string {
@@ -321,9 +339,11 @@ func takenPod(sandbox string) string {
 // the claim's issue pod has passed its teardown's last read, after which the runtime deletes the
 // pod and reads nothing more; the refusal is the operator's answer (a RefusedError, 409 on the
 // route), naming the release and the pod, with the claim put back exactly as it was. So no
-// operator's suspension lands on a claim whose pod is going. Any other failure of the write puts
-// the claim back too and owes nothing (putClaim, not persist), since an owed take-over would be
-// made later by the repair, when the pod it was for may be gone; the operator asks again.
+// operator's suspension lands on a claim whose pod is going. The refused suspension is still the
+// operator's later word, so a resume owed to the claim (ResumeOwedError) is dropped with it
+// (Store.ForgetResume), and the answer says so. Any other failure of the write puts the claim back
+// too and owes nothing (putClaim, not persist), since an owed take-over would be made later by the
+// repair, when the pod it was for may be gone; the operator asks again.
 func (m *Machine) takeOverForOperator(ctx context.Context) error {
 	held := m.claim.SuspendedBy
 	m.claim.SuspendedBy = SuspendedByOperator
@@ -331,12 +351,19 @@ func (m *Machine) takeOverForOperator(ctx context.Context) error {
 		m.claim.SuspendedBy = held
 		m.publish()
 		var podTaken *PodTakenError
-		if errors.As(err, &podTaken) {
-			m.log.Info("supervise: the operator's take-over of the suspended claim was refused: its issue's pod is being deleted by a release",
-				"issue", podTaken.Issue, "release", podTaken.Release, "sandbox", podTaken.Sandbox)
-			return &RefusedError{State: m.claim.State, Request: "suspend", Err: podTaken}
+		if !errors.As(err, &podTaken) {
+			return err
 		}
-		return err
+		m.log.Info("supervise: the operator's take-over of the suspended claim was refused: its issue's pod is being deleted by a release",
+			"issue", podTaken.Issue, "release", podTaken.Release, "sandbox", podTaken.Sandbox)
+		refusal := error(podTaken)
+		switch forgot, forgetErr := m.deps.Store.ForgetResume(ctx, m.claim.Token); {
+		case forgetErr != nil:
+			refusal = fmt.Errorf("%w; a resume owed to the claim may still stand, since its end failed: %w", podTaken, forgetErr)
+		case forgot:
+			refusal = fmt.Errorf("%w; the resume owed to the claim is dropped", podTaken)
+		}
+		return &RefusedError{State: m.claim.State, Request: "suspend", Err: refusal}
 	}
 	return nil
 }

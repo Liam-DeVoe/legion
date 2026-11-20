@@ -788,6 +788,15 @@ type Store interface {
 	// runtime; it returns the named cleanup wait without charging a launch failure, and the named
 	// wait *PodTakenLaunchError while a release is deleting the claim's issue pod.
 	CheckLaunch(ctx context.Context, c Claim) error
+	// OweResume records the operator's resume of c, a suspended claim whose launch a release's
+	// take refused (PodTakenLaunchError), as owed while that take stands, and answers the release
+	// and the Sandbox it takes; the daemon resumes the claim once that release ends, in a new pod.
+	// It answers release 0 and records nothing once no take stands, and the caller launches then.
+	// A write that changes the claim's state or its suspension's source ends the owed resume.
+	OweResume(ctx context.Context, c Claim) (release int64, sandbox string, err error)
+	// ForgetResume ends the resume owed to the claim, where one is owed (OweResume), and answers
+	// whether one was.
+	ForgetResume(ctx context.Context, token claim.Token) (forgot bool, err error)
 	// PutClaim, like every write of a claim, refuses two writes, writing nothing, while the
 	// release of the claim's issue pod has taken that pod (past the teardown's last read): one
 	// that makes the claim the operator's suspension, unless it is already, with a *PodTakenError,

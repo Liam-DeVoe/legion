@@ -28,13 +28,53 @@ import (
 // runtime names none. A last read that answers ReleaseActs records the take on the mark
 // (issue_releases.taken_pod), which refuses an operator's suspension of a claim of the issue,
 // and the start of a claim's launch there, from then until the release ends or its teardown
-// fails before it touches the pod (takeRefusal, ClearIssuePodTakeTx).
+// fails before it touches the pod (takeRefusal, ClearIssuePodTakeTx). Lease is the lease the
+// row's run holds the row by (record.OutboxRow.LeaseToken), which a last read needs: it records
+// the take only while that lease still holds Row (RowLease), and answers ErrRowLeaseLost where it
+// does not, since another run of the row then holds it.
 type IssueReleased struct {
 	Issue, Tree                     string
 	IssueGeneration, TreeGeneration uint64
 	Row                             int64
 	Takes                           bool
 	Sandbox                         string
+	Lease                           string
+}
+
+// RowLease is the outbox row a release's act runs in and the lease its run holds the row by
+// (record.OutboxRow's ID and LeaseToken). Every write that records a release's take of its pod or
+// ends it is made only while that lease still holds the row: the last read's record of the take
+// (IssueRelease), the end of a take whose teardown did not touch the pod (ClearIssuePodTakeTx),
+// and the delete of a mark that carries a take (ClearIssueRelease, CancelIssueRelease). Two runs
+// of one row meet where a run's lease lapsed and another run claimed the row (the outbox orders
+// an issue's rows by the lease alone), and the run that lost its lease then changes no take: the
+// take the run holding the row recorded stands until that run ends it.
+type RowLease struct {
+	Row   int64
+	Token string
+}
+
+// ErrRowLeaseLost is a write of a release's take that the run could not make because its lease no
+// longer holds its outbox row (RowLease): another run of the row holds it, or the row is gone.
+var ErrRowLeaseLost = errors.New("the outbox row's lease is no longer this run's")
+
+// holdsRowLease is whether lease still holds its outbox row, inside tx, with the row locked until
+// tx ends when it does, so no other run claims the row before tx commits. A lease with no token
+// holds nothing. The transactions that call it take the shared serializer first, so the lock is
+// the second of the two, in the order every one of them takes them.
+func holdsRowLease(ctx context.Context, tx pgx.Tx, lease RowLease) (bool, error) {
+	if lease.Row <= 0 || lease.Token == "" {
+		return false, nil
+	}
+	var row int64
+	err := tx.QueryRow(ctx, `select id from outbox where id = $1 and lease_token = $2 for update`, lease.Row, lease.Token).Scan(&row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the lease of outbox row %d: %w", lease.Row, err)
+	}
+	return true, nil
 }
 
 // ReleaseAct is what one row of an idle release may do, which the store decides and the row's
@@ -512,8 +552,17 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// The runtime takes the pod on this answer when it is the last read, and reads the store
 		// no more: the take goes on the mark in this same transaction, so an operator's
 		// suspension or a launch of a claim of the issue that comes after it is refused rather
-		// than landing on a claim whose pod is going (takeRefusal).
+		// than landing on a claim whose pod is going (takeRefusal). It goes on only while this
+		// run still holds its row: a run whose lease lapsed answers ErrRowLeaseLost, so its
+		// runtime acts on nothing, and the run that holds the row now reads the claims itself.
 		if release.Takes {
+			held, err := holdsRowLease(ctx, tx, RowLease{Row: release.Row, Token: release.Lease})
+			if err != nil {
+				return err
+			}
+			if !held {
+				return fmt.Errorf("issue %s release row %d records no take: %w", release.Issue, release.Row, ErrRowLeaseLost)
+			}
 			if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = $3 where project = $1 and issue = $2`,
 				project, release.Issue, release.Sandbox); err != nil {
 				return err
@@ -601,15 +650,106 @@ func takeRefusal(err error, c supervise.Claim) error {
 // touched the pod (runtime.PodUntouchedError). The pod then stands as it stood and no teardown
 // holds it, so the writes the take refuses are taken again (takeRefusal), and the row's
 // next run reads the issue's claims again, its last read recording the take anew if the pod
-// still goes. A take of another release, or none, is left alone. It takes the shared serializer,
-// as every read and write of the take does.
-func (s *Store) ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64) error {
+// still goes. A take of another release, or none, is left alone, and so is every take where
+// lease no longer holds the row (RowLease): the run that holds it now may be deleting the pod on
+// a last read of its own, so this answers ErrRowLeaseLost, and the transaction that would record
+// the failure of the row it no longer holds records nothing. It takes the shared serializer, as
+// every read and write of the take does, and then the row's lock.
+func (s *Store) ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64, lease RowLease) error {
 	if err := treelifecycle.Serialize(ctx, tx); err != nil {
 		return err
+	}
+	held, err := holdsRowLease(ctx, tx, lease)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return fmt.Errorf("the take of %s's pod by release %d ends only under the lease of the run that holds outbox row %d: %w",
+			issue, release, lease.Row, ErrRowLeaseLost)
 	}
 	if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = null where project = $1 and issue = $2 and id = $3`,
 		project, issue, release); err != nil {
 		return fmt.Errorf("end the take of %s's pod by release %d: %w", issue, release, err)
 	}
 	return nil
+}
+
+// OweResume records the operator's resume of c, a suspended claim, as owed while a release has
+// taken the pod of c's issue (claims.resume_owed_release), and answers that release and the
+// Sandbox its teardown takes: the launch the take refused runs once the release ends, in a new
+// pod, without the operator asking again (OwedResumes). It answers release 0 and records nothing
+// where no release has taken the pod — the take ended between the launch's refusal and this call
+// — and where the store does not hold c suspended. It reads the take under the shared serializer,
+// as every end of a take does, so the two are ordered: an owe committed before the end is one the
+// end's reader of owed resumes reads, and one after it finds no take, owes nothing, and leaves the
+// caller to launch at once. A second owe of the same claim changes nothing; the write that changes
+// the claim's state or its suspension's source ends it (the trigger claims_owed_resume_ends), and
+// so does ForgetResume.
+func (s *Store) OweResume(ctx context.Context, c supervise.Claim) (release int64, sandbox string, err error) {
+	err = s.Tx(ctx, func(tx pgx.Tx) error {
+		release, sandbox = 0, ""
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		taken, takenSandbox, ok, err := readTake(ctx, tx, c.Project, c.Issue)
+		if err != nil || !ok {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `update claims set resume_owed_release = $3 where token = $1 and project = $2 and state = $4`,
+			string(c.Token), c.Project, taken, string(supervise.StateSuspended))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 1 {
+			release, sandbox = taken, takenSandbox
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, "", fmt.Errorf("owe the resume of claim %s: %w", c.Token, err)
+	}
+	return release, sandbox, nil
+}
+
+// ForgetResume ends the resume owed to the claim token (OweResume), where one is owed, and
+// answers whether one was: the operator suspended the claim after asking for it, which the take
+// refused, and the owed resume would otherwise overrule that later word once the release ends.
+func (s *Store) ForgetResume(ctx context.Context, token claim.Token) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `update claims set resume_owed_release = null where token = $1 and resume_owed_release is not null`,
+		string(token))
+	if err != nil {
+		return false, fmt.Errorf("forget the resume owed to claim %s: %w", token, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// OwedResumes is every claim of issue owed the operator's resume (OweResume), in token order, once
+// no release has taken the issue's pod: the release that refused each has ended, by its finish,
+// its cancel, or a teardown that left the pod standing (ClearIssuePodTakeTx). While a take stands
+// it answers none, since each launch would be refused again.
+func (s *Store) OwedResumes(ctx context.Context, project, issue string) ([]claim.Token, error) {
+	var owed []claim.Token
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		owed = nil
+		if _, _, taken, err := readTake(ctx, tx, project, issue); err != nil || taken {
+			return err
+		}
+		rows, err := tx.Query(ctx, `select token from claims where project = $1 and issue = $2 and resume_owed_release is not null order by token`,
+			project, issue)
+		if err != nil {
+			return err
+		}
+		tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, token := range tokens {
+			owed = append(owed, claim.Token(token))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the resumes owed to claims of %s: %w", issue, err)
+	}
+	return owed, nil
 }

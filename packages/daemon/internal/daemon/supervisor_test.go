@@ -236,6 +236,12 @@ func (s *relaunchingStore) AdmitClaim(ctx context.Context, c supervise.Claim) (s
 
 func (s *relaunchingStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+func (s *relaunchingStore) OweResume(context.Context, supervise.Claim) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (s *relaunchingStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+
 func (s *relaunchingStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {
 	return nil
 }

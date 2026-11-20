@@ -456,8 +456,15 @@ type RequestSuspend struct {
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
-// suspended it.
-type RequestResume struct{ Claim claim.Token }
+// suspended it. Owe is set by the operator's own resume (`legion claims resume`) and by the
+// daemon's resume of one it owes: a launch a release's take refuses (PodTakenLaunchError) is then
+// recorded as owed (Store.OweResume) and answered with a *ResumeOwedError, and the daemon resumes
+// the claim once that release ends. Without it the refusal goes back as the launch's wait, for a
+// caller that asks again itself (the fresh session's doors).
+type RequestResume struct {
+	Claim claim.Token
+	Owe   bool
+}
 
 // ResumePause is the daemon's word, posted to every machine of its project once a resume of the
 // project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
@@ -2576,11 +2583,41 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
+// resume is the operator's resume (RequestResume). A resume that asks to be owed (Owe) and whose
+// launch a release's take refuses, leaving the claim suspended as it was, is recorded as owed
+// (oweResume).
 func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	err := m.revive(ctx, exemptWake(ev), nil)
+	var taken *PodTakenLaunchError
+	if request, _ := ev.(RequestResume); !request.Owe || !errors.As(err, &taken) || m.claim.State != StateSuspended || m.claim.Locator != nil {
+		return err
+	}
+	return m.oweResume(ctx, ev, taken)
+}
+
+// oweResume records the operator's resume of the suspended claim, whose launch the take of its
+// issue's pod refused (taken), as owed (Store.OweResume), and answers a *ResumeOwedError that
+// names the release: the daemon resumes the claim once that release ends, in a new pod, with no
+// second request (the daemon's resume of the owed claims at the release's end). The record and
+// the refusal's take are read in one transaction under the serializer every end of a take takes,
+// so a release that ended between the launch's refusal and the record owes nothing: the take is
+// gone, and the resume launches now, once. A store that does not answer owes nothing either, and
+// the launch's wait goes back with its error.
+func (m *Machine) oweResume(ctx context.Context, ev Event, taken *PodTakenLaunchError) error {
+	release, sandbox, err := m.deps.Store.OweResume(ctx, m.claim)
+	if err != nil {
+		return errors.Join(taken, err)
+	}
+	if release == 0 {
+		m.log.Info("supervise: the release that refused the resume has ended; resuming the claim now", "release", taken.Release)
+		return m.revive(ctx, exemptWake(ev), nil)
+	}
+	m.log.Info("supervise: the resume waits for a release that is deleting the claim's issue pod; it is owed, and the claim is resumed once the release ends",
+		"release", release, "sandbox", sandbox)
+	return &ResumeOwedError{Issue: m.claim.Issue, Release: release, Sandbox: sandbox}
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not

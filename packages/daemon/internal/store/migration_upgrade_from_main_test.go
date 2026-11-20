@@ -108,8 +108,9 @@ import (
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
 // The release mark's record of the teardown's last read (20261120084333) is the newest of all: it
-// adds issue_releases.taken_pod, null on every row it finds, and the trigger on claims that reads
-// it, which refuses nothing while no mark carries a take, and touches no outbox_kind_check.
+// adds issue_releases.taken_pod and claims.resume_owed_release, null on every row it finds, the
+// trigger on claims that reads the first, which refuses nothing while no mark carries a take, and
+// the trigger that clears the second, and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

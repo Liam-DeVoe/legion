@@ -311,7 +311,11 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // (PodTakenLaunchError) parks nothing: the wake is taken off the machine with the timer its gate
 // armed, the state the gate found is put back, as dropWakeFor puts it back, and the wait goes to
 // whoever asked for the launch, whose retry raises it again once the release ends. It is met only
-// by a launch that passed the lifecycle check just before the release's teardown took the pod.
+// by a launch that passed the lifecycle check just before the release's teardown took the pod. A
+// wake timer left armed there would fire into a claim the put-back left processless, where the
+// table ignores it ("no wake is waiting"), so it would start nothing; it is disarmed all the same,
+// so the machine holds no timer for a wake it no longer holds
+// (TestALaunchTheStoreRefusesForATakenPodLeavesTheClaimAsItWas counts them).
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 	m.wake = waiting
 	if m.claim.Locator != nil {

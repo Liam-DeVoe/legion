@@ -138,6 +138,12 @@ func (s *memoryClaims) AdmitClaim(ctx context.Context, c supervise.Claim) (super
 
 func (s *memoryClaims) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+func (s *memoryClaims) OweResume(context.Context, supervise.Claim) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (s *memoryClaims) ForgetResume(context.Context, legionclaim.Token) (bool, error) { return false, nil }
+
 func (s *memoryClaims) PutDelivery(context.Context, legionclaim.Token, supervise.Delivery) error {
 	return nil
 }

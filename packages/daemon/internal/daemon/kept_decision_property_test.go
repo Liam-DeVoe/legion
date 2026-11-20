@@ -410,6 +410,12 @@ func (s keptClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supe
 
 func (keptClaimStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+func (keptClaimStore) OweResume(context.Context, supervise.Claim) (int64, string, error) {
+	return 0, "", nil
+}
+
+func (keptClaimStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+
 // keptRuntime is the fake runtime with every launch of the architect refused while the run's
 // toggle is on — the pod the cluster would not open, the session it could not resume — so a start
 // spends the claim's launch budget (supervise.Limits.LaunchFailures) and leaves the claim failed.

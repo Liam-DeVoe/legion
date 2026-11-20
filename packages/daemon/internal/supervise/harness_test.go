@@ -321,6 +321,12 @@ func (s *memStore) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
 
 func (s *memStore) CheckLaunch(context.Context, Claim) error { return nil }
 
+// OweResume and ForgetResume are the store's record of an operator's resume a release's take made
+// wait; the memory store holds no take, so it owes nothing.
+func (s *memStore) OweResume(context.Context, Claim) (int64, string, error) { return 0, "", nil }
+
+func (s *memStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+
 func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
