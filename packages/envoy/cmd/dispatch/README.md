@@ -3806,7 +3806,7 @@ Each item below names a rule, then what a caller meets.
 - Lists
 
   Every list answers `{items, total, limit, offset}`, with the route's own `limit` bounds (50 and 200 where it had none): a `limit` outside them is `400 INVALID_LIMIT` naming the bound, and an `offset` that is no integer of 0 or more `400 INVALID_OFFSET`.
-  The global event log (`GET /api/v2/events`) answers `total: null`, since counting it costs about ten times its page, and every other list, every other log among them, an exact `total`.
+  The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting the global log costs about ten times its page and counting the dismissed threads counts every thread the caller has ever dismissed; every other list, every other log among them, answers an exact `total`.
   A log reads `after` and `before` in its one position field (`seq` for an issue's and a document's events, `id` for the global log, `source_seq` for the references, `<time>,<id>` for the caller's dismissed threads); an `after` past the log's last position, or a value not written as that field is, is `400 POSITION_INVALID` naming the parameter and the field, and a `before` past the end answers the newest page.
 
 - Refusals
@@ -4431,6 +4431,7 @@ Each item below names a path with its method and identity, then its purpose.
   It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `missing`), a blank title and text included (`not_made`).
   The two forms do not answer alike: POST is the check an agent runs to ask a question, so it also answers `other_projects`, at most two answered question asks of other projects, and GET answers none of them, because its caller is the dashboard's new-issue dialog ([Search](#search)).
   `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for an unknown one.
+  Both forms' `/api/v2` successor is a `POST`, `POST /api/v2/projects/{key}/related-searches`, which takes the fields in its JSON body, so the `Link` a `GET` answer carries names a route that a `GET` does not reach.
 
 - `/api/v1/related-checks?project=&source_kind=&from=&to=` (GET; cookie, trusted header, or bearer)
 

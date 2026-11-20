@@ -275,7 +275,7 @@ function renderV2(routes: RouteV2[]): string {
     "",
     "## What every route keeps",
     "",
-    "- A list answers `{items, total, limit, offset}`. A `limit` outside the route's bounds is refused `400 INVALID_LIMIT`, and an `offset` that is not a whole number of 0 or more `400 INVALID_OFFSET`. The global event log (`GET /api/v2/events`) answers `total: null`, since counting it costs more than its page; every other list answers an exact `total`.",
+    "- A list answers `{items, total, limit, offset}`. A `limit` outside the route's bounds is refused `400 INVALID_LIMIT`, and an `offset` that is not a whole number of 0 or more `400 INVALID_OFFSET`. The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting either costs more than its page; every other list answers an exact `total`.",
     "- A log reads `after` and `before` in its one position field. An `after` past the log's last position, and a value not written as that field is, are refused `400 POSITION_INVALID`, naming the parameter and the field.",
     "- A refusal is `{code, error}`. Each code is one of one list the server declares, and one condition takes one code on every route.",
     "- A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`, whose body also names the `key` and every key the route `declared`. A body member the route does not declare is ignored.",

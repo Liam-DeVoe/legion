@@ -232,7 +232,9 @@ func (s *server) v2ProjectRows() []routeRow {
 				"everything a done issue owns last. include=other_projects adds other_projects beside related: at most 2 "+
 				"answered question asks of other projects, each with its ask state, its answer and the project it stands in, "+
 				"ranked by meaning alone and offered with no claim that they answer the question. 404 PROJECT_NOT_FOUND for "+
-				"a project that does not exist.", contracts.IssueTitleMax, relatedExcludeLimit),
+				"a project that does not exist. It answers for both forms of /api/v1/projects/{key}/related, so the Link of "+
+				"that route's GET names this POST: the GET's query fields go in this route's JSON body.",
+				contracts.IssueTitleMax, relatedExcludeLimit),
 			Handler:  s.postRelatedSearchV2,
 			Resource: "related-searches", Kind: kindComputation,
 			Query: relatedSearchV2Query{},
