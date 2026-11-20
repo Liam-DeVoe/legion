@@ -7,7 +7,9 @@ description: >-
   ghcr.io/cybermonklabs/legion/ci, a registry this repository publishes, so a failed pull is a fault of
   this repository and must be seen. The action reads each image from the Go string constant that
   declares it (testnats.Image and testnats.HubImage, tests3.Image), so the tests and the pull
-  never name two images.
+  never name two images. Each pull runs under .github/scripts/network-install.sh's bound for docker:
+  docker ends a wait for a registry's headers by itself, but not a wait for a body that trickles,
+  so a registry that answers and then all but stops would otherwise hold the job until its limit.
 inputs:
   consts:
     description: >-
@@ -40,5 +42,5 @@ runs:
         done <<<"$IMAGES"
         [ "${#images[@]}" -gt 0 ] || { echo "::error::no image to pull"; exit 1; }
         for image in "${images[@]}"; do
-          docker pull "$image"
+          "$GITHUB_ACTION_PATH/../../scripts/network-install.sh" docker -- docker pull "$image"
         done

@@ -58,16 +58,21 @@ runs:
         while read -r name digest; do
           file="$dir/$name"
           files+=("$file")
-          if [ -e "$file" ] && printf '%s  %s\n' "$digest" "$file" | sha256sum --check --status; then
-            echo "$name: the Actions cache's copy, which is the pinned bytes"
-            continue
+          cached="The cache held no copy of it either."
+          if [ -e "$file" ]; then
+            if printf '%s  %s\n' "$digest" "$file" | sha256sum --check --status; then
+              echo "$name: the Actions cache's copy, which is the pinned bytes"
+              continue
+            fi
+            cached="The cache's copy was no good either: its sha256 is not the pinned $digest, so it was set aside."
+            echo "$name: the Actions cache's copy is not the pinned bytes, so it is fetched again"
           fi
           rm -f -- "$file"
           status=0
           ci_tools_curl "$file" 60 "$pool/$name" || status=$?
           if [ "$status" -ne 0 ]; then
             rm -f -- "$file"
-            echo "::error::install-zsh: $pool/$name did not serve the package (curl exit $status, after the bounded retries of ci_tools_curl), so zsh is not installed. The cache held no copy of it either." >&2
+            echo "::error::install-zsh: $pool/$name did not serve the package (curl exit $status, after the bounded retries of ci_tools_curl), so zsh is not installed. $cached" >&2
             exit 1
           fi
           if ! printf '%s  %s\n' "$digest" "$file" | sha256sum --check --status; then

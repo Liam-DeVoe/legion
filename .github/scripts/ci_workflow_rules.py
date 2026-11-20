@@ -28,8 +28,11 @@ a module Python has finished loading by then.
 """
 
 import json
+import os
 import re
+import subprocess
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import cache
 
 
@@ -49,7 +52,7 @@ from ci_filter_coverage import (
     step_label,
     where_if,
 )
-from shell_commands import commands_of
+from shell_commands import STDIN_SHELLS, WRAPPERS, command_of, pipelines_of
 from workflow_paths import events
 
 
@@ -541,85 +544,102 @@ def check_one_merge_group_workflow(problems: list) -> None:
 # ------------------------------------------------- the network installs a required job runs
 # The one way a job of ci.yaml, or of a workflow it calls, may run an install that waits on the
 # network: through this script, which bounds each attempt, tries it a fixed number of times and
-# fails by name (its header says how each kind's bound was measured).
+# fails by name (its header says how each kind's bound was measured). `--bounds` prints its table.
 NETWORK_INSTALL = ".github/scripts/network-install.sh"
 ACTIONS_PREFIX = "./.github/actions/"
-# The commands a step's `run:` is looked through to find the command they start, with the
-# options of each that take a value of their own.
-WRAPPERS = {
-    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"},
-    "timeout": {"-s", "-k", "--signal", "--kill-after"},
-    "nice": {"-n"},
-    "ionice": {"-c", "-n", "-p"},
-    "nohup": set(),
-    "command": set(),
-}
+# The variables network-install.sh reads in place of its bounds for its own tests alone; this rule
+# asks it for the real ones with them unset.
+NETWORK_INSTALL_SEAMS = ("NETWORK_INSTALL_BOUND_SECONDS", "NETWORK_INSTALL_KILL_AFTER_SECONDS",
+                         "NETWORK_INSTALL_PAUSE_SECONDS")
+# GitHub's limit for a job or a step that sets no timeout-minutes.
+DEFAULT_MINUTES = 360
 # apt's own verbs that read a mirror, and the options of apt and apt-get that take a value.
 APT = {"apt", "apt-get", "aptitude"}
 APT_VERBS = {"update", "install", "reinstall", "upgrade", "dist-upgrade", "full-upgrade", "build-dep", "source",
              "download"}
 APT_VALUE_OPTIONS = {"-o", "-c", "-t", "--option", "--config-file", "--target-release"}
-# Every other installer, by its command name, with the verbs of it that install from the network:
-# the verb is the first word after the command that is no option.
+# Every other installer, by its command name: the verbs of it that install from the network, and
+# the options of it that take a value of their own and so may stand before the verb (`npm --prefix
+# dir ci`, `bun --cwd dir install`); a `+toolchain` word (`cargo +nightly install`) is an option.
+PIP_VALUE_OPTIONS = {"--proxy", "--cert", "--client-cert", "--log", "--timeout", "--retries", "--python",
+                     "--cache-dir", "--exists-action", "--trusted-host"}
 INSTALLERS = {
-    "pip": {"install", "download"}, "pip3": {"install", "download"}, "pipx": {"install"},
-    "npm": {"install", "i", "ci", "add"}, "pnpm": {"install", "i", "add"}, "yarn": {"install", "add"},
-    "bun": {"install", "i", "add"}, "gem": {"install"}, "cargo": {"install"}, "snap": {"install"},
-    "brew": {"install"},
+    "pip": ({"install", "download"}, PIP_VALUE_OPTIONS),
+    "pip3": ({"install", "download"}, PIP_VALUE_OPTIONS),
+    "pipx": ({"install"}, set()),
+    "npm": ({"install", "i", "ci", "add"}, {"--prefix", "-C", "--workspace", "-w", "--registry", "--cache",
+                                            "--userconfig", "--loglevel"}),
+    "pnpm": ({"install", "i", "add"}, {"-C", "--dir", "--filter", "-F", "--reporter", "--loglevel"}),
+    "yarn": ({"install", "add"}, {"--cwd", "--cache-folder", "--modules-folder", "--registry"}),
+    "bun": ({"install", "i", "add"}, {"--cwd", "-c", "--config", "--env-file", "-r", "--preload"}),
+    "gem": ({"install"}, {"--config-file"}),
+    "cargo": ({"install"}, {"-C", "--config", "-Z", "--color"}),
+    "snap": ({"install"}, set()),
+    "brew": ({"install"}, set()),
 }
-# A fetch piped straight into a shell.
-PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n|;&]*\|\s*(sudo\s+(-\S+\s+)*)?(ba|da|z)?sh\b")
+UV_VALUE_OPTIONS = {"--directory", "--project", "--cache-dir", "--python", "-p", "--config-file", "--color"}
+DOCKER_VALUE_OPTIONS = {"--config", "-c", "--context", "-H", "--host", "-l", "--log-level", "--tlscacert",
+                        "--tlscert", "--tlskey"}
+# The runners of a package's own command, with their options that take a value, and the packages
+# whose `install` downloads Playwright's browsers.
+PACKAGE_RUNNERS = {"bunx": {"-p", "--package"}, "npx": {"-p", "--package"}, "pnpx": set()}
+PLAYWRIGHT_PACKAGES = {"playwright", "@playwright/test", "playwright-core"}
 
 
-def _unwrapped(words: list) -> list:
-    """The words of a command with the commands that only run another one taken off the front,
-    each with its options and the value an option takes: `sudo -E apt-get update` is apt-get's,
-    and `timeout 60 apt-get update` too, since timeout(1) bounds a wait but neither tries it again
-    nor names it."""
-    words = list(words)
-    while words and words[0].rsplit("/", 1)[-1] in WRAPPERS:
-        name = words.pop(0).rsplit("/", 1)[-1]
-        while words and words[0].startswith("-"):
-            option = words.pop(0)
-            if option in WRAPPERS[name] and words:
-                words.pop(0)
-        if name == "timeout" and words:
-            words.pop(0)  # the duration
-    return words
+def _from_verb(rest: list, value_options: set) -> list:
+    """The words from the first that is no option on, each option's own value taken with it."""
+    index = 0
+    while index < len(rest):
+        if rest[index] in value_options:
+            index += 2
+        elif rest[index].startswith(("-", "+")):
+            index += 1
+        else:
+            return rest[index:]
+    return []
 
 
-def network_install(words: list) -> str:
+def _playwright_install(rest: list, value_options: set) -> bool:
+    """Whether a package runner's words (`playwright install chromium`, `-p @playwright/test
+    playwright install`) run Playwright's browser download."""
+    words = _from_verb(rest, value_options)
+    package = words[0].rsplit("@", 1)[0] if words[:1] and "@" in words[0][1:] else (words[:1] or [""])[0]
+    return package in PLAYWRIGHT_PACKAGES and _from_verb(words[1:], set())[:1] == ["install"]
+
+
+def network_install(words: list) -> tuple[str, str] | None:
     """The install a command makes from the network, as the words that say so (`apt-get update`,
-    `bun install`), or "" where it makes none or runs through NETWORK_INSTALL."""
-    words = _unwrapped(words)
-    if not words:
-        return ""
+    `bun install`) and its kind, network-install.sh's word for it (`apt`, `bun`, `docker`,
+    `playwright`; an install that script has no kind for is of a kind named after its program), or
+    None where the command makes none."""
     name = words[0].rsplit("/", 1)[-1]
-    if name == NETWORK_INSTALL.rsplit("/", 1)[-1]:
-        return ""
     rest = words[1:]
     if name in APT:
-        skip = False
-        for word in rest:
-            if skip:
-                skip = False
-            elif word in APT_VALUE_OPTIONS:
-                skip = True
-            elif not word.startswith("-"):
-                return f"{name} {word}" if word in APT_VERBS else ""
-        return ""
+        verb = (_from_verb(rest, APT_VALUE_OPTIONS) or [""])[0]
+        return (f"{name} {verb}", "apt") if verb in APT_VERBS else None
     if name == "wget":
-        return "wget"
-    if name == "uv" and rest[:2] in (["pip", "install"], ["tool", "install"]):
-        return f"uv {rest[0]} install"
+        return ("wget", "wget")
+    if name == "docker":
+        command = _from_verb(rest, DOCKER_VALUE_OPTIONS)
+        return ("docker pull", "docker") if command[:1] == ["pull"] or command[:2] == ["image", "pull"] else None
+    if name in PACKAGE_RUNNERS and _playwright_install(rest, PACKAGE_RUNNERS[name]):
+        return ("playwright install", "playwright")
+    if name == "bun" and _from_verb(rest, INSTALLERS["bun"][1])[:1] == ["x"] and \
+            _playwright_install(_from_verb(rest, INSTALLERS["bun"][1])[1:], PACKAGE_RUNNERS["bunx"]):
+        return ("playwright install", "playwright")
+    if name == "uv":
+        command = _from_verb(rest, UV_VALUE_OPTIONS)
+        return (f"uv {command[0]} install", "uv") if command[:2] in (["pip", "install"], ["tool", "install"]) else None
     if name.startswith("python") and rest[:2] == ["-m", "pip"] and "install" in rest[2:]:
-        return f"{name} -m pip install"
+        return (f"{name} -m pip install", "pip")
     if name == "go":
-        return go_fetch(rest)
+        fetch = go_fetch(rest)
+        return (fetch, "go") if fetch else None
     if name in INSTALLERS:
-        verb = next((word for word in rest if not word.startswith("-")), "")
-        return f"{name} {verb}" if verb in INSTALLERS[name] else ""
-    return ""
+        verbs, value_options = INSTALLERS[name]
+        verb = (_from_verb(rest, value_options) or [""])[0]
+        return (f"{name} {verb}", name) if verb in verbs else None
+    return None
 
 
 def go_fetch(rest: list) -> str:
@@ -638,6 +658,56 @@ def go_fetch(rest: list) -> str:
     if words[:1] in (["install"], ["run"]) and any("@" in word for word in words[1:]):
         return f"go {words[0]} <module>@<version>"
     return ""
+
+
+@cache
+def network_install_bounds() -> dict | str:
+    """network-install.sh's table, read by running it with `--bounds` and its test seams unset:
+    {kind: (bound s, attempts, s before SIGKILL, pause s)}, or why it could not be read."""
+    script = REPO / NETWORK_INSTALL
+    if not script.is_file():
+        return f"{NETWORK_INSTALL} is not in the repository"
+    env = {name: value for name, value in os.environ.items() if name not in NETWORK_INSTALL_SEAMS}
+    result = subprocess.run(["bash", str(script), "--bounds"], capture_output=True, text=True, env=env,
+                            timeout=60, check=False)
+    try:
+        if result.returncode != 0:
+            raise ValueError(f"exit {result.returncode}")
+        return {kind: tuple(int(field) for field in fields)
+                for kind, *fields in (line.split() for line in result.stdout.splitlines())
+                if len(fields) == 4}
+    except ValueError as exc:
+        return f"`{NETWORK_INSTALL} --bounds` did not print its table ({exc}): {squash(result.stderr)}"
+
+
+def worst_case(bound: int, attempts: int, kill_after: int, pause: int) -> int:
+    """The seconds a wrapped install can take before network-install.sh fails it by name: every
+    attempt cut at its bound and killed after the wait for SIGTERM, with the pauses between them."""
+    return attempts * (bound + kill_after) + (attempts - 1) * pause
+
+
+def _minutes(holder: dict) -> int | None:
+    """A job's or a step's timeout-minutes, GitHub's 360 where it sets none, or None where it is an
+    expression this rule cannot read."""
+    value = holder.get("timeout-minutes", DEFAULT_MINUTES)
+    return value if isinstance(value, (int, float)) else None
+
+
+@dataclass
+class Site:
+    """Where a command runs: the job and its workflow, the job's step it runs in, the file that
+    holds the command (the workflow, a local action's action.yml or a repository script), the
+    words that say how that file is reached from the job's step, the label of the step in that
+    file, the directory a relative path is read from, and a local action's directory, which
+    $GITHUB_ACTION_PATH names."""
+    path: str
+    job_id: str
+    step: str
+    where: str
+    via: str = ""
+    label: str = ""
+    base: str = ""
+    action: str = ""
 
 
 def _action_steps(uses: str, seen: set) -> list:
@@ -661,61 +731,224 @@ def _action_steps(uses: str, seen: set) -> list:
     return []
 
 
+def _resolved(word: str, site: Site) -> str | None:
+    """The repository-relative path a command word names, read from the site's directory: a path
+    under $GITHUB_WORKSPACE from the root, and in a local action one under $GITHUB_ACTION_PATH from
+    the action's directory. None for a word that holds any other variable or an expression, for an
+    absolute path, and for one outside the repository."""
+    base = site.base
+    for variable in ("$GITHUB_ACTION_PATH", "${GITHUB_ACTION_PATH}"):
+        if word.startswith(variable + "/") and site.action:
+            word, base = word[len(variable) + 1:], site.action
+    for variable in ("$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE}"):
+        if word.startswith(variable + "/"):
+            word, base = word[len(variable) + 1:], ""
+    if "$" in word or "EXPR" in word or word.startswith("/"):
+        return None
+    path = os.path.normpath(os.path.join(base, word))
+    return None if path.startswith("..") else path
+
+
+def _repository_script(word: str, site: Site) -> str | None:
+    """The repository-relative path of the shell script a command word runs, where it names one
+    this repository holds (a `.sh` file, or a file whose `#!` line names bash, sh, dash or zsh), read
+    from the site's directory or else from the root; a bare name with no `/` is a program on PATH
+    unless it ends in `.sh`."""
+    if "/" not in word and not word.endswith(".sh"):
+        return None
+    for candidate in (_resolved(word, site), _resolved(word, Site("", "", "", "", action=site.action))):
+        if candidate and (REPO / candidate).is_file():
+            if candidate.endswith(".sh"):
+                return candidate
+            first = read_repository_text(REPO / candidate).split("\n", 1)[0]
+            interpreter = first[2:].split() if first.startswith("#!") else []
+            if interpreter[:1] and interpreter[0].endswith("/env"):
+                interpreter = interpreter[1:]
+            if interpreter and interpreter[0].rsplit("/", 1)[-1] in STDIN_SHELLS:
+                return candidate
+    return None
+
+
+def _is_wrapper(word: str, site: Site) -> bool:
+    """Whether a command word names this repository's NETWORK_INSTALL: resolved to that path, or,
+    where a variable stands for the root (`"$root/.github/scripts/network-install.sh"`), ending
+    in it."""
+    resolved = _resolved(word, site)
+    return resolved == NETWORK_INSTALL if resolved is not None else word.endswith("/" + NETWORK_INSTALL)
+
+
+class NetworkInstalls:
+    """Rule 21's reading of one job: each install its steps run, in the steps' own `run:`, in the
+    local actions they use and in the repository scripts those run, refused unless wrapped, and
+    each wrapped install's worst case held to the limits of its step and its job."""
+
+    def __init__(self, path: str, job_id: str, job: dict, problems: list) -> None:
+        self.path, self.job_id, self.job, self.problems = path, job_id, job, problems
+        self.limit = _minutes(job)
+        self.wrapped: list = []  # each wrapped install of the steps read so far, with its worst case
+
+    def refuse(self, site: Site, message: str) -> None:
+        self.problems.append(error(site.where, f"job {self.job_id} of {self.path}{site.via} {message}"))
+
+    def read_step(self, step: dict) -> None:
+        label = step_label(step)
+        directory = step.get("working-directory") or (((self.job.get("defaults") or {}).get("run") or {})
+                                                       .get("working-directory")) or ""
+        directory = "" if "${{" in str(directory) else str(directory)
+        own = Site(self.path, self.job_id, label, self.path, label=label, base=directory)
+        located = [(own, step)]
+        uses = str(step.get("uses", ""))
+        if uses.startswith(ACTIONS_PREFIX):
+            for where, inner in _action_steps(uses, set()):
+                located.append((Site(self.path, self.job_id, label, where,
+                                     via=f", in {where}, which step \"{label}\" uses,", label=step_label(inner),
+                                     action=where.rsplit("/", 1)[0]), inner))
+        wrapped: list = []
+        for site, inner in located:
+            if isinstance(inner.get("run"), str):
+                self.read_run(site, inner["run"], wrapped, set())
+        self.hold_to_limits(step, label, wrapped)
+
+    def read_run(self, site: Site, run: str, wrapped: list, seen: set) -> None:
+        """Each pipeline of a `run:` or a script (shell_commands.pipelines_of, looked through
+        WRAPPERS): its installs refused, its wrapped installs kept in `wrapped`, and each
+        repository script it runs read the same way, once."""
+        found: list = []
+        for pipeline in pipelines_of(run, WRAPPERS):
+            for index, words in enumerate(pipeline):
+                name = words[0].rsplit("/", 1)[-1]
+                if name == NETWORK_INSTALL.rsplit("/", 1)[-1]:
+                    self.read_wrapped(site, words, wrapped)
+                    continue
+                install = network_install(words)
+                if install:
+                    found.append(install[0])
+                if name in ("curl", "wget") and any(later == [shell] for later in pipeline[index + 1:]
+                                                    for shell in STDIN_SHELLS):
+                    found.append(f"{name} piped into a shell")
+                script = _repository_script(words[0], site)
+                if script and script not in seen:
+                    seen.add(script)
+                    parent = f"step \"{site.label}\"" if site.where == site.path else site.where
+                    self.read_run(Site(site.path, site.job_id, site.step, script,
+                                       via=f"{site.via}, in {script}, which {parent} runs,".replace(",,", ","),
+                                       label=site.label, base=site.base),
+                                  read_repository_text(REPO / script), wrapped, seen)
+        for install in dict.fromkeys(found):
+            self.refuse(site, f"runs `{install}` in step \"{site.label}\": an install that waits on the network "
+                              f"with no bound of its own, so a mirror or a registry that stops answering holds the "
+                              f"job until its limit and fails it for a cause outside the change under test. Run "
+                              f"it as `{NETWORK_INSTALL} <kind> -- <command>` (from a composite action, "
+                              f"\"$GITHUB_ACTION_PATH/../../scripts/network-install.sh\"), which bounds each "
+                              f"attempt by that kind's measured bound, tries it three times and fails by name; a "
+                              f"kind it lacks is a line of its table, with a bound measured from that install's "
+                              f"own runs. A tool every run needs belongs in the runner image or in a cached, "
+                              f"pinned download instead")
+
+    def read_wrapped(self, site: Site, words: list, wrapped: list) -> None:
+        """A call of a script named network-install.sh: the repository's own, as `<kind> --
+        <command>`, with a kind its table bounds, wrapping an install of that kind."""
+        call = " ".join(words)
+        if not _is_wrapper(words[0], site):
+            self.refuse(site, f"runs `{call}` in step \"{site.label}\": a network-install.sh that is not "
+                              f"this repository's {NETWORK_INSTALL}, whose bounds are the measured ones")
+            return
+        if len(words) < 4 or words[2] != "--":
+            self.refuse(site, f"runs `{call}` in step \"{site.label}\": {NETWORK_INSTALL} takes "
+                              f"`<kind> -- <command>`, and refuses any other call when it runs")
+            return
+        kind, bounds = words[1], network_install_bounds()
+        if isinstance(bounds, str):
+            self.refuse(site, f"runs `{call}` in step \"{site.label}\", and rule 21 cannot read the bounds that "
+                              f"call waits under: {bounds}")
+            return
+        if kind not in bounds:
+            self.refuse(site, f"runs `{call}` in step \"{site.label}\": {NETWORK_INSTALL} bounds no kind "
+                              f"'{kind}' (its kinds: {', '.join(sorted(bounds))}), and refuses it when it runs. A "
+                              f"new kind is a line of its table, with a bound measured from that install's own runs")
+            return
+        for pipeline in command_of(list(words[3:]), WRAPPERS):
+            for command in pipeline:
+                install = network_install(command)
+                if install and install[1] != kind:
+                    self.refuse(site, f"runs `{install[0]}` through {NETWORK_INSTALL}'s kind '{kind}' in step "
+                                      f"\"{site.label}\": that bound was measured on {kind}'s installs, and "
+                                      f"`{install[0]}` is of kind '{install[1]}'")
+        wrapped.append((" ".join(words[3:]), kind, worst_case(*bounds[kind])))
+
+    def hold_to_limits(self, step: dict, label: str, wrapped: list) -> None:
+        """Every wrapped install of the step must be able to fail by name inside the step's own
+        limit, and, counted with those of the steps before it, inside the job's: a limit that ends
+        first ends the job in GitHub's cancellation, which names nothing."""
+        if not wrapped:
+            return
+        self.wrapped += wrapped
+
+        def why(installs: list) -> str:
+            each = "; ".join(f"`{command}` ({kind}) {seconds} s" for command, kind, seconds in installs)
+            return (f"the wrapped installs can take before the last of them fails by name, each through "
+                    f"{NETWORK_INSTALL}'s attempts, each cut at its bound and killed after the wait for SIGTERM, "
+                    f"with the pauses between them ({each}). A registry that stalls would end it in GitHub's "
+                    f"cancellation, which names nothing, before {NETWORK_INSTALL} names the install. Give it a "
+                    f"limit derived from what it runs, or fewer tries, with the reason in a comment")
+
+        took = sum(seconds for _, _, seconds in wrapped)
+        step_limit = _minutes(step) if "timeout-minutes" in step else None
+        if step_limit is not None and took > step_limit * 60:
+            self.problems.append(error(self.path, f"job {self.job_id} of {self.path}: step \"{label}\" has "
+                                                  f"timeout-minutes {step_limit}, {step_limit * 60} s, and {took} s is "
+                                                  f"what {why(wrapped)}"))
+        spent = sum(seconds for _, _, seconds in self.wrapped)
+        if self.limit is not None and spent > self.limit * 60:
+            self.problems.append(error(self.path, f"job {self.job_id} of {self.path} has timeout-minutes "
+                                                  f"{self.limit}, {self.limit * 60} s, and {spent} s is what, up "
+                                                  f"to step \"{label}\", {why(self.wrapped)}"))
+            self.limit = None  # the job is named once
+
+
 def check_network_installs(documents: dict, problems: list) -> None:
     """No job of ci.yaml, nor of a workflow it calls, nor a local composite action one of them uses,
-    runs an install that waits on the network except through NETWORK_INSTALL. Every such job is on
-    the path of ci-ok, the check main's ruleset requires, or is pr-title, the other one, so an
-    install there that waits without a bound fails a pull request for a cause outside its change:
-    on 2026-11-20 run 44665181416's daemon-go job waited in `sudo apt-get update` from 03:05:59Z
-    until the job's 70-minute limit, on a mirror that had sent an answer's headers and then all
-    but stopped, which apt's own timeout, a wait for the next byte, never ends.
+    nor a shell script of this repository one of those runs, runs an install that waits on the
+    network except through NETWORK_INSTALL, and every install it runs that way can fail by name
+    inside the limits of its step and its job. Every such job is on the path of ci-ok, the check
+    main's ruleset requires, or is pr-title, the other one, so an install there that waits without a
+    bound fails a pull request for a cause outside its change: on 2026-11-20 run 44665181416's
+    daemon-go job waited in `sudo apt-get update` from 03:05:59Z until the job's 70-minute limit, on
+    a mirror that had sent an answer's headers and then all but stopped, which apt's own timeout, a
+    wait for the next byte, never ends.
 
-    What it refuses, in each command a step's `run:` starts (shell_commands.commands_of, looked
-    through sudo, timeout, nice, ionice, nohup and command): apt, apt-get and aptitude with a verb
-    that reads a mirror; pip, pip3, pipx, `uv pip`, `uv tool` and `python -m pip` installing; npm,
-    pnpm, yarn and bun installing or adding; gem, cargo, snap and brew installing; a go command
-    that names a fetch (`go mod download`, `go get`, `go install` or `go run` of a
-    <module>@<version>); any wget; and a curl or a wget piped into a shell. timeout(1) alone is
-    refused too: it bounds the wait, but neither tries it again nor names what failed.
+    What it reads: each pipeline of each step's `run:` (shell_commands.pipelines_of, looked through
+    its WRAPPERS: sudo, timeout, nice, ionice, nohup, setsid, stdbuf, xargs and command, and the
+    `NAME=value` words, env, interpreters and `-c` strings each of them may put before the command,
+    until none is left); the steps of each local action a step uses, and of the actions those use;
+    and each shell script of this repository one of those commands runs (`bash scripts/x.sh`,
+    `./scripts/x.sh`, `. "$GITHUB_ACTION_PATH/../../scripts/x.sh"`), and the scripts those run, each
+    once. A command word that holds any other variable or an expression (`"$root/x.sh"`), and a
+    program that is no shell script (a Python, TypeScript or Go program), are out of its reach.
+
+    What it refuses: apt, apt-get and aptitude with a verb that reads a mirror; pip, pip3, pipx,
+    `uv pip`, `uv tool` and `python -m pip` installing; npm, pnpm, yarn and bun installing or
+    adding; gem, cargo, snap and brew installing; `docker pull`; Playwright's `install`, run by
+    bunx, npx, pnpx or `bun x`; a go command that names a fetch (`go mod download`, `go get`, `go
+    install` or `go run` of a <module>@<version>); any wget; and a curl or a wget piped into a shell.
+    timeout(1) alone is refused too: it bounds the wait, but neither tries it again nor names what
+    failed. A call of NETWORK_INSTALL passes when it is the repository's own script, names a kind
+    its table bounds (`--bounds`) and wraps no install of another kind, whose bound was not measured
+    on it.
 
     What it leaves alone, each for a reason: a `uses:` of an action this repository does not hold
-    (actions/setup-go, actions/cache), whose fetches are that action's own; a pull of an image
-    (`docker pull`), mise and Playwright's browser download, whose clients end a wait that gets no
-    answer (docker's 40 s for the response headers, mise's 20 s a request, Playwright's 30 s
-    socket timeout over five attempts); and curl outside a pipe into a shell, which a pinned
-    download makes through .github/scripts/ci-tools.sh's ci_tools_curl, bounded by --max-time and
-    --retry-max-time. The modules a `go build`, `go test`, `go vet` or `go run` of this
-    repository's own packages downloads by itself are no step's install: pull request #4434 moves
-    them into one fetch step per job, which this rule then reads, so whichever of that pull
-    request and this rule lands second wraps that step in NETWORK_INSTALL."""
+    (actions/setup-go, actions/cache), whose fetches are that action's own; `mise install`, whose
+    client ends a stalled wait by itself: mise 2026.8.12 bounds each request, its body included, by
+    `http_timeout`'s 30 s, and against a server that sent the answer's headers and then one byte
+    every 5 s, `mise install` of the jj install-jj installs ended by itself after four attempts, in
+    125 s; and curl outside a pipe into a shell, which a pinned download makes through
+    .github/scripts/ci-tools.sh's ci_tools_curl, bounded by --max-time and --retry-max-time. The
+    modules a `go build`, `go test`, `go vet` or `go run` of this repository's own packages
+    downloads by itself are no step's install: pull request #4434 moves them into one fetch step per
+    job, which this rule then reads, so whichever of that pull request and this rule lands second
+    wraps that step in NETWORK_INSTALL."""
     for path, document in documents.items():
         for job_id, job in ((document or {}).get("jobs") or {}).items():
-            seen: set = set()
+            reader = NetworkInstalls(path, job_id, job or {}, problems)
             for step in (job or {}).get("steps") or []:
-                located = [(path, step)]
-                uses = str(step.get("uses", ""))
-                if uses.startswith(ACTIONS_PREFIX):
-                    located += _action_steps(uses, seen)
-                for where, inner in located:
-                    run = inner.get("run")
-                    if not isinstance(run, str):
-                        continue
-                    found = [network_install(words) for words in commands_of(run)]
-                    found = [install for install in found if install]
-                    text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
-                    found += [f"{match.group(1)} piped into a shell" for match in PIPE_TO_SHELL.finditer(text)]
-                    label = step_label(inner)
-                    via = "" if where == path else f", in {where}, which step \"{step_label(step)}\" uses,"
-                    for install in dict.fromkeys(found):
-                        problems.append(error(where, f"job {job_id} of {path}{via} runs `{install}` in step "
-                                                     f"\"{label}\": an install that waits on the network with no "
-                                                     f"bound of its own, so a mirror or a registry that stops "
-                                                     f"answering holds the job until its limit and fails it for a "
-                                                     f"cause outside the change under test. Run it as "
-                                                     f"`{NETWORK_INSTALL} <kind> -- <command>` (from a composite "
-                                                     f"action, \"$GITHUB_ACTION_PATH/../../scripts/network-install.sh\"), "
-                                                     f"which bounds each attempt by that kind's measured bound, tries "
-                                                     f"it three times and fails by name; a kind it lacks is a line "
-                                                     f"of its table, with a bound measured from that install's own "
-                                                     f"runs. A tool every run needs belongs in the runner image or "
-                                                     f"in a cached, pinned download instead"))
+                reader.read_step(step)

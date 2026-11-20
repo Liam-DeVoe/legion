@@ -355,7 +355,7 @@ def install_zsh(job):
     and the helper whose bounded fetch reads a package the Actions cache lacks."""
     return reads(
         (".github/actions/install-zsh/**", at(job, "./.github/actions/install-zsh")),
-        (".github/scripts/ci-tools.sh", ".github/actions/install-zsh/action.yml:53 sources it, and :67's "
+        (".github/scripts/ci-tools.sh", ".github/actions/install-zsh/action.yml:53 sources it, and :72's "
                                         "ci_tools_curl fetches a package the cache lacks"),
     )
 
@@ -365,10 +365,13 @@ RUNNER_TMUX_STEP = "Use the runner image's tmux"
 
 
 def runner_tmux(job):
-    """The step that uses the runner image's tmux, which installs Ubuntu's tmux through
-    .github/scripts/network-install.sh where the image has none."""
-    return reads((".github/scripts/network-install.sh",
-                  f"{at(job, RUNNER_TMUX_STEP)} installs Ubuntu's tmux through it where the runner image has none"))
+    """The step that uses the runner image's tmux: the script it runs, which installs Ubuntu's tmux
+    through .github/scripts/network-install.sh where the image has none."""
+    return reads(
+        (".github/scripts/runner-tmux.sh", at(job, RUNNER_TMUX_STEP)),
+        (".github/scripts/network-install.sh",
+         f"{at(job, RUNNER_TMUX_STEP)}: runner-tmux.sh installs Ubuntu's tmux through it where the runner image has none"),
+    )
 
 
 def install_omp(job):
@@ -2487,6 +2490,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/shell_commands.py", "the shell reader rule 21 imports, linked in beside it"),
+        (f"{SCRIPTS}/network-install.sh", "rule 21 reads its bounds with `--bounds`, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2905 and :3373 import this table, to derive the plain "
@@ -2618,6 +2622,8 @@ GATES = [
         (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
                                         "reads the uv row's two sources"),
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
+        (".github/scripts/network-install.sh",
+         f"{at('daemon-go', 'Pull the NATS test container images')}: the action runs each pull through it"),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + runner_tmux("daemon-go")
@@ -3169,6 +3175,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
+        (".github/scripts/network-install.sh", f"{at('envoy-go', 'Pull test container images')}: the action runs each pull through it"),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
@@ -3321,6 +3328,8 @@ GATES = [
     ], reads=reads(
         (f"{INFRA}/**", f"{at('envoy-infra-go', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
         (".github/actions/pull-test-images/**", at("envoy-infra-go", "Pull the NATS and Postgres test container images")),
+        (".github/scripts/network-install.sh",
+         f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: the action runs each pull through it"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
@@ -3517,6 +3526,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
+        (".github/scripts/network-install.sh", f"{at('envoy-smoke', 'Pull test container images')}: the action runs each pull through it"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
@@ -3640,8 +3650,12 @@ GATES = [
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/shell_commands.py", "ci_workflow_rules.py's rule 21 finds each command a step runs with it"),
+        (".github/scripts/network-install.sh", "ci_workflow_rules.py's rule 21 runs it with `--bounds` to hold each "
+                                               "job's limits to the worst case of the installs it runs through it"),
         (".github/actions/**", "ci_workflow_rules.py's rule 21 reads every local action a job of ci.yaml or of a "
                                "workflow it calls uses, and every action those use"),
+        ("**/*.sh", "ci_workflow_rules.py's rule 21 reads each shell script of this repository a job's step, or a "
+                    "script it runs, runs, wherever it lives"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                      "its directory walk, its constraint-name reader, is_tag, platforms and its go list "

@@ -30,7 +30,13 @@ on:
 jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # The slowest green run of this job in the 20 merge-group runs network-install.sh's bounds were
+    # measured on took 217 s (job 136018339483). Its two installs through that script, Claude
+    # Code's `bun add` and the frozen install, can take 425 s each before the script fails them by
+    # name, so the limit is 217 s + 850 s, rounded up: 18 minutes. Ten minutes would end a stalled
+    # install in GitHub's cancellation, which names nothing (check-ci-filters.sh rule 21 refuses
+    # that).
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

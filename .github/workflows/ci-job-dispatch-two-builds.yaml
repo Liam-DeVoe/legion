@@ -200,9 +200,10 @@ jobs:
         # screenshot, so the font packages `--with-deps` brought are not needed either. The
         # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
         # with the apt work gone this step's removal of the runner image's chrome-stable apt
-        # source goes with it. The 4-minute budget is that step's, for the same download.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # source goes with it. The download runs under .github/scripts/network-install.sh's bound
+        # for playwright, and the 5-minute budget is that step's, for the same download.
+        timeout-minutes: 5
+        run: '"$GITHUB_WORKSPACE/.github/scripts/network-install.sh" playwright -- bunx playwright install chromium'
         working-directory: packages/dispatch
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as

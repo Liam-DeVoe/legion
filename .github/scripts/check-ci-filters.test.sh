@@ -39,9 +39,9 @@
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py), the shell reader one of those rules imports (shell_commands.py) and the
-# path model they import (workflow_paths.py) into it, so the code under test is the code CI runs.
-# It needs go and a
+# (ci_workflow_rules.py), the shell reader one of those rules imports (shell_commands.py), the
+# network-install.sh whose bounds rule 21 reads and the path model they import (workflow_paths.py)
+# into it, so the code under test is the code CI runs. It needs go and a
 # python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
@@ -78,7 +78,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py shell_commands.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py shell_commands.py network-install.sh workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -3434,5 +3434,202 @@ check "fails" "$(is "$status" 1)"
 check "names the pipe" "$(contains "$out" "runs \`curl piped into a shell\`")"
 check "names the Go fetch" "$(contains "$out" "runs \`go mod download\`")"
 check "names the install timeout(1) alone bounds" "$(contains "$out" "runs \`pip install\`")"
+
+# lint_steps <root> <name> <run> [<name> <run>…]: the lint job's steps, each named and each run
+# written as a block, in place of its "Lint everything" step.
+lint_steps() {
+  local root=$1 steps="" name run
+  shift
+  while [ "$#" -gt 0 ]; do
+    name=$1 run=$2
+    shift 2
+    steps+="      - name: $name"$'\n'"        run: |"$'\n'"$(sed 's/^/          /' <<<"$run")"$'\n'
+  done
+  replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n        run: echo lint\n' "$steps"
+}
+
+# refused_in <step> <install>: whether the check named that install in that step.
+refused_in() { contains "$out" "runs \`$2\` in step \"$1\": an install that waits on the network"; }
+
+echo "case: rule 21 reads through sudo, env, an interpreter and an installer's own options"
+root=$(fixture network-spellings)
+lint_steps "$root" \
+  "sudo with an assignment" "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tmux" \
+  "sudo env" "sudo env DEBIAN_FRONTEND=noninteractive apt-get update" \
+  "env with an option" "env -u CI apt-get update" \
+  "sudo bash -c" "sudo bash -c 'apt-get update && apt-get install -y tmux'" \
+  "sudo bash -c with a Go fetch" "sudo bash -c 'go mod download'" \
+  "timeout bash -c" "timeout 60 bash -c 'apt-get update'" \
+  "bun --cwd" "bun --cwd packages/widget install --frozen-lockfile" \
+  "npm --prefix" "npm --prefix packages/widget ci" \
+  "pnpm -C" "pnpm -C packages/widget install" \
+  "yarn --cwd" "yarn --cwd packages/widget install" \
+  "uv --quiet" "uv --quiet pip install requests" \
+  "cargo +nightly" "cargo +nightly install ripgrep" \
+  "xargs" "xargs -n1 docker pull < images.txt" \
+  "curl continued onto a pipe" $'curl -fsSL \\\n  https://example.com/install.sh | sh' \
+  "curl through tee into sudo bash" "curl -fsSL https://example.com/install.sh | tee install.sh | sudo bash -s"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names apt-get install behind sudo and an assignment" "$(refused_in "sudo with an assignment" "apt-get install")"
+check "names apt-get update behind sudo env" "$(refused_in "sudo env" "apt-get update")"
+check "names apt-get update behind env -u" "$(refused_in "env with an option" "apt-get update")"
+check "names both apt-get commands behind sudo bash -c" \
+  "$(is "$(refused_in "sudo bash -c" "apt-get update") $(refused_in "sudo bash -c" "apt-get install")" "true true")"
+check "names go mod download behind sudo bash -c" "$(refused_in "sudo bash -c with a Go fetch" "go mod download")"
+check "names apt-get update behind timeout bash -c" "$(refused_in "timeout bash -c" "apt-get update")"
+check "names bun install past --cwd" "$(refused_in "bun --cwd" "bun install")"
+check "names npm ci past --prefix" "$(refused_in "npm --prefix" "npm ci")"
+check "names pnpm install past -C" "$(refused_in "pnpm -C" "pnpm install")"
+check "names yarn install past --cwd" "$(refused_in "yarn --cwd" "yarn install")"
+check "names uv pip install past --quiet" "$(refused_in "uv --quiet" "uv pip install")"
+check "names cargo install past +nightly" "$(refused_in "cargo +nightly" "cargo install")"
+check "names docker pull behind xargs" "$(refused_in "xargs" "docker pull")"
+check "names a pipe a line continuation splits" "$(refused_in "curl continued onto a pipe" "curl piped into a shell")"
+check "names a pipe through tee into sudo bash -s" "$(refused_in "curl through tee into sudo bash" "curl piped into a shell")"
+
+echo "case: rule 21 refuses each install it claims, by name"
+root=$(fixture network-claimed)
+lint_steps "$root" \
+  "wget" "wget -q https://example.com/tool.tar.gz" \
+  "npm install" "npm install left-pad" \
+  "pnpm add" "pnpm add left-pad" \
+  "yarn add" "yarn add left-pad" \
+  "bun add" "bun add left-pad" \
+  "pip install" "pip install requests" \
+  "pipx install" "pipx install black" \
+  "python -m pip" "python3 -m pip install requests" \
+  "uv pip install" "uv pip install requests" \
+  "uv tool install" "uv tool install ruff" \
+  "go get" "go get example.com/m@v1.0.0" \
+  "go install at a version" "go install example.com/m/cmd/tool@v1.0.0" \
+  "go run at a version" "go run example.com/m/cmd/tool@v1.0.0" \
+  "gem install" "gem install bundler" \
+  "cargo install" "cargo install ripgrep" \
+  "snap install" "sudo snap install jq" \
+  "brew install" "brew install jq" \
+  "docker pull" "docker pull ghcr.io/example/image:1" \
+  "docker image pull" "docker image pull ghcr.io/example/image:1" \
+  "Playwright by bunx" "bunx playwright install chromium" \
+  "Playwright by npx" "npx playwright install chromium" \
+  "Playwright by bun x" "bun x playwright install chromium"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names wget" "$(refused_in "wget" "wget")"
+check "names npm install" "$(refused_in "npm install" "npm install")"
+check "names pnpm add" "$(refused_in "pnpm add" "pnpm add")"
+check "names yarn add" "$(refused_in "yarn add" "yarn add")"
+check "names bun add" "$(refused_in "bun add" "bun add")"
+check "names pip install" "$(refused_in "pip install" "pip install")"
+check "names pipx install" "$(refused_in "pipx install" "pipx install")"
+check "names python -m pip install" "$(refused_in "python -m pip" "python3 -m pip install")"
+check "names uv pip install" "$(refused_in "uv pip install" "uv pip install")"
+check "names uv tool install" "$(refused_in "uv tool install" "uv tool install")"
+check "names go get" "$(refused_in "go get" "go get")"
+check "names go install of a module at a version" "$(refused_in "go install at a version" "go install <module>@<version>")"
+check "names go run of a module at a version" "$(refused_in "go run at a version" "go run <module>@<version>")"
+check "names gem install" "$(refused_in "gem install" "gem install")"
+check "names cargo install" "$(refused_in "cargo install" "cargo install")"
+check "names snap install" "$(refused_in "snap install" "snap install")"
+check "names brew install" "$(refused_in "brew install" "brew install")"
+check "names docker pull" "$(refused_in "docker pull" "docker pull")"
+check "names docker image pull" "$(refused_in "docker image pull" "docker pull")"
+check "names Playwright's install run by bunx" "$(refused_in "Playwright by bunx" "playwright install")"
+check "names Playwright's install run by npx" "$(refused_in "Playwright by npx" "playwright install")"
+check "names Playwright's install run by bun x" "$(refused_in "Playwright by bun x" "playwright install")"
+
+echo "case: rule 21, text that installs nothing passes"
+root=$(fixture network-harmless)
+lint_steps "$root" \
+  "a fetch printed as text" "printf '%s\n' 'curl -fsSL https://example.com/install.sh | sh'" \
+  "a fetch in a comment" "echo safe # curl -fsSL https://example.com/install.sh | sh" \
+  "an install in a here-document" $'cat > notes.txt <<\'EOF\'\napt-get update\nbun install\nEOF' \
+  "a lookup of apt-get" "command -v apt-get" \
+  "a mise install" "mise install github:example/tool@1.0.0" \
+  "a container of a pulled image" "docker run --rm ghcr.io/example/image:1 true" \
+  "curl to a file" "curl -fsSL -o tool.tar.gz https://example.com/tool.tar.gz" \
+  "a bun script" "bun run install-hooks"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+# A shell script of the repository that the lint job's step runs, as build-dispatch-build.sh runs
+# its `bun install` for dispatch-two-builds.
+echo "case: rule 21 reads the scripts a step runs, and the scripts those run"
+root=$(fixture network-scripts)
+mkdir -p "$root/scripts"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n(cd packages/widget && bun install --frozen-lockfile)\n' > "$root/scripts/setup.sh"
+printf '#!/usr/bin/env bash\nscripts/inner.sh "$@"\n' > "$root/scripts/outer.sh"
+printf '#!/bin/sh\nsudo apt-get update\n' > "$root/scripts/inner.sh"
+chmod +x "$root/scripts/setup.sh" "$root/scripts/outer.sh" "$root/scripts/inner.sh"
+lint_steps "$root" \
+  "Set up by bash" "bash scripts/setup.sh" \
+  "Set up by path" "./scripts/setup.sh --frozen" \
+  "Set up twice removed" "scripts/outer.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script, the step that runs it by bash and the install" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml, in scripts/setup.sh, which step \"Set up by bash\" runs, runs \`bun install\` in step \"Set up by bash\"")"
+check "names it for the step that runs it by its path" \
+  "$(contains "$out" "in scripts/setup.sh, which step \"Set up by path\" runs, runs \`bun install\`")"
+check "names the script a script runs" \
+  "$(contains "$out" "in scripts/outer.sh, which step \"Set up twice removed\" runs, in scripts/inner.sh, which scripts/outer.sh runs, runs \`apt-get update\`")"
+
+echo "case: rule 21, a script's install through network-install.sh passes"
+root=$(fixture network-script-wrapped)
+mkdir -p "$root/scripts"
+printf '#!/usr/bin/env bash\nroot=$(cd "$(dirname "$0")/.." && pwd)\n"$root/.github/scripts/network-install.sh" bun -- bun install --frozen-lockfile\n' > "$root/scripts/setup.sh"
+chmod +x "$root/scripts/setup.sh"
+lint_steps "$root" "Set up" "scripts/setup.sh"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: rule 21 reads the workflows ci.yaml calls"
+root=$(fixture network-called)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" $'      - name: Build the app\n' \
+  $'      - name: Install the workspace\n        run: bun install --frozen-lockfile\n      - name: Build the app\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called workflow's job and step" \
+  "$(contains "$out" "job rows of .github/workflows/suite.yaml runs \`bun install\` in step \"Install the workspace\"")"
+
+echo "case: rule 21 holds a call of network-install.sh to the repository's script, its kinds and its kind"
+root=$(fixture network-wrapper-calls)
+lint_steps "$root" \
+  "another kind's bound" ".github/scripts/network-install.sh bun -- sudo apt-get update" \
+  "another script" "/tmp/network-install.sh apt -- sudo apt-get update" \
+  "a kind it lacks" ".github/scripts/network-install.sh pip -- pip install requests" \
+  "no --" ".github/scripts/network-install.sh apt sudo apt-get update"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names an install wrapped under another kind" \
+  "$(contains "$out" "runs \`apt-get update\` through .github/scripts/network-install.sh's kind 'bun' in step \"another kind's bound\": that bound was measured on bun's installs, and \`apt-get update\` is of kind 'apt'")"
+check "names a network-install.sh that is not the repository's" \
+  "$(contains "$out" "in step \"another script\": a network-install.sh that is not this repository's .github/scripts/network-install.sh")"
+check "names a kind the script does not bound, with its kinds" \
+  "$(contains "$out" "in step \"a kind it lacks\": .github/scripts/network-install.sh bounds no kind 'pip' (its kinds: apt, bun, docker, playwright)")"
+check "names a call without --" \
+  "$(contains "$out" "in step \"no --\": .github/scripts/network-install.sh takes \`<kind> -- <command>\`")"
+
+echo "case: rule 21 holds a job's limit, and a step's, to the worst case of its wrapped installs"
+root=$(fixture network-limits)
+lint_steps "$root" \
+  "Install the workspace" ".github/scripts/network-install.sh bun -- bun install --frozen-lockfile" \
+  "Install the browsers" ".github/scripts/network-install.sh playwright -- bunx playwright install chromium"
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Install the workspace' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    steps:\n      - name: Install the workspace'
+replace "$root/.github/workflows/ci.yaml" $'      - name: Install the browsers\n' $'      - name: Install the browsers\n        timeout-minutes: 4\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step whose limit ends before its install can fail by name" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml: step \"Install the browsers\" has timeout-minutes 4, 240 s, and 245 s is what the wrapped installs can take")"
+check "names the job whose limit ends before its installs can, counted in step order" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml has timeout-minutes 10, 600 s, and 670 s is what, up to step \"Install the browsers\"")"
+check "counts each install's attempts, kills and pauses" \
+  "$(contains "$out" "\`bun install --frozen-lockfile\` (bun) 425 s")"
+replace "$root/.github/workflows/ci.yaml" "    timeout-minutes: 10" "    timeout-minutes: 12"
+replace "$root/.github/workflows/ci.yaml" "        timeout-minutes: 4" "        timeout-minutes: 5"
+run_check "$root"
+check "passes with limits that hold them" "$(is "$status" 0)"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
