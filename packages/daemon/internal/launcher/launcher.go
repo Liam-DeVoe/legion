@@ -1140,28 +1140,41 @@ func failedExit(exit shimwire.LauncherExit) bool {
 // never answered or a served connection it ended, with no dial that reached it since
 // (sessionproxy.Proxy.Fault). With no proxy, reported, the store fault the child reported itself:
 // a first open of its session database whose connection failed before the server answered it
-// (childReport). With no such report, witnessed, the fault the latest look of the generation's
-// store witness met (storeWitness): a fault no later look found over overlaps the exit, so a store
-// that failed the child's open and answered again only after the witness's last look still reads
-// as the store's, and one a later look found answering does not. With no fault there, the launcher
-// asks the store once, as the child would, within bound, half of what the child's grace leaves, as
-// the proxy's proof dial is bounded by half of it (storeAnswers): through the proxy's socket that
-// ask's own dial is one more event the proxy records. A child's report is not read under a proxy,
-// which ends a connection whose sign-in the instance refused as it ends one whose database it
-// could not reach, and records which itself.
+// (childReport). The report's code is the driver's, which names a URL file whose host does not
+// resolve, or whose port is some other server's, as it names a refused dial, so the report decides
+// only once the launcher's own connect to the same URL file within bound answered (askStore): one
+// that meets the store's own fault is that fault, and one that meets a fault of the
+// configuration's is the child's own end, charged, whatever the child wrote, as the same URL file
+// is charged at a resume's lookup. With no such report, witnessed, the fault the latest look of the
+// generation's store witness met (storeWitness): a fault no later look found over overlaps the
+// exit, so a store that failed the child's open and answered again only after the witness's last
+// look still reads as the store's, and one a later look found answering does not. With no fault
+// there, the launcher asks the store once, as the child would, within bound, half of what the
+// child's grace leaves, as the proxy's proof dial is bounded by half of it: through the proxy's
+// socket that ask's own dial is one more event the proxy records. A child's report is not read
+// under a proxy, which ends a connection whose sign-in the instance refused as it ends one whose
+// database it could not reach, and records which itself.
 func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, reported, witnessed error, bound time.Duration) error {
 	if proxy != nil {
 		if fault := proxy.Fault(); fault != nil {
 			return fault
 		}
 	} else if reported != nil {
-		return reported
+		asked, err := askStore(store, bound)
+		switch {
+		case ompsessions.StoreFault(err):
+			return err
+		case err != nil:
+			return nil
+		case asked:
+			return reported
+		}
 	}
 	if witnessed != nil {
 		return witnessed
 	}
-	if fault := storeAnswers(store, bound); fault != nil {
-		return fault
+	if _, err := askStore(store, bound); ompsessions.StoreFault(err) {
+		return err
 	}
 	if proxy != nil {
 		return proxy.Fault()
@@ -1169,23 +1182,22 @@ func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, reported, witn
 	return nil
 }
 
-// storeAnswers connects to store once, within bound, as the child would: the store's own fault
-// (ompsessions.StoreFault), or nil for a store that answered, or answered with a refusal of its own
-// (a login it refused), and for a bound that leaves no time to ask. The connection alone is asked,
-// never the table: a child that failed in a database no Oh My Pi has opened yet would otherwise
-// read as a store fault and be tried for ever.
-func storeAnswers(store sessionDial, bound time.Duration) error {
+// askStore connects to store once, within bound, as the child would, and answers whether it asked
+// and what the connect met: nil for a store that answered, an error ompsessions.StoreFault reads as
+// the store's own, or any other refusal, an answer about the configuration (a login the server
+// refused, a host that does not resolve, a URL file that is not there). A bound that leaves no
+// time to ask asks nothing. The connection alone is asked, never the table: a child that failed in
+// a database no Oh My Pi has opened yet would otherwise read as a store fault and be tried for
+// ever.
+func askStore(store sessionDial, bound time.Duration) (bool, error) {
 	if bound <= 0 {
-		return nil
+		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
 	conn, err := store.connect(ctx)
 	closeSessions(conn)
-	if ompsessions.StoreFault(err) {
-		return err
-	}
-	return nil
+	return true, err
 }
 
 func (m *manager) stop(command shimwire.LauncherStop) shimwire.LauncherStopResult {

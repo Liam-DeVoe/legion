@@ -242,6 +242,10 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 		t.Fatal(err)
 	}
 	readOnly := readOnlyURLFile(t)
+	noHost := filepath.Join(t.TempDir(), "no-host-dsn")
+	if err := replaceURLFile(noHost, "postgres://legion@no-such-session-store.invalid:5432/none?sslmode=disable"); err != nil {
+		t.Fatal(err)
+	}
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0009.jsonl")
 	importSession(t, dsn, sessionFile)
 	omp := func(dsnFile string) func(t *testing.T) (shimwire.LauncherStartResult, string) {
@@ -284,7 +288,9 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 		"an Oh My Pi resume whose environment names no URL file": {names: ompsessions.DSNFileVariable + " names no file", start: omp("")},
 		"an Oh My Pi resume whose URL file is not there":         {names: missing, start: omp(missing)},
 		"an Oh My Pi resume whose server refuses the password":   {names: "password authentication failed", start: omp(wrongPassword)},
-		"a fresh Claude Code start whose URL file is not there":  {names: missing, start: claude(missing, false)},
+		"an Oh My Pi resume whose URL file names a host that does not resolve": {names: "no-such-session-store.invalid",
+			start: omp(noHost)},
+		"a fresh Claude Code start whose URL file is not there": {names: missing, start: claude(missing, false)},
 		"a Claude Code resume whose environment names no URL file": {names: ompsessions.DSNFileVariable + " names no file",
 			start: claude("", true)},
 		"a fresh Claude Code start whose server refuses the password": {names: "password authentication failed", start: claude(wrongPassword, false)},
@@ -392,30 +398,53 @@ func TestALookupWhoseLastAttemptTheBoundCutsShortKeepsTheDatabasesLastAnswer(t *
 // stopped answering it after the start's checks passed, exits as a store fault
 // (shimwire.LauncherExit.Session), under either session store. Under the generation's proxy the
 // child's own connections decide it: a dial the database refuses, a served connection it resets.
-// With no fault there, and under a URL file no proxy serves, the launcher asks the store once
-// after the exit, and a store that refuses it or answers that it cannot take a connection now
-// (57P03) marks the exit too: under the proxy, the ask's own dial the database refused, after a
-// child it served. A child that exits while the store answers exits as itself, and so does a child
-// that ends at 0 on a store that fails it. Under the proxy the child is the test binary dialing its
-// socket as Oh My Pi does (TestLauncherStoreChild); under a URL file it is a shell, since what
-// those cases test is how the launcher reads an exit, and one case runs the pinned Oh My Pi itself,
-// which exits at once on a store that refuses it.
+// Its report is not read there: a child whose sign-in the instance refused after the proof dial
+// reports a connection that failed before the server answered it, as it does a refused dial, and
+// is charged. Under a URL file the child's own report decides where the launcher's own connect to
+// the same URL file meets no fault of the configuration's: a server's answer whose SQLSTATE is of
+// the server's own state, however the store answers the launcher; not a connection that failed
+// before the server answered on a URL file that names a web server's port. With no fault there,
+// the launcher asks the store once after the exit, and a store that refuses it or answers that it
+// cannot take a connection now (57P03) marks the exit too: under the proxy, the ask's own dial the
+// database refused, after a child it served. A child that exits while the store answers exits as
+// itself, and so does a child that ends at 0 on a store that fails it. Under the proxy the child is
+// the test binary dialing its socket as Oh My Pi does (TestLauncherStoreChild), or the pinned Oh My
+// Pi itself, whose refused sign-in it reports only after thirty seconds of its own retries; under
+// a URL file it is a shell, since what those cases test is how the launcher reads an exit, and one
+// case runs the pinned Oh My Pi itself, which exits at once on a store that refuses it. A shell
+// that reports writes the line an Oh My Pi whose first open failed writes (reports): an Oh My Pi's
+// that prints the server's SQLSTATE, and, as unit rows of the launcher's reading alone, a replay of
+// the pinned Oh My Pi's own line for a connection the proxy or a web server closed, which the
+// pinned Oh My Pi's own rows here and in TestAPinnedOhMyPiThatReportsItsStoreRefusedItExitsAsAStoreFault
+// prove it writes.
 func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *testing.T) {
+	// reports is a shell child that writes the report of an Oh My Pi whose first open of the store
+	// failed, with detail after the URL file's name, and exits 1.
+	reports := func(detail string) string {
+		return `printf 'Error: %s names %s, but the session database could not be opened: %s\n' ` + ompsessions.DSNFileVariable +
+			` "$` + ompsessions.DSNFileVariable + `" '` + detail + `' >&2; exit 1`
+	}
+	const closed = "Connection closed before the connection was established (ERR_POSTGRES_CONNECTION_FAILED)"
 	for name, tc := range map[string]struct {
 		// proxied is whether the generation has a proxy of its own, and target, given the test
 		// database's URL, the URL of the store its child and the launcher reach.
 		proxied bool
 		target  func(t *testing.T, dsn string) string
 		// refuseFrom is the first of the proxy's dials it refuses, 0 for none: the proof dial is
-		// the first, the child's own the second, the launcher's ask at the exit the third. send is
-		// what the proxied child writes on its connection.
+		// the first, the child's own the second, the launcher's ask at the exit the third; signIn
+		// refuses them as an instance refuses a sign-in, a fault of the configuration's, rather
+		// than as a database that is down. send is what the proxied child writes on its connection.
 		refuseFrom int32
+		signIn     bool
 		send       string
-		// shell, when set, is the URL-file child, run by /bin/sh; omp runs the pinned Oh My Pi.
-		shell string
-		omp   bool
-		code  int
-		want  shimwire.SessionRefusal
+		// shell, when set, is the child, run by /bin/sh; omp runs the pinned Oh My Pi. reported, when
+		// set, is what the child's report of its failed open must name, so the case is one the
+		// report could decide.
+		shell    string
+		omp      bool
+		reported string
+		code     int
+		want     shimwire.SessionRefusal
 	}{
 		"under the proxy, the child's own connection is refused": {proxied: true, refuseFrom: 2, code: 1,
 			want: shimwire.SessionStoreUnreachable},
@@ -427,10 +456,24 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 		"under the proxy, the database serves the child, then refuses the launcher's ask": {proxied: true, refuseFrom: 3, code: 1,
 			want: shimwire.SessionStoreUnreachable},
 		"control: under the proxy, the store answers a child that fails": {proxied: true, code: 1},
+		"control: under the proxy, the instance refuses the pinned Oh My Pi's sign-in after the proof dial": {proxied: true, omp: true,
+			refuseFrom: 2, signIn: true, reported: connectionFailed, code: 1},
+		"control, a replay of the pinned Oh My Pi's line: under the proxy, the sign-in refused after the proof dial": {proxied: true,
+			refuseFrom: 2, signIn: true, shell: reports(closed), code: 1},
 		"under a URL file, the store refuses the pinned Oh My Pi and the launcher": {omp: true, code: 1,
 			target: func(t *testing.T, _ string) string { return refusingURL(t) }, want: shimwire.SessionStoreUnreachable},
 		"under a URL file, the store cannot take a connection now (57P03)": {shell: "exit 1", code: 1,
 			target: startingUp, want: shimwire.SessionStoreUnreachable},
+		"under a URL file, the child reports its server starting up (57P03) and the store answers the launcher": {code: 1,
+			shell: reports("the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57P03)"), want: shimwire.SessionStoreUnreachable},
+		"under a URL file, the child reports its server has no client slot left (53300) and the store answers the launcher": {code: 1,
+			shell: reports("sorry, too many clients already (ERR_POSTGRES_SERVER_ERROR 53300)"), want: shimwire.SessionStoreUnreachable},
+		"control: under a URL file, the child reports its server refused the password (28P01)": {code: 1,
+			shell: reports(`password authentication failed for user "legion" (ERR_POSTGRES_SERVER_ERROR 28P01)`)},
+		"control, a replay of the pinned Oh My Pi's line: under a URL file that names a web server's port, the connection closed": {code: 1,
+			shell: reports(closed), target: func(t *testing.T, _ string) string {
+				return "postgres://legion@" + webServer(t) + "/none?sslmode=disable"
+			}},
 		"control: under a URL file, the store answers a child that fails":      {shell: "exit 3", code: 3},
 		"control: under a URL file, the store answers and the child ends at 0": {shell: "exit 0"},
 		"control: under a URL file, the store cannot take a connection now and the child ends at 0": {shell: "exit 0",
@@ -446,9 +489,13 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 			var g *rig
 			var env []string
 			argv := []string{"/bin/sh", "-c", tc.shell}
+			workspace := "LEGION_WORKSPACE=" + filepath.Join(t.TempDir(), "workspace")
 			if tc.proxied {
 				database, dialer := sessionDatabaseAt(t, target)
 				refused := testdb.RefusedDial(t)
+				if tc.signIn {
+					refused = errors.New("the instance refused the connection's IAM sign-in")
+				}
 				var dials atomic.Int32
 				dialer.check = func() error {
 					if n := dials.Add(1); tc.refuseFrom > 0 && n >= tc.refuseFrom {
@@ -457,28 +504,29 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 					return nil
 				}
 				g = newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
-				command := g.childStart(1, filepath.Join(t.TempDir(), "marker"), nil)
-				argv = []string{command.Argv[0], "-test.run=^TestLauncherStoreChild$"}
-				env = append(command.Env, launcherStoreChildEnv+"=1", storeChildSendEnv+"="+tc.send,
-					ompsessions.StorageVariable+"="+ompsessions.SQLStorage,
-					ompsessions.DSNFileVariable+"="+filepath.Join(g.generationDir(1), ompsessions.DSNFileName))
+				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage,
+					ompsessions.DSNFileVariable + "=" + filepath.Join(g.generationDir(1), ompsessions.DSNFileName), workspace}
+				if tc.shell == "" && !tc.omp {
+					command := g.childStart(1, filepath.Join(t.TempDir(), "marker"), nil)
+					argv = []string{command.Argv[0], "-test.run=^TestLauncherStoreChild$"}
+					env = append(append(command.Env, launcherStoreChildEnv+"=1", storeChildSendEnv+"="+tc.send), env...)
+				}
 			} else {
 				g = newRig(t)
 				urlFile := filepath.Join(t.TempDir(), "dsn")
 				if err := replaceURLFile(urlFile, target); err != nil {
 					t.Fatal(err)
 				}
-				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + urlFile,
-					"LEGION_WORKSPACE=" + filepath.Join(t.TempDir(), "workspace")}
-				if tc.omp {
-					ompBinary := testbin.OMP(t)
-					home := t.TempDir()
-					testbin.OMPHome(t, ompBinary, home)
-					testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
-						"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
-					argv = []string{ompBinary, "--mode", "rpc"}
-					env = append(testbin.OMPEnviron(home), env...)
-				}
+				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + urlFile, workspace}
+			}
+			if tc.omp {
+				ompBinary := testbin.OMP(t)
+				home := t.TempDir()
+				testbin.OMPHome(t, ompBinary, home)
+				testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
+					"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
+				argv = []string{ompBinary, "--mode", "rpc"}
+				env = append(testbin.OMPEnviron(home), env...)
 			}
 			if got := g.start(shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: argv, Env: env}); !got.OK {
 				t.Fatalf("start = %#v, want the child started", got)
@@ -486,6 +534,9 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 			exit := g.awaitExitWithin(1, 2*time.Minute)
 			if exit.Session != tc.want || exit.Code != tc.code {
 				t.Fatalf("the child's exit = %+v, want status %d and session refusal %q\nlauncher log:\n%s", exit, tc.code, tc.want, g.stderr.String())
+			}
+			if log := g.stderr.String(); tc.reported != "" && (!strings.Contains(log, openFailed) || !strings.Contains(log, tc.reported)) {
+				t.Fatalf("the child reported no failed open naming %s; launcher log:\n%s", tc.reported, log)
 			}
 		})
 	}
