@@ -322,7 +322,8 @@ func TestTheControllerSweepKindProofsGitHubAnswers404AtATagItDoesNotHold(t *test
 	}
 	const documentation = `"documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar"`
 	if response.StatusCode != http.StatusNotFound || !strings.Contains(string(body), documentation) {
-		t.Fatalf("the tarball at main answered %d %s, want GitHub's 404 holding %s", response.StatusCode, body, documentation)
+		// %.200q: a tarball answered in the 404's place is gzip, so the body is quoted and cut.
+		t.Fatalf("the tarball at main answered %d with %d bytes, %.200q, want GitHub's 404 holding %s", response.StatusCode, len(body), body, documentation)
 	}
 	if served := github.TarballsServed(); len(served) != 0 {
 		t.Fatalf("the proof's GitHub recorded %+v as served, want no served read", served)
