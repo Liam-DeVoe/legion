@@ -769,10 +769,11 @@ good at its next release. The enrollment's own record keeps the person it was ma
 grant log names them, and their **Live grants** still lists each grant of the pod they may see,
 naming no operator on it: the pod no longer acts for them, so they end a grant only if they
 approved it or its approver is `anyone`, and their revoke withholds nothing from the pod. A grant
-the policy gave the pod without asking names no approver either, so its row reads **Ends with its
-machine login**: revoking the pod's login ends it. A grant of a private project they are not on,
-which the pod may now get through its exchange entry, is hidden from them as from anyone outside
-the project.
+the policy gave the pod without asking names no approver either, so it is listed, as a service's
+pod's is, to every signed-in person who may see it, and its row reads **Ends with its machine
+login**: revoking the pod's login ends it. A grant of a private project they are not on, which
+the pod may now get through its exchange entry, is hidden from them as from anyone outside the
+project, and is on the pages of that project's people.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ## Requests and grants

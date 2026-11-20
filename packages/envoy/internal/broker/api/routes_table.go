@@ -396,12 +396,13 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants the named person's Live grants page shows: those the person
 		// approved, those of their own sessions, those the model judge approved in anyone's stead,
-		// and those a service's pod took without asking, which nobody may revoke. A grant the
+		// and those a pod that acts for no person took without asking (a service's pod, or a
+		// person's pod BROKER_POD_OPERATORS no longer maps), which nobody may revoke. A grant the
 		// person approved, or whose session acts for them, is listed whatever project it touches;
-		// an unmapped person's pod acts for no one, so its grants are listed to its former person
-		// naming no operator. Any other grant of a private project the person may not see is left
-		// out, and one Dispatch cannot answer for is left out while it cannot. The person is the
-		// one the caller names.
+		// an unmapped person's pod acts for no one, so its other grants are listed to its former
+		// person naming no operator. Any other grant of a private project the person may not see is
+		// left out, and one Dispatch cannot answer for is left out while it cannot. The person is
+		// the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
 		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
 		// pod acts for no one), whatever project it touches and whether or not Dispatch answers,
