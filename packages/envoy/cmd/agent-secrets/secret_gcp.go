@@ -470,9 +470,9 @@ func runRecorded(cmd *exec.Cmd) error {
 	return err
 }
 
-// startGcloud starts cmd and reaches the gcloudStarted step the moment the start has returned,
-// so that step is the first moment gcloud runs, wherever runRecorded takes runningGcloud and arms
-// its watch around the call.
+// startGcloud starts cmd and reaches the gcloudStarted step the moment the start has returned, so
+// the step comes before anything else runRecorded does once gcloud runs, wherever runRecorded
+// takes runningGcloud and arms its watch around the call.
 func startGcloud(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
