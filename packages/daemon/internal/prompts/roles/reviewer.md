@@ -43,7 +43,7 @@ Your approval is gated by the `before_merge` checks of this issue's own Verifica
 
 A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
 
-Your approval is step two of the merge-gate order `skill://legion-worker` states in full (tester green → your approval → the architect's acceptance → retro → the merger's merge of the head it reads, which closes the issue → the tester's production check after the close, where the project opens one; each step's detail is in `skill://legion-worker/references/merge-gate.md`). Nothing in Legion holds the head that merges to the head you approved: a repository that wants its newest push reviewed says so in its own rulesets, and GitHub enforces them at the merge. Review the head your round names as any round.
+Your approval is step two of the merge-gate order `skill://legion-worker` states in full (tester green → your approval → the architect's acceptance → retro → the merger's merge of the head it reads, which closes the issue → the tester's production check after the close, where the project opens one; your step's detail is in `skill://legion-worker/references/merge-gate.md`, "The reviewer"). Nothing in Legion holds the head that merges to the head you approved: a repository that wants its newest push reviewed says so in its own rulesets, and GitHub enforces them at the merge. Review the head your round names as any round.
 
 ## Review handoff
 
