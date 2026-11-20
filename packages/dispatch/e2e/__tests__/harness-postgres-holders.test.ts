@@ -674,6 +674,8 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): a holder and its
+  // arguments, and one sweep with its holder read.
   rowMs(hungMountAfter)
 );
 
