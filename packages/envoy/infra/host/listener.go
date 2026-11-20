@@ -47,9 +47,9 @@ type ListenerArgs struct {
 	// default true; false for a listener whose NATS is not reachable from where the stack is
 	// applied (the container is created and Docker restarts it until it connects)
 	WaitForHealthy *bool `pulumi:"waitForHealthy,optional"`
-	// PrivateProjects says the listener's deployment may make a Dispatch project private
-	// (dispatch://INFRA-3862): ENVOY_PRIVATE_PROJECTS=1, in the container's envs and the watchdog's
-	// env file, which the listener reads once it holds each session to its token's projects
+	// PrivateProjects says the listener's deployment may make a Dispatch project private:
+	// ENVOY_PRIVATE_PROJECTS=1, in the container's envs and the watchdog's env file, which the
+	// listener reads once it holds each session to its token's projects
 	// (core.ListenerConfig.PrivateProjects).
 	// Default false, which renders what the listener rendered before the input existed. A program
 	// sets it from the same value as its hub's privateProjects.

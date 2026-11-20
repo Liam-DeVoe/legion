@@ -71,7 +71,7 @@ type ListenerConfig struct {
 	PublicURL            string
 	// ServiceTokenFile and ServiceGoogleAudience are the platform identity the listener's NATS
 	// connection presents to a hub whose connections the auth service in the secrets broker
-	// admits (dispatch://INFRA-840, internal/broker/natscallout): the path of a projected
+	// admits (internal/cipher/natscallout): the path of a projected
 	// ServiceAccount token, NATS_SERVICE_TOKEN_FILE, which a listener in a pod reads afresh at
 	// each connect, or the audience of the Google identity token a VM's metadata server mints,
 	// NATS_SERVICE_GOOGLE_AUDIENCE (bus.ServiceTokenFileEnvVar, bus.ServiceGoogleAudienceEnvVar).
@@ -82,7 +82,7 @@ type ListenerConfig struct {
 	ServiceTokenFile      string
 	ServiceGoogleAudience string
 	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1: the listener's deployment may make a Dispatch
-	// project private (dispatch://INFRA-3862). The listener reads it once it holds each session to
+	// project private. The listener reads it once it holds each session to
 	// its token's projects (PlanC's #t-c-8): a project frame that carries no stamp is then decided
 	// as private rather than by the listener's copy of the private projects. A component sets it
 	// from the same value as its hub's privateProjects. False leaves the variable unset, which
@@ -90,8 +90,8 @@ type ListenerConfig struct {
 	PrivateProjects bool
 }
 
-// envPrivateProjects names the variable PrivateProjects renders, which PlanC's #t-c-8
-// (dispatch://INFRA-3862, rule 3) makes the listener read; core may not import the listener's
+// envPrivateProjects names the variable PrivateProjects renders, which PlanC's #t-c-8 (its
+// rule 3) makes the listener read; core may not import the listener's
 // packages, for the reason brokerVars gives, so the name is written here once. It is unexported,
 // as brokerVars is: a component sets PrivateProjects and never renders the variable itself.
 const envPrivateProjects = "ENVOY_PRIVATE_PROJECTS"

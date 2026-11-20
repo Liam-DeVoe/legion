@@ -110,7 +110,7 @@ func calloutClusteredHubWithTailnet() *gcp.ClusteredNatsHubArgs {
 }
 
 // A hub behind the auth service runs its own listener by the listener's service identity, which
-// the auth service admits it by (dispatch://INFRA-840, t-e-13), and not as a user whose seed the
+// the auth service admits it by (t-e-13), and not as a user whose seed the
 // hub stores: the start is not refused, the authorization holds no user for the listener, so its
 // key is in no auth_users list, and the listener is handed no seed. gcp:NatsHub's VM listener
 // presents the VM's Google identity token for listener.natsAudience, with no env file and no
@@ -364,7 +364,7 @@ func TestAHubListenersIdentityFollowsTheCallout(t *testing.T) {
 // A hub whose deployment may make a Dispatch project private tells its own listener so: with
 // privateProjects the listener's environment carries ENVOY_PRIVATE_PROJECTS=1, which a listener
 // that holds each session to its token's projects reads to decide a project frame carrying no
-// stamp as private (dispatch://INFRA-3862), and without it the
+// stamp as private, and without it the
 // environment holds no such line. privateProjects needs authCallout, so the listener is the one
 // that connects by its service identity. Both hubs, each read from the environment it renders.
 func TestAPrivateProjectsHubTellsItsListener(t *testing.T) {

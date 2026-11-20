@@ -214,7 +214,7 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 // the component mounts by reference and never reads; the hub renders the user itself, named after
 // the machine id and granted core.ListenerPermissions for it, as gcp:NatsHub renders its own
 // listener's. With authCallout it is a projected token of the listener's own ServiceAccount for
-// natsAudience, which the auth service admits it by (dispatch://INFRA-840): the hub renders no
+// natsAudience, which the auth service admits it by: the hub renders no
 // user and mounts no Secret, so the seed's inputs are refused. Declared as the hub's own listener
 // input, or with clientNamespaces, the listener requires a credential of every caller
 // (oidcIssuer, oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the

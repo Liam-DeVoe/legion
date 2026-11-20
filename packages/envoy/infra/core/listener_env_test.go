@@ -282,7 +282,7 @@ func TestListenerEnvServiceIdentity(t *testing.T) {
 
 // PrivateProjects renders ENVOY_PRIVATE_PROJECTS=1, last, which a listener that holds each session
 // to its token's projects reads to decide a project frame that carries no stamp as private
-// (dispatch://INFRA-3862, PlanC's rule 3), and
+// (PlanC's rule 3), and
 // false renders no such line: every config written before the field existed renders what it always
 // rendered (R9), so the goldens every component that renders a listener pins (gcp/testdata,
 // aws/testdata, host's) hold no such line. Negative control, run by hand: render the line whatever

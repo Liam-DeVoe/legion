@@ -177,7 +177,7 @@ func (p *PermissionsArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "Permi
 // project that holds the seed, and the seed's public key, from which the hub renders the user
 // itself, named after the hub's hostname, the listener's machine id, and granted
 // core.ListenerPermissions for that machine. With authCallout it is the VM's own Google identity
-// token for natsAudience, which the auth service admits it by (dispatch://INFRA-840): the hub
+// token for natsAudience, which the auth service admits it by: the hub
 // renders no user for the listener and fetches no seed, so seedSecret and nkey are refused.
 type HubListenerArgs struct {
 	Image      string `pulumi:"image"`               // pinned: <name>@sha256:<digest>
@@ -517,7 +517,7 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 // Without the callout the listener connects as the user the hub renders for its seed, so
 // natsAudience, which only the auth service reads, is refused, and the seed's inputs are left to
 // the rules that require them. With the callout it connects by its service identity, a platform
-// token for natsAudience, which the auth service admits it by (dispatch://INFRA-840): the hub
+// token for natsAudience, which the auth service admits it by: the hub
 // renders no user for it and hands it no seed, so natsAudience is required and each seed input
 // that is set is refused, since a listener connects as one identity.
 func listenerIdentity(prefix string, callout bool, audience, carrier, brokerVariable string, seed [][2]string) error {
