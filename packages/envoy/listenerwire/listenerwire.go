@@ -528,9 +528,9 @@ type RoleHolder struct {
 // the notifications stream refused because, as the listener last read it, the stream captures no
 // subject of the role's kept lane is answered 503 with Retry-After, an APIError whose words open
 // with the listener's stream-lacks-subject prefix, since nothing stored the message and the same
-// keep is stored once a build that stores the subject sets the stream; or, when an earlier send of
-// the same keep went out unanswered and so may have stored the copy, the APIError with
-// CodeMaybeStored. HolderState says which
+// keep is stored once a build that stores the subject sets the stream; or, when an earlier send
+// may have stored the message - a send of the same keep, or a forward of the same role send, that
+// went out unanswered - the APIError with CodeMaybeStored. HolderState says which
 // of the three states the claim's holder is in, so a caller can tell a holder that is merely
 // unresponsive - stalled, still claiming, still being stored for - from one that is gone.
 // ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a

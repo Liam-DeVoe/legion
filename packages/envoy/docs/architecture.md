@@ -209,7 +209,9 @@ no claim can ever name; or the keep itself failed, also a keep whose publish wen
 never acknowledged, which may have stored the copy, as at main, save a keep the stream did not
 take for want of the role's kept-lane subject (`bus.ErrStreamLacksSubject`), which is a 503 of
 the table instead: the `stream_lacks_subject` one, or the `maybe_stored` one when an earlier send
-of the same keep went out unanswered and so may have stored the copy. A role send whose message
+may have stored the message: a send of the same keep that went out unanswered, which may have
+stored the copy, or a forward of the same role send that went out unanswered, which may have
+stored it for the holder it went to. A role send whose message
 the listener kept answers `202`
 instead, both for a role nobody claims and for a claim whose holder is not live. A
 role topic's send then runs on
@@ -429,8 +431,9 @@ the sender starts no replacement for it. It answers `404` with `reason` `unclaim
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
 that with `keep: false`, or the keep was refused or failed, save a keep the stream did not take
 for want of the role's kept-lane subject, which is a 503 of "Send and publish answers" instead:
-the `stream_lacks_subject` one, or the `maybe_stored` one when an earlier send of the same keep
-may have stored the copy. A `holder_lapsed` 404 names the same
+the `stream_lacks_subject` one, or the `maybe_stored` one when an earlier send of the same keep,
+or an earlier forward of the same send, went out unanswered and so may have stored the message. A
+`holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`

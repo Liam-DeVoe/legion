@@ -72,12 +72,14 @@ func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.
 
 // A role send whose earlier forward went out and got no answer may have stored the message for its
 // holder (sendToRole's unanswered: the bus marks such a forward bus.ErrUnacknowledged), so a later
-// forward the stream refuses for want of the holder's subject is answered with the maybe-stored
-// 503, recorded bus_unavailable, and not with the missing-subject 503 that says nothing stored it:
-// the same rule as the keep's above. A forward with no answer is one whose acknowledgement did not
-// come within its window, or whose publish the client could not confirm. The controls are the same
-// refusal where no earlier forward went unanswered, which still answers the missing-subject 503,
-// recorded stream_lacks_subject: the refusal of the send's first forward, and the refusal after a
+// refusal for want of a subject is answered with the maybe-stored 503, recorded bus_unavailable,
+// and not with the missing-subject 503 that says nothing stored it: the same rule as the keep's
+// above. That holds for a later forward the stream refuses for want of the holder's subject, and
+// for the keep the send makes once the holder let the role go, which the stream refuses for want
+// of the kept lane's subject. A forward with no answer is one whose acknowledgement did not come
+// within its window, or whose publish the client could not confirm. The controls are the same
+// refusals where no earlier forward went unanswered, which still answer the missing-subject 503,
+// recorded stream_lacks_subject: the refusal of the send's first forward, and refusals after a
 // forward the server answered, that nothing took it (no responders) or with the stream's own error,
 // since such a forward stored nothing.
 func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLacksTheSubject(t *testing.T) {
@@ -91,25 +93,46 @@ func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLac
 	for i, row := range []struct {
 		name     string
 		answers  []error // what each forward's wait returns; the last one answers every later forward
+		letGo    bool    // the holder lets the role go while the first forward is out, so the send keeps
 		forwards int32
 		code     string
 		prefix   string
 		outcome  requestOutcome
 	}{
-		{"control: the first forward refused for want of the holder's subject", []error{lacks}, 1, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
-		{"the forward after an unanswered one refused for want of the holder's subject", []error{bus.ErrForwardNotStored, lacks}, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
-		{"the forward after one whose unconfirmed publish went unanswered refused for want of the holder's subject", []error{unconfirmed, lacks}, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
-		{"control: the forward after one the server answered no responders refused for want of the holder's subject", []error{noResponders, lacks}, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
-		{"control: the forward after one the stream answered with its error refused for want of the holder's subject", []error{streamError, lacks}, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"control: the first forward refused for want of the holder's subject", []error{lacks}, false, 1, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"the forward after an unanswered one refused for want of the holder's subject", []error{bus.ErrForwardNotStored, lacks}, false, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+		{"the forward after one whose unconfirmed publish went unanswered refused for want of the holder's subject", []error{unconfirmed, lacks}, false, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+		{"control: the forward after one the server answered no responders refused for want of the holder's subject", []error{noResponders, lacks}, false, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"control: the forward after one the stream answered with its error refused for want of the holder's subject", []error{streamError, lacks}, false, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"the keep after an unanswered forward, the role let go, refused for want of the kept lane's subject", []error{bus.ErrForwardNotStored}, true, 1, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+		{"control: the keep after a forward the server answered no responders, the role let go, refused for want of the kept lane's subject", []error{noResponders}, true, 1, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			role := fmt.Sprintf("forward-own-send-%d", i)
 			harness := newListenerDeliveryHarness(t)
-			forwards := &atomic.Int32{}
+			claims, err := harness.client.JS().KeyValue(bus.RoleClaimBucket)
+			if err != nil {
+				t.Fatalf("open the role claim bucket %s: %v", bus.RoleClaimBucket, err)
+			}
+			forwards, keeps := &atomic.Int32{}, &atomic.Int32{}
 			config := harness.config
 			config.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
 				answer := row.answers[min(int(forwards.Add(1)), len(row.answers))-1]
-				return func() error { return answer }, nil
+				return func() error {
+					if row.letGo {
+						// The holder lets the role go while this forward is out, so the send's
+						// next resolution reads the role unclaimed and keeps the message.
+						if err := claims.Delete(role); err != nil {
+							t.Errorf("delete role %s's claim: %v", role, err)
+						}
+					}
+					return answer
+				}, nil
+			}
+			config.keepPublish = func(_ context.Context, kept string, _ contracts.Envelope, _ string) (bus.StoredAck, error) {
+				keeps.Add(1)
+				return bus.StoredAck{}, fmt.Errorf("%w: %s at generation 1000000 carries no subject capturing %q: %w",
+					bus.ErrStreamLacksSubject, bus.Stream, kept, natsgo.ErrNoStreamResponse)
 			}
 			deps := harness.publishDeps(t)
 			deps.delivery = &config
@@ -129,14 +152,17 @@ func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLac
 			retryAfter := recorder.Header().Get("Retry-After")
 			if recorder.Code != http.StatusServiceUnavailable || retryAfter != "1" || body.Code != row.code ||
 				!strings.HasPrefix(body.Error, row.prefix+": ") || !strings.Contains(body.Error, bus.ErrStreamLacksSubject.Error()) {
-				t.Errorf("after %d forwards the send is answered %d, Retry-After %q, code %q: %s; want 503, 1, code %q and words that open with %q and name the missing subject",
-					forwards.Load(), recorder.Code, retryAfter, body.Code, body.Error, row.code, row.prefix)
+				t.Errorf("after %d forwards and %d keeps the send is answered %d, Retry-After %q, code %q: %s; want 503, 1, code %q and words that open with %q and name the missing subject",
+					forwards.Load(), keeps.Load(), recorder.Code, retryAfter, body.Code, body.Error, row.code, row.prefix)
 			}
 			if record["outcome"] != string(row.outcome) {
 				t.Errorf("the record's outcome is %v, want %s", record["outcome"], row.outcome)
 			}
 			if got := forwards.Load(); got != row.forwards {
 				t.Errorf("the send made %d forwards, want %d", got, row.forwards)
+			}
+			if got, want := keeps.Load() > 0, row.letGo; got != want {
+				t.Errorf("the send made %d keeps; want a keep %t", keeps.Load(), want)
 			}
 		})
 	}
