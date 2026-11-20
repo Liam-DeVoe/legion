@@ -963,10 +963,11 @@ type LauncherLeakCheckIndex struct {
 }
 
 // LauncherLeakCheckIndexResult answers one LauncherLeakCheckIndex. OK is the slice taken.
-// Installed is the launcher having put the whole, digest-checked index in place, which it answers
-// the last slice of the sequence with, or any slice of a sequence whose digest it has already
-// installed: the sequence is over and the daemon sends no more of it. A refusal carries Error, why
-// the index could not be installed.
+// Installed is the launcher having put the whole, digest-checked index in place, or found one
+// built at its time or later there, which it keeps (leakguard.InstallIndex). It answers the last
+// slice of the sequence with it, or any slice of a sequence whose digest it has already installed:
+// the sequence is over and the daemon sends no more of it. A refusal carries Error, why the index
+// could not be installed.
 type LauncherLeakCheckIndexResult struct {
 	ID        string `json:"id"`
 	Index     int    `json:"index"`

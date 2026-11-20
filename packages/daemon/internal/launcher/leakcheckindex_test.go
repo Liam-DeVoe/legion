@@ -444,3 +444,58 @@ func TestEverySliceOfARefusedIndexIsToldItsCause(t *testing.T) {
 		t.Fatalf("the folder holds %v, want the marker alone", names)
 	}
 }
+
+// A refused sequence keeps no slices, so the refusal of a later slice of another index names no
+// sequence as held: it says the launcher holds none, and names the sequence it refused last, so the
+// daemon's log does not claim the launcher still holds the refused one.
+func TestASliceAfterARefusalNamesNoSequenceAsHeld(t *testing.T) {
+	c := newTestIndexInstall(t, filepath.Join(t.TempDir(), "public-leak-check"))
+	ahead := time.Now().Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	refused := slicedIndex(t, indexOf(ahead, 40000), 2)
+	requireIndexTaken(t, requireIndexAnswer(t, refused[0], c.receive(refused[0])))
+	requireIndexRefused(t, requireIndexAnswer(t, refused[1], c.receive(refused[1])))
+
+	other := slicedIndex(t, indexOf("2026-11-19T09:07:00Z", 40000), 2)
+	cause := requireIndexRefused(t, requireIndexAnswer(t, other[1], c.receive(other[1])))
+	if held := "it holds " + refused[0].ID; strings.Contains(cause, held) {
+		t.Fatalf("the refusal is %q, which says %q of a sequence refused whole, whose slices are gone", cause, held)
+	}
+	for _, want := range []string{"slice 1 of 2 of " + other[1].ID, "it holds no sequence", "the sequence last refused is " + refused[0].ID} {
+		if !strings.Contains(cause, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", cause, want)
+		}
+	}
+}
+
+// A slice that carries the held sequence's id with another count or another digest is refused,
+// naming both, and the sequence goes on: its true next slice is still taken, and installs it.
+func TestASliceThatDisagreesWithItsSequenceIsRefusedAndTheSequenceGoesOn(t *testing.T) {
+	body := indexOf("2026-11-19T09:07:00Z", 40000)
+	frames := slicedIndex(t, body, 2)
+	another := slicedIndex(t, indexOf("2026-11-19T10:07:00Z", 40000), 2)[0].SHA256
+	for _, tc := range []struct {
+		name   string
+		change func(*shimwire.LauncherLeakCheckIndex)
+		want   string
+	}{
+		{"another count", func(f *shimwire.LauncherLeakCheckIndex) { f.Count = 3 },
+			"slice 1 of 3 of sha256 " + frames[0].SHA256 + " does not match the 2 slices of sha256 " + frames[0].SHA256},
+		{"another digest", func(f *shimwire.LauncherLeakCheckIndex) { f.SHA256 = another },
+			"slice 1 of 2 of sha256 " + another + " does not match the 2 slices of sha256 " + frames[0].SHA256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "public-leak-check")
+			c := newTestIndexInstall(t, dir)
+			requireIndexTaken(t, requireIndexAnswer(t, frames[0], c.receive(frames[0])))
+			bad := frames[1]
+			tc.change(&bad)
+			if cause := requireIndexRefused(t, requireIndexAnswer(t, bad, c.receive(bad))); !strings.Contains(cause, tc.want) {
+				t.Fatalf("the refusal is %q, want it to say %q", cause, tc.want)
+			}
+			if got := requireIndexAnswer(t, frames[1], c.receive(frames[1])); !got.OK || !got.Installed {
+				t.Fatalf("the sequence's true slice 1 answered %#v after the refusal, want Installed", got)
+			}
+			requireHeld(t, dir, body, "the index whose sequence went on")
+		})
+	}
+}

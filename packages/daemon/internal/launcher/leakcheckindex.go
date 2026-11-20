@@ -23,10 +23,14 @@ const indexNotInstalled = "the leak check index could not be installed: "
 //
 // Every slice of every role's connection is taken under mu, the install included.
 // leakguard.InstallIndex keeps the newer of two indexes only of calls that do not overlap: two at
-// once can both read the held file before either renames, and the older can rename last. So of
-// two connections that push an older and a newer index at once the folder ends with the newer,
-// and of two that push the same index the second finds it installed and is answered Installed at
-// once.
+// once can both read the held file before either renames, and the older can rename last. So of two
+// pushes that each bring their index whole, an older and a newer, the folder ends with the newer,
+// whether they come at once or one after the other; an index of one slice is brought whole by that
+// slice. Of two that push the same index, the second finds it installed and is answered Installed
+// at once. Two pushes of several slices each that interleave end otherwise: the launcher holds one
+// sequence at a time and the one begun last takes its place (receive), so the index begun last is
+// installed and the other is refused, even where the refused one is the newer. The folder then
+// holds the older until the daemon's next read of the release pushes the newest again.
 type indexInstall struct {
 	// dir is the folder the index is written in (Config.LeakCheckIndexDir), never "".
 	dir string
@@ -96,9 +100,12 @@ func (c *indexInstall) receive(frame shimwire.LauncherLeakCheckIndex) shimwire.L
 	}
 	if frame.ID != c.sequence || c.refused != "" {
 		if frame.Index != 0 {
-			holds := c.sequence
-			if holds == "" {
-				holds = "no sequence"
+			holds := "no sequence"
+			switch {
+			case c.refused != "":
+				holds = "no sequence; the sequence last refused is " + c.sequence
+			case c.sequence != "":
+				holds = c.sequence
 			}
 			return refused(fmt.Sprintf("%sslice %d of %d of %s arrived while the launcher holds none of its earlier slices (it holds %s); a push of it begins again at slice 0",
 				indexNotInstalled, frame.Index, frame.Count, frame.ID, holds))
