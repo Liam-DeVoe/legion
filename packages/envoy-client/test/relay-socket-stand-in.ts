@@ -37,7 +37,7 @@ import {
   randomBytes,
   verify,
 } from "node:crypto";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import type { ServerWebSocket } from "bun";
 
 /** The subprotocol a relay socket speaks. */

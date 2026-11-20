@@ -617,7 +617,7 @@ describe("a relay socket", () => {
     const asks = { count: 0 };
     const restored = { count: 0 };
     // The token client answers a refusal again with no trade until its own retry, 15 s or so
-    // later (`RETRY_FIRST_WAIT_MS`, @legion/broker-client/token-client), and the relay asks it at
+    // later (`RETRY_FIRST_WAIT_MS`, @legion/cipher-client/token-client), and the relay asks it at
     // 1 s, 3 s, 7 s, 15 s and 31 s: the open comes on one of the last two.
     const opening = opened(server, "ses_a", { told, asks, restored, boundMs: 50_000 });
     await until(
