@@ -1049,6 +1049,14 @@ Any enrollment of the same owner reads the request (`agent-secrets status`) and 
 a person reads their request from another box, the next pod of a claim cancels what the pod before
 it asked for, and a second machine of the same fleet, or another role of the same issue, reads
 neither.
+A request of a private Dispatch project, by a secret's project tag, a project a credential it has
+had names, or an issue key its reason names, is read and cancelled, apart from the enrollment it
+hangs off, only by an enrollment whose own credential names that project for a person still on the
+project's list. Every other enrollment, of the same owner or not, is answered `404 NOT_FOUND`, as
+for an id no request has (`machine_read.go`, `HideRequestFromSession`), so `NOT_YOURS` never says
+that a private project's request exists. A person reads such a request from another box only when
+that box's session named the project, and the next pod of a claim cancels it only when its account
+maps to the project.
 An enrollment that records no owner, every one made before the broker recorded owners, reads and
 cancels its own requests alone.
 A pod that `BROKER_POD_OPERATORS` maps to a person records that person as its owner, as the
@@ -1089,8 +1097,9 @@ The session it takes from need not have ended: a carry takes from every enrollme
 still holds something and has not been ended for good, a live one included
 (`enroll.go`, `adopt`).
 The box it took from keeps its enrollment and loses the grant: the grant hangs off the new
-enrollment now, and the old enrollment's read of it is refused `NOT_YOURS`
-(`packages/envoy/internal/broker/requests/machine_read.go`, `Values`).
+enrollment now, and the old enrollment's read of it is refused `NOT_YOURS`, or, for a grant of a
+private project the old enrollment's credential does not name, `GRANT_NOT_LIVE`, as for an id no
+grant has (`packages/envoy/internal/broker/requests/machine_read.go`, `Values`).
 Taking a grant releases its values at once and asks nobody, where a request for the same human-tier
 secret under a name of its own would wait for the person who owns the secret
 (`packages/envoy/internal/broker/policy/policy.go`, `Evaluate`).

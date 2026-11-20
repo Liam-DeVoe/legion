@@ -160,7 +160,10 @@ the pod before it asked for, and a machine cancels its request after its helper 
 person, another role of the same issue and another machine of the same fleet are refused
 `NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
 which is any enrollment made before the broker recorded owners
-([Concepts](/legion/broker/concepts/#requests-and-grants)).
+([Concepts](/legion/broker/concepts/#requests-and-grants)). A request of a private Dispatch project
+is the exception: a session other than the one that holds it cancels it only when its own
+credential names the project for a person still on its list, and any other session, yours
+included, gets `no such request (NOT_FOUND)`, as for an unknown id.
 
 ## End a session
 

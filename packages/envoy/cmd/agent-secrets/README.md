@@ -78,7 +78,8 @@ list|revoke` and `grant list` to a process inside a registered session's process
 run inside a session is the session's own revoke instead, which `agent-secrets revoke` makes too:
 it signs as the broker identity the session's use command takes, and the broker ends only a grant
 of that identity's enrollment and refuses any other (`NOT_YOURS`), which stays its holder's, its
-operator's or its approver's to end. Processes that sign as one enrollment share its grants: each
+operator's or its approver's to end; a private project's grant the session does not name is
+answered as an unknown grant (`NOT_FOUND`). Processes that sign as one enrollment share its grants: each
 session of a person who ran `agent-secrets login` on the machine signs as that sign-in's one
 enrollment, and processes that share one key dir sign as its enrollment, so each can end the
 others' grants. The machine-command check covers that tree only: a process a

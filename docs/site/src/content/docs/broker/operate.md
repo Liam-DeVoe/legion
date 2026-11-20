@@ -623,7 +623,8 @@ another person:
   that person's approval, and a shared agent-tier secret is still granted;
 - the pod's requests are its own enrollment's alone. The pod no longer reads or cancels a request
   of the person's box or of another session of the person, and those sessions no longer read or
-  cancel the pod's requests: each is refused `403 NOT_YOURS`, and the request stays pending. The
+  cancel the pod's requests: each is refused `403 NOT_YOURS`, or `404 NOT_FOUND` for a request of
+  a private project the reading session's credential does not name, and the request stays pending. The
   pod still reads and cancels its own requests. Putting the entry back gives the pod the person's
   requests again;
 - a request for a shared secret keeps the Inbox it was listed in when it was made, since the broker
