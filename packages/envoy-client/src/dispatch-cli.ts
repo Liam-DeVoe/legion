@@ -20,7 +20,7 @@ import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DispatchWriteLandedError, stillRunningText } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -547,10 +547,12 @@ export async function runDispatchCli(
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
       subscriptions,
-      // A write Dispatch is still running is waited on past the command's usual minute, for as
-      // long as Dispatch can still finish it. The line says so once, so the caller does not take
-      // the wait for a hang and stop the command, which would leave it not knowing the outcome.
-      onRunWait: ({ key, withinMs }) => {
+      // A write Dispatch is, or may be, still running is waited on past the command's usual
+      // minute, for as long as Dispatch can still finish it. The line says so once, so the caller
+      // does not take the wait for a hang and stop the command, which would leave it not knowing
+      // the outcome. It says the write is running only where Dispatch said so: after an attempt
+      // cut off for silence alone, Dispatch may not hold the write at all.
+      onRunWait: ({ key, withinMs, toldRunning }) => {
         const seconds = Math.ceil(withinMs / 1_000);
         const minutes = Math.floor(seconds / 60);
         const most =
@@ -559,8 +561,9 @@ export async function runDispatchCli(
             : seconds % 60 === 0
               ? `${minutes} min`
               : `${minutes} min ${seconds % 60} s`;
+        const finishes = toldRunning ? "the write" : "an attempt of the write it received";
         io.stderr(
-          `dispatch: Dispatch is still running this write under key ${key}, so this command waits up to ${most} for its outcome. Do not stop it: Dispatch finishes the write either way, and a stopped command cannot tell whether it landed.\n`
+          `dispatch: Dispatch ${stillRunningText(toldRunning)} this write under key ${key}, so this command waits up to ${most} for its outcome. Do not stop it: Dispatch finishes ${finishes} either way, and a stopped command cannot tell whether it landed.\n`
         );
       },
     });

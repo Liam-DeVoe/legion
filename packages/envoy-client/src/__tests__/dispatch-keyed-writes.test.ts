@@ -16,6 +16,7 @@ import {
 } from "@legion/contracts";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
+  DISPATCH_IN_PROCESS_DEADLINE_MS,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
@@ -1353,7 +1354,9 @@ describe("DispatchClient's writes", () => {
 
   // The deadline that ends a no-route retry's wait after an attempt that may have landed leaves the
   // write unsettled too, never the runtime's bare "The operation timed out." (the red team of the
-  // review of c5ed36708c, F3).
+  // review of c5ed36708c, F3). The attempt was cut off for silence, so Dispatch may still be
+  // running it, and the deadline the client's maker named says that much and no more: Dispatch
+  // never said it holds the write.
   test("the deadline during a no-route wait after a silent attempt leaves the write unsettled", async () => {
     const { retry, stall } = stalling();
     const { fetchImpl } = scripted(
@@ -1374,7 +1377,13 @@ describe("DispatchClient's writes", () => {
     );
 
     expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(error.message).toContain("had no definitive answer when its deadline ended it");
+    expect(error).toEqual(expect.objectContaining({ running: true, toldRunning: false }));
+    expect(error.message).toContain(
+      "may still be running on Dispatch, and its deadline ended the wait for its outcome"
+    );
+    expect(error.message).toContain(
+      "Dispatch finishes an attempt of the write it received whatever this side does"
+    );
   }, 10_000);
 
   // R1-81d8 (the review of 81d860a8f7): a 2xx settles only once its body is read whole, inside the
@@ -2247,6 +2256,7 @@ describe("DispatchClient's writes", () => {
           key: sent[0]?.headers["Idempotency-Key"] as string,
           request: "POST http://dispatch.test/api/v1/issues/DSP-1/comments",
           withinMs: 680_000,
+          toldRunning: true,
         },
       ]);
     } finally {
@@ -2323,6 +2333,126 @@ describe("DispatchClient's writes", () => {
       );
     } finally {
       restore();
+    }
+  });
+
+  // A caller inside an agent's process names a deadline of its own
+  // (DISPATCH_IN_PROCESS_DEADLINE_MS), since an agent's turn, the listener's delivery path or a
+  // queue of the session's writes waits on its write. That deadline ends a write Dispatch may still
+  // be running as it ends any other, at the minute and not at the run window's end, and the write
+  // is answered as still running rather than failed: its key, and that the same request under it
+  // returns the outcome once Dispatch's run ends, which a later call under that key then collects.
+  // It says the write is running only where Dispatch said so, with a 409 KEY_IN_FLIGHT; where only
+  // silence put the write in the wait, Dispatch may not hold it at all, and it says so. The run
+  // wait's notice says what the write had been told when it entered the wait.
+  test.each([
+    {
+      how: "answered 409 KEY_IN_FLIGHT",
+      silent: (_ask: number) => false,
+      attempts: 21,
+      standing: "is still running",
+      finishes: "the write",
+      toldAtWait: true,
+    },
+    {
+      how: "cut off for silence",
+      silent: (_ask: number) => true,
+      attempts: 3,
+      standing: "may still be running",
+      finishes: "an attempt of the write it received",
+      toldAtWait: false,
+    },
+    {
+      how: "cut off for silence, then answered 409 KEY_IN_FLIGHT",
+      silent: (ask: number) => ask === 1,
+      attempts: 14,
+      standing: "is still running",
+      finishes: "the write",
+      toldAtWait: false,
+    },
+  ])("a deadline its maker named ends a write $how as one that $standing, and its key collects the outcome", async (row) => {
+    jest.useFakeTimers();
+    try {
+      const started = performance.now();
+      // The fake timers move only here, a second at a time, until the wait ends or its signal
+      // does, as a real wait would: a pause, or an attempt Dispatch does not answer.
+      const wait = (ms: number, signal: AbortSignal) => {
+        for (let left = ms; left > 0 && !signal.aborted; left -= 1_000) {
+          jest.advanceTimersByTime(Math.min(1_000, left));
+        }
+      };
+      const retry: DispatchWriteRetry = {
+        ...DISPATCH_WRITE_RETRY,
+        pause: async (ms, signal) => {
+          wait(ms, signal);
+          signal.throwIfAborted();
+        },
+      };
+      let runEnded = false;
+      let asked = 0;
+      const edited = { applied: 1 };
+      const dispatch = (signal: AbortSignal | null | undefined) => {
+        asked += 1;
+        if (runEnded) return json(edited, 200, { "Idempotency-Replayed": "?1" });
+        if (!row.silent(asked) || signal === null || signal === undefined) return inFlight();
+        const answer = hang(signal);
+        wait(DISPATCH_WRITE_RETRY.silenceMs, signal);
+        return answer;
+      };
+      const { fetchImpl, sent } = scripted(Array.from({ length: 30 }, () => dispatch));
+      const waits: DispatchRunWait[] = [];
+      const options = {
+        deadlineMs: DISPATCH_IN_PROCESS_DEADLINE_MS,
+        writeRetry: retry,
+        onRunWait: (runWait: DispatchRunWait) => waits.push(runWait),
+      };
+      const credential = bearerCredential("secret");
+      const key = "askgate-rec.0123abcd";
+      const edit = { ops: [{ op: "insert" as const, markdown: "A line.", after: "end" }], actor };
+
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, options).docEdit(
+          "doc-1",
+          edit,
+          key
+        )
+      );
+
+      expect(performance.now() - started).toBe(DISPATCH_IN_PROCESS_DEADLINE_MS);
+      expect(sent).toHaveLength(row.attempts);
+      expect(new Set(sent.map((request) => request.headers["Idempotency-Key"]))).toEqual(
+        new Set([key])
+      );
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect(error).toEqual(
+        expect.objectContaining({
+          key,
+          running: true,
+          toldRunning: row.standing === "is still running",
+        })
+      );
+      expect(error.message).toBe(
+        `POST http://dispatch.test/api/v1/artifacts/doc-1/edits ${row.standing} on Dispatch, ` +
+          `and its deadline ended the wait for its outcome (the last of ${row.attempts} ` +
+          `attempts): Dispatch finishes ${row.finishes} whatever this side does, and the same ` +
+          `request sent again under Idempotency-Key ${key} returns its outcome once Dispatch's ` +
+          "run ends."
+      );
+      expect(waits.map(({ toldRunning }) => toldRunning)).toEqual([row.toldAtWait]);
+
+      // Dispatch's run ends, and the same request under the same key is answered its outcome.
+      runEnded = true;
+      await expect(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, options).docEdit(
+          "doc-1",
+          edit,
+          key
+        )
+      ).resolves.toMatchObject(edited);
+      expect(sent).toHaveLength(row.attempts + 1);
+      expect(sent.at(-1)?.headers["Idempotency-Key"]).toBe(key);
+    } finally {
+      jest.useRealTimers();
     }
   });
 

@@ -657,9 +657,20 @@ so. Dispatch renews a run's lease until that limit and no further, so past it no
 The window is read once, so a Dispatch that never answers holds the write one window and no more.
 A write that takes Dispatch ten minutes, or two silent attempts in a row, still ends in its answer.
 The client's default deadline (`DISPATCH_TOOL_DEADLINE_MS`, 60 s) does not end such a write; a
-deadline or a `signal` its maker named still does. The client tells its maker once, with the key
-and the longest wait (`onRunWait`), and the `dispatch` command prints that on stderr, so the agent
-that ran it does not stop it as hung. An upload (a body of a megabyte or more) keeps the
+deadline or a `signal` its maker named still does. A write a named deadline (`deadlineMs`) ends
+there is no failure: it is `DispatchWriteUnsettledError` with `running` set, whose message says
+the write is still running on Dispatch where Dispatch answered `409 KEY_IN_FLIGHT` (`toldRunning`),
+or that it may still be running where only an attempt cut off for silence put it in the wait, and
+that the same request under its key, which it names, returns the write's outcome once Dispatch's
+run ends. Every caller inside an agent's process that
+writes names a deadline of its own, since an agent's turn, the listener's delivery path or a queue
+of the session's writes waits on it: the delivery replies (`postDeliveryReply`) and AskGate's
+decision records name `DISPATCH_IN_PROCESS_DEADLINE_MS` (60 s), and the accept of a person's turn
+a shorter one of its own. The client
+tells its maker once, with the key, the longest wait and whether Dispatch said it is running the
+write (`onRunWait`), and the `dispatch` command, which names no deadline and waits for the run,
+prints that on stderr, so the agent that ran it does not stop it as hung. An upload (a body of a
+megabyte or more) keeps the
 five-attempt schedule, since each repeat sends its whole body again. No attempt of a write
 Dispatch has not said it may be running starts more than 55 s after the client was made, since its
 60 s deadline counts from there. The numbers come from the 3,612 `dispatch` write commands that

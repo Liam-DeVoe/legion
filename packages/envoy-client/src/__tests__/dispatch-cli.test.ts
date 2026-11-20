@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
@@ -12,7 +12,11 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  forgetKeyedLayerMemory,
+  KEYED_LAYER_MEMORY_MS,
+} from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -1102,6 +1106,70 @@ describe("the dispatch CLI", () => {
         "waits up to 11 min 20 s for its outcome. Do not stop it: Dispatch finishes the write " +
         "either way, and a stopped command cannot tell whether it landed.\n"
     );
+  });
+
+  // An attempt cut off for silence puts the write in that wait as well, though Dispatch never said
+  // it holds the write: the line says it may still be running, and that Dispatch finishes an
+  // attempt it received, which is all the command knows.
+  test("a write whose attempt went silent may still be running, and stderr says that much once", async () => {
+    jest.useFakeTimers();
+    try {
+      const keys: string[] = [];
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const { pathname } = new URL(request.url);
+        // Dispatch's keyed layer, which a write whose attempt went unanswered asks about before it
+        // asks again.
+        if (pathname === "/healthz") return Response.json({ idempotency_keys: true });
+        const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
+        const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+        if (message) keys.push(key ?? "");
+        if (message && keys.length === 1) {
+          // No answer: the fake clock runs out the attempt's silence bound, which cuts it off.
+          const { promise, reject } = Promise.withResolvers<Response>();
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+          jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs);
+          return await promise;
+        }
+        const answer = await fetch(request);
+        if (key === null) return answer;
+        const headers = new Headers(answer.headers);
+        headers.set(IDEMPOTENCY_KEY_HEADER, key);
+        return new Response(answer.body, { status: answer.status, headers });
+      }) as typeof fetch;
+      let stderr = "";
+
+      const code = await runDispatchCli(
+        ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+        environment(omp),
+        {
+          stdout: () => undefined,
+          stderr: (text) => {
+            stderr += text;
+            // The pause before the next attempt starts on the fake clock as the line is written:
+            // run it out once it has.
+            queueMicrotask(() => jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.pausesMs[0] ?? 0));
+          },
+          readText: (path) => readFileSync(path, "utf-8"),
+          cwd: stateDir,
+          fetchImpl,
+        }
+      );
+
+      expect(code, stderr).toBe(0);
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0] ?? "");
+      expect(stderr).toBe(
+        `dispatch: Dispatch may still be running this write under key ${keys[0]}, so this ` +
+          "command waits up to 11 min for its outcome. Do not stop it: Dispatch finishes an " +
+          "attempt of the write it received either way, and a stopped command cannot tell " +
+          "whether it landed.\n"
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
