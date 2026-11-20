@@ -91,22 +91,32 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 				}
 			}
 			defer release()
-			// waiting is how many backends of this database wait on an advisory lock.
-			waiting := func() int {
+			// waitingOn is how many backends wait for an advisory lock that the where clause names,
+			// read from pg_locks. Each wait is told apart by its lock, so a backend of the server that
+			// waits on another lock behind A, a document's settlement waiting on A's owner lock for
+			// one, counts as neither A held nor B waiting.
+			waitingOn := func(where string, args ...any) int {
 				var count int
 				if err := database.Pool.QueryRow(ctx, `
-					select count(*) from pg_stat_activity
-					where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'
-				`).Scan(&count); err != nil {
+					select count(*) from pg_locks l join pg_database d on d.oid = l.database
+					where d.datname = current_database() and l.locktype = 'advisory' and not l.granted and `+where,
+					args...).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				return count
+			}
+			// aHeld is A waiting for the lock the trigger holds it by, a one-key lock.
+			aHeld := func() bool { return waitingOn(`l.objsubid = 1 and l.objid::bigint = $1::bigint`, heldLinkLock) > 0 }
+			// bWaits is B waiting for the lock of the pull request (lockLinkedPullRequests), a two-key
+			// lock whose first key is the hash of linkedPullRequestLockSpace.
+			bWaits := func() bool {
+				return waitingOn(`l.objsubid = 2 and l.classid = (hashtext($1)::bigint & 4294967295)::oid`, linkedPullRequestLockSpace) > 0
 			}
 
 			first := make(chan *httptest.ResponseRecorder, 1)
 			go func() { first <- link(one, "https://github.com/acme/tools/pull/7") }()
 			deadline := time.Now().Add(30 * time.Second)
-			for waiting() < 1 {
+			for !aHeld() {
 				if time.Now().After(deadline) {
 					t.Fatal("write A never reached its held insert")
 				}
@@ -122,16 +132,18 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 				later <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 					map[string]string{"project": "CORE", "external": "acme/tools#7"}, "alice")
 			}()
-			// B either answers while A is held, which is the race, or waits on a lock behind A.
+			// B either answers while A is held, which is the race, or waits for the lock of the pull
+			// request behind A. A B that does neither within 30 s waits on something else, and the
+			// test says so rather than letting A go and reading what follows.
 			var answered *httptest.ResponseRecorder
 			deadline = time.Now().Add(30 * time.Second)
-			for answered == nil && waiting() < 2 {
+			for answered == nil && !bWaits() {
 				select {
 				case answered = <-later:
 				case <-time.After(20 * time.Millisecond):
 				}
 				if answered == nil && time.Now().After(deadline) {
-					t.Fatal("write B neither answered nor waited on a lock while A was held")
+					t.Fatal("write B neither answered nor waited for the lock of the pull request while A was held")
 				}
 			}
 			waitedForA := answered == nil
