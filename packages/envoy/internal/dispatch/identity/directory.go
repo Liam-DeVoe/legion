@@ -99,10 +99,12 @@ func (e *DirectoryError) Unwrap() error { return e.cause }
 // authenticated client those requests are signed with, and shares one minted access token among
 // its checks until the token expires.
 //
-// Each check is one flight under its caller's context. The impersonate package carries no context
-// into its two requests (signJwt and the token exchange), so the reader builds the token source of
-// each mint on a client of that flight alone, whose transport puts the flight's context on every
-// request the package sends; no context of a finished flight is kept.
+// A check's Directory read runs under the check's own context. Its token comes from the shared
+// token, or from the one mint every check that finds no valid token waits on (sharedMint), each
+// only within its own context. The impersonate package carries no context into its two requests
+// (signJwt and the token exchange), so each mint builds its token source on a client of that mint
+// alone (flight), whose transport puts the mint's context on every request the package sends; no
+// context of a finished mint is kept.
 type DirectoryReader struct {
 	signer, admin string
 	// opts are the caller's options, given again to each mint's token source.
@@ -112,9 +114,13 @@ type DirectoryReader struct {
 	// reading is the client the Directory read goes through, with no credential of its own: the
 	// read carries the minted token.
 	reading *http.Client
+	// mintTimeout bounds a shared mint, which runs under no caller's context: DirectoryFlight.
+	mintTimeout time.Duration
 
 	mu    sync.Mutex
 	token *oauth2.Token
+	// minting is the mint in flight, nil when none is.
+	minting *sharedMint
 }
 
 // NewDirectoryReader is a reader that signs through signer, the service account's email, for
@@ -146,7 +152,7 @@ func NewDirectoryReader(ctx context.Context, signer, admin string, opts ...optio
 	if err != nil {
 		return nil, fmt.Errorf("identity: the Directory reader's reading client: %w", err)
 	}
-	d := &DirectoryReader{signer: signer, admin: admin, opts: opts, signing: signing.Transport, reading: reading}
+	d := &DirectoryReader{signer: signer, admin: admin, opts: opts, signing: signing.Transport, reading: reading, mintTimeout: DirectoryFlight}
 	if d.signing == nil {
 		d.signing = http.DefaultTransport
 	}
@@ -164,8 +170,9 @@ func NewDirectoryReader(ctx context.Context, signer, admin string, opts ...optio
 // knownID, when its primaryEmail is email with letter case ignored (Google addresses ignore case):
 // a renamed person, whose old address is now an alias of their own account, keeps their id and is
 // Active, and an address made an alias of a colleague's account, or deleted and created again,
-// answers with another id and is Held. A Failed outcome comes with a *DirectoryError. Check ends
-// when ctx ends, at each of its three requests.
+// answers with another id and is Held. A Failed outcome comes with a *DirectoryError. Check
+// returns when ctx ends, at each of its steps; a shared mint it waited on goes on for the checks
+// still waiting on it.
 func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (DirectoryOutcome, string, error) {
 	token, err := d.accessToken(ctx)
 	if err != nil {
@@ -227,7 +234,8 @@ func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (Dir
 // whose code is not a plain OAuth error code - is an error, a *DirectoryError. The token is
 // discarded. `envoy-dispatch directory-check` asks it for a scope the grant must not give.
 func (d *DirectoryReader) ProbeScope(ctx context.Context, scope string) (granted bool, refusal string, err error) {
-	f, _, err := d.mint(ctx, scope)
+	f := &flight{ctx: ctx, base: d.signing}
+	_, err = d.mintOn(f, scope)
 	if err == nil {
 		return true, "", nil
 	}
@@ -237,22 +245,73 @@ func (d *DirectoryReader) ProbeScope(ctx context.Context, scope string) (granted
 	return false, "", err
 }
 
-// accessToken is the minted token while it is valid, or a new one minted within ctx.
+// accessToken is the shared token while it is valid. A caller that finds none waits on the one
+// mint in flight, and starts it when none is, so concurrent checks send one signJwt and one token
+// exchange. Each caller waits only within its own ctx: one whose ctx ends fails alone, on the step
+// the mint had reached, and the mint goes on for the others. A caller whose ctx is still live when
+// the mint's own deadline passed waits on a new mint.
 func (d *DirectoryReader) accessToken(ctx context.Context) (string, error) {
-	d.mu.Lock()
-	token := d.token
-	d.mu.Unlock()
-	if token.Valid() {
-		return token.AccessToken, nil
+	for {
+		d.mu.Lock()
+		if d.token.Valid() {
+			token := d.token.AccessToken
+			d.mu.Unlock()
+			return token, nil
+		}
+		mint := d.minting
+		if mint == nil {
+			mint = d.startMint(ctx)
+		}
+		d.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", mint.flight.abandoned(ctx)
+		case <-mint.done:
+		}
+		switch {
+		case mint.err == nil:
+			return mint.token.AccessToken, nil
+		case !mint.lapsed:
+			return "", mint.err
+		case ctx.Err() != nil:
+			return "", mint.flight.abandoned(ctx)
+		}
 	}
-	_, token, err := d.mint(ctx, directory.AdminDirectoryUserReadonlyScope)
-	if err != nil {
-		return "", err
-	}
-	d.mu.Lock()
-	d.token = token
-	d.mu.Unlock()
-	return token.AccessToken, nil
+}
+
+// sharedMint is one mint of the Directory scope's token, which every check that finds no valid
+// token waits on. It runs under a context of its own: the values of the caller that started it,
+// none of that caller's cancellation or deadline, and mintTimeout. So no caller's end fails it for
+// the others, and it ends within the deadline a check has.
+type sharedMint struct {
+	flight *flight
+	done   chan struct{}
+	// token, err and lapsed are set before done closes.
+	token *oauth2.Token
+	err   error
+	// lapsed is a mint that ended because its own deadline passed, before Google answered it.
+	lapsed bool
+}
+
+// startMint starts the shared mint, with d.mu held.
+func (d *DirectoryReader) startMint(ctx context.Context) *sharedMint {
+	mintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.mintTimeout)
+	mint := &sharedMint{flight: &flight{ctx: mintCtx, base: d.signing}, done: make(chan struct{})}
+	d.minting = mint
+	go func() {
+		defer cancel()
+		token, err := d.mintOn(mint.flight, directory.AdminDirectoryUserReadonlyScope)
+		mint.token, mint.err = token, err
+		mint.lapsed = err != nil && errors.Is(mintCtx.Err(), context.DeadlineExceeded)
+		d.mu.Lock()
+		if err == nil {
+			d.token = token
+		}
+		d.minting = nil
+		d.mu.Unlock()
+		close(mint.done)
+	}()
+	return mint
 }
 
 // forget drops the shared token when it is still token.
@@ -264,22 +323,21 @@ func (d *DirectoryReader) forget(token string) {
 	}
 }
 
-// mint asks Google for a token for scope within ctx alone, through a token source of this flight.
-// It returns the flight, whose steps say how a failed mint ended.
-func (d *DirectoryReader) mint(ctx context.Context, scope string) (*flight, *oauth2.Token, error) {
-	f := &flight{ctx: ctx, base: d.signing}
-	source, err := d.tokenSource(ctx, f, scope)
+// mintOn asks Google for a token for scope through a token source of f, within f's context. A
+// failure is classed by f's steps.
+func (d *DirectoryReader) mintOn(f *flight, scope string) (*oauth2.Token, error) {
+	source, err := d.tokenSource(f.ctx, f, scope)
 	if err != nil {
-		return f, nil, &DirectoryError{Class: "the token source refused its configuration"}
+		return nil, &DirectoryError{Class: "the token source refused its configuration"}
 	}
 	token, err := source.Token()
 	if err != nil {
-		return f, nil, f.failure()
+		return nil, f.failure()
 	}
 	if token.AccessToken == "" {
-		return f, nil, &DirectoryError{Class: "the token exchange's answer held no access token", Status: f.exchanged().status}
+		return nil, &DirectoryError{Class: "the token exchange's answer held no access token", Status: f.exchanged().status}
 	}
-	return f, token, nil
+	return token, nil
 }
 
 // tokenSource is the impersonate package's token source for scope, signed for the delegated user,
@@ -349,6 +407,17 @@ func (f *flight) RoundTrip(request *http.Request) (*http.Response, error) {
 	}
 	record(func(s *step) { s.answered, s.status, s.oauthCode = true, response.StatusCode, code })
 	return response, nil
+}
+
+// abandoned is the failure of a caller whose own ctx ended while it waited on f's mint: the step
+// the mint had reached, which had not answered within that caller's context.
+func (f *flight) abandoned(ctx context.Context) *DirectoryError {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.exchange.sent {
+		return unanswered(ctx, "the token exchange")
+	}
+	return unanswered(ctx, "signJwt")
 }
 
 // exchanged is what the token exchange got.

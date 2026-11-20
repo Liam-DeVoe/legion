@@ -232,6 +232,135 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 			t.Errorf("a check after a 401 reused the token: %d JWTs signed, want 2", signs)
 		}
 	})
+
+	t.Run("concurrent checks with no valid token share one signJwt and one exchange", func(t *testing.T) {
+		google, reader := newDirectoryRig(t)
+		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
+		release := google.HoldSigner()
+		defer release()
+		const callers = 8
+		start := make(chan struct{})
+		results := make([]<-chan checked, callers)
+		for i := range results {
+			ctx, cancel := context.WithTimeout(t.Context(), DirectoryFlight)
+			t.Cleanup(cancel)
+			results[i] = goCheck(start, reader, ctx)
+		}
+		close(start)
+		waitFor(t, "the first signJwt", func() bool { return len(google.Signs()) >= 1 })
+		// While the first is held, a reader that minted for each check sends every other caller's
+		// signJwt too; a second gives them the time, and ends early when all of them arrived.
+		within(time.Second, func() bool { return len(google.Signs()) == callers })
+		release()
+		for i, result := range results {
+			if r := receive(t, result); r.outcome != DirectoryActive || r.userID != "u-ada" || r.err != nil {
+				t.Errorf("caller %d: Check = %v, %q, %v; want Active, u-ada", i, r.outcome, r.userID, r.err)
+			}
+		}
+		if signs, exchanges := len(google.Signs()), len(google.Exchanges()); signs != 1 || exchanges != 1 {
+			t.Errorf("%d concurrent checks sent %d signJwt and %d token exchanges, want 1 and 1", callers, signs, exchanges)
+		}
+		holdRequestsToTheGrant(t, google)
+	})
+
+	t.Run("a caller whose context ends during the shared mint fails alone, and a caller still waiting gets the token", func(t *testing.T) {
+		google, reader := newDirectoryRig(t)
+		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
+		release := google.HoldSigner()
+		defer release()
+		hangsUp, hangUp := context.WithCancel(t.Context())
+		defer hangUp()
+		first := goCheck(nil, reader, hangsUp)
+		waitFor(t, "the first caller's signJwt", func() bool { return len(google.Signs()) == 1 })
+		short, endShort := context.WithTimeout(t.Context(), 300*time.Millisecond)
+		defer endShort()
+		timesOut := goCheck(nil, reader, short)
+		long, endLong := context.WithTimeout(t.Context(), DirectoryFlight)
+		defer endLong()
+		waiting := goCheck(nil, reader, long)
+		// Each of the two that end while the mint is held fails on its own context's end.
+		r := receive(t, timesOut)
+		if reason := failedReason(t, r); reason != "signJwt did not answer before the check's context ended" || !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Errorf("the caller whose deadline passed: Failed for %q (%v), want signJwt unanswered on its own deadline", reason, r.err)
+		}
+		hangUp()
+		r = receive(t, first)
+		if reason := failedReason(t, r); reason != "signJwt did not answer before the check's context ended" || !errors.Is(r.err, context.Canceled) {
+			t.Errorf("the first caller, who hung up: Failed for %q (%v), want signJwt unanswered on its own cancel", reason, r.err)
+		}
+		release()
+		if r := receive(t, waiting); r.outcome != DirectoryActive || r.userID != "u-ada" || r.err != nil {
+			t.Errorf("the caller still waiting: Check = %v, %q, %v; want Active, u-ada: another caller's end failed it", r.outcome, r.userID, r.err)
+		}
+		if signs, exchanges := len(google.Signs()), len(google.Exchanges()); signs != 1 || exchanges != 1 {
+			t.Errorf("three checks sent %d signJwt and %d token exchanges, want 1 and 1", signs, exchanges)
+		}
+	})
+
+	t.Run("a caller still waiting when the shared mint's own deadline passes waits on a new mint", func(t *testing.T) {
+		google, reader := newDirectoryRig(t)
+		reader.mintTimeout = 300 * time.Millisecond
+		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
+		google.AnswerSigner(&stalled)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		result := goCheck(nil, reader, ctx)
+		waitFor(t, "the stalled signJwt", func() bool { return len(google.Signs()) == 1 })
+		google.AnswerSigner(nil)
+		if r := receive(t, result); r.outcome != DirectoryActive || r.userID != "u-ada" || r.err != nil {
+			t.Errorf("Check = %v, %q, %v; want Active from a second mint within the caller's own context", r.outcome, r.userID, r.err)
+		}
+		if signs := len(google.Signs()); signs != 2 {
+			t.Errorf("%d signJwt, want 2: the lapsed mint and the one after it", signs)
+		}
+	})
+}
+
+// goCheck checks ada, with the stored id u-ada, under ctx once start closes (at once for a nil
+// start), and delivers what Check returned.
+func goCheck(start <-chan struct{}, reader *DirectoryReader, ctx context.Context) <-chan checked {
+	done := make(chan checked, 1)
+	go func() {
+		if start != nil {
+			<-start
+		}
+		started := time.Now()
+		outcome, userID, err := reader.Check(ctx, directoryAda, "u-ada")
+		done <- checked{outcome: outcome, userID: userID, err: err, took: time.Since(started)}
+	}()
+	return done
+}
+
+// receive is what a goCheck delivered, failing the test when it delivers nothing in 20 seconds.
+func receive(t *testing.T, result <-chan checked) checked {
+	t.Helper()
+	select {
+	case r := <-result:
+		return r
+	case <-time.After(20 * time.Second):
+		t.Fatal("a Check returned nothing within 20 seconds")
+		return checked{}
+	}
+}
+
+// within polls cond every 5 milliseconds for at most d, and answers whether it held.
+func within(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// waitFor fails the test when cond does not hold within 10 seconds.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	if !within(10*time.Second, cond) {
+		t.Fatalf("%s did not happen within 10 seconds", what)
+	}
 }
 
 // directoryRefusal makes users.get answer ada with status and an error body in Google's shape.

@@ -81,6 +81,7 @@ type Google struct {
 
 	mu        sync.Mutex
 	signer    *Answer
+	hold      chan struct{}
 	scopes    map[string]*Answer
 	granted   map[string]bool
 	tokenLife time.Duration
@@ -150,6 +151,28 @@ func (g *Google) AnswerUser(key string, a Answer) {
 	g.users[key] = a
 }
 
+// HoldSigner holds each signJwt request from now on as it arrives, until release is called, the
+// request's context ends or the fake stops; a released request is then answered as AnswerSigner
+// says. Signs counts a held request from its arrival, so a test sees how many reached the signer
+// while none was answered.
+func (g *Google) HoldSigner() (release func()) {
+	held := make(chan struct{})
+	g.mu.Lock()
+	g.hold = held
+	g.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			if g.hold == held {
+				g.hold = nil
+			}
+			g.mu.Unlock()
+			close(held)
+		})
+	}
+}
+
 // AnswerSigner makes signJwt answer every request with a; nil signs again.
 func (g *Google) AnswerSigner(a *Answer) {
 	g.mu.Lock()
@@ -186,7 +209,7 @@ func (g *Google) TokenLife(life time.Duration) {
 	g.tokenLife = life
 }
 
-// Signs are the signJwt requests the fake answered, in order.
+// Signs are the signJwt requests that reached the fake, in order, each counted as it arrived.
 func (g *Google) Signs() []Sign {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -290,13 +313,28 @@ func (g *Google) serveSign(w http.ResponseWriter, r *http.Request) {
 	}
 	sign := Sign{Principal: principal, Issuer: claims.Iss, Subject: claims.Sub, Scope: claims.Scope, Audience: claims.Aud}
 	g.mu.Lock()
-	answer := g.signer
 	g.signs = append(g.signs, sign)
+	// The answer is the one set when the request arrived, or, for a held request, when it is let go.
+	hold, answer := g.hold, g.signer
+	g.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+			return
+		case <-g.release:
+			return
+		}
+		g.mu.Lock()
+		answer = g.signer
+		g.mu.Unlock()
+	}
+	g.mu.Lock()
 	jwt := ""
 	if answer == nil {
 		jwt = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." +
 			base64.RawURLEncoding.EncodeToString([]byte(request.Payload)) + "." +
-			base64.RawURLEncoding.EncodeToString([]byte("signature-"+strconv.Itoa(len(g.signs))))
+			base64.RawURLEncoding.EncodeToString([]byte("signature-"+strconv.Itoa(len(g.signed)+1)))
 		g.signed[jwt] = sign
 	}
 	g.mu.Unlock()
