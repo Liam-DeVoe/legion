@@ -149,7 +149,7 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
     const hidden = view.container.querySelector("[data-hidden]");
     const shown = view.container.querySelector("[data-shown]");
     expect(outOfTabOrder(hidden), "the link the cut hides keeps a tab stop").toBe(true);
-    expect(shown?.hasAttribute("tabindex"), "the link above the cut lost its tab stop").toBe(false);
+    expect(shown, "the link above the cut lost its tab stop").not.toHaveAttribute("tabindex");
     act(() => {
       more?.click();
     });
@@ -159,9 +159,9 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
       );
     });
     expect(
-      hidden?.hasAttribute("tabindex"),
+      hidden,
       "the link the cut hid has no tab stop once the words are whole"
-    ).toBe(false);
+    ).not.toHaveAttribute("tabindex");
     expect(shown).not.toHaveAttribute("tabindex");
   } finally {
     view.unmount();

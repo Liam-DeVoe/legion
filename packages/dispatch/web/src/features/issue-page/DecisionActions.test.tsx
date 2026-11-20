@@ -131,9 +131,9 @@ test("the change form opens with the caret in its field", async () => {
     const field = screen.getByLabelText(CONTROL_LABELS.your_change);
     expect(field.tagName).toBe("TEXTAREA");
     expect(
-      document.activeElement,
+      field,
       "the form opened with the caret somewhere other than the field a reader opened it to type in"
-    ).toBe(field);
+    ).toHaveFocus();
   } finally {
     unmount();
   }
@@ -187,7 +187,7 @@ test("a Change being written comes back with its words when the body opens again
       "aria-expanded",
       "true"
     );
-    expect(document.activeElement, "the form that came back took the caret").not.toBe(field);
+    expect(field, "the form that came back took the caret").not.toHaveFocus();
   } finally {
     body.unmount();
   }

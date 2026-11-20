@@ -38,8 +38,12 @@
 # `expect(el).toHaveAttribute(name, expect.stringContaining(part))` (`expect.stringMatching(re)`),
 # not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
 # or `.toMatch(`. Wherever `.toBe(` is named here, `.toEqual(` and `.toStrictEqual(` count too,
-# since on a string, a boolean or an element they compare what `.toBe(` does. The suite's sites
-# of those hand-written shapes, and of their `.not` forms, were
+# since on a string, a boolean or an element they compare what `.toBe(` does. Each shape counts
+# whether or not `expect` carries a message after the value it reads, a string, a template literal
+# or a name: `expect(document.activeElement, "why").toBe(el)` is the same site as
+# `expect(document.activeElement).toBe(el)`, and when the message argument was first counted, 29
+# such sites in 6 files had come in unseen. The suite's sites of those hand-written shapes, and of
+# their `.not` forms, were
 # rewritten, and nothing but this keeps a new test from writing them again: between the merge that
 # moved the suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus
 # reads went from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site
@@ -48,15 +52,19 @@
 # hold, or a `.not` form the matcher decides otherwise. On an absent attribute `.not.toContain(`
 # fails and `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may
 # be missing, `.not.toBeNull()` over `el?.getAttribute(name)` and `.not.toBe(true)` over
-# `el?.hasAttribute(name)` pass, and the matcher fails.
+# `el?.hasAttribute(name)` pass, and the matcher fails. A message that names what a failure needs,
+# such as the key or the path a loop is on, is a reason too: Bun 1.4.4 prints no `expect` message
+# for a matcher `expect.extend` registered, so only the hand-written form shows it.
 #
 # Biome's formatter wraps a long assertion, so this rule reads each file whole: a site whose
 # `expect(` ends its line, with the read on the next, is the same site, and is named at the line of
 # its `expect(`. A read or comparison counts only at the top level of `expect`'s argument, never
 # inside a call there, so `expect(rows.map((row) => row.getAttribute(name))).toEqual(…)` is not
 # one, and neither is a read of a property of the focused element (`document.activeElement?.id`)
-# or a call it is passed to (`pane.contains(document.activeElement)`). A locator holding an
-# unbalanced parenthesis inside a string hides its site from this.
+# or a call it is passed to (`pane.contains(document.activeElement)`), with a message or without
+# one. A locator holding an unbalanced parenthesis inside a string hides its site from this, and so
+# does a message where a pattern reads the whole argument list (the focused element named in
+# `.toBe(`, or compared with `===`).
 #
 # A reason is a comment within the five lines above the call: the site's own one-line reason, or
 # the `biome-ignore` comment where the call sits beside the import. The window is five lines rather
@@ -99,14 +107,25 @@ COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
 BALANCED = r"[^()]"
 for _ in range(4):
     BALANCED = rf"(?:[^()]|\({BALANCED}*\))"
+# A message `expect` carries after the value it reads (`expect(el.hasAttribute(name), "why")`)
+# leaves the site what it is, so where a read must end `expect`'s argument, a message may follow
+# it: a string, a template literal or a name. Only those: a read followed by anything else, such as
+# the second item of `expect([a.getAttribute(x), b.getAttribute(y)])` or the next key of an object,
+# is not the whole value `expect` reads.
+LITERAL = "|".join((r'"(?:[^"\\\n]|\\.)*"', r"'(?:[^'\\\n]|\\.)*'", r"`(?:[^`\\]|\\.)*`"))
+NAME = r"[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*"
+MESSAGE = rf"(?:\s*,\s*(?:{LITERAL}|{NAME})\s*,?)?"
 # The focused element compared by hand: read as `expect`'s whole argument and compared with
 # `.toBe(`; named as what `.toBe(` compares with; or compared with `===`, `!==`, `==` or `!=`, on
 # either side, at the top level of `expect`'s argument. A read of a property of the focused element
 # (`document.activeElement?.tagName`, `.matches(…)`) is not that element, and an argument it is
-# passed to (`pane.contains(document.activeElement)`) is not a comparison, so neither counts.
+# passed to (`pane.contains(document.activeElement)`) is not a comparison, so neither counts. The
+# second and third patterns already read the whole argument list, a message included.
 COMPARE = r"(?:toBe|toEqual|toStrictEqual)"
 FOCUS = (
-    re.compile(rf"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.{COMPARE}\("),
+    re.compile(
+        rf"\bexpect\(\s*document\.activeElement\s*{MESSAGE}\)\s*(?:\.not\s*)?\.{COMPARE}\("
+    ),
     re.compile(
         rf"\bexpect\({BALANCED}*\)\s*(?:\.not\s*)?\.{COMPARE}\(\s*document\.activeElement\s*\)"
     ),
@@ -117,11 +136,12 @@ FOCUS = (
 )
 ATTRIBUTE = (
     re.compile(
-        rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\)"
+        rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\){MESSAGE}\s*\)"
         r"\s*(?:\.not\s*)?\.(?:toBe|toEqual|toStrictEqual|toBeNull|toContain|toMatch)\("
     ),
     re.compile(
-        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\)\s*\)\s*(?:\.not\s*)?\.{COMPARE}\("
+        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\){MESSAGE}\s*\)"
+        rf"\s*(?:\.not\s*)?\.{COMPARE}\("
     ),
 )
 

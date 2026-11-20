@@ -11,11 +11,14 @@
 # `expect(el.hasAttribute(name)).toBe(true|false)` fails, its `.not` and wrapped forms too; a
 # hand-written attribute read fails whether it is compared with `.toBe(`, `.toBeNull(`,
 # `.not.toBeNull(`, `.toContain(` or `.toMatch(`, and also when Biome has wrapped it onto lines of
-# its own, where it is named at its `expect(`; a kept site with its reason above passes; jest-dom's
-# own matchers, an asymmetric matcher among them, a read nested inside `expect`'s argument and a
-# read named in a comment are not counted; and one run reports both rules. The real repository
-# passes over a count of calls and of files it actually found, so a run that scanned nothing fails
-# rather than reporting a clean scan.
+# its own, where it is named at its `expect(`; a focus, `getAttribute` or `hasAttribute` read whose
+# `expect` carries a message, a string or a template literal, fails as it does without one, while
+# with a message a matcher, a property of the focused element, a read nested in a call and a read
+# inside an array or an object are still not counted; a kept site with its reason above passes;
+# jest-dom's own matchers, an asymmetric matcher among them, a read nested inside `expect`'s
+# argument and a read named in a comment are not counted; and one run reports both rules. The real
+# repository passes over a count of calls and of files it actually found, so a run that scanned
+# nothing fails rather than reporting a clean scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -320,6 +323,52 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the expect's line" "$(contains "$out" 'rows.test.tsx:2')"
 check "counts it once" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
+
+# `expect`'s second argument is a message, and a site's form is the same with it: a pattern that
+# wanted the read to close `expect(` straight after it saw none of these.
+echo "case: a focus or attribute read whose expect carries a message is refused at its line"
+root=$(fixture message)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(document.activeElement, "the press took the focus").toBe(row);
+  expect(document.activeElement, `${key} moved the focus`).toBe(row);
+  expect(row.getAttribute("aria-current"), "the row is not current").toBe("true");
+  expect(row.getAttribute("aria-current"), `${path} is not current`).toBe("true");
+  expect(shown?.hasAttribute("tabindex"), "the link lost its tab stop").toBe(false);
+  expect(shown?.hasAttribute("tabindex"), `${name} lost its tab stop`).toBe(false);
+  expect(
+    hidden?.hasAttribute("tabindex"),
+    "the link the cut hid has no tab stop once the words are whole"
+  ).toBe(false);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all seven" "$(contains "$out" '7 of 7 hand-written focus and attribute assertions')"
+check "names the focus read with a string message" "$(contains "$out" 'rows.test.tsx:2:')"
+check "names the focus read with a template message" "$(contains "$out" 'rows.test.tsx:3:')"
+check "names the getAttribute read with a string message" "$(contains "$out" 'rows.test.tsx:4:')"
+check "names the getAttribute read with a template message" "$(contains "$out" 'rows.test.tsx:5:')"
+check "names the hasAttribute read with a string message" "$(contains "$out" 'rows.test.tsx:6:')"
+check "names the hasAttribute read with a template message" "$(contains "$out" 'rows.test.tsx:7:')"
+check "names the wrapped read with a message at its expect" "$(contains "$out" 'rows.test.tsx:8:')"
+
+echo "case: with a message, what the rule leaves out is still left out"
+root=$(fixture message_left_out)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // Not `expect(document.activeElement, "why").toBe(row)` by hand: the matcher prints the row.
+  expect(row, "the press took the focus").toHaveFocus();
+  expect(row, `${key} is not current`).toHaveAttribute("aria-current", "true");
+  expect(document.activeElement?.tagName, "the focus left the button").toBe("BUTTON");
+  expect(rows.map((item) => item.getAttribute("data-turn")), "the turns").toEqual(["a", "b"]);
+  expect([row.getAttribute("data-a"), row.getAttribute("data-b")]).toEqual(["1", "2"]);
+  expect({ a: row.getAttribute("data-a"), b: "2" }).toEqual({ a: "1", b: "2" });
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts no read at all" "$(contains "$out" 'every one of the 0 hand-written focus and attribute assertions')"
 
 echo "case: a kept site with its reason on the line above passes"
 root=$(fixture kept)

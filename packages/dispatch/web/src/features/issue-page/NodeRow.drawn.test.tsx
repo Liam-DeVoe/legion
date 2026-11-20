@@ -1788,6 +1788,7 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
         name: pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open,
       });
       await user.pointer({ keys: "[MouseLeft>]", target: control });
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the button.
       expect(document.activeElement, `a press on ${control.textContent} took the focus`).toBe(held);
       await user.pointer({ keys: "[/MouseLeft]", target: control });
       expect(pressed, `the press on ${control.textContent} did nothing`).toEqual([true]);

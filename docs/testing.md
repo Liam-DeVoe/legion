@@ -326,7 +326,10 @@ How a unit test acts on the page and reads it:
   of the value. A site that keeps the hand-written form carries its reason the same way.
   `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
   without one. A read of a property of the focused element, such as its `tagName`, is not one of
-  these forms.
+  these forms. Bun 1.4.4 prints no `expect` message for a matcher that `expect.extend` registered,
+  jest-dom's among them, so a read whose message names what a failure needs, such as the key or the
+  path a loop is on, keeps the hand-written form with that reason, and a read whose message is a
+  fixed sentence goes to the matcher, which keeps the sentence as the claim it states.
 
 Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
 no role edits them:
