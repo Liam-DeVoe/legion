@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A room of a document can report its unload after a later room of the same document has loaded,
@@ -406,7 +407,11 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 			return
 		}
 		started.Store(true)
-		go func() { settled <- r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))) }()
+		settleCtx, endSettle := testdeadline.Answered(t, context.Background())
+		go func() {
+			defer endSettle()
+			settled <- r.service.settleOwedNow(settleCtx, r.room)
+		}()
 		select {
 		case <-locked:
 		case <-waiting:
@@ -537,7 +542,9 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesI
 		t.Fatal("no room of the document is resident once the departing browser's socket has ended, want the one the late settlement loaded: its armed retry holds the room's record")
 	}
 
-	if err := r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))); err != nil {
+	settleCtx, endSettle := testdeadline.Answered(t, context.Background())
+	defer endSettle()
+	if err := r.service.settleOwedNow(settleCtx, r.room); err != nil {
 		t.Fatalf("the synchronous settlement that takes the retry over: %v", err)
 	}
 	if got := versionWrites.Load(); got != 2 {

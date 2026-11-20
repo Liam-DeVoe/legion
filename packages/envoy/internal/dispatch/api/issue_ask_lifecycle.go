@@ -40,16 +40,25 @@ func withdrawnReason(issueKey string) string {
 // (docs.Service.RunSettlementResumption).
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
-// whether or not the client waits for the close, as the settlement it stands in for would. On a
-// keyed request it still ends at the keyed run's bound (keyedRunLimit). issueSettleBudget
-// (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable appends and whether a
-// retry starts, not a settlement already running.
+// whether or not the client waits for the close, as the settlement it stands in for would. The
+// settlements, and their waits for the rooms' durable appends, take no bound of their own
+// (docs.SettleIssueDocuments): a database that stores an append late is waited for, so the close
+// withdraws the asks it made. They end at the close's own deadline instead. On a keyed request
+// that is the keyed run's bound (keyedRunLimit); an unkeyed request's context has none, since its
+// client's leaving no longer ends it, so it is given that same bound here: the most this route
+// runs for on a keyed request, past which a room whose append never lands holds the close up no
+// longer, and the close goes on as it does after a settlement that stopped short.
 func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
 	if _, open, err := issueStatus(ctx, issueKey, pooledOwnerRead(s.deps.Store.Pool)); err != nil || !open {
 		return
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.keyedRunLimit())
+		defer cancel()
 	}
 	if err := s.deps.Docs.SettleIssueDocuments(ctx, issueKey); err != nil {
 		slog.Warn("dispatch: close an issue whose documents did not all settle first", "issue", issueKey, "error", err)
