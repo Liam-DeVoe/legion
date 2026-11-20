@@ -19,9 +19,10 @@
 #   2. it clones <commit> once for each label into a second new directory, under a name of 16
 #      random hexadecimal digits that names no label, and applies the label's patch there; and once
 #      for each hidden label, with its source's patch (none for head);
-#   3. it runs `bun install --force` in each of those checkouts, which the rig's profile build
-#      needs (a frozen install of a fresh clone left the workspace packages' links unresolved), and
-#      prints its output only when it fails;
+#   3. it runs `bun install --force` in the head's checkout and in each of those checkouts, since
+#      the rig's profile build of each, the label `head` included, needs it (a frozen install of a
+#      fresh clone left the workspace packages' links unresolved), and prints its output only when
+#      it fails;
 #   4. it runs `rule-search.ts <checkout> cut <label> <head>` over each label's checkout and over
 #      the checkout of the label's hidden copy, which fails where a text that the label's role reads
 #      still states its rule, or where a sentence that the head's search cuts is still there, and
@@ -57,6 +58,8 @@ head=$(mktemp -d)
 labels=$(mktemp -d)
 git clone --quiet --no-checkout "$repository" "$head/head"
 git -C "$head/head" checkout --quiet --detach "$commit"
+head_install=$(cd "$head/head" && bun install --force 2>&1) ||
+  refuse "bun install --force failed in the head's checkout: $head_install"
 scenarios=$head/head/packages/pi-legion/scripts/skill-scenarios
 search=$scenarios/rule-search.ts
 [ -f "$search" ] && [ -f "$scenarios/label-rules.ts" ] ||
