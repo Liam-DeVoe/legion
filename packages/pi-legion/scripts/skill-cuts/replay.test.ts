@@ -5,7 +5,13 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Arm } from "./arms";
 import { createGateway, type Gateway, type MessagesBody, type Reply } from "./gateway";
-import { MAX_SKILL_ROUNDS, replay, replayOnce } from "./replay";
+import {
+  MAX_BREAKPOINTS,
+  MAX_SKILL_ROUNDS,
+  replay,
+  replayOnce,
+  withCacheBreakpoint,
+} from "./replay";
 
 // The replay of an arm, on F5 (testdata/): the model gateway's replies to request bodies made from
 // F2, captured by plan task t1 (testdata/CAPTURE.md, "F5") with
@@ -102,16 +108,56 @@ const SKILL_READ_CALL = {
   caller: { type: "direct" },
 };
 
+/** Where `value` holds cache breakpoints: `tools.10`, `system.0`, `messages.2.content.0`. */
+function breakpointPaths(value: unknown, at = ""): string[] {
+  const under = (key: string | number) => (at === "" ? `${key}` : `${at}.${key}`);
+  if (Array.isArray(value))
+    return value.flatMap((item, index) => breakpointPaths(item, under(index)));
+  if (typeof value !== "object" || value === null) return [];
+  return [
+    ...("cache_control" in value ? [at] : []),
+    ...Object.entries(value).flatMap(([key, field]) =>
+      key === "cache_control" ? [] : breakpointPaths(field, under(key))
+    ),
+  ];
+}
+
+/** A copy of `body` to change in a test. */
+function copyOf(body: MessagesBody) {
+  return JSON.parse(JSON.stringify(body));
+}
+
+/** `body` with each breakpoint of F2's (5 minutes) made an hour long, as the pilot's bodies, which
+ *  Oh My Pi built for claude-opus-5-5, hold them. */
+function hourLong(body: MessagesBody): MessagesBody {
+  return JSON.parse(
+    JSON.stringify(body).replaceAll(
+      '"cache_control":{"type":"ephemeral"}',
+      '"cache_control":{"type":"ephemeral","ttl":"1h"}'
+    )
+  );
+}
+
+/** The last block of `body`'s last message. */
+function lastBlock(body: MessagesBody): Record<string, unknown> {
+  const content = Object(body.messages.at(-1)).content;
+  const block = Array.isArray(content) ? content.at(-1) : undefined;
+  if (typeof block !== "object" || block === null) throw new Error("the last message has no block");
+  return block;
+}
+
 test("answers skill reads and stops at the first other call", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   const { gateway, bodies } = world((n) => f5(n === 1 ? "skill-read" : "text"));
   const replayed = await replayOnce(BODY, arm, gateway);
 
   expect(bodies).toHaveLength(2);
-  expect(bodies[0]).toEqual(BODY);
+  // Each send is the body with a cache breakpoint on its last block (withCacheBreakpoint).
+  const cached = withCacheBreakpoint(BODY);
+  expect(bodies[0]).toEqual(cached);
   // The second send is the same body with the reply and the arm's answer to its read added.
   const { messages: sentMessages, ...sentFields } = bodies[1] ?? BODY;
-  const { messages: bodyMessages, ...bodyFields } = BODY;
+  const { messages: bodyMessages, ...bodyFields } = cached;
   expect(sentFields).toEqual(bodyFields);
   expect(sentMessages).toEqual([
     ...bodyMessages,
@@ -194,6 +240,10 @@ test("answers at most three rounds of skill reads; the reply after the last is t
   expect(MAX_SKILL_ROUNDS).toBe(3);
   expect(bodies).toHaveLength(4);
   expect(bodies.map((body) => body.messages.length)).toEqual([3, 5, 7, 9]);
+  // Every round keeps the one breakpoint on the body's own last block: the prefix all runs share.
+  for (const sent of bodies) {
+    expect(breakpointPaths(sent).sort()).toEqual(["messages.2.content.0", "system.0", "tools.10"]);
+  }
   expect(replayed.rounds).toBe(3);
   expect(replayed.step.message.stop_reason).toBe("tool_use");
   expect(replayed.usage).toHaveLength(4);
@@ -302,4 +352,64 @@ test("replay runs n replays, the first alone, and keeps each one's outcome", asy
     "Error: the model call failed: made up"
   );
   await expect(replay(BODY, arm, gateway, 0)).rejects.toThrow("1 or more, not 0");
+});
+
+test("withCacheBreakpoint puts one breakpoint on the last block and changes nothing else", () => {
+  const before = JSON.stringify(BODY);
+  // F2 holds two breakpoints, on its tools and its system prompt, and none in its messages.
+  expect(breakpointPaths(BODY).sort()).toEqual(["system.0", "tools.10"]);
+  const long = hourLong(BODY);
+  const cached = withCacheBreakpoint(long);
+  expect(breakpointPaths(cached).sort()).toEqual(["messages.2.content.0", "system.0", "tools.10"]);
+  expect(lastBlock(cached)).toMatchObject({ type: "tool_result" });
+  expect(lastBlock(cached).cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  // Byte for byte, the body less the breakpoint added is the body given, which is left as it was.
+  const back = copyOf(cached);
+  delete lastBlock(back).cache_control;
+  expect(JSON.stringify(back)).toBe(JSON.stringify(long));
+  expect(JSON.stringify(BODY)).toBe(before);
+  // After 5-minute breakpoints, as F2's own are, the one added is 5-minute too: a request may not
+  // hold an hour-long breakpoint after a shorter one.
+  expect(lastBlock(withCacheBreakpoint(BODY)).cache_control).toEqual({ type: "ephemeral" });
+});
+
+test("withCacheBreakpoint keeps at most four, dropping the earliest message ones first", () => {
+  const crowded = copyOf(hourLong(BODY));
+  crowded.messages[0].content[0].cache_control = { type: "ephemeral", ttl: "1h" };
+  crowded.messages[0].content[1].cache_control = { type: "ephemeral", ttl: "1h" };
+  crowded.messages[1].content[0].cache_control = { type: "ephemeral", ttl: "1h" };
+  const cached = withCacheBreakpoint(crowded);
+  expect(MAX_BREAKPOINTS).toBe(4);
+  expect(breakpointPaths(cached).sort()).toEqual([
+    "messages.1.content.0",
+    "messages.2.content.0",
+    "system.0",
+    "tools.10",
+  ]);
+  expect(breakpointPaths(crowded)).toHaveLength(5);
+
+  // Tools and a system prompt that hold four already leave no room: the body comes back as it is.
+  const full = copyOf(BODY);
+  for (const tool of full.tools.slice(0, 3)) tool.cache_control = { type: "ephemeral" };
+  expect(breakpointPaths(full)).toHaveLength(5);
+  expect(withCacheBreakpoint(full)).toBe(full);
+});
+
+test("withCacheBreakpoint does not add a second breakpoint to a last block that holds one", () => {
+  const marked = copyOf(BODY);
+  lastBlock(marked).cache_control = { type: "ephemeral" };
+  expect(withCacheBreakpoint(marked)).toBe(marked);
+  expect(breakpointPaths(withCacheBreakpoint(marked))).toHaveLength(3);
+
+  // With more than four, the earliest message breakpoint goes and the last block's own stays.
+  marked.messages[0].content[0].cache_control = { type: "ephemeral" };
+  marked.messages[0].content[1].cache_control = { type: "ephemeral" };
+  const cached = withCacheBreakpoint(marked);
+  expect(breakpointPaths(cached).sort()).toEqual([
+    "messages.0.content.1",
+    "messages.2.content.0",
+    "system.0",
+    "tools.10",
+  ]);
+  expect(lastBlock(cached).cache_control).toEqual({ type: "ephemeral" });
 });
