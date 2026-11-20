@@ -35,6 +35,10 @@ import (
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
+// operatorFileNamed is how every message names the operator file: by the setting that names it,
+// never by its path, as MachineFileNamed names the machine file.
+const operatorFileNamed = "the operator file AGENT_SECRETS_OPERATOR_FILE names (default ~/.config/agent-secrets/operator)"
+
 var errNoCredential = errors.New("no machine credential")
 
 func (b *Broker) noCredentialFailure() brokerclient.Failure {
@@ -252,16 +256,16 @@ type SignIns interface {
 // code and said are the answer's code and words, held as redact.RemoteText, which the helper acts
 // on and reads (HasCode, says) and which prints only the rule's reading of them, under every verb,
 // in JSON and in a log field. Beside an address that is not clean they print not at all: whoever
-// answers there can repeat the credential the address carries in any text it answers, so do sets
-// withheld, and the refusal prints as its status and brokeraddr.WordsNotPrinted, without its
-// code. A log line that names a code names one the helper matched against its own
-// (isLauncherInvalid, enrollmentNotLive, revokeOnce).
+// answers there can repeat the credential the address carries in any text it answers, so do and
+// oauthBrokerError set withheld, and the refusal prints as its status and
+// brokeraddr.WordsNotPrinted, without its code. A log line that names a code names one the helper
+// matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
 type BrokerError struct {
 	Status int
 	code   redact.RemoteText
 	said   redact.RemoteText
 	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision do made, read by Error.
+	// its text prints: the decision do or oauthBrokerError made, read by Error.
 	withheld bool
 }
 
@@ -314,15 +318,15 @@ func (e *BrokerError) says(phrase string) bool { return e.said.Contains(phrase) 
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
 // login, and the "operator" of an enrolment signed with the credential such a login minted,
 // which is the one launcher credential of the three the helper can hold whose operator it
-// learns from this file (enrolAuthority).
+// learns from this file (enrolAuthority). Its error names the file as operatorFileNamed.
 func (b *Broker) readOperator() (string, error) {
 	data, err := os.ReadFile(b.OperatorFile)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", b.OperatorFile, err)
+		return "", fileError("read", operatorFileNamed, err)
 	}
 	operator := strings.TrimSpace(string(data))
 	if operator == "" {
-		return "", fmt.Errorf("%s is empty", b.OperatorFile)
+		return "", fmt.Errorf("%s is empty", operatorFileNamed)
 	}
 	return operator, nil
 }
@@ -406,27 +410,46 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // as the rule for remote text reads them.
 //
 // An answer the redactor did not print as the answer - every answer beside an address that
-// carries a credential, which the broker or anyone answering for it can repeat back - stays as it
-// printed it, the failure's class and status: the code and description under it are the very text
-// it withheld, and a BrokerError made of them would print them all the same. The redactor printed
-// the answer exactly when its Cause, which is what it prints of the failure without a call's
-// operation and URL, is the answer's text as the rule reads it (redact.AnswerText). That holds
-// under a caller's %w too, whose words it drops while it still prints the answer, which is why
-// this asks the text and not whether Error answered err itself.
+// carries a credential, which the broker or anyone answering for it can repeat back, one with an
+// error_uri, and one with no error code - is still the broker's refusal, a BrokerError of its
+// status alone: no code and no word of its description, which are the very text the redactor
+// withheld, so no BrokerError holds a part of the credential either. Its words read
+// brokeraddr.WordsNotPrinted beside an address that is not clean, and are empty beside a clean
+// one, so a machine login's device authorization prints it as "broker <n>" and those words
+// (BrokerError.Error). requestReach.settle reads its status, so a 4xx refusal is reported as one
+// and not as an unknown outcome, and any other status, a 3xx or a 5xx, stays unknown; an answer
+// with no status stays as the redactor printed it. It reads the broker's own answer
+// (redact.BrokerAnswer), never errors.As, which also reaches an answer Class or Masked holds:
+// another server's, whose words they withheld; and it takes redact.OAuth2's split of the answer
+// only from the OAuthAnswer that holds that same answer.
+//
+// The redactor printed the answer exactly when its Cause, which is what it prints of the failure
+// without a call's operation and URL, is the answer's text as the rule reads it
+// (redact.AnswerText), not the answer's raw text (its Error). That holds under a caller's %w too,
+// whose words it drops while it still prints the answer, which is why this asks the text and not
+// whether Error answered err itself.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
-	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || addr.Cause(err).Error() != redact.AnswerText(re) {
+	re, ok := redact.BrokerAnswer(err)
+	if !ok {
 		return shown
 	}
 	status := 0
 	if re.Response != nil {
 		status = re.Response.StatusCode
 	}
+	if addr.Cause(err).Error() != redact.AnswerText(re) {
+		if status == 0 {
+			return shown
+		}
+		return newBrokerError(status, redact.RemoteText{}, redact.RemoteText{}, !addr.Clean())
+	}
 	code, message := redact.NewOAuthRefusal(re.ErrorCode, re.ErrorDescription)
 	var answer *redact.OAuthAnswer
 	if errors.As(err, &answer) {
-		code, message = answer.Refusal()
+		if held, _ := answer.Unwrap().(*oauth2.RetrieveError); held == re {
+			code, message = answer.Refusal()
+		}
 	}
 	return newBrokerError(status, code, message, false)
 }
@@ -699,7 +722,7 @@ func (b *Broker) Start(ctx context.Context) error {
 		return b.startIdentity(ctx)
 	}
 	if err := RemoveLeftoverMachineTemps(b.MachineFile); err != nil {
-		b.logger().Error("removing the temporary files an interrupted machine file save left", "machine_file", b.MachineFile, "error", err)
+		b.logger().Error("removing the temporary files an interrupted machine file save left", "machine_file", MachineFileNamed, "error", err)
 	}
 	f, err := LoadMachineFile(b.MachineFile)
 	sched := b.newRetrySchedule()
@@ -739,7 +762,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	b.credMu.Unlock()
 	if refusal == "" {
 		b.logger().Info("the helper resumed the machine login it kept", "credential_id", f.CredentialID,
-			"expires_at", f.ExpiresAt.Format(time.RFC3339), "machine_file", b.MachineFile)
+			"expires_at", f.ExpiresAt.Format(time.RFC3339), "machine_file", MachineFileNamed)
 	}
 	if first == 0 {
 		first = b.nextRefresh(b.refreshEveryOrDefault())
@@ -907,10 +930,10 @@ var (
 func (b *Broker) unsaveFile(cred *machineCredential, err error) {
 	b.unsaved = cred
 	if rerr := RemoveMachineFile(b.MachineFile); rerr != nil {
-		b.logger().Error(unsavedStuckMsg, "credential_id", cred.id, "machine_file", b.MachineFile, "error", errors.Join(err, rerr))
+		b.logger().Error(unsavedStuckMsg, "credential_id", cred.id, "machine_file", MachineFileNamed, "error", errors.Join(err, rerr))
 		return
 	}
-	b.logger().Error(unsavedRemovedMsg, "credential_id", cred.id, "machine_file", b.MachineFile, "error", err)
+	b.logger().Error(unsavedRemovedMsg, "credential_id", cred.id, "machine_file", MachineFileNamed, "error", err)
 }
 
 // retrySave saves cred, the unsaved login, and spends no rotation; a save that lands writes the
@@ -920,10 +943,10 @@ func (b *Broker) retrySave(cred *machineCredential) error {
 	err := b.saveFile(&MachineFile{Key: cred.key, CredentialID: cred.id, ExpiresAt: cred.expiresAt, RefreshToken: cred.refreshToken})
 	if err == nil {
 		b.unsaved = nil
-		b.logger().Info("the helper kept the machine login's refresh on disk", "credential_id", cred.id, "machine_file", b.MachineFile)
+		b.logger().Info("the helper kept the machine login's refresh on disk", "credential_id", cred.id, "machine_file", MachineFileNamed)
 		return nil
 	}
-	b.logger().Warn("the helper still cannot keep the machine login's refresh on disk; retrying the save", "credential_id", cred.id, "machine_file", b.MachineFile, "error", err)
+	b.logger().Warn("the helper still cannot keep the machine login's refresh on disk; retrying the save", "credential_id", cred.id, "machine_file", MachineFileNamed, "error", err)
 	return err
 }
 
@@ -1100,7 +1123,7 @@ func retryAfter(err error) time.Duration {
 // removeRefusedFile deletes the machine file of a login the broker refused to refresh.
 func (b *Broker) removeRefusedFile() {
 	if err := RemoveMachineFile(b.MachineFile); err != nil {
-		b.logger().Error("removing the refused machine login's file", "machine_file", b.MachineFile, "error", err)
+		b.logger().Error("removing the refused machine login's file", "machine_file", MachineFileNamed, "error", err)
 	}
 }
 
@@ -1173,7 +1196,7 @@ func (b *Broker) settleRefused(ctx context.Context, cred *machineCredential) err
 	f, refusal, err := b.redeem(ctx, cred)
 	switch {
 	case refusal != "":
-		b.logger().Error(dropRefreshRefused+"; removed the machine file", "credential_id", cred.id, "code", refusal, "machine_file", b.MachineFile)
+		b.logger().Error(dropRefreshRefused+"; removed the machine file", "credential_id", cred.id, "code", refusal, "machine_file", MachineFileNamed)
 		b.removeRefusedFile()
 		return nil
 	case err != nil:
@@ -1659,6 +1682,14 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
+		var refused *BrokerError
+		if !errors.As(err, &refused) {
+			// A failed exchange names its request URL, and this one ends in the id the caller
+			// gave, which for `unenroll --enrollment` is typed and was never accepted by the
+			// broker: a credential pasted in its place would print. The route names the call
+			// without it, and no Error, Cause or Class of the failure names the URL again.
+			err = b.URL.Named(err, http.MethodDelete+" "+b.URL.String()+"/v1/enrollments/(the enrollment id, not printed)")
+		}
 		err = reach.settle(err)
 		if cred == nil {
 			return err
@@ -1674,7 +1705,9 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 // own words (the answer's error) as the address lets them print (brokeraddr.Address.Words):
 // beside an address that is not clean, the broker, or whoever answers for that address, can
 // repeat the credential back in any text of its answer, so the refusal prints as its status alone
-// (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs.
+// (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs. An
+// accepted answer out cannot be decoded from is an error whose decoder text prints through Words
+// too, since the decoder quotes the answer's text.
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
@@ -1698,7 +1731,9 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 		return newBrokerError(resp.StatusCode, e.Code.WithoutTokens(carried...), e.Error.WithoutTokens(carried...), !b.URL.Clean())
 	}
 	if out != nil && len(data) > 0 {
-		return json.Unmarshal(data, out)
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("the broker's answer is not the JSON the helper reads: %s", b.URL.Words(err.Error()))
+		}
 	}
 	return nil
 }

@@ -128,8 +128,13 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 				t.Errorf("the refusal's BrokerError prints %q: %+v", marker, be)
 			}
 		}
-		if err.Error() != "the broker answered HTTP 400" {
-			t.Errorf("the refusal is %q, want the status the broker answered", err)
+		// Still the broker's refusal, of its status alone: not an unknown outcome, and no word of it.
+		var be *BrokerError
+		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.code.IsEmpty() || err.Error() != "broker 400: "+brokeraddr.WordsNotPrinted {
+			t.Errorf("the refusal is %q, want the broker's 400 as a refusal of its status alone", err)
+		}
+		if outcomeUnknown(err) {
+			t.Errorf("the refusal is %q, which reads as an unknown outcome", err)
 		}
 	})
 
