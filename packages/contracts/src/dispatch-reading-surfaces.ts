@@ -107,6 +107,8 @@ export type DispatchReadingSurface =
   | "ref-picker-row-label"
   | "agent-message-issue-option"
   | "issue-page-title"
+  | "node-row-words"
+  | "node-row-child-title"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -399,7 +401,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "broadcasts-list-body",
   },
   // The Answers page: the subject a row answers, the options an answer chose, the answer, and
-  // the reply that carried it.
+  // the reply that carried it. The options an answer chose are drawn the same way on the new
+  // issue page, under the question of an ask that offers no list to mark them in.
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
     reach: "/answers, a row's subject line",
@@ -415,7 +418,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "answers-answer",
   },
   {
-    files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/answers/AnswersPage.tsx",
+      "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+    ],
     reach: "/answers, a row's chosen options",
     record: true,
     rendered: true,
@@ -501,6 +507,27 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "reply-quote",
   },
+  // The new issue page's outline: the words a node's row draws - its own text, and the answer an
+  // ask carries under its question - and a child issue's row, which is its title.
+  {
+    cannotCarry: {
+      forms: ["question-id"],
+      why: "A row reads no question map: a `#id` is read against its document's questions, one read for each document, which a row of the outline does not make (`row-references.ts`), so it is drawn as written.",
+    },
+    files: ["packages/dispatch/web/src/features/issue-page/RowText.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page on, a comment's row in the outline",
+    record: true,
+    rendered: true,
+    surface: "node-row-words",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page on, a child issue's row",
+    reason: `${NO_MARKUP_REASON} A child issue's row is its title, which is that one line, as the title bar's is (\`issue-page-title\`).`,
+    record: false,
+    rendered: false,
+    surface: "node-row-child-title",
+  },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
   {
@@ -562,8 +589,12 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "resolved-ask",
   },
+  // An ask's options, on its card and under its question on the new issue page's row.
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskOptionRow.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/inbox/AskOptionRow.tsx",
+      "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+    ],
     reach: "/, an ask option's label and description",
     record: true,
     rendered: true,
@@ -670,11 +701,14 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "item-match-first-line",
   },
-  // A decision's heading, where it names a write, a form or a card, or words a link.
+  // A decision's heading, where it names a write, a form or a card, or words a link: on the
+  // Decisions panel, on a margin card, and in the Keep and the Change of a decision's row on the
+  // new issue page.
   {
     files: [
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
+      "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
     ],
     proof: {
       file: "packages/dispatch/web/src/features/margin/DecisionCard.test.tsx",

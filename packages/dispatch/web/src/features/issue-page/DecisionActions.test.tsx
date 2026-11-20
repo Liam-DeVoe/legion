@@ -1,4 +1,5 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,9 +11,13 @@ import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api
 import {
   borderDefault,
   dangerText,
+  inputClasses,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
@@ -354,6 +359,75 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
     }
   } finally {
     createComment.mockRestore();
+  }
+});
+
+// The Change's box is the field every box a person writes a comment in mounts, with the
+// reference picker in it (the writing list's `decisions-change`), and the line under it is that
+// row's own words. Inside `NoTooltips` it takes the page's shape - its box, its name and that
+// line in the page's own colours, no `title` anywhere, and no face of its own, so it is drawn in
+// the page's typeface - and outside it the field keeps its own box.
+test("the Change's box is the shared field, in the page's shape inside NoTooltips", async () => {
+  for (const surface of ["page", "main"] as const) {
+    const user = userEvent.setup();
+    const { unmount } = renderActions(read, DOCUMENT_TEXT, { page: surface === "page" });
+    try {
+      await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+      const box = screen.getByLabelText(CONTROL_LABELS.your_change);
+      const hint = document.getElementById(
+        box.getAttribute("aria-describedby")?.split(" ")[0] ?? ""
+      );
+      expect(hint?.textContent).toBe(dispatchWritingBox("decisions-change", "comment").hint);
+      const name = box.closest("label");
+      if (surface === "page") {
+        expect(wears(box, pageHairBorder, pagePaperBg, pageInkText), "the box's colours").toBe(
+          true
+        );
+        expect(wears(box, inputClasses(true)), "the box draws main's colours").toBe(false);
+        expect(name !== null && wears(name, pageMutedText), "the name's colour").toBe(true);
+        expect(hint !== null && wears(hint, pageMutedText), "the line's colour").toBe(true);
+        const form = box.closest("form");
+        expect(
+          form?.querySelectorAll("[title]").length,
+          "an element of the form sets a title"
+        ).toBe(0);
+        const faces = [form, ...(form?.querySelectorAll("*") ?? [])].filter((element) =>
+          [...(element?.classList ?? [])].some((one) => /^font-(?:sans|serif|mono)$/u.test(one))
+        );
+        expect(faces.length, "an element of the form draws in a face of its own").toBe(0);
+      } else {
+        expect(wears(box, inputClasses(true)), "the box keeps the field's own").toBe(true);
+      }
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// A write's label and a form's name hold no markup, so Keep's write and the Change form are
+// named after the heading's plain words, as the Decisions panel names its own (the reading
+// list's `decision-heading-words`), and never after its markdown.
+test("the Change form is named after the heading's plain words", async () => {
+  const text = "## **One** tree, five presets\n\nThe presets are queries over the one tree.";
+  const marked: Decision = {
+    ...decision,
+    heading: "**One** tree, five presets",
+    text,
+    text_tree: displayTree(text),
+  };
+  const user = userEvent.setup();
+  const { unmount } = renderActions({ ...read, decisions: [marked] }, DOCUMENT_TEXT, {
+    page: true,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    expect(
+      await screen.findByRole("form", {
+        name: `${CONTROL_LABELS.change_decision} One tree, five presets`,
+      })
+    ).toBeTruthy();
+  } finally {
+    unmount();
   }
 });
 

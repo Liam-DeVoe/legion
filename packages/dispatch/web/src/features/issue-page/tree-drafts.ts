@@ -818,8 +818,14 @@ function addAsks(
       draft.options = (ask.options ?? []).map((option) => ({
         ...(option.description === undefined || option.description === ""
           ? {}
-          : { description: option.description }),
+          : {
+              description: option.description,
+              ...(option.description_tree === undefined
+                ? {}
+                : { descriptionTree: option.description_tree }),
+            }),
         label: option.label,
+        ...(option.label_tree === undefined ? {} : { labelTree: option.label_tree }),
       }));
     }
     if (ask.multiple) draft.multiple = true;
@@ -845,13 +851,16 @@ function addAsks(
 }
 
 /** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
- *  through where they did, and their choices and words as stored. */
-function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
+ *  through where they did, and their choices and words as stored, with the server's reading of
+ *  each where the read sent one. */
+function answerOf(answer: NonNullable<TreeAsk["answer"]>): NodeAnswer {
   return {
     at: answer.at,
     by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
     selected: answer.selected ?? [],
+    ...(answer.selected_trees === undefined ? {} : { selectedTrees: answer.selected_trees }),
     text: answer.text ?? "",
+    ...(answer.text_tree === undefined ? {} : { textTree: answer.text_tree }),
   };
 }
 

@@ -867,6 +867,76 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   }
 });
 
+/** A live session a chip names, and the path of its live view. */
+const AGENT_SESSION = "7c0f3a52-5d0e-4b8e-9a51-2f4d6c8e1b90";
+const AGENT_CHIP: NodeChip = {
+  answered: true,
+  gone: false,
+  name: "Planner",
+  ref: `dispatch://agent/${AGENT_SESSION}`,
+};
+
+/** The address a reference to a person is written as: no page shows one (R5). */
+const PERSON_REFERENCE = "dispatch://person/alice@example.com";
+
+// R5: no page shows a person, so a chip that names one draws its words as text with no link, as
+// a chip whose target nothing answers to does; an agent's chip beside it is the link to that
+// agent's live view.
+test("a chip naming a person draws its words with no link, beside an agent's chip that links", () => {
+  const view = renderRow(
+    node({
+      chips: [
+        { answered: true, gone: false, name: "alice@example.com", ref: PERSON_REFERENCE },
+        AGENT_CHIP,
+      ],
+      id: "decisions-md#b-d1",
+      text: "Keep one reading.",
+      type: "decision",
+    }),
+    { body: false }
+  );
+  try {
+    const [person, agent] = view.container.querySelectorAll("[data-node-chip]");
+    expect(person?.textContent).toBe("alice@example.com");
+    expect(person?.querySelector("a"), "a person's chip links to a page no one shows").toBeNull();
+    expect(agent?.querySelector("a")?.getAttribute("href")).toBe(`/agents/${AGENT_SESSION}/live`);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and R5: a filter's row names its parent on one line, as the link to it; a parent that is a
+// person, whom no page shows, is named by its words with no link, while an agent's chip on the
+// same row is the link to that agent's live view.
+test("a parent line naming a person draws its words with no link, beside an agent's chip that links", () => {
+  const view = renderRow(
+    node({
+      chips: [AGENT_CHIP],
+      id: "comment-1",
+      parentLine: {
+        id: "person-alice",
+        line: "alice@example.com",
+        reference: PERSON_REFERENCE,
+        type: "comment",
+      },
+      text: "Keep one reading.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const parent = view.container.querySelector("[data-node-parent-line]");
+    expect(parent?.textContent).toContain("alice@example.com");
+    expect(parent?.querySelector("a"), "a person's parent line is a link").toBeNull();
+    expect(
+      view.container.querySelector("[data-node-chip] a")?.getAttribute("href"),
+      "the agent's chip on the same row is no link to its live view"
+    ).toBe(`/agents/${AGENT_SESSION}/live`);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The names the page's one batched read brought, and the references it read as ambiguous,
  *  published as the page publishes them. */
 function Named({
@@ -1363,7 +1433,16 @@ test("an option's press keeps the focus, and only a waiting question's are in th
       type: "ask",
       waiting,
     });
-  const view = render(<NodeOptions body={false} node={asked(true)} writer={writer} />);
+  // Each option's words are drawn by the renderer, which reads what they cite through the query
+  // client, so the options are drawn under one, as the page draws them.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const drawOptions = (waiting: boolean) =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NodeOptions body={false} node={asked(waiting)} writer={writer} />
+      </QueryClientProvider>
+    );
+  const view = drawOptions(true);
   try {
     const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
     expect(option).not.toBeNull();
@@ -1381,7 +1460,7 @@ test("an option's press keeps the focus, and only a waiting question's are in th
   } finally {
     view.unmount();
   }
-  const other = render(<NodeOptions body={false} node={asked(false)} writer={writer} />);
+  const other = drawOptions(false);
   try {
     const option = other.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
     expect(option?.className).toContain("text-page-quiet");
@@ -1653,7 +1732,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "A reply on its way", mentions: [], replacement: "" },
+    draft: { body: "A reply on its way", replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

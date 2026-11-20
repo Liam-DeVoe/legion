@@ -1681,6 +1681,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "first.reason",
   },
   {
+    file: `${FEATURES}/issue-page/NodeRow.tsx`,
+    holds: "whether the reader picked this option: a boolean, drawn nowhere",
+    written: "picks.includes(option.label)",
+  },
+  {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,
     holds: "the assignee badge's text colour, a class of the theme's badge tone",
     written: "tone.text",

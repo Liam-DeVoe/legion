@@ -29,8 +29,9 @@ import {
 } from "./row-references";
 
 /**
- * A node's own text, as its row in the outline draws it (R16, R20, R34),
- * in the size and the colour of the words it is drawn among.
+ * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
+ * answer an ask's row carries (`NodeRow.tsx`'s `AskAnswer`), in the size and the colour of the
+ * words it is drawn among.
  *
  * A text whose read sent the server's reading of it (`tree`) is drawn from that reading, with
  * the renderer every other surface draws a stored text with (`MarkdownBody`): a heading, bold
@@ -501,6 +502,7 @@ function DrawnText({
           onRendered={link}
           referenceText=""
           source={source}
+          surface="node-row-words"
           tree={tree}
         />
       </TextAskCard.Provider>

@@ -142,8 +142,13 @@ export interface NodeAnswer {
   readonly by: Actor;
   /** The options they chose, each as the ask's own words name it. */
   readonly selected: readonly string[];
+  /** The server's reading of each of `selected`, at the same index, where the read sent one: the
+   *  label as the answer took it, which the ask may have renamed since. */
+  readonly selectedTrees?: readonly DisplayTree[];
   /** What they wrote, as stored; `""` where they wrote nothing beside their choice. */
   readonly text: string;
+  /** The server's reading of `text`, where the read sent one. */
+  readonly textTree?: DisplayTree;
 }
 
 /**
@@ -162,10 +167,13 @@ export interface NodeFact {
   readonly value: string;
 }
 
-/** One choice an ask offers, as the ask's own words name it (`AskOption`). */
+/** One choice an ask offers, as the ask's own words name it (`AskOption`), with the server's
+ *  reading of each of its texts where the read sent one. */
 export interface NodeOption {
   readonly description?: string;
+  readonly descriptionTree?: DisplayTree;
   readonly label: string;
+  readonly labelTree?: DisplayTree;
 }
 
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
@@ -320,8 +328,10 @@ export interface DocumentBlocks {
 }
 
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
- *  server's reading of the question beside it, which `Ask` leaves out. */
-export type TreeAsk = Ask & Pick<AskWithTrees, "question_tree">;
+ *  server's reading of the question, of each option's label and description and of the answer
+ *  beside them, which `Ask` leaves out. */
+export type TreeAsk = Omit<Ask, "answer" | "options"> &
+  Pick<AskWithTrees, "answer" | "options" | "question_tree">;
 
 /** The page's reads, as one value. Every field but the issue is optional, because the tree draws
  *  from the reads that have answered rather than waiting for the last of them. */
