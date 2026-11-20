@@ -30,6 +30,7 @@ a module Python has finished loading by then.
 import json
 import posixpath
 import re
+import shlex
 from collections import defaultdict
 from functools import cache
 
@@ -546,11 +547,11 @@ DAEMON_MODULE = "packages/daemon"
 PRIVATE_PROC = ".github/scripts/private_proc.py"
 PRIVATE_PROC_OPTIONS = frozenset({"--sudo"})
 # What splits a script line into the commands this rule reads one at a time, each kept: bash's &&,
-# ||, ;, | and &, and the parentheses of a subshell. A quote and a backtick are read as spaces, so a
-# go test a quoted script runs (`bash -c 'go test ./...'`) is a command of the line too, and so is
-# one a command substitution runs: its `$(` and the `)` that closes it are read as spaces too.
+# ||, ;, | and &, and the parentheses of a subshell. shell_commands reads quote-aware words
+# first, so a `|` inside a quoted -run selector stays a word rather than a pipeline separator. A
+# command substitution's `$(` and the `)` that closes it are read as spaces, so a go test it runs
+# is read as a command too.
 SEPARATOR = re.compile(r"(&&|\|\||[;|&()])")
-QUOTE = re.compile(r"['\"`]")
 # The commands that read a test binary's name without running it. Any other command that names
 # one, however it takes its options (env, timeout, setsid, stdbuf, nohup, bash -c, ...), runs it.
 NAME_READERS = frozenset({"rm", "cp", "mv", "ls", "ln", "chmod", "chown", "mkdir", "touch", "cat", "file", "stat",
@@ -653,6 +654,50 @@ def without_substitutions(text: str) -> str:
     return "".join(out)
 
 
+def shell_commands(text: str) -> list[str]:
+    """text split into shell commands and separators. shlex keeps a quoted word whole, so
+    `go test -run 'Test|Example' ../daemon` is one command rather than two commands split at the
+    selector's `|`; punctuation_chars holds only the shell separators this rule follows."""
+    try:
+        lexer = shlex.shlex(without_substitutions(text), posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split, lexer.commenters = True, ""
+        words = list(lexer)
+    except ValueError:
+        # A script Bash itself cannot parse runs no test. Keep it whole here rather than pretend
+        # an unquoted punctuation character made commands it did not.
+        return [text.strip()] if text.strip() else []
+    commands, words_of_one = [], []
+    for word in words:
+        punctuation = shell_separators(word)
+        if punctuation is not None:
+            if words_of_one:
+                commands.append(" ".join(words_of_one))
+                words_of_one = []
+            commands.extend(punctuation)
+        else:
+            words_of_one.append(word)
+    if words_of_one:
+        commands.append(" ".join(words_of_one))
+    return commands
+
+
+def shell_separators(word: str) -> list[str] | None:
+    """The separators in one shlex punctuation word, or None when word is not punctuation. shlex
+    returns a run such as `);` as one word, while Bash executes its close and its next-command
+    separator apart."""
+    if not word or set(word) - set(";&|()"):
+        return None
+    separated, at = [], 0
+    while at < len(word):
+        if word[at:at + 2] in ("&&", "||"):
+            separated.append(word[at:at + 2])
+            at += 2
+        else:
+            separated.append(word[at])
+            at += 1
+    return separated
+
+
 def names_daemon(directory: str, package: str) -> bool | None:
     """Whether a package argument of a go test run in directory names a package of the daemon
     module; None when the rule cannot read it (a variable, a substitution, an absolute path, which
@@ -752,10 +797,9 @@ def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
                 directory: str | None = step_workdir(document, job, step)
                 pushed: list[str | None] = []
                 built: dict[str, bool | None] = {}
+                subshells: list[str | None] = []
                 for line in script_lines(script.replace("\\\n", " ")):
-                    tokens = [token.strip() for token in SEPARATOR.split(QUOTE.sub(" ", without_substitutions(line)))]
-                    tokens = [token for token in tokens if token]
-                    subshells: list[str | None] = []
+                    tokens = shell_commands(line)
                     listed: list[str] | None = None
                     for at, token in enumerate(tokens):
                         if token == "(":

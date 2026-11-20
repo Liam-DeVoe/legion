@@ -2612,6 +2612,16 @@ rule21_refuses daemon-timeout-binary "a test binary behind a runner, timeout" pa
 rule21_refuses daemon-cd-unknown "a go test after a cd to a directory named by a variable" . 'cd "$DAEMON" && go test ./...' "a directory a cd made unknown"
 rule21_refuses daemon-semicolon "a -c build and a run split by ; rather than &&" packages/daemon "go test -c -o /dev/null ./... ; go test -count=1 ./..." packages/daemon
 
+rule21_refuses daemon-quoted-run-alternation "a quoted -run alternation before a daemon package" packages/envoy "go test -run 'Test|Example' ../daemon/internal/launcher" "packages/envoy, whose packages are the daemon's,"
+
+echo "case: a multiline subshell restores the directory for the command after it"
+root=$(fixture daemon-multiline-subshell)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon" $'(\n  cd ../envoy\n  go test ./...\n)\ngo test ./...' packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the daemon test after the closing parenthesis" \
+  "$(has "$out" "step \"Test the daemon\" runs \`go test ./...\` in packages/daemon $rule21")"
 echo "case: the forms beside those that run no daemon test binary outside the wrapper pass rule 21"
 root=$(fixture daemon-quiet-forms)
 daemon_workspace "$root"
