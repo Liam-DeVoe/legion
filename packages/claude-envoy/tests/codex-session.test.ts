@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test"
+import { afterEach, describe, expect, jest, test } from "bun:test"
 import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
@@ -31,6 +31,12 @@ import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user
 import { FakeNats } from "./channel-session-harness"
 
 const directory = temporaryDirectory("codex-session")
+
+// The live view's retake row holds Bun's fake clock. A row that fails, or that the command's guard
+// ends, never reaches the rest of its body, so the real clock comes back here, before the next row.
+afterEach(() => {
+  jest.useRealTimers()
+})
 
 describe("the Codex session record", () => {
   test("is written whole and read back; a missing or foreign file reads as none", async () => {
@@ -467,42 +473,39 @@ describe("the Codex live view", () => {
     expect(takes(subject)).toBe(1)
 
     // The retake is a timer of the view's own (`RESUBSCRIBE_MS`, a second), so from here the row
-    // runs on Bun's fake clock and moves it itself.
+    // runs on Bun's fake clock and moves it itself. The file's `afterEach` gives the real clock back.
     jest.useFakeTimers()
-    try {
-      // Ended on a live connection: taken again at the second, and not a millisecond before.
-      nats.failSubscription(subject, refusal)
-      await turn()
-      jest.advanceTimersByTime(999)
-      await turn()
-      expect(takes(subject)).toBe(1)
-      jest.advanceTimersByTime(1)
-      await turnsUntil("the control subject taken again", () => takes(subject) === 2)
-      expect(nats.liveSubscriptions(subject)).toBe(1)
 
-      // Ended again, and a `/new` lands while the retake waits: the old id is not taken again.
-      nats.failSubscription(subject, refusal)
-      await turn()
-      jest.advanceTimersByTime(100)
-      stream.rebind("s16")
-      expect(takes(renewed)).toBe(1)
-      jest.advanceTimersByTime(1_400)
-      await turn()
-      expect(takes(subject)).toBe(2)
-      expect(takes(renewed)).toBe(1)
+    // Ended on a live connection: taken again at the second, and not a millisecond before.
+    nats.failSubscription(subject, refusal)
+    await turn()
+    jest.advanceTimersByTime(999)
+    await turn()
+    expect(takes(subject)).toBe(1)
+    jest.advanceTimersByTime(1)
+    await turnsUntil("the control subject taken again", () => takes(subject) === 2)
+    expect(nats.liveSubscriptions(subject)).toBe(1)
 
-      // Ended again, and the view stops while the retake waits: nothing is taken again.
-      nats.failSubscription(renewed, refusal)
-      await turn()
-      jest.advanceTimersByTime(100)
-      stream.stop()
-      jest.advanceTimersByTime(1_400)
-      await turn()
-      expect(takes(renewed)).toBe(1)
-      expect(nats.liveSubscriptions(renewed)).toBe(0)
-    } finally {
-      jest.useRealTimers()
-    }
+    // Ended again, and a `/new` lands while the retake waits: the old id is not taken again.
+    nats.failSubscription(subject, refusal)
+    await turn()
+    jest.advanceTimersByTime(100)
+    stream.rebind("s16")
+    expect(takes(renewed)).toBe(1)
+    jest.advanceTimersByTime(1_400)
+    await turn()
+    expect(takes(subject)).toBe(2)
+    expect(takes(renewed)).toBe(1)
+
+    // Ended again, and the view stops while the retake waits: nothing is taken again.
+    nats.failSubscription(renewed, refusal)
+    await turn()
+    jest.advanceTimersByTime(100)
+    stream.stop()
+    jest.advanceTimersByTime(1_400)
+    await turn()
+    expect(takes(renewed)).toBe(1)
+    expect(nats.liveSubscriptions(renewed)).toBe(0)
   })
 })
 

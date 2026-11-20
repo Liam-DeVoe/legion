@@ -22,8 +22,9 @@ import {
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
-// in its directory slows that removal. A server's stop alone may take 5 s, SIGTERM to its SIGKILL
-// (`CodexServer.stop`), which the command's guard covers.
+// in its directory slows that removal. A server's stop waits for its exit on SIGTERM
+// (`CodexServer.stop`), and a server that has not exited by this hook's deadline fails it, naming
+// that exit, and is killed.
 afterEach(async () => {
   for (const stop of stops.splice(0).reverse()) await stop()
 })

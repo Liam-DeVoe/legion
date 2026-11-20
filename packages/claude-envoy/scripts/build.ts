@@ -26,7 +26,7 @@ import { thirdPartyNotices } from "../../../scripts/third-party-notices"
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 
 /** How long a refusing build gives stderr to take the line that says why before it exits whatever
- *  is still queued (`exitProcess`). What stops this process is CI's `timeout-minutes: 10` on the
+ *  is still queued (`exitProcess`). What stops this process is CI's `timeout-minutes: 13` on the
  *  claude-envoy job that runs it (`.github/workflows/ci-job-claude-envoy.yaml`), the release
  *  job's own, or a person's ^C: a refusal comes before any build work, so 5 s is far inside
  *  each. */

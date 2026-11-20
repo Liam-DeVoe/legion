@@ -13,7 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { until as sharedUntil } from "@legion/test-fixtures/wait"
+import { settled, until as sharedUntil } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import {
   codexSessionRecordFile,
@@ -27,7 +27,8 @@ export interface CodexServer {
   readonly process: Subprocess<"pipe", "pipe", "pipe">
   /** Everything the server has written to stderr so far. */
   stderr(): string
-  /** Stops the server: SIGTERM, then SIGKILL after 5 s. */
+  /** Stops the server: SIGTERM, then the shared wait for its exit, which ends at the deadline of
+   *  the row or hook that stops it, naming the exit; a server still running then is killed. */
   stop(): Promise<void>
 }
 
@@ -94,9 +95,14 @@ export function startCodexServer(env: Record<string, string>, pluginRoot: string
     stderr: () => stderr,
     stop: async () => {
       child.kill("SIGTERM")
-      const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(5_000)])
-      if (exited !== true) child.kill("SIGKILL")
-      await child.exited
+      try {
+        await settled("the Codex server's exit on SIGTERM", child.exited)
+      } finally {
+        // A server still running when the deadline passed goes too, rather than outliving the
+        // run (a no-op for one that exited).
+        child.kill("SIGKILL")
+        await child.exited
+      }
     },
   }
 }
