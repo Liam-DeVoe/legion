@@ -362,16 +362,19 @@ class Site:
     fakes: frozenset = frozenset()
 
 
-def _fakes(shell, word: str) -> frozenset:
-    """The commands a text puts first on the PATH it gives the command `word` runs: each file it
-    writes into the directory that PATH names first. autodeploy_test.sh writes its fake docker to
-    "$bin/docker" (its line 55, `cat >"$bin/docker"`) and runs autodeploy.sh under
+def _fakes(shell) -> frozenset:
+    """The commands a text puts first on a PATH it sets: each file it writes into the directory that
+    PATH names first, where the PATH is set before a command (`PATH="$bin:$PATH" cmd`, `env -u X
+    PATH=… cmd`) or by an assignment (`export PATH="$bin:$PATH"`). autodeploy_test.sh writes its
+    fake docker to "$bin/docker" (its line 55, `cat >"$bin/docker"`) and runs autodeploy.sh under
     `PATH="$bin:$PATH"` (its line 334), so in envoy-go-checks every docker call of autodeploy.sh
-    reaches that fake and no registry. In the script `word` runs, and the scripts that one runs in
+    reaches that fake and no registry; airlock-check.test.sh fakes curl the same way for the k7
+    consumers it sources. In the scripts such a text runs or sources, and the scripts those run in
     turn, a command of such a name is the fake and no install; every other command is read as
-    anywhere else. A directory the PATH names after the runner's own is no fake's: the real
-    command comes first there."""
-    firsts = {value.split(":", 1)[0] for command, value in shell.paths if command == word}
+    anywhere else. A directory a PATH names after the runner's own is no fake's: the real command
+    comes first there."""
+    values = [value for _, value in shell.paths] + [value for name, value in shell.assignments if name == "PATH"]
+    firsts = {value.split(":", 1)[0] for value in values}
     return frozenset(posixpath.basename(target) for target in shell.writes
                      if posixpath.dirname(target) and posixpath.dirname(target) in firsts)
 
@@ -820,7 +823,7 @@ class NetworkInstalls:
                                        via=f"{site.via}, in {script}, which {parent} runs,".replace(",,", ","),
                                        label=site.label, base=site.base, script=script, image=site.image,
                                        workdir=site.workdir, files=site.files, action=site.action,
-                                       fakes=site.fakes | _fakes(shell, words[0])),
+                                       fakes=site.fakes | _fakes(shell)),
                                   read_repository_text(REPO / script), wrapped, seen, known)
                 elif script is None and _unfound_script(words[0], site):
                     unfound.append(words[0])

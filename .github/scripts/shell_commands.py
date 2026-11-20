@@ -240,8 +240,8 @@ class Scanner:
                     self.assignments.append((name, value))
             return
         prefix = words[1:] if words[0] == "env" else words
-        while prefix and prefix[0].startswith("-"):
-            prefix = prefix[1:]
+        while words[0] == "env" and prefix and prefix[0].startswith("-"):
+            prefix = prefix[2:] if prefix[0] in ("-u", "--unset", "-C", "--chdir") else prefix[1:]
         for index, word in enumerate(prefix):
             if not ASSIGNMENT.match(word):
                 self.paths += [(word, value.partition("=")[2]) for value in prefix[:index]
