@@ -205,6 +205,16 @@ func (c *keptCuts) check(where string) {
 	}
 }
 
+// wantCount stops t when the list called name holds got entries, not the want listed with it. A
+// check of each entry cannot see the list emptied or short, and the rows that cut over the list
+// would then cut over fewer entries and still pass; unseen says what they would leave out.
+func wantCount(t *testing.T, name string, got, want int, entries, unseen string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s holds %d %s, not the %d listed above, so %s", name, got, entries, want, unseen)
+	}
+}
+
 // spanRunes lists the code points of each range of bounds, given as its first and its last.
 func spanRunes(bounds ...rune) []rune {
 	var runes []rune
@@ -305,25 +315,39 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // run between one letter and up to four or between two quarters of the length, two of the
 // character between two halves, the run alone, the character once first, last, in the middle, or
 // with up to 63 letters on one side and the rest on the other, and the character once and a run
-// first or last at one more place for each length, a share of the value's places that moves along
-// it as the lengths run, in the seventh row as in the others. They cut each pair once
-// (answersSlices), which catches a copy keyed on what the value
-// holds; a third cuts the values of each kind they hold 22 times, at each edge of the ranges of
-// lengths the rows hold and one byte each side of it, and at 500 and 1,000 bytes and one byte each
-// side, which catches a copy keyed on how many times a pair was cut. A copy keyed on a value with
-// two runs of wider characters or more, such as one at each end, or with characters of two widths
-// besides letters, can pass, and so can a copy keyed on a run between two stretches of letters
-// (say, ten letters, a run of three, then 5,000 letters), or on a count of letters beside one run
-// or the character once at lengths where the rows do not put it (say, the character once after
-// exactly 100 letters, in values of 5,000 bytes only), and a copy keyed on how many times a pair
-// was cut or an allocation HeadRunes does not return, each keyed too on lengths inside a range,
-// away from its edges and from the third row's lengths (from 1,100 to 1,900 bytes, say). The last
-// rows hold values longer than five bytes, each cut to a slice with no copy, up to 32,000
-// characters, the most an embedding input keeps. Among them, a cut after characters outside the
-// BMP fails a count of UTF-16 units, and a cut before a combining mark fails a count that keeps a
-// mark with its letter.
+// first or last at one more place for each length, which the length's place in its row spreads
+// evenly over the value in every row (lengthPairs says how). They cut each pair once
+// (answersSlices), which catches a copy keyed on what the value holds; a third cuts the values of
+// each kind they hold 22 times, at each edge of the ranges of lengths the rows hold and one byte
+// each side of it, and at 500 and 1,000 bytes and one byte each side, which catches a copy keyed
+// on how many times a pair was cut. Two more put the character once at every place, and a run
+// beside every count of letters on one side of it: one cuts those pairs 22 times at each length
+// the third cuts up to 2,005 bytes, the 2,000 characters a document edit reads back among them,
+// and the other once at 5,000 bytes, at 8,001, where the seventh row ends, and at 8,033, where the
+// eighth starts. A copy keyed on a value with two runs of wider characters or more, such as one at
+// each end, or with characters of two widths besides letters, can pass, and so can a copy keyed on
+// a run between two stretches of letters (say, ten letters, a run of three, then 5,000 letters),
+// or on a count of letters beside one run or the character once at a length that no row cuts at
+// every place, where the length rows put it at a few places only (say, the character once after
+// exactly 100 letters, in values of 4,999 bytes only, or of 127,919), and a copy keyed on how
+// many times a pair was cut or an allocation HeadRunes does not return, each keyed too on lengths
+// inside a range, away from its edges and from the lengths the rows that cut 22 times hold (from
+// 1,100 to 1,900 bytes, say), or keyed on how many times a pair was cut and on a place of one run
+// or the character once that only the first two length rows hold, at a length of 8,000 bytes or
+// more (say, from a pair's second call on, the character once after 80 to 100 letters, in values
+// of 8,001 bytes only). Each list of inputs that the test writes out stops it, naming the list,
+// when the list holds another count of entries than the one written with it, since the rows would
+// otherwise cut over fewer entries and still pass. The last rows hold values longer than five
+// bytes, each cut to a slice with no copy, up to 32,000 characters, the most an embedding input
+// keeps. Among them, a cut after characters outside the BMP fails a count of UTF-16 units, and a
+// cut before a combining mark fails a count that keeps a mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
+	// The first row builds its values of the alphabet's bytes, and the seeded row of those bytes
+	// and headRunesCharacters, so a byte or a character taken out would leave each value that
+	// holds it unbuilt, and both rows would still pass.
+	wantCount(t, "headRunesAlphabet", len(headRunesAlphabet), 12, "bytes", "the first two rows would build their values of fewer bytes")
+	wantCount(t, "headRunesCharacters", len(headRunesCharacters), 5, "characters", "the seeded row would build its values of fewer characters")
 	var values []string
 	for length := 0; length <= longest; length++ {
 		count := 1
@@ -410,7 +434,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		const characters = 2001
 		differ, cuts := 0, 0
 		var sliced []pair
-		for _, kind := range []string{"\xff", "\uFFFD", "é", "界", "\U0001F54C", "\u0301"} {
+		kinds := []string{"\xff", "\uFFFD", "é", "界", "\U0001F54C", "\u0301"}
+		wantCount(t, "kinds", len(kinds), 6, "characters", "the row would put fewer kinds of character at each place")
+		for _, kind := range kinds {
 			for place := range characters {
 				value := strings.Repeat("a", place) + kind + strings.Repeat("a", characters-1-place)
 				around := []int{place - 1, place, place + 1, place + 2, characters - 1}
@@ -456,9 +482,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	}
 	// The fifth row checks each linker the list holds, so it cannot see the list emptied or short;
 	// the fourth and fifth rows would then cut after fewer linkers and still pass.
-	if len(linkers) != 23 {
-		t.Fatalf("linkers holds %d strings, not the 23 listed above, so the fourth and fifth rows would cut after fewer linkers", len(linkers))
-	}
+	wantCount(t, "linkers", len(linkers), 23, "strings", "the fourth and fifth rows would cut after fewer linkers")
 	// letters holds the letters of each script of Go's tables, under the script's name.
 	letters := map[string][]rune{}
 	for name, table := range unicode.Scripts {
@@ -480,9 +504,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	}
 	// joined below holds the marks of Go's tables too, so its check alone cannot see others empty or
 	// short; the fifth and sixth rows would then cut before fewer of the 107 and still pass.
-	if len(others) != 107 {
-		t.Fatalf("others holds %d code points, not the 107 listed above, so the fifth and sixth rows would cut before fewer of them", len(others))
-	}
+	wantCount(t, "others", len(others), 107, "code points", "the fifth and sixth rows would cut before fewer of them")
 	joins := func(r rune) bool { return unicode.Is(unicode.M, r) || others[r] }
 	var joined []rune
 	for r := rune(0); r <= unicode.MaxRune; r++ {
@@ -510,6 +532,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			// GB11: a pictograph and a zero-width joiner. GB12 and GB13: a regional indicator.
 			"\u00A9\u200D", "\U0001F44D\u200D", "\U0001F1E6",
 		}, linkers...)
+		wantCount(t, "befores", len(befores), 62, "strings", "the row would cut after fewer of them")
 		cuts := keptCuts{t: t}
 		for r := rune(0); r <= utf8.MaxRune; r++ {
 			if !utf8.ValidRune(r) {
@@ -545,17 +568,24 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		// Each rule names the sets of its left side and of its right, and cuts each code point of
 		// each right set after each of each left set. A pair of sets that makes no cut, as when one
 		// of them holds no code point, fails the row by name, as a linker does below: the other
-		// pairs' cuts would still pass it.
+		// pairs' cuts would still pass it. That check cannot see a set short, or a rule or a side
+		// of one taken out, so the row counts each set and the pairs of sets the rules name.
 		sets := map[string][]rune{"L": leading, "V": vowels, "T": trailing, "LV": lv, "LVT": lvt, "RI": regional}
-		cuts := keptCuts{t: t}
-		for _, rule := range []struct{ left, right []string }{
+		for name, want := range map[string]int{"L": 125, "V": 100, "T": 137, "LV": 399, "LVT": 10773, "RI": 26} {
+			wantCount(t, "the set "+name, len(sets[name]), want, "code points", "the row would cut between fewer of the code points these rules keep together")
+		}
+		rules := []struct{ left, right []string }{
 			{[]string{"L"}, []string{"L", "V", "LV", "LVT"}},
 			{[]string{"LV", "V"}, []string{"V", "T"}},
 			{[]string{"LVT", "T"}, []string{"T"}},
 			{[]string{"RI"}, []string{"RI"}},
-		} {
+		}
+		cuts := keptCuts{t: t}
+		setPairs := 0
+		for _, rule := range rules {
 			for _, leftSet := range rule.left {
 				for _, rightSet := range rule.right {
+					setPairs++
 					made := cuts.cuts
 					for _, left := range sets[leftSet] {
 						for _, right := range sets[rightSet] {
@@ -568,6 +598,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 				}
 			}
 		}
+		wantCount(t, "rules", setPairs, 11, "pairs of sets", "the row would cut between the code points of fewer of the pairs of sets GB6 to GB8, GB12 and GB13 keep together")
 		// GB9c, as Unicode 18.0 writes it, keeps a consonant after a linker and any InCB=Extend:
 		// each letter of the script of a linker's consonant, the linker, then each letter of that
 		// script, which holds each consonant of the script that Go's tables call a letter; and the
@@ -667,6 +698,8 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			0x1F6B4, 0x1F6B6, 0x1F6C0, 0x1F6C0, 0x1F6CC, 0x1F6CC, 0x1F90C, 0x1F90C, 0x1F90F, 0x1F90F, 0x1F918, 0x1F91F,
 			0x1F926, 0x1F926, 0x1F930, 0x1F939, 0x1F93C, 0x1F93E, 0x1F977, 0x1F977, 0x1F9B5, 0x1F9B6, 0x1F9B8, 0x1F9B9,
 			0x1F9BB, 0x1F9BB, 0x1F9CD, 0x1F9CF, 0x1F9D1, 0x1F9DD, 0x1FAC3, 0x1FAC5, 0x1FAF0, 0x1FAFA)
+		// madeCuts below sees the list empty but not short.
+		wantCount(t, "modifierBases", len(modifierBases), 136, "code points", "the row would cut the modifiers after fewer bases")
 		for _, base := range modifierBases {
 			for modifier := rune(0x1F3FB); modifier <= 0x1F3FF; modifier++ {
 				cuts.cut(string(base), string(modifier)+"a")
@@ -676,14 +709,21 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		cuts.check("before a mark")
 	})
 
+	// wide holds é, 界 and U+1F54C, characters of two, three and four bytes, which the length rows
+	// and the two rows that cut every place put among letters.
+	wide := []string{"é", "界", "\U0001F54C"}
+	wantCount(t, "wide", len(wide), 3, "characters", "the length rows would put characters of fewer widths among letters")
 	// lengthPairs gives values at each of lengths, in bytes, each cut to its own length in characters
-	// and to one short, each pair once. One is of letters. For each of é, 界 and U+1F54C, characters
-	// of two, three and four bytes, the others hold letters and one run of the character, or the
-	// character once. Below, few is the remainder of the length's place in lengths divided by 64, so
-	// over each 64 lengths running it takes each count from 0 to 63, and spread is that place times
-	// 4,093 modulo 8,191, a prime, as a share of the places the character has in a value of the
-	// length, so it moves along the whole value as the lengths run, in the seventh row too, where
-	// the place is the length.
+	// and to one short, each pair once. One is of letters. For each character of wide, the others
+	// hold letters and one run of the character, or the character once. Below, few is the remainder
+	// of the length's place in lengths divided by 64, so over each 64 lengths running it takes each
+	// count from 0 to 63, and spread is that place times 5,062 modulo 8,191, a prime, as a share of
+	// the places the character has in a value of the length. 5,062 is about 8,191 times 0.618, the
+	// golden ratio's fraction, whose multiples stand far apart however few of them run, so the place
+	// moves along the whole value in every row: of the values of each width that hold the character
+	// once after spread letters, each twentieth of the value holds 395 to 407 of the seventh row's
+	// 7,996 to 7,998, 61 to 63 of the eighth's 1,232, and 0 to 3 of the ninth's 32 to 34, whose
+	// places leave no stretch of more than 6% of the value empty.
 	//   - A run first, with as many letters after it as the length leaves over, and, where it leaves
 	//     some, the run alone, as long as the length rounded down to the character's width. A run
 	//     last, after one to four letters, as many as the length needs, and a run between one letter
@@ -717,7 +757,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		for _, n := range lengths {
 			add(letters[:n])
 		}
-		for _, character := range []string{"é", "界", "\U0001F54C"} {
+		for _, character := range wide {
 			width := len(character)
 			run := strings.Repeat(character, to/width)
 			// first[over] is the run then over letters, last[over] is over+1 letters then the run;
@@ -755,9 +795,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 					add(lettersRun[to-few : to-few+n])
 					add(runLetters[len(run)-(n-few) : len(run)-(n-few)+n])
 				}
-				// spread moves over the value's places as the lengths run, so the character once and a
-				// run at either end stand at places away from the ends and the middle too.
-				spread := i * 4093 % 8191 * (n - width + 1) / 8191
+				// spread takes the place along the whole value as the lengths run, so the character
+				// once and a run at either end stand away from the ends and the middle too.
+				spread := i * 5062 % 8191 * (n - width + 1) / 8191
 				add(once[to-spread : to-spread+n])
 				if spread += (n - spread) % width; spread <= n-2*width {
 					add(lettersRun[to-spread : to-spread+n])
@@ -787,6 +827,8 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	for n := 32001 + 199; n <= 128001; n += 199 {
 		long = append(long, n)
 	}
+	wantCount(t, "short", len(short), 8002, "lengths", "the seventh row would cut values of fewer lengths")
+	wantCount(t, "long", len(long), 1232, "lengths", "the eighth row would cut values of fewer lengths")
 	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		answersSlices(t, lengthPairs(short))
 	})
@@ -802,10 +844,72 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	// to 32,002); and 127,919, its last (127,918 to 127,920). Inside the seventh row's range it cuts
 	// 500 and 1,000 bytes too, and one byte each side (499 to 501, 999 to 1,001), where a key on a
 	// range of round lengths starts or ends. So a copy keyed on how many times a pair was cut fails
-	// it, with or without a key on what the value holds, when its key reaches one of these lengths,
-	// and so does an allocation HeadRunes does not return.
+	// it when its key reaches one of these lengths and a value lengthPairs gives at it, and so does
+	// an allocation HeadRunes does not return. The next row cuts every place of one run or the
+	// character once 22 times at these lengths up to 2,005 bytes. From 8,000 bytes on, a copy keyed
+	// on how many times a pair was cut and on a place of one run or the character once that only the
+	// two rows above hold at its length can pass (say, from a pair's second call on, the character
+	// once after 80 to 100 letters, in values of 8,001 bytes only).
+	edges := []int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 499, 500, 501, 999, 1000, 1001, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 8032, 8033, 8034, 32000, 32001, 32002, 127918, 127919, 127920}
+	wantCount(t, "edges", len(edges), 34, "lengths", "the ninth row would cut values of fewer lengths 22 times")
 	t.Run("each kind of value of the two rows above, at each edge of the lengths the rows hold and one byte each side of it (4 to 7, 63 to 68, 2,000 to 2,005, 8,000 to 8,002, 8,032 to 8,034, 32,000 to 32,002 and 127,918 to 127,920 bytes) and at 499 to 501 and 999 to 1,001 bytes, unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
-		copiesNothing(t, lengthPairs([]int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 499, 500, 501, 999, 1000, 1001, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 8032, 8033, 8034, 32000, 32001, 32002, 127918, 127919, 127920}))
+		copiesNothing(t, lengthPairs(edges))
+	})
+	// The length rows put the character once, and a run beside letters, at a few places of each
+	// length. The next two put them at every place: everyPlacePairs gives, for each character of
+	// wide, each value of each of lengths, in bytes, that holds letters and the character once, at
+	// each of its places, or letters and one run of two characters or more with each count of
+	// letters before it and none after, or after it and none before, each cut to its own length in
+	// characters and to one short. Each of those values is a slice of a string it makes once for
+	// its character, so it makes no value of its own. It reads about ten times the square of each
+	// length in bytes on each call (about 1.7 × 10^11 at 127,919 bytes), so the first of the two
+	// cuts its pairs 22 times at the ninth row's lengths up to 2,005 bytes, the 2,000 characters a
+	// document edit reads back among them, and the second once, at 5,000 bytes, at 8,001, where the
+	// seventh row ends, and at 8,033, where the eighth starts. The longer lengths are left to the
+	// length rows' few places.
+	everyPlacePairs := func(lengths []int) []pair {
+		var pairs []pair
+		add := func(value string) {
+			characters := utf8.RuneCountInString(value)
+			_, last := utf8.DecodeLastRuneInString(value)
+			pairs = append(pairs, pair{value, characters, len(value)}, pair{value, characters - 1, len(value) - last})
+		}
+		to := slices.Max(lengths)
+		letters := strings.Repeat("a", to)
+		for _, character := range wide {
+			width := len(character)
+			run := strings.Repeat(character, to/width)
+			once, lettersRun, runLetters := letters+character+letters, letters+run, run+letters
+			for _, n := range lengths {
+				for place := 0; place <= n-width; place++ {
+					add(once[to-place : to-place+n])
+				}
+				// count letters then the run, and the run then count letters; with no letter the
+				// two are one value.
+				for count := n % width; count <= n-2*width; count += width {
+					add(lettersRun[to-count : to-count+n])
+					if count > 0 {
+						add(runLetters[len(run)-(n-count) : len(run)-(n-count)+n])
+					}
+				}
+			}
+		}
+		return pairs
+	}
+	var everyPlaceCalls []int
+	for _, n := range edges {
+		if n <= 2005 {
+			everyPlaceCalls = append(everyPlaceCalls, n)
+		}
+	}
+	everyPlaceOnce := []int{5000, 8001, 8033}
+	wantCount(t, "everyPlaceCalls", len(everyPlaceCalls), 22, "lengths", "the next row would cut every place at fewer lengths")
+	wantCount(t, "everyPlaceOnce", len(everyPlaceOnce), 3, "lengths", "the row after it would cut every place at fewer lengths")
+	t.Run("the character once at each place, or a run beside each count of letters on one side of it, of a character of two, three or four bytes, at 4 to 7, 63 to 68, 499 to 501, 999 to 1,001 and 2,000 to 2,005 bytes, unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
+		copiesNothing(t, everyPlacePairs(everyPlaceCalls))
+	})
+	t.Run("the character once at each place, or a run beside each count of letters on one side of it, of a character of two, three or four bytes, at 5,000, 8,001 and 8,033 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
+		answersSlices(t, everyPlacePairs(everyPlaceOnce))
 	})
 
 	shapes := map[string][]pair{}
@@ -817,12 +921,15 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			}
 		}
 	}
+	// shapeOf names 19 shapes of the first row's pairs whose answer is a slice; a change to it or to
+	// the values that left one out would run one row fewer and still pass.
+	wantCount(t, "shapes", len(shapes), 19, "shapes", "fewer shape rows would run")
 	for _, shape := range slices.Sorted(maps.Keys(shapes)) {
 		pairs := shapes[shape]
 		t.Run(shape+" copies nothing", func(t *testing.T) { copiesNothing(t, pairs) })
 	}
 
-	for _, row := range []struct {
+	kept := []struct {
 		name, value string
 		limit       int
 		want        string
@@ -837,7 +944,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		{name: "32,000 Chinese characters are returned unchanged", value: strings.Repeat("界", 32000), limit: 32000, want: strings.Repeat("界", 32000)},
 		{name: "32,001 letters are cut at 32,000", value: strings.Repeat("a", 32001), limit: 32000, want: strings.Repeat("a", 32000)},
 		{name: "32,001 Chinese characters are cut at 32,000", value: strings.Repeat("界", 32001), limit: 32000, want: strings.Repeat("界", 32000)},
-	} {
+	}
+	wantCount(t, "kept", len(kept), 10, "rows", "fewer of the rows below would run")
+	for _, row := range kept {
 		t.Run(row.name, func(t *testing.T) {
 			if !strings.HasPrefix(row.value, row.want) {
 				t.Fatalf("the row wants %.40q, which is not the first bytes of its value", row.want)
