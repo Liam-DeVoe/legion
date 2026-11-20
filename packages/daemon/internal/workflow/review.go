@@ -514,8 +514,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
 // suspended there, so the settlement is recorded and nobody is told. A parent waiting in
 // awaiting_children is told nothing either, and neither is the architect that owns it: no role
-// works the parent while it waits, and the forward merge its return asks for gives its head new
-// checks (dispatch://INFRA-3320 R11), so the settlement is recorded and no message goes out.
+// works the parent while it waits, and its next testing round runs the checks on its head merged
+// with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
+// message goes out.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement

@@ -430,9 +430,9 @@ func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 			spPass(t, pool, admission)
 
 			got := issue(t, pool, spParent)
-			if got.Phase != tc.to || got.ChildrenWait != nil || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) || got.Status != "in_progress" {
-				t.Fatalf("the parent = phase %s, held start %+v, waited at %v, status %s; want %s with no held start, the wait's moment kept, in_progress",
-					got.Phase, got.ChildrenWait, got.ChildrenWaitedAt, got.Status, tc.to)
+			if got.Phase != tc.to || got.ChildrenWait != nil || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) || got.Status != workflow.PhaseStatus(tc.to) {
+				t.Fatalf("the parent = phase %s, held start %+v, waited at %v, status %s; want %s with no held start, the wait's moment kept, %s",
+					got.Phase, got.ChildrenWait, got.ChildrenWaitedAt, got.Status, tc.to, workflow.PhaseStatus(tc.to))
 			}
 			starts := startsOf(t, pool, spParent)
 			if len(starts) != 1 || starts[0].role != role || !starts[0].needsSlot || starts[0].claimable {

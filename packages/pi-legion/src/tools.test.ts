@@ -162,16 +162,20 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
 }
 
 /** The clauses of the sign_off description that say where a parent waiting on its children comes
- * back: once no child under it is open it goes back by itself to the start it held, a held test,
- * review or acceptance as testing unless its pull request merged during the wait
- * (dispatch://INFRA-3320 R12, on the person's answer "Children first"). */
+ * back and when it is accepted: once no child under it is open it goes back by itself to the start
+ * it held, a held test, review or acceptance as testing unless its pull request merged during the
+ * wait, and it is accepted on a head that need not carry its children's merges, once each check a
+ * role runs has a pass at that head whose observed line names a base commit carrying every needed
+ * child's merge (dispatch://INFRA-3320 R12 and R14, on the person's answer "Children first"). */
 const SIGN_OFF_RETURN =
   "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
   "parent goes back by itself once none is, to that start, a held test, review or acceptance as testing unless its pull " +
   "request merged during the wait), and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children and it " +
-  "comes back by itself as testing, and otherwise you sign off again. ";
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one). A parent is accepted on a head that need not carry its children's " +
+  "merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying every " +
+  "needed child's merge; send one whose pass names an older base commit, or none, back to testing with " +
+  "request_backward_move. Run each one to done; unless its pull request has merged, the next admission pass moves the " +
+  "parent to awaiting_children and it comes back by itself as testing, and otherwise you sign off again. ";
 
 /** The `legion` tool description Oh My Pi agents read, written out whole: the shared template
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */

@@ -1710,14 +1710,17 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // childrenWaits is the admission pass's reading of the started parents' wait on their open
 // Dispatch children (record.LineFacts.StartedParentWaits, dispatch://INFRA-3320 R9 and R12), and
 // answers whether it wrote anything, which tells the pass to take its shared reads again. It makes
-// two moves, each through the engine, and no other:
+// two moves and one write, each through the engine, and no other:
 //
 //   - a started parent an open child now holds moves into awaiting_children
 //     (workflow.Engine.StopForChildren): a parent in accepting, one whose start is written and
 //     not delivered, and one whose worker is in the middle of its phase, the three a transition
 //     never meets, since no transition starts them;
-//   - a parent in awaiting_children that no open child holds any longer goes back to the start it
-//     held (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
+//   - a parent in awaiting_children that an open child still holds keeps each child it finds
+//     open under it on the wait's children (workflow.Engine.KeepWaitChildren), so a child filed
+//     or released during the wait is one the return names if it merged;
+//   - a parent in awaiting_children that no open child holds any longer goes back
+//     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
 //
 // Each reads an issue of this project in the workflow whose tree runs (record.RunningRoots: its
 // lifecycle open under the workflow, its root neither lingering nor waiting in the line as a
@@ -1769,6 +1772,12 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 				return wrote, fmt.Errorf("take %s back to the start it held: %w", parent.Key, err)
 			}
 			wrote = true
+		case open && parent.Phase == phase.AwaitingChildren:
+			kept, err := a.engine.KeepWaitChildren(ctx, tx, parent, wait.Open)
+			if err != nil {
+				return wrote, fmt.Errorf("keep the open children of %s's wait: %w", parent.Key, err)
+			}
+			wrote = wrote || kept
 		case open:
 			moved, err := a.engine.StopForChildren(ctx, tx, parent, wait.Open, owed[parent.Key])
 			if err != nil {

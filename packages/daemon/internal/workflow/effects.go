@@ -601,23 +601,31 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	marks startMarks) error {
 	marks.stored = row.EntryTask != ""
 	marks.reasserts = true
-	return e.started(ctx, tx, issue, role, entryWork(issue, row), row.Entry, marks)
+	parent := false
+	if !marks.stored {
+		var err error
+		if parent, err = e.testingParent(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
+	return e.started(ctx, tx, issue, role, entryWork(issue, row, parent), row.Entry, marks)
 }
 
 // entryWork is the work row's entry was raised with (record.PhaseRow.EntryTask), and the phase's
-// resume task where the row carries none (ResumePhaseTask): what a claim behind its entry is sent
-// (SendOwedEntry says which rows carry none), and what the admission pass holds for a phase it
-// stops in the middle (StopForChildren, queuedTask).
-func entryWork(issue record.Issue, row record.PhaseRow) string {
+// resume task where the row carries none (ResumePhaseTask, whose parent flag parent is): what a
+// claim behind its entry is sent (SendOwedEntry says which rows carry none), and what the admission
+// pass holds for a phase it stops in the middle (StopForChildren, queuedTask).
+func entryWork(issue record.Issue, row record.PhaseRow, parent bool) string {
 	if row.EntryTask != "" {
 		return row.EntryTask
 	}
-	return ResumePhaseTask(issue, false)
+	return ResumePhaseTask(issue, parent)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask), which asks for the forward merge an implementing member still owes.
+// in (ResumePhaseTask), which tells the tester of a parent to test the head merged with its
+// base's tip.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -628,7 +636,11 @@ func entryWork(issue record.Issue, row record.PhaseRow) string {
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task := ResumePhaseTask(issue, false)
+	parent, err := e.testingParent(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	task := ResumePhaseTask(issue, parent)
 	entry, sent, err := e.enter(ctx, tx, issue, role, task, "", false)
 	if err != nil {
 		return err
@@ -933,13 +945,13 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // The move back is written with them: whether the move that raised this entry, out of from into
 // the phase issue stands in now, went back to an earlier phase (phase.MovesBack), or is the
-// return out of awaiting_children (ReturnFromChildren), which asks for the held phase's work to
-// be done again on a head that is to carry the children's merges. Its one reader is the
-// completion route's entry fence, which takes a completion of an earlier entry at the head the
-// record holds and refuses it whatever head it names when the entry standing now was raised by a
-// move back, since such an entry asks for the phase's work to be done again
-// (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here rather than counted
-// anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
+// return out of awaiting_children (ReturnFromChildren), which asks for the phase's work to be done
+// again now that the children's work is in, so a completion from before the wait is refused at
+// the same head. Its one reader is the completion route's entry fence, which takes a completion
+// of an earlier entry at the head the record holds and refuses it whatever head it names when the
+// entry standing now was raised by a move back, since such an entry asks for the phase's work to
+// be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here rather than
+// counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
 //
 // from is written with them too: the phase the move that raises this entry left, "" where no
 // move raises it (StartPromotedWorker, EnterArchitect), which is no move back. The admission pass
@@ -1027,11 +1039,10 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
 //
-// An implementing task of a parent that still owes the forward merge of its children's work ends
-// with the request for it (withForwardMerge).
-//
-// parent says whether issue is a parent: an issue with a Dispatch child of any status in the
-// daemon's copy of Dispatch (record.Store.DispatchChildren).
+// A testing task of a parent ends with the sentence that asks for the round on the head merged
+// with the tip of the pull request's base branch (withBaseMergeRun). parent says whether issue is
+// a parent, an issue with a Dispatch child of any status in the daemon's copy of Dispatch
+// (Engine.testingParent, which reads it for a testing task alone).
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string, parent bool) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -1054,7 +1065,10 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
-	return withForwardMerge(text, issue)
+	if issue.Phase == phase.Testing {
+		return withBaseMergeRun(text, parent)
+	}
+	return text
 }
 
 // continueLine opens every phase task: the issue, its key and the phase the worker starts, and,
@@ -1097,13 +1111,38 @@ func handoffWord(role claim.Role) string {
 // begins that phase — the run that did is over — so the task names the phase and says to carry
 // the work on, which is what a resumed session needs to tell this phase from its last.
 //
-// Every task of an implementing phase whose issue owes the forward merge of its children's work
-// asks for it, and the resume task is no exception (withForwardMerge): the silence repair, the
-// boot's resume, the catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send
-// of an entry that names no task (entryWork) each hand it to a session that may have read none of
-// the task that first asked. parent says whether issue is a parent, as task's does.
+// Every testing task of a parent asks for the round on the head merged with its base's tip, and
+// the resume task is no exception (withBaseMergeRun): the silence repair, the boot's resume, the
+// catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send of an entry that
+// names no task (entryWork) each hand it to a session that may have read none of the task that
+// first asked. parent says whether issue is a parent, as task's does.
 func ResumePhaseTask(issue record.Issue, parent bool) string {
-	return withForwardMerge(continueLine(issue)+" Resume the existing phase work.", issue)
+	text := continueLine(issue) + " Resume the existing phase work."
+	if issue.Phase == phase.Testing {
+		return withBaseMergeRun(text, parent)
+	}
+	return text
+}
+
+// baseMergeRun is the tester's rule for every round of a parent (dispatch://INFRA-3320 R12 and
+// R14, on the person's answer "Children first"): the head is tested merged with the tip of the pull
+// request's base branch once that tip carries each needed child's merge, in a checkout of the
+// tester's own that it never pushes, and each result is recorded at the head with the base commit
+// it ran on, which the architect accepts the parent on.
+const baseMergeRun = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
+
+// withBaseMergeRun is text, a testing task, ending with the base-merge sentence (baseMergeRun)
+// once where parent says its issue is a parent, and with none where it is not: any copy text
+// already carries is taken out first, so a held testing task that carried it before the wait
+// carries it once after the return (ReturnFromChildren). Every writer of a testing task ends it
+// here: task, which builds a transition's, a retry's, a held start's and the return's, and
+// ResumePhaseTask.
+func withBaseMergeRun(text string, parent bool) string {
+	text = strings.ReplaceAll(text, " "+baseMergeRun, "")
+	if !parent {
+		return text
+	}
+	return text + " " + baseMergeRun
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

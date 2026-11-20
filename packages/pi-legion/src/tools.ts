@@ -577,10 +577,13 @@ export function createLegionTool(deps: {
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING), on an issue in awaiting_children (WAITING_ON_CHILDREN, naming its open " +
         "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
-        "parent goes back to that start by itself once none is), and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-        "to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children and it " +
-        "comes back to implementing for the forward merge of their work, and otherwise you sign off again. " +
+        "parent goes back by itself once none is, to that start, a held test, review or acceptance as testing unless its pull " +
+        "request merged during the wait), and while an issue beneath it is still in the workflow " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one). A parent is accepted on a head that need not carry its children's " +
+        "merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying every " +
+        "needed child's merge; send one whose pass names an older base commit, or none, back to testing with " +
+        "request_backward_move. Run each one to done; unless its pull request has merged, the next admission pass moves the " +
+        "parent to awaiting_children and it comes back by itself as testing, and otherwise you sign off again. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
         "Past that refusal the daemon refuses it while a root whose design-gate step rests on the issue's approval is still " +

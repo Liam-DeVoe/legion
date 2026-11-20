@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -740,7 +741,9 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // rather than reported as a restart. So is one that moved the issue to awaiting_children: a
 // Dispatch child of it is open, so the workflow started no phase of it and holds the start
 // instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
-// waits on its children, naming them through the reason the held start keeps.
+// waits on its children, naming them through the reason the held start keeps, and where the
+// return takes it: a held reviewing back as testing unless its pull request merged during the
+// wait (record.ReturnsAsTesting, R12), and any other held start to that start.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
@@ -778,8 +781,12 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), true
 	}
 	if after != nil && after.Phase == phase.AwaitingChildren && after.ChildrenWait != nil {
-		return http.StatusConflict, fmt.Sprintf("%s waits on its open children after the retry of its phase %s, so no phase of it was started for %s: the retry moved it to awaiting_children, holding the start of %s (%s), and the daemon goes back to that start by itself once no Dispatch child of %s is open",
-			c.Issue, working, token, after.ChildrenWait.Start, after.ChildrenWait.Reason, c.Issue), true
+		back := "the daemon goes back to that start by itself"
+		if held := after.ChildrenWait.Start; record.ReturnsAsTesting(held) && held != phase.Testing {
+			back = "the daemon takes it back by itself as testing, or to that start if its pull request merged during the wait,"
+		}
+		return http.StatusConflict, fmt.Sprintf("%s waits on its open children after the retry of its phase %s, so no phase of it was started for %s: the retry moved it to awaiting_children, holding the start of %s (%s), and %s once no Dispatch child of %s is open",
+			c.Issue, working, token, after.ChildrenWait.Start, after.ChildrenWait.Reason, back, c.Issue), true
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true

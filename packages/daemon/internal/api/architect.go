@@ -232,8 +232,9 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
-// Both routes say one sentence, because they refuse for one reason: a parent's head proves its
-// children's merged work, so nothing enters the workflow beneath a head already accepted.
+// Both routes say one sentence, because they refuse for one reason: the ancestor was accepted on
+// checks of its children's work as it stood, so nothing enters the workflow beneath a head
+// already accepted.
 // operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
 	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",

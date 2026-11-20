@@ -51,12 +51,12 @@ import (
 // root's own check does, rather than being stopped by them.
 //
 // Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
-// from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, which the
-// record's shape ties to that phase), as a held issue's hold goes with its leave, while the two
-// facts of its run that outlive the phase — the forward merge it owes and the moment it last
-// waited — stay on the record. A root a person moves to the backlog while it waits on its
-// children leaves like any root moved to the backlog, and a person's todo re-admits it as a new
-// generation (admit's readmit).
+// from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, the children
+// of the wait among it, which the record's shape ties to that phase), as a held issue's hold goes
+// with its leave, while the fact of its run that outlives the phase, the moment it last waited,
+// stays on the record. A root a person moves to the backlog while it waits on its children leaves
+// like any root moved to the backlog, and a person's todo re-admits it as a new generation
+// (admit's readmit).
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it

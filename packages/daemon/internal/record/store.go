@@ -65,11 +65,12 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written, and a NULL view_of as "", an issue that is a view on no ancestor. The four
-// issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
-// (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but the
-// back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at`
+// it was written, and so an empty list of the children a wait was on, and a NULL view_of as "", an
+// issue that is a view on no ancestor. The four issues.memory_* columns are no part of it: what a
+// unit was drawn is an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this
+// release's daemon runs reads the columns but the back-fill of
+// 20261111045636_experiment_assignments.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -256,6 +257,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince any
+	var childrenWaitChildren []string
 	if issue.ChildrenWait != nil {
 		childrenWaitStart = nullableText(string(issue.ChildrenWait.Start))
 		childrenWaitTask = nullableText(issue.ChildrenWait.Task)
@@ -263,6 +265,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		if !issue.ChildrenWait.Since.IsZero() {
 			childrenWaitSince = issue.ChildrenWait.Since
 		}
+		childrenWaitChildren = issue.ChildrenWait.Children
 	}
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
@@ -292,10 +295,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
-		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at)
+		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
-		$32, $33, $34, $35, $36, $37)
+		$32, $33, $34, $35, nullif($36::text[], '{}'), $37)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -311,13 +314,13 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		view_of = excluded.view_of,
 		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
-		forward_merge_owed = excluded.forward_merge_owed, children_waited_at = excluded.children_waited_at
+		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
-		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, issue.ForwardMergeOwed, issue.ChildrenWaitedAt,
+		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -527,12 +530,13 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt *time.Time
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
+	var childrenWaitChildren []string
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
-		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &issue.ForwardMergeOwed,
+		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
 		&childrenWaitedAt); err != nil {
 		return nil, err
 	}
@@ -572,7 +576,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		}
 	}
 	if childrenWaitStart != nil {
-		wait := ChildrenWait{Start: phase.Phase(*childrenWaitStart)}
+		wait := ChildrenWait{Start: phase.Phase(*childrenWaitStart), Children: childrenWaitChildren}
 		if childrenWaitTask != nil {
 			wait.Task = *childrenWaitTask
 		}
