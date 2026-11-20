@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+  The broker serves named credential profiles. `BROKER_PROFILES_FILE` names one JSON file,
+  `{"profiles": [...]}`; each profile names a stored secret (`source`, else its own name), may
+  narrow its `tier`, `requesters` and `maxGrant`, and carries a `github` block (accounts,
+  repositories, permissions, and `value` `installations` or `token`), a `google` block (scopes),
+  and a `proxy` block (the fields of an airlock rules entry; `hosts` required). At every policy
+  load each profile is checked against its source and served by its name; one that does not fit
+  its source, or is looser than it, is refused alone (`profile:NAME` in the refused line, with
+  `detail=`), and the first load writes one `cipherd: profiles applied` line with the counts. A
+  source that profiles of other names use is served only through them, and a github-app secret
+  no profile names is refused. A GitHub profile's token asks GitHub for the profile's
+  permissions cut to what each installation holds; the values answer names what the cut left
+  out (`github_left_out`) and an empty cut sends nothing. A request may narrow a profile to one
+  account or to repositories of it with RFC 9396 `locations` in its signed request, which the
+  approval page prints with the profile's scope; a grant is reused only for the same profile
+  and target. A GitHub profile with a `proxy` block is minted by the proxy for the grant's
+  target, and a `value: token` profile is released as one placeholder, which the proxy swaps
+  for the token in a header the block names or inside a git Basic credential
+  (`x-access-token:<placeholder>`). New refusals: `TARGET_REFUSED`, `SERVED_ONLY_AS_PROFILES`,
+  `PROFILE_REFUSED`, `PROFILE_MINT_REFUSED`, `GITHUB_APP_FIELD_REMOVED`. `envoy-broker profiles
+  check <file> [--against <old file>]` validates a file and prints every field a change adds and
+  removes.
+  **Deploy the profiles file with this release**: the broker refuses `BROKER_AIRLOCK_RULES_FILE`
+  at boot, and serves no github-app secret that no profile names.
