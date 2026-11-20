@@ -156,6 +156,14 @@ function changedUnder(draft: SentDraft, base: string | undefined, body: string):
 
 /** What the composer's field opens with (`mountDraft`). */
 export interface MountDraft {
+  /** When the words this composer is about were taken, where the field took a draft written for
+   *  them: the time the compose that wrote it took them, which a held send at these words keeps
+   *  (`HeldSend.anchoredAt`, read as `awayDraftOf` reads it) and a draft kept for them keeps
+   *  (`AwayDraft.anchoredAt`; 0, before every read, for one an older release kept with no time, as
+   *  the lines that lead a kept draft count it). The composer goes on with that compose's words,
+   *  so it takes this time as its own (`MentionComposer`). Undefined where the field took no such
+   *  draft. */
+  readonly anchoredAt: number | undefined;
   readonly ask: SentRequest["ask"] | undefined;
   /** The field took the draft kept for this address, which is kept there no longer. */
   readonly away: boolean;
@@ -197,7 +205,12 @@ export function mountDraft({
   const { awayName, unsentName } = keptNames(names);
   const unsentHere = unsentName === undefined ? undefined : unsent.read(unsentName);
   const kept:
-    | { readonly ask?: SentRequest["ask"]; readonly base?: string; readonly draft: SentDraft }
+    | {
+        readonly anchoredAt?: number;
+        readonly ask?: SentRequest["ask"];
+        readonly base?: string;
+        readonly draft: SentDraft;
+      }
     | undefined =
     unsentHere === undefined
       ? awayName === undefined
@@ -208,6 +221,7 @@ export function mountDraft({
     held?.status === "refused" && !sameAddress(held.request, { anchor, edit, owner, replyTo });
   const seeded = seededDraft(seedMentions, undefined, owner);
   const fresh = {
+    anchoredAt: undefined,
     ask: undefined,
     away: false,
     body: edit?.body ?? seeded.body,
@@ -225,6 +239,10 @@ export function mountDraft({
       return { ...fresh, changed: held.draft.draft };
     }
     return {
+      anchoredAt:
+        anchor !== undefined && sameAnchor(held.request.anchor, anchor)
+          ? awayDraftOf(held).anchoredAt
+          : undefined,
       ask: held.draft.ask,
       away: false,
       body: held.draft.draft.body,
@@ -239,6 +257,8 @@ export function mountDraft({
       return { ...fresh, changed: kept.draft };
     }
     return {
+      anchoredAt:
+        unsentHere === undefined && anchor !== undefined ? (kept.anchoredAt ?? 0) : undefined,
       ask: kept.ask,
       away: unsentHere === undefined,
       body: kept.draft.body,

@@ -1,14 +1,18 @@
-import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-import type { ArtifactText, DisplayTree } from "../../api/types";
+import { rowsOf } from "../../api/event-refresh";
+import type { ArtifactText, Comment, DisplayTree } from "../../api/types";
+import { postDeletion } from "../refs/post-marks";
 import { wordsOf } from "../refs/tree-fragment";
 import { liveTextQueryOptions } from "./live-text-query";
 
-/** The words of a document a draft was written for: the document, and the words as the editor
- *  named the reader's selection of them (a margin compose's `ComposerAnchor`). */
+/** The words of a document a draft was written for: the document, the words as the editor named
+ *  the reader's selection of them, and the pending inserts they lie in (a margin compose's
+ *  `ComposerAnchor`). */
 export interface QuotedWords {
   readonly artifact: string;
+  readonly insertMarks?: readonly string[];
   readonly quote: string;
 }
 
@@ -36,28 +40,74 @@ function documentWords(text: ArtifactText): string | undefined {
   return words;
 }
 
+/** Whether a comment list of `client`'s cache lists, deleted, a comment anchored in the document
+ *  `artifact` by one of `marks`: the comment of one of the inserts the words lie in. The lists are
+ *  an issue's (`["comments", key, …]`) and a document's (`["artifact", id, "comments"]`), the
+ *  reads of the comments family a delete's correction writes its mark into
+ *  (`markCorrectedPost`), which the server answers with the deleted comment in its place. */
+function holdsDeletedInsert(
+  client: QueryClient,
+  artifact: string,
+  marks: readonly string[]
+): boolean {
+  return client
+    .getQueryCache()
+    .getAll()
+    .some(
+      ({ queryKey, state }) =>
+        (queryKey[0] === "comments" ||
+          (queryKey[0] === "artifact" && queryKey[2] === "comments")) &&
+        rowsOf<Comment>(state.data).some(
+          (comment) =>
+            comment.anchor !== null &&
+            comment.anchor.artifact_id === artifact &&
+            marks.includes(comment.anchor.mark_id) &&
+            postDeletion(comment) !== null
+        )
+    );
+}
+
 /**
  * Whether the document `words` names still holds the words a draft was written for
- * (`words.quote`), as the page holds the document's text now: the live text read every open
- * document keeps (`liveTextQueryOptions`, `ProofDocument`), which the page reads again after an
- * event of a comment anchored there (`eventRefreshTargets`). This read asks for nothing itself.
+ * (`words.quote`), as the page holds them now. This read asks for nothing itself.
  *
  * The words can leave the document while the draft waits. A selection inside another comment's
  * pending insert suggestion quotes that comment's words, and the comment's delete rejects the
  * insert and takes them out of the document: they are then a deleted post's words, which no
  * surface may draw. So a draft whose words the document no longer holds is drawn without them.
  *
- * Only a read that landed after `anchoredAt`, when the draft's compose took the words, says so. No
- * keystroke and no update from a collaborator reads the text again, so a read from before then
- * can lack words the reader had just typed and selected, which are on screen. A draft with no
- * such time - one an older release kept - counts as taken before every read. False only where the
- * page holds such a read of the document's text and it does not hold the words; while it holds
- * none, the words are drawn as before.
+ * The first fact, which decides alone: the words lie in a pending insert (`words.insertMarks`)
+ * whose comment a comment list of the page's cache holds deleted (`holdsDeletedInsert`). The
+ * delete's correction writes that into every such list the page holds (`markCorrectedPost`), and
+ * the server answers them with the deleted comment in its place, so the page knows it whatever it
+ * has read of the document's text, and however old that read is: false then.
+ *
+ * Otherwise, words that left the document by any other edit: the live text read every open
+ * document keeps (`liveTextQueryOptions`, `ProofDocument`), which the page reads again after an
+ * event of a comment anchored there (`eventRefreshTargets`). Only a read that landed after
+ * `anchoredAt`, when the draft's compose took the words, says they left. No keystroke and no
+ * update from a collaborator reads the text again, so a read from before then can lack words the
+ * reader had just typed and selected, which are on screen. A draft with no such time - one an
+ * older release kept - counts as taken before every read. False only where the page holds such a
+ * read of the document's text and it does not hold the words; while it holds none, the words are
+ * drawn as before.
  */
 export function useQuoteInDocument(
-  { artifact, quote }: QuotedWords,
+  { artifact, insertMarks, quote }: QuotedWords,
   anchoredAt: number | undefined
 ): boolean {
+  const client = useQueryClient();
+  const subscribe = useCallback(
+    (changed: () => void) => client.getQueryCache().subscribe(changed),
+    [client]
+  );
+  const insertDeleted = useSyncExternalStore(
+    subscribe,
+    () =>
+      insertMarks !== undefined &&
+      insertMarks.length > 0 &&
+      holdsDeletedInsert(client, artifact, insertMarks)
+  );
   const { data: words, dataUpdatedAt } = useQuery({
     ...liveTextQueryOptions(artifact),
     enabled: false,
@@ -65,9 +115,10 @@ export function useQuoteInDocument(
   });
   return useMemo(
     () =>
-      words === undefined ||
-      (anchoredAt !== undefined && dataUpdatedAt <= anchoredAt) ||
-      words.includes(spaced(quote)),
-    [anchoredAt, dataUpdatedAt, quote, words]
+      !insertDeleted &&
+      (words === undefined ||
+        (anchoredAt !== undefined && dataUpdatedAt <= anchoredAt) ||
+        words.includes(spaced(quote))),
+    [anchoredAt, dataUpdatedAt, insertDeleted, quote, words]
   );
 }

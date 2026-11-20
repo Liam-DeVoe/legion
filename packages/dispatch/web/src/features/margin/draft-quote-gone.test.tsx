@@ -4,14 +4,22 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction, DELETION } from "../../__tests__/correction-feed";
 import { ApiError, api } from "../../api/client";
-import type { ArtifactText } from "../../api/types";
+import { markCorrectedPost } from "../../api/corrected-post";
+import type { ArtifactText, Comment } from "../../api/types";
 import type { ComposerAnchor } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import { KeptDraftOffers } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
-import { unsentDraftsOf } from "../conversation/unsent-drafts";
-import { giveWay, type OfferedDraft } from "../conversation/useKeptDrafts";
+import {
+  type AwayDraft,
+  draftStoresReloaded,
+  draftStoresSignedIn,
+  unsentDraftsOf,
+} from "../conversation/unsent-drafts";
+import { composerNameOf, giveWay, type OfferedDraft } from "../conversation/useKeptDrafts";
 import { liveTextQueryOptions } from "../doc/live-text-query";
 import { MarginKeptDrafts } from "./CommentsTab";
 import { marginComposeKeptKey, marginComposeSendKey } from "./margin-context";
@@ -27,9 +35,17 @@ import { marginComposeKeptKey, marginComposeSendKey } from "./margin-context";
 //
 // No keystroke and no collaborator's update reads the text again, so the page's read can be older
 // than words the reader has just typed and selected. Only a read newer than the time the draft's
-// compose took the words says they left (`useQuoteInDocument`): the open composer's mount, the
+// compose took the words says they left (`useQuoteInDocument`): the open composer's mount, or the
+// time the compose whose draft it took for its words took them (`MountDraft.anchoredAt`), the
 // time a kept draft keeps from its compose (`AwayDraft.anchoredAt`), and for a draft an older
 // release kept with no time, before every read.
+//
+// The architect's ruling of 2026-11-20 20:55Z, approved at 21:57Z: before that time gate, a fact
+// the page holds decides alone, whatever the age of its read of the text. The selection bar keeps
+// the pending inserts the selected words lie in with the anchor (`ComposerAnchor.insertMarks`),
+// and the delete's correction writes the insert's comment deleted into the page's comment lists
+// (`markCorrectedPost`): a surface whose words lie in an insert those lists hold deleted draws
+// none of them.
 
 const DOCUMENT = "doc-1";
 /** The words the pending insert put in the document, which the reader's selection lies in. */
@@ -38,6 +54,41 @@ const BEFORE = ["Ship the release.", "Hold it for the security review."];
 /** The document once the delete's reject took the insert's words out. */
 const AFTER = ["Ship the release.", "Hold it."];
 const OWNER = { issueKey: "CORE-1", kind: "issue" } as const;
+/** The issue's comment list, as the margin and the issue page read it (`useMarginItems`). */
+const COMMENTS = ["comments", OWNER.issueKey];
+/** The pending insert suggestion's mark, which the reader's selection lies in. */
+const INSERT_MARK = "mark-insert-suggestion";
+/** The insert suggestion's comment, as the page's comment list holds it while it stands. */
+const INSERT_COMMENT: Comment = {
+  anchor: {
+    artifact_id: DOCUMENT,
+    block_id: "block-hold",
+    mark_id: INSERT_MARK,
+    orphaned: false,
+    quote: QUOTE,
+    version: 1,
+  },
+  ask_id: null,
+  author: { id: "alice", kind: "user" },
+  body: "Name the review.",
+  created_at: "2026-11-20T00:00:00Z",
+  edited_at: null,
+  id: "comment-insert",
+  issue_key: OWNER.issueKey,
+  reply_to: null,
+  resolved: false,
+  resolved_at: null,
+  resolved_by: null,
+  suggestion: null,
+  turn: null,
+  ...commentDeliveryFields(),
+};
+/** The delete of the insert's comment as the page's feed carries it: its anchor with the quote
+ *  emptied, since the insert's words were the comment's own. */
+const insertDeleted = () =>
+  correction("comment", INSERT_COMMENT.id, false, {
+    anchor: { ...INSERT_COMMENT.anchor, quote: "" },
+  });
 
 /** The document's text read (`GET /api/v1/artifacts/{id}/text`) holding `paragraphs`, with the
  *  tree the page reads its words from. */
@@ -62,10 +113,17 @@ function land(client: QueryClient, read: ArtifactText, at?: number): void {
 const noop = () => {};
 
 /** A draft kept for `quote`'s words of the document under the mark `markId`, with `body`, by a
- *  compose that took those words at `anchoredAt`, or by an older release, which kept no time. */
-function keptDraft(markId: string, quote: string, body: string, anchoredAt?: number): OfferedDraft {
+ *  compose that took those words at `anchoredAt`, or by an older release, which kept no time; the
+ *  words lie in the pending inserts `insertMarks` names, where it names any. */
+function keptDraft(
+  markId: string,
+  quote: string,
+  body: string,
+  anchoredAt?: number,
+  insertMarks?: readonly string[]
+): OfferedDraft {
   return {
-    anchor: { artifact: DOCUMENT, mark_id: markId, quote },
+    anchor: { artifact: DOCUMENT, insertMarks, mark_id: markId, quote },
     anchoredAt,
     draft: { body, mentions: [], replacement: "" },
     drop: noop,
@@ -78,22 +136,43 @@ function keptDraft(markId: string, quote: string, body: string, anchoredAt?: num
 
 /** The open composer at `quote`'s words, the offer of a draft kept for them beside it, and the
  *  margin's own list of what its compose kept, over a cache holding the document's text `read`,
- *  or none where it is undefined. `offeredAt` and `awayAt` are when the composes that kept the two
- *  drafts took the words, and `readAt` is when `read` landed. */
+ *  or none where it is undefined, and the issue's comment list `comments`, where it is given.
+ *  `offeredAt` and `awayAt` are when the composes that kept the two drafts took the words, and
+ *  `readAt` is when `read` landed; the words lie in the pending inserts `insertMarks` names on
+ *  every surface, where it names any. */
 function renderSurfaces(
   quote: string,
   read: ArtifactText | undefined,
-  { awayAt, offeredAt, readAt }: { awayAt?: number; offeredAt?: number; readAt?: number } = {}
+  {
+    awayAt,
+    comments,
+    insertMarks,
+    offeredAt,
+    readAt,
+  }: {
+    awayAt?: number;
+    comments?: readonly Comment[];
+    insertMarks?: readonly string[];
+    offeredAt?: number;
+    readAt?: number;
+  } = {}
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (read !== undefined) land(client, read, readAt);
-  const offered = keptDraft("mark-offered", quote, "Is this the review we agreed on?", offeredAt);
-  const away = keptDraft("mark-away", quote, "Name who runs it.", awayAt);
+  if (comments !== undefined) client.setQueryData(COMMENTS, comments);
+  const offered = keptDraft(
+    "mark-offered",
+    quote,
+    "Is this the review we agreed on?",
+    offeredAt,
+    insertMarks
+  );
+  const away = keptDraft("mark-away", quote, "Name who runs it.", awayAt, insertMarks);
   const view = render(
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={client}>
         <MentionComposer
-          anchor={{ artifact: DOCUMENT, mark_id: "mark-open", quote }}
+          anchor={{ artifact: DOCUMENT, insertMarks, mark_id: "mark-open", quote }}
           kind="comment"
           onClose={noop}
           onSent={noop}
@@ -407,6 +486,147 @@ test("a composer that mounts again after the delete, while the page's next read 
   } finally {
     setSystemTime();
     again.unmount();
+    client.clear();
+  }
+});
+
+// The architect's ruling of 2026-11-20 20:55Z, approved at 21:57Z: a fact the page holds decides
+// alone, whatever its read of the document's text says. The reader's selection lies in another
+// comment's pending insert, so each draft's anchor keeps the insert's mark
+// (`ComposerAnchor.insertMarks`), and the page's read of the text is the one from before the
+// delete, which holds the words. The delete's correction writes the insert's comment deleted into
+// the issue's comment list (`markCorrectedPost`), and no read of the text lands after it: the open
+// composer, the offer of a draft kept for the words and the margin's list of what its compose kept
+// each draw none of them.
+test("a draft whose words lie in a pending insert draws none of them on any surface once the page holds the insert's comment deleted, with no read of the document since", () => {
+  const { client, view } = renderSurfaces(QUOTE, textRead(BEFORE), {
+    comments: [INSERT_COMMENT],
+    insertMarks: [INSERT_MARK],
+  });
+  const textKey = liveTextQueryOptions(DOCUMENT).queryKey;
+  try {
+    // While the insert stands, its words are the document's, and each surface quotes them.
+    expect(timesDrawn(view.container, QUOTE)).toBe(3);
+    const readAt = client.getQueryState(textKey)?.dataUpdatedAt;
+
+    act(() => markCorrectedPost(client, insertDeleted()));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    expect({
+      composer:
+        within(composer).queryByText(
+          "The words this draft was for are no longer in the document."
+        ) !== null,
+      drawn: timesDrawn(view.container, QUOTE),
+      kept: screen.getByTestId("kept").textContent,
+      offered: screen.getByTestId("offered").textContent,
+      // The only read of the document's text is still the one from before the delete.
+      readSince: client.getQueryState(textKey)?.dataUpdatedAt !== readAt,
+    }).toEqual({
+      composer: true,
+      drawn: 0,
+      kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+      offered:
+        "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+      readSince: false,
+    });
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});
+
+// A reload after the delete: the tab kept the drafts the margin's compose kept for the words, each
+// with the insert's mark in its anchor (`keptAnchor`), and the page that loads holds no read of
+// the document's text at all, only the issue's comment list as Dispatch answers it after the
+// delete, with the insert's comment deleted. The composer at the words takes the draft kept for
+// them, a compose at other words offers the newest one kept for other words, and the margin lists
+// the other: none draws the words.
+test("after a reload, the drafts the tab kept for words in a deleted insert keep its mark and draw none of the words, with no read of the document", () => {
+  const name = composerNameOf(marginComposeSendKey(DOCUMENT));
+  const wordsAt = (markId: string): ComposerAnchor => ({
+    artifact: DOCUMENT,
+    insertMarks: [INSERT_MARK],
+    mark_id: markId,
+    quote: QUOTE,
+  });
+  const keptFor = (markId: string, body: string): AwayDraft => ({
+    anchor: wordsAt(markId),
+    anchoredAt: Date.now(),
+    draft: { body, mentions: [], replacement: "" },
+    kind: "comment",
+    owner: OWNER,
+    replyTo: null,
+  });
+  const before = new QueryClient();
+  draftStoresSignedIn(before, "alice");
+  unsentDraftsOf(before).keepAway(name, keptFor("mark-away", "Name who runs it."));
+  unsentDraftsOf(before).keepAway(name, keptFor("mark-insert", "Which review is this?"));
+  // The reload: the next page loads over the same tab, with a query client of its own.
+  before.clear();
+  draftStoresReloaded();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  draftStoresSignedIn(client, "alice");
+  client.setQueryData(COMMENTS, [
+    { ...INSERT_COMMENT, anchor: { ...INSERT_COMMENT.anchor, quote: "" }, body: "", ...DELETION },
+  ]);
+  const stored = unsentDraftsOf(client);
+  const atWords = stored.readAway(name, null, wordsAt("mark-insert"));
+  const away = stored.readAway(name, null, wordsAt("mark-away"));
+  if (atWords?.anchor === undefined || away?.anchor === undefined) {
+    throw new Error("the tab kept no draft for the words");
+  }
+  const marks = [atWords.anchor.insertMarks, away.anchor.insertMarks];
+
+  const again = render(composeAt(client, atWords.anchor));
+  let composer: { drawn: number; field: string; gone: boolean };
+  try {
+    composer = {
+      drawn: timesDrawn(again.container, QUOTE),
+      field: screen.getByLabelText<HTMLTextAreaElement>("Comment").value,
+      gone:
+        screen.queryByText("The words this draft was for are no longer in the document.") !== null,
+    };
+  } finally {
+    again.unmount();
+  }
+
+  const others = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={client}>
+        <MentionComposer
+          anchor={{ artifact: DOCUMENT, mark_id: "mark-release", quote: "Ship the release." }}
+          kind="comment"
+          mutationKey={marginComposeSendKey(DOCUMENT)}
+          onClose={noop}
+          onSent={noop}
+          owner={OWNER}
+          replyTo={null}
+        />
+        <div data-testid="kept">
+          <MarginKeptDrafts drafts={[away]} hidden={false} onDiscard={noop} />
+        </div>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    expect({
+      composer,
+      drawn: timesDrawn(others.container, QUOTE),
+      kept: screen.getByTestId("kept").textContent,
+      marks,
+      offered: screen.getByText("Which review is this?").closest('[role="status"]')?.textContent,
+      read: client.getQueryData(liveTextQueryOptions(DOCUMENT).queryKey),
+    }).toEqual({
+      composer: { drawn: 0, field: "Which review is this?", gone: true },
+      drawn: 0,
+      kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+      marks: [[INSERT_MARK], [INSERT_MARK]],
+      offered:
+        "You wrote this draft for other words, which are no longer in the document. It is kept here:Which review is this?",
+      read: undefined,
+    });
+  } finally {
+    others.unmount();
     client.clear();
   }
 });

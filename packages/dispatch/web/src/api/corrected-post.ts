@@ -57,6 +57,11 @@ interface CorrectedPost {
   readonly id: string;
   /** What every block of the post's node id starts with: a block's is `<kind>/<id>#<block id>`. */
   readonly blockNodes: string;
+  /** For the delete of a comment that emptied its anchor quote (`quoteCleared`) - a pending
+   *  insert suggestion's, whose words its delete took out of the document - the block of the
+   *  document its mark lay in, as the delete's own anchor names it (`block_id`); undefined for
+   *  every other correction, and for an anchor that names no block. */
+  readonly insertBlock: { readonly artifactId: string; readonly blockId: string } | undefined;
   readonly mark: PostMark;
   /** Whether an address a names read holds names the post or a block of it
    *  (`correctedPostAddresses`); undefined for an event whose id is no post's. */
@@ -166,8 +171,13 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       ? undefined
       : markedNamesRead(answer as ReferenceTargetsAnswer | undefined, post.names, post.mark),
   /** A graph read (`referencesQuery`, `["references", "to", …]`): its node where that is the post
-   *  or a block of it, and each edge whose other end is, as the Referenced by panel lists them. */
-  "references to": (answer, post) => markedGraphRead(answer as GraphReferences, post),
+   *  or a block of it, and each edge whose other end is, as the Referenced by panel lists them;
+   *  and for a pending insert's delete, the text of the document's block the insert's words lay
+   *  in, wherever the read holds it (`withdrawnInsertBlock`), as a document's `part_of` read does. */
+  "references to": (answer, post) => {
+    const marked = markedGraphRead(answer as GraphReferences, post);
+    return withdrawnInsertBlock(marked ?? (answer as GraphReferences), post) ?? marked;
+  },
   /** The search palette's answers (`["search", …]`): each hit of the post. */
   search: (answer, post) => markedSearch(answer as SearchResponse, post),
 };
@@ -264,6 +274,10 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
  *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
  *   answer holds, and the node's mark is what a reference to the block reads the deletion from;
+ * - for a pending insert suggestion's delete, the text of the document's block the insert's
+ *   words lay in, wherever a graph read holds that block - a document's `part_of` read, which the
+ *   spec's "Changed since you last read" line names its sections from (`spec-marks.ts`), among
+ *   them: no text and no excerpt (`withdrawnInsertBlock`);
  * - each member of a names read naming the post or a block of it (`["reference-targets", …]`,
  *   by `correctedPostAddresses`): the post's named `""`, a block's gone, with no tree;
  * - the name of the document version a comment's accepted suggestion had named after the
@@ -535,6 +549,7 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
 function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
   let kind: CorrectedPost["kind"];
   let mark: PostMark;
+  let insertBlock: CorrectedPost["insertBlock"];
   switch (event.type) {
     case "comment.deleted":
     case "message.deleted": {
@@ -544,8 +559,14 @@ function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
       }
       kind = event.type === "comment.deleted" ? "comment" : "message";
       // The delete's own payload carries the comment's anchor as the delete left it.
-      const quoteCleared = event.type === "comment.deleted" && event.payload.anchor?.quote === "";
+      const anchor = event.type === "comment.deleted" ? event.payload.anchor : undefined;
+      const quoteCleared = anchor?.quote === "";
       mark = { deletion, kind: "deleted", quoteCleared };
+      const artifactId = anchor?.artifact_id;
+      const blockId = anchor?.block_id;
+      if (quoteCleared && typeof artifactId === "string" && typeof blockId === "string") {
+        insertBlock = { artifactId, blockId };
+      }
       break;
     }
     case "comment.edited":
@@ -566,6 +587,7 @@ function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
     event.type === "comment.deleted" ? event.payload.renamed_version : undefined;
   return {
     blockNodes: `${kind}/${id}#`,
+    insertBlock,
     id,
     kind,
     mark,
@@ -997,6 +1019,46 @@ function markedGraphRead(read: GraphReferences, post: CorrectedPost): GraphRefer
     : { ...read, edges: edges ?? read.edges, node: node ?? read.node };
 }
 
+/**
+ * A graph read once `post`, the delete of a pending insert suggestion, is corrected: the text of
+ * the block of the document its words lay in (`CorrectedPost.insertBlock`) withdrawn wherever the
+ * read holds that block - its node, where the read is of the block, and the node of each edge at
+ * it, as a document's `part_of` read lists its blocks - each with no text, no tree and no pinned
+ * text, and each such edge with no excerpt. Undefined where the read holds no such block, and for
+ * every other correction.
+ *
+ * A block's text in a graph read is the one its document's latest indexed version gave it
+ * (`document_blocks`, `loadBlockNodes` in `refs/graph.go`), which holds the insert's words until
+ * the version that holds the delete's reject is written and indexed, at the document's next
+ * settlement; the read the delete's event refreshes can land before then, and nothing reads it
+ * again after. The read carries no mark to tell the insert's words from the block's own, so the
+ * block's whole text goes, until a read of it answers again.
+ */
+function withdrawnInsertBlock(
+  read: GraphReferences,
+  post: CorrectedPost
+): GraphReferences | undefined {
+  const block = post.insertBlock;
+  if (block === undefined) {
+    return undefined;
+  }
+  const isInsertBlock = (node: GraphEdge["node"]) =>
+    node.kind === "block" &&
+    node.block_id === block.blockId &&
+    node.parent?.id === block.artifactId;
+  const edges = markEach(read.edges, (edge) => {
+    if (!isInsertBlock(edge.node)) {
+      return undefined;
+    }
+    const { excerpt: _excerpt, ...kept } = edge;
+    return { ...kept, node: withoutWords(edge.node as GraphReferences["node"]) };
+  });
+  const node = isInsertBlock(read.node) ? withoutWords(read.node) : undefined;
+  return node === undefined && edges === undefined
+    ? undefined
+    : { ...read, edges: edges ?? read.edges, node: node ?? read.node };
+}
+
 /** `edge` once `post` is corrected, where its other end is the post or a block of it: that end
  *  marked, and, for a delete, no excerpt of its words; undefined for any other edge. */
 function markedEdge(edge: GraphEdge, post: CorrectedPost): GraphEdge | undefined {
@@ -1028,17 +1090,20 @@ function markedGraphNode(
   if (post.mark.kind === "edited") {
     return { ...node, edited_at: editedAfter(node.edited_at, post.mark.at) };
   }
-  const { deleted_by: _by, pin, text, text_tree: _tree, ...kept } = node;
-  const marked = {
-    ...kept,
-    ...deletionMarks(post.mark.deletion),
-    ...(text === undefined ? {} : { text: "" }),
-  };
+  const { deleted_by: _by, ...kept } = node;
+  return { ...withoutWords(kept), ...deletionMarks(post.mark.deletion) };
+}
+
+/** `node`, a graph read's or an edge's, with no text, no tree and no pinned text: a node that
+ *  had text has `""`. */
+function withoutWords(node: GraphReferences["node"]): GraphReferences["node"] {
+  const { pin, text, text_tree: _tree, ...kept } = node;
+  const bare = { ...kept, ...(text === undefined ? {} : { text: "" }) };
   if (pin === undefined) {
-    return marked;
+    return bare;
   }
   const { text_tree: _pinTree, ...pinKept } = pin;
-  return { ...marked, pin: { ...pinKept, text: "" } };
+  return { ...bare, pin: { ...pinKept, text: "" } };
 }
 
 /** A names read once the post is corrected: each member naming the post or a block of it

@@ -561,8 +561,13 @@ export function MentionComposer({
   // later one says they left (`useQuoteInDocument`), and a draft it keeps for them keeps this time
   // (`AwayDraft.anchoredAt`). The margin mounts a composer of its own for each compose, with its
   // words (`MarginSheet`), and a kind switch moves it to another mark over the same words, so the
-  // mount is when it took them.
-  const [anchoredAt] = useState(() => (anchor === undefined ? undefined : Date.now()));
+  // mount is when it took them - unless the field took a draft written for those words, a held
+  // send's or one kept for them, whose compose took them before: a composer that mounts again at
+  // its words, as one does when the reader comes back to the document, goes on with that
+  // compose's words, and keeps its time (`MountDraft.anchoredAt`).
+  const [anchoredAt] = useState(() =>
+    anchor === undefined ? undefined : (initial.anchoredAt ?? Date.now())
+  );
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);

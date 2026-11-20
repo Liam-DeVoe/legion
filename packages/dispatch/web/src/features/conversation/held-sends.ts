@@ -227,6 +227,9 @@ const keptEdit = shape.either(
 export const keptAnchor = shape.either(
   shape.record({
     artifact: shape.string,
+    // The pending inserts the words lie in, which say after a reload that they are a deleted
+    // post's once the page holds the insert's comment deleted (`ComposerAnchor.insertMarks`).
+    insertMarks: shape.optional(shape.array(shape.string)),
     mark_id: shape.string,
     // The words the reader had around their selection and how many readings of them their
     // block held, which the recovery from `ANCHOR_MISSING` needs after a reload as much as
@@ -241,7 +244,12 @@ export const keptAnchor = shape.either(
     ),
     quote: shape.string,
   }),
-  shape.record({ artifact: shape.string, occurrence: shape.number, quote: shape.string })
+  shape.record({
+    artifact: shape.string,
+    insertMarks: shape.optional(shape.array(shape.string)),
+    occurrence: shape.number,
+    quote: shape.string,
+  })
 );
 
 /** The kind a draft is written as (`ComposerKind`). */

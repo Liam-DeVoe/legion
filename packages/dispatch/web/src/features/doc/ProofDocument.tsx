@@ -77,6 +77,7 @@ import {
   blockOffsets,
   blockPlacements as collectBlockPlacements,
   composerKindFor,
+  insertMarksIn,
   markPlacements,
   selectionBarKindFor,
 } from "./marks";
@@ -930,18 +931,26 @@ export function ProofDocument({
                   switch (action.kind) {
                     case "comment":
                     case "suggest":
-                    case "ask":
+                    case "ask": {
                       // The margin owns the mark from here: it removes it when the composer ends
-                      // unsaved and retypes it when the composer's kind changes.
+                      // unsaved and retypes it when the composer's kind changes. The anchor keeps
+                      // the pending inserts the selected words lie in, whose comment's delete
+                      // takes them out of the document (`ComposerAnchor.insertMarks`).
+                      const doc = editor?.view.state.doc;
                       return marginRef.current.composeForMark({
                         anchor: {
                           artifact: artifact.id,
+                          insertMarks:
+                            doc === undefined
+                              ? undefined
+                              : insertMarksIn(doc, action.from, action.to),
                           mark_id: action.markId,
                           placement: action.placement ?? undefined,
                           quote: action.quote,
                         },
                         kind: composerKindFor(action.kind),
                       });
+                    }
                     case "quote-comment": {
                       // A closed issue's document takes no mark: the comment names its text by
                       // quote, and the server writes its mark where the reader selected. The bar
@@ -950,7 +959,7 @@ export function ProofDocument({
                       const doc = editor?.view.state.doc;
                       const anchor =
                         doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
-                      if (anchor === undefined) {
+                      if (doc === undefined || anchor === undefined) {
                         setQuoteRefusal(
                           "This selection holds no text to quote. Select text to comment on it."
                         );
@@ -958,7 +967,11 @@ export function ProofDocument({
                       }
                       setQuoteRefusal(undefined);
                       return marginRef.current.composeForMark({
-                        anchor: { artifact: artifact.id, ...anchor },
+                        anchor: {
+                          artifact: artifact.id,
+                          ...anchor,
+                          insertMarks: insertMarksIn(doc, action.from, action.to),
+                        },
                         kind: "comment",
                       });
                     }
