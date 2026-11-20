@@ -13,7 +13,7 @@ import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { forgetTheEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
@@ -1310,6 +1310,52 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
     `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
   );
   expect(drawn.maxHeight).toBe("144px");
+});
+
+// Decision 263 again, where the words are drawn after the row by the Markdown engine rather than
+// by a later read: a row whose read sent its reading draws it once the page's engine has loaded,
+// and on a fresh load of the issue page the rows can mount before it has. The mount measures the
+// row with no words, and the batch its coming near starts holds it in view at that length;
+// nothing draws it from other words, so only the paint can say it drew them. A browser Job of
+// dispatch://INFRA-341 caught it otherwise at 1440 px: the conversation's first reply was painted
+// 53 ms after its mount and stayed whole, 306 px tall.
+test("a row in view whose reading the Markdown engine paints after the row's commit is drawn cut before the page is painted", async () => {
+  // The reading the server sent, read while the engine is loaded: `displayTree` draws with it.
+  const tree = displayTree(LONG_WORDS);
+  // Words not painted yet run no height; painted, they run 400 lines of 24 px.
+  const restore = layOut(9600, (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600));
+  const near = installIntersectionObserver();
+  // Every animation frame held, so no batch runs: a cut can come only from the paint's own task.
+  const frame = spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  // The engine dropped, so the row mounts before one has loaded, as on a fresh load.
+  forgetTheEngine();
+  try {
+    const row = renderRow(node({ id: "comment-1", text: LONG_WORDS, tree, type: "comment" }), {
+      author: { kind: "agent", name: "Planner", reader: false },
+      body: false,
+    });
+    try {
+      const words = row.container.querySelector<HTMLElement>("[data-node-words]");
+      expect(words?.textContent, "the reading was painted in the row's commit").toBe("");
+      await act(async () => {
+        await warmMarkdownRenderer();
+      });
+      expect(words?.textContent, "the engine painted no reading").toContain("word3000");
+      expect(
+        row.container.querySelector("[data-node-more]")?.textContent,
+        "the reading painted after the row's commit was drawn whole in view"
+      ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
+      expect(words?.style.maxHeight).toBe("144px");
+    } finally {
+      row.unmount();
+    }
+  } finally {
+    frame.mockRestore();
+    near.restore();
+    restore();
+    // The engine every other row of this file draws with.
+    await warmMarkdownRenderer();
+  }
 });
 
 // Decision 261: a row in view keeps its length unless it draws other words. A new comment on the

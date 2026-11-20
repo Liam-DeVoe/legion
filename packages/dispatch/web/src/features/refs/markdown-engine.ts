@@ -364,8 +364,10 @@ export function setParseDeadline(limitMs = PARSE_TIME_LIMIT_MS): void {
 }
 
 /** Drops the engine this page built and every answer it parsed, so the next load builds a fresh
- *  one: for the rows that watch an engine being built (`markdown-engine.test.ts`). A page builds
- *  its one engine from the manifest it was built with and keeps it, so nothing else needs this. */
+ *  one: for the rows that watch an engine being built (`markdown-engine.test.ts`), and for one
+ *  that draws a row before its engine has loaded, as a fresh page does (`NodeRow.drawn.test.tsx`).
+ *  A page builds its one engine from the manifest it was built with and keeps it, so nothing else
+ *  needs this. */
 export function forgetTheEngine(): void {
   loadingEngine = undefined;
   readyEngine = undefined;

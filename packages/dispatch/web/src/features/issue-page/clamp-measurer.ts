@@ -107,6 +107,17 @@ interface Watched {
  * either. A row never measured is left as it was: one outside the view to the batches, and one
  * in view at the length the reader sees.
  *
+ * A row's reading can be painted after the row too. The page's Markdown engine paints it, in the
+ * row's own commit where the engine has loaded and in the task the engine loads in otherwise,
+ * and on a fresh load of the page the rows can mount first: the conversation's first reply,
+ * 306 px tall at 1440 px, was painted 53 ms after its mount and never cut (dispatch://INFRA-341).
+ * Whatever the mount and the batches measured of such a row before that paint was no words at
+ * all. So the row says when its reading is first painted after its commit (`painted`), and that
+ * measure is forgotten: the row is measured as one that mounts, in the task of the paint and
+ * before the page is painted, where it stands in view, and left to the batches as never measured
+ * where it does not. Kept, that measure would make a row far below the view stale once the
+ * typeface arrives, and the row would be cut wherever it stood before the reader came near it.
+ *
  * A long jump into the middle of the page, such as a fast drag of the scrollbar, lands on rows
  * not measured yet, and their cuts the frame after moved the content in view (-1,141 px once in
  * five jumps from 60,000 px to 15,000 px): the browser's own scroll anchoring holds the view only
@@ -217,6 +228,19 @@ class ClampMeasurer {
     this.#measureAsMounted(element);
   }
 
+  /** Measures `element`'s words as they mount (`#measureMounted`), now that their reading has
+   *  been painted for the first time after the commit that handed them over. Whatever was
+   *  measured of them before that was no words at all, so it is forgotten: where the row does
+   *  not stand in view, it is left to the batches as a row never measured, which the typeface's
+   *  arrival does not measure wherever it stands. Called from the task of that paint
+   *  (`RowText`'s `onLatePaint`). */
+  painted(element: HTMLElement): void {
+    const watched = this.#rows.get(element);
+    if (watched === undefined) return;
+    watched.face = undefined;
+    this.#measureAsMounted(element);
+  }
+
   /** Whether no row is watched any more. */
   get idle(): boolean {
     return this.#rows.size === 0;
@@ -247,7 +271,8 @@ class ClampMeasurer {
 
   /** Puts `element` in the mount's pass (`#measureMounted`), which runs once the commit now
    *  running has run its layout effects: the commit's first such row schedules it, as one
-   *  microtask, and every later row of the commit joins it. */
+   *  microtask, and every later row of the commit joins it. So does every reading the Markdown
+   *  engine paints as it loads: each is painted in a microtask queued before that one. */
   #measureAsMounted(element: HTMLElement): void {
     this.#mounted.push(element);
     if (this.#mounted.length === 1) queueMicrotask(this.#measureMounted);
@@ -272,10 +297,11 @@ class ClampMeasurer {
   };
 
   /** The rows handed over since the commit that mounted them, or that drew other words in it
-   *  (`redrawn`), measured where they stand in view once that commit's layout effects have all
-   *  run, and before the page is painted: every read of them comes first, after the writes of
-   *  every layout effect, so the page is laid out for them once; then their cuts are drawn at
-   *  once (`flushSync`). A row outside the view is left to the batches. */
+   *  (`redrawn`), or whose reading was painted after it (`painted`), measured where they stand in
+   *  view once that commit's layout effects or those paints have all run, and before the page is
+   *  painted: every read of them comes first, after every write before them, so the page is laid
+   *  out for them once; then their cuts are drawn at once (`flushSync`). A row outside the view is
+   *  left to the batches. */
   readonly #measureMounted = (): void => {
     const screen = window.innerHeight;
     const read: Measured[] = [];
@@ -385,6 +411,12 @@ export function watchClamp(element: HTMLElement, report: Report): () => void {
  *  measured them on (`ClampMeasurer.redrawn`). */
 export function clampRedrawn(element: HTMLElement): void {
   measurer?.redrawn(element);
+}
+
+/** Tells the page's one measurer that the reading of `element`'s words has been painted for the
+ *  first time, after the commit that handed them over (`ClampMeasurer.painted`). */
+export function clampPainted(element: HTMLElement): void {
+  measurer?.painted(element);
 }
 
 /** Whether the words' box, as the slice read it, is laid out within `NEAR_BAND` of the viewport.

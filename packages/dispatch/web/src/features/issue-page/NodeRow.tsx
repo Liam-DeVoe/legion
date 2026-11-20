@@ -32,7 +32,7 @@ import { moveTheScroll } from "../doc/readers-place";
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, clampPainted, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -329,6 +329,12 @@ export function NodeRow({
                 <RowText
                   focused={focused}
                   markdown={node.text}
+                  // The reading is painted once the Markdown engine has loaded, which can be
+                  // after this row's commit measured its words with none: the measurer forgets
+                  // that measure and measures the row as it mounts (`useClamp`).
+                  onLatePaint={() => {
+                    if (cuttable && words.current !== null) clampPainted(words.current);
+                  }}
                   source={node.source}
                   tabStops={tabStops}
                   tree={node.tree}
@@ -1337,9 +1343,13 @@ export function MoreWords({
  * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
  * read under a new key, which a new comment on the issue starts, shares none with the last - and
  * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
- * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
- * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
- * on the fallback face, which is measured again once the typeface arrives.
+ * its words are drawn from passes nothing. A row drawn from its reading can mount before the
+ * Markdown engine has loaded, and then its reading is painted in a task after its commit, which
+ * measured its words with none (`RowText`'s `onLatePaint`): in that task the row is measured as
+ * one that mounts, and where it stands outside the view, left to the batches as one never
+ * measured (`clampPainted`). Undefined where the words are drawn whole, or not measured yet; a
+ * row the reader scrolled away from keeps the cut it last had, save one measured on the fallback
+ * face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
