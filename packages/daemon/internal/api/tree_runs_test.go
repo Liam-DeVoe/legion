@@ -32,8 +32,8 @@ var treeRunsNow = time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 type projectedState struct{}
 
 func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	state, err := projection.Project(ctx, tx, record.NewStore(), treeRunsProject, config.DesignGateRootIssues.Steps(),
-		nil, nil, nil, nil, treeRunsNow)
+	state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: record.NewStore(), Project: treeRunsProject,
+		Steps: config.DesignGateRootIssues.Steps(), Now: treeRunsNow})
 	return state, nil, err
 }
 

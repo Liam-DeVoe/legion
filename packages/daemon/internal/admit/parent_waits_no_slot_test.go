@@ -169,8 +169,8 @@ func pnState(t *testing.T, pool *pgxpool.Pool, admission *Admission) api.State {
 	var state api.State
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if state, err = projection.Project(context.Background(), tx, record.NewStore(), testProject,
-			admission.engine.GatedSteps(), nil, nil, nil, nil, fixedNow); err != nil {
+		if state, err = projection.Project(context.Background(), projection.Inputs{Tx: tx, Store: record.NewStore(), Project: testProject,
+			Steps: admission.engine.GatedSteps(), Now: fixedNow}); err != nil {
 			t.Fatalf("project the state: %v", err)
 		}
 	})

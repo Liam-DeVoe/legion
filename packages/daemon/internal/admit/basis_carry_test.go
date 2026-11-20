@@ -181,7 +181,7 @@ func childCatchUp(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) m
 type carryState struct{ steps []record.DesignStep }
 
 func (s carryState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	state, err := projection.Project(ctx, tx, record.NewStore(), testProject, s.steps, nil, nil, nil, nil, fixedNow)
+	state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: record.NewStore(), Project: testProject, Steps: s.steps, Now: fixedNow})
 	return state, nil, err
 }
 
