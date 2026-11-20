@@ -1437,14 +1437,16 @@ test("a priority's own page writes its title and description and lists only its 
   }
 });
 
-// INFRA-2947 R7 (spec v76, its third point; spec v85) and check 138e9e4d (Verification v62): at
-// 1280 by 800 the work under a priority takes the whole of its box. Title takes all the width the
-// key, the project and the status leave, so no space stands empty at the table's right: the last
-// column that draws anything ends at the box's right edge, less the room a filling column leaves
-// there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
+// INFRA-2947 R7 (spec v76, its third point; spec v85, v89) and check 138e9e4d (Verification v62,
+// v66): at 1280 by 800 the work under a priority takes the whole of its box. Title takes all the
+// width the key, the project and the status leave, so no space stands empty at the table's
+// right: the last column that draws anything ends at the box's right edge, less the room a
+// filling column leaves there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
 // `features/project/issues-table-layout.ts`). An issue title of 190 characters reads whole there
-// and on each fault tab: no ellipsis, no clamp, nothing of it past its box.
-// SLOW(>=2s): the seed, three more issues, and three tables read at the desktop's size.
+// and on each fault tab: no ellipsis, no clamp, nothing of it past its box. One of 900, as long
+// as production's longest run, is drawn in eight lines ending in '…', its whole text in its
+// tooltip.
+// SLOW(>=2s): the seed, six more issues, and three tables read at the desktop's size.
 test("at 1280 by 800 a priority's work table leaves no empty room at its right, and it and each fault tab read a 190-character title whole", async ({
   browser,
 }) => {
@@ -1454,16 +1456,24 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
     "the smoke suite proving each took the build and the roll-back ready for any machine that " +
     "refused it.";
   expect(title).toHaveLength(190);
-  // One issue of that title under #1 in flight, one under no priority in flight, and one whose
+  const longTitle = `${"The rollout moves every machine of the fleet onto the new daemon and proves that each one took the build. ".repeat(12).slice(0, 899)}.`;
+  expect(longTitle).toHaveLength(900);
+  // One issue of each title under #1 in flight, one under no priority in flight, and one whose
   // own row names #1 standing in the backlog: the work table, the first fault tab and the
   // second.
   const work = await createIssue({ project: "CORE", title });
   const none = await createIssue({ project: "OPS", title });
   const parked = await createIssue({ project: "WEB", title });
+  const workLong = await createIssue({ project: "CORE", title: longTitle });
+  const noneLong = await createIssue({ project: "OPS", title: longTitle });
+  const parkedLong = await createIssue({ project: "WEB", title: longTitle });
   await Promise.all([
     patchIssue(work.key, { advances: [seed.ids[0]], status: "in_progress" }),
     patchIssue(none.key, { status: "in_progress" }),
     patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" }),
+    patchIssue(workLong.key, { advances: [seed.ids[0]], status: "in_progress" }),
+    patchIssue(noneLong.key, { status: "in_progress" }),
+    patchIssue(parkedLong.key, { advances: [seed.ids[0]], status: "backlog" }),
   ]);
   const context = await asUser(browser, "alice");
   try {
@@ -1497,6 +1507,46 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
         )
         .toEqual([]);
     };
+    // Whether the 900-character title in `key`'s row is drawn in eight lines ending in '…' - a
+    // clamp of eight lines that holds more than it shows - with its whole text in a tooltip of
+    // its own or of an element around it in its cell.
+    const expectEightLines = async (table: Locator, key: string, where: string) => {
+      const row = table.getByRole("row", { exact: true, name: `${key} ${longTitle}` });
+      await expect(row).toBeVisible();
+      const text = (await cellUnder(table, row, "Title")).getByText(longTitle, { exact: true });
+      await expect(text).toBeVisible();
+      const drawn = await settledValue(`${where}: the 900-character title`, () =>
+        text.evaluate((element) => {
+          const style = getComputedStyle(element);
+          const lines = Math.round(
+            element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
+          );
+          const cell = element.closest("td");
+          let tooltip = "";
+          for (let node: Element | null = element; node !== null; node = node.parentElement) {
+            const own = node.getAttribute("title");
+            if (own !== null && own !== "") {
+              tooltip = own;
+              break;
+            }
+            if (node === cell) break;
+          }
+          return {
+            endsInEllipsis:
+              style.webkitLineClamp === "8" && element.scrollHeight > element.clientHeight,
+            lines,
+            tooltip,
+          };
+        })
+      );
+      soft(
+        { endsInEllipsis: drawn.endsInEllipsis, lines: drawn.lines },
+        `${where}: the 900-character title is drawn in eight lines ending in '…'`
+      ).toEqual({ endsInEllipsis: true, lines: 8 });
+      soft(drawn.tooltip, `${where}: the 900-character title's whole text is in its tooltip`).toBe(
+        longTitle
+      );
+    };
 
     // A priority's page.
     await page.goto(`/priorities/${seed.ids[0]}`);
@@ -1505,8 +1555,10 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
       `${work.key} ${title}`,
-      // The parked one advances #1 as well, so the work under #1 lists it.
+      `${workLong.key} ${longTitle}`,
+      // The parked ones advance #1 as well, so the work under #1 lists them.
       `${parked.key} ${title}`,
+      `${parkedLong.key} ${longTitle}`,
     ]);
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
 
@@ -1542,21 +1594,18 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
       });
     await soft.poll(emptyRoom).toBeLessThanOrEqual(20);
     await expectWhole(workTable, work.key, "a priority's page");
+    await expectEightLines(workTable, workLong.key, "a priority's page");
 
     // The two fault tabs.
     await page.goto(PRIORITIES_PATH);
     await chooseTab(page, "none");
-    await expectWhole(
-      page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE }),
-      none.key,
-      "the none tab"
-    );
+    const noneTable = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
+    await expectWhole(noneTable, none.key, "the none tab");
+    await expectEightLines(noneTable, noneLong.key, "the none tab");
     await chooseTab(page, "parked");
-    await expectWhole(
-      page.getByRole("table", { exact: true, name: PARKED_TABLE }),
-      parked.key,
-      "the parked tab"
-    );
+    const parkedTable = page.getByRole("table", { exact: true, name: PARKED_TABLE });
+    await expectWhole(parkedTable, parked.key, "the parked tab");
+    await expectEightLines(parkedTable, parkedLong.key, "the parked tab");
   } finally {
     await context.close();
   }
@@ -2004,14 +2053,16 @@ test("on a phone the priorities tab keeps each place and title together as wide 
   }
 });
 
-// INFRA-2947 R7 (spec v86 to v89) and check 138e9e4d (Verification v64, v65), read on data
+// INFRA-2947 R7 (spec v86 to v89) and check 138e9e4d (Verification v64 to v66), read on data
 // shaped as production's: a holder's claim chip on each fault tab drawn whole at 1280, its words
-// no wider than its box; at 1280 Title at least 260 px wide on the Active tab and 200 px on the
-// Parked tab, and on both no other column wider than its widest header or cell needs, with its
-// padding; and the status bar over the work under a priority, at 1280 and at 390, and over each
-// fault tab at 390, cutting no status's name - each name is whole in its segment, in view, or
-// whole in a legend under the bar - and at 390 drawing every count inside the bar.
-// SLOW(>=2s): the seed, eight more issues, two claims, and three pages read at two sizes.
+// no wider than its box, for a holder named by a long session title, by a session title of 55
+// characters led by an emoji, and by a bare session id; at 1280 Title at least 260 px wide on
+// the Active tab and 200 px on the Parked tab, and on both no other column wider than its widest
+// header or cell needs, with its padding; and the status bar over the work under a priority, at
+// 1280 and at 390, and over each fault tab at 390, cutting no status's name - each name is whole
+// in its segment, in view, or whole in a legend under the bar - and at 390 drawing every count
+// inside the bar.
+// SLOW(>=2s): the seed, twelve more issues, six claims, and three pages read at two sizes.
 test("the fault tabs draw a holder's claim whole, and no status bar of these pages cuts a status's name", async ({
   browser,
 }) => {
@@ -2023,18 +2074,44 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
     const issue = await createIssue({ project: "CORE", title: `Under #1 in ${status}` });
     await patchIssue(issue.key, { advances: [seed.ids[0]], status });
   }
-  // One claimed issue on each fault tab, held by a session whose name runs as production's do.
-  const holder = {
-    id: "019a1c0f-6d4b-7e80-bf39-4a1b5c8d9e0f",
-    kind: "session" as const,
-    origin: { session_title: "Legion implementer · INFRA-2947 · build host" },
-  };
-  const unplaced = await createIssue({ project: "OPS", title: "Claimed under no priority" });
-  const parked = await createIssue({ project: "WEB", title: "Claimed and parked under #1" });
-  await patchIssue(unplaced.key, { status: "in_progress" });
-  await patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" });
-  for (const key of [unplaced.key, parked.key]) {
-    await claimIssue(key, { actor: holder, as: "agent" });
+  // A claimed issue on each fault tab for each of three holders shaped as production's are: a
+  // session named by a long title, one by a title of 55 characters led by an emoji, and one
+  // named by its bare id, which carries no title.
+  const emoji = "🚀 Legion implementer · INFRA-2947 · build host, rack 42";
+  expect([...emoji]).toHaveLength(55);
+  const holders = [
+    {
+      id: "019a1c0f-6d4b-7e80-bf39-4a1b5c8d9e0f",
+      kind: "session" as const,
+      origin: { session_title: "Legion implementer · INFRA-2947 · build host" },
+    },
+    {
+      id: "019a1c10-7e5c-7f91-8a4b-5b2c6d9e0f10",
+      kind: "session" as const,
+      origin: { session_title: emoji },
+    },
+    { id: "019a1c11-8f6d-7aa2-9b5c-6c3d7e0f1a11", kind: "session" as const },
+  ];
+  const claimed: { holder: string; parked: string; unplaced: string }[] = [];
+  for (const [at, holder] of holders.entries()) {
+    const unplaced = await createIssue({
+      project: "OPS",
+      title: `Claimed under no priority ${at + 1}`,
+    });
+    const parked = await createIssue({
+      project: "WEB",
+      title: `Claimed and parked under #1 ${at + 1}`,
+    });
+    await patchIssue(unplaced.key, { status: "in_progress" });
+    await patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" });
+    for (const key of [unplaced.key, parked.key]) {
+      await claimIssue(key, { actor: holder, as: "agent" });
+    }
+    claimed.push({
+      holder: holder.origin?.session_title ?? holder.id,
+      parked: parked.key,
+      unplaced: unplaced.key,
+    });
   }
   const context = await asUser(browser, "alice");
   try {
@@ -2155,14 +2232,17 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
     // and the bar over #1's work.
     await page.setViewportSize(DESKTOP);
     await page.goto(PRIORITIES_PATH);
-    for (const [tab, name, key] of [
-      ["none", NO_PRIORITY_TABLE, unplaced.key],
-      ["parked", PARKED_TABLE, parked.key],
+    for (const [tab, name] of [
+      ["none", NO_PRIORITY_TABLE],
+      ["parked", PARKED_TABLE],
     ] as const) {
       await chooseTab(page, tab);
       const table = page.getByRole("table", { exact: true, name });
-      const chip = table.locator("tr[data-issue-row]", { hasText: key }).getByTestId("issue-claim");
-      await expect(chip).toBeVisible();
+      // A row by its own key: its name starts with the key and a space, so OPS-1 is not OPS-12.
+      const rowOf = (key: string) => table.locator(`tr[data-issue-row][aria-label^="${key} "]`);
+      const first = claimed[0];
+      if (first === undefined) throw new Error("no claimed issue was written");
+      await expect(rowOf(tab === "none" ? first.unplaced : first.parked)).toBeVisible();
       const fit = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
       const least = tab === "none" ? 260 : 200;
       soft(
@@ -2173,28 +2253,32 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         fit.wide,
         `at 1280 no column of the ${tab} tab but Title is wider than its widest header or cell needs`
       ).toEqual([]);
-      const cut = await settledValue(`the ${tab} tab's claim chip`, () =>
-        chip.evaluate((element) => {
-          const cell = element.closest("td")?.getBoundingClientRect();
-          const parts = [element, ...element.querySelectorAll("*")].filter(
-            (part) =>
-              part.getBoundingClientRect().width > 0 &&
-              (part.scrollWidth > part.clientWidth || part.scrollHeight > part.clientHeight)
-          );
-          const box = element.getBoundingClientRect();
-          return {
-            cut: parts.map(
+      for (const one of claimed) {
+        const chip = rowOf(tab === "none" ? one.unplaced : one.parked).getByTestId("issue-claim");
+        await expect(chip).toBeVisible();
+        const cut = await settledValue(`the ${tab} tab's claim chip of ${one.holder}`, () =>
+          chip.evaluate((element) => {
+            const cell = element.closest("td")?.getBoundingClientRect();
+            const parts = [element, ...element.querySelectorAll("*")].filter(
               (part) =>
-                `${part.tagName.toLowerCase()} ${(part.textContent ?? "").trim().slice(0, 24)}`
-            ),
-            insideCell: cell !== undefined && box.right <= cell.right + 0.5,
-          };
-        })
-      );
-      soft(cut, `the ${tab} tab draws the holder's claim chip whole`).toEqual({
-        cut: [],
-        insideCell: true,
-      });
+                part.getBoundingClientRect().width > 0 &&
+                (part.scrollWidth > part.clientWidth || part.scrollHeight > part.clientHeight)
+            );
+            const box = element.getBoundingClientRect();
+            return {
+              cut: parts.map(
+                (part) =>
+                  `${part.tagName.toLowerCase()} ${(part.textContent ?? "").trim().slice(0, 24)}`
+              ),
+              insideCell: cell !== undefined && box.right <= cell.right + 0.5,
+            };
+          })
+        );
+        soft(cut, `the ${tab} tab draws the claim chip of ${one.holder} whole`).toEqual({
+          cut: [],
+          insideCell: true,
+        });
+      }
     }
     await page.goto(`/priorities/${seed.ids[0]}`);
     const work = section(page, "Work advancing this priority");
