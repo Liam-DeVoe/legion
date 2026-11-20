@@ -440,10 +440,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, and one connection is what it costs the instance: a
-// serving process opens at most 113 rather than the 112 it would without it
+// serving process opens at most 114 rather than the 113 it would without it
 // (ConnectionsPerProcess), and the default tier's 500 connections less PostgreSQL's 3 reserved
-// slots still admit four app pods holding connections at once (452 of 497) and still refuse five
-// (565), exactly as they do at 112 (448 and 560), so it moves no replica boundary. A deployment on
+// slots still admit four app pods holding connections at once (456 of 497) and still refuse five
+// (570), exactly as they do at 113 (452 and 565), so it moves no replica boundary. A deployment on
 // another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
@@ -545,12 +545,15 @@ func (c *LeaseCallers) Complete() error {
 }
 
 // outboxPoolSize bounds the pool the events outbox reads and records events through, and takes
-// and renews its publisher hold on (duty.Hold). The outbox's scan is one goroutine that runs one
-// statement at a time and closes each cursor before its next statement, and the hold's renewal
-// runs beside it on a goroutine of its own, so two connections are every connection it can use: a
-// renewal never waits behind a batch's statement, which may take up to the five seconds a batch's
-// record is allowed, five times the hold's one second between renewals.
-const outboxPoolSize = 2
+// and renews its publisher hold on (duty.Hold). Three users take a connection of it at once, each
+// one statement at a time, so three connections are every connection it can use: the outbox's
+// scan, one goroutine whose batches run one statement at a time and close each cursor before
+// their next (lanes); the hold's renewal, on a goroutine of its own; and, after a late take-over,
+// the ending of the previous holder's sessions that runs beside the first scan
+// (outbox.endLateSessions). So a renewal never waits behind a batch's statement or that ending,
+// each of which may take up to the five seconds a batch's record is allowed, five times the hold's
+// one second between renewals.
+const outboxPoolSize = 3
 
 // registryPoolSize bounds the pool the registry of live server processes stamps this process's row
 // through: processes.Register opens it from this pool's configuration with MaxConns 1, outside the

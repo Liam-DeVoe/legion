@@ -603,7 +603,7 @@ func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.
 
 	holder := startKilledHolder(t, database)
 	writes.WaitForRenewal(t, holder.instance, outboxHangGuard)
-	standby := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener})
+	standby := standbyOf(t, database, &recordingPublisher{})
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { standby.Run(runCtx); close(done) }()
@@ -1200,12 +1200,12 @@ func (h *heldRelease) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx
 
 func (h *heldRelease) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// timeIn is the key attribute, read as the RFC3339Nano string the code logs, of the first record
-// the recorder kept whose message holds message, and false when no record says it yet, so a row
-// can both wait for the line and read a moment it carries. It reads the records the code wrote
-// rather than a rendering of them: slog's text handler truncates a record's own time to the
-// millisecond and quotes what it writes, so a row that cut its output on "stopped=" and trimmed
-// the quotes off asserted on a layer that is not the code under test.
+// timeIn is the key attribute (momentOf) of the first record the recorder kept whose message holds
+// message, and false when no record says it yet, so a row can both wait for the line and read a
+// moment it carries. It reads the records the code wrote rather than a rendering of them: slog's
+// text handler truncates a record's own time to the millisecond and quotes what it writes, so a
+// row that cut its output on "stopped=" and trimmed the quotes off asserted on a layer that is not
+// the code under test.
 //
 // It takes the attribute's name because the lost and released lines carry two bounds on the
 // moment the process stopped publishing, stopped and stopped_by, and a row that reads only the
@@ -1214,27 +1214,44 @@ func (h *heldRelease) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEn
 func timeIn(t *testing.T, recorder *logtest.Recorder, message, key string) (time.Time, bool) {
 	t.Helper()
 	for _, record := range recorder.Records() {
-		if !strings.Contains(record.Message, message) {
-			continue
+		if strings.Contains(record.Message, message) {
+			return momentOf(t, record, key), true
 		}
-		value, found := "", false
-		record.Attrs(func(attribute slog.Attr) bool {
-			if attribute.Key != key {
-				return true
-			}
-			value, found = attribute.Value.String(), true
-			return false
-		})
-		if !found {
-			t.Fatalf("the record %q carries no %s attribute", record.Message, key)
-		}
-		moment, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			t.Fatalf("read the %s attribute %q of the record %q: %v", key, value, record.Message, err)
-		}
-		return moment, true
 	}
 	return time.Time{}, false
+}
+
+// momentOf is the moment record's key attribute carries, failing t when it carries none: a
+// time.Time the code logged as one (the sent batch line's started) as it is, and a string as the
+// RFC3339Nano text the code writes the took, lost and released lines' moments in.
+func momentOf(t *testing.T, record slog.Record, key string) time.Time {
+	t.Helper()
+	value, found := attributeOf(record, key)
+	if !found {
+		t.Fatalf("the record %q carries no %s attribute", record.Message, key)
+	}
+	if value.Kind() == slog.KindTime {
+		return value.Time()
+	}
+	moment, err := time.Parse(time.RFC3339Nano, value.String())
+	if err != nil {
+		t.Fatalf("read the %s attribute %q of the record %q: %v", key, value.String(), record.Message, err)
+	}
+	return moment
+}
+
+// attributeOf is the value of record's key attribute, and false when the record carries none.
+func attributeOf(record slog.Record, key string) (slog.Value, bool) {
+	var value slog.Value
+	found := false
+	record.Attrs(func(attribute slog.Attr) bool {
+		if attribute.Key != key {
+			return true
+		}
+		value, found = attribute.Value.Resolve(), true
+		return false
+	})
+	return value, found
 }
 
 // loggedMessages are the messages of every record the recorder kept so far, for a row's failure
