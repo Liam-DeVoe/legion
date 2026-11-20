@@ -34,9 +34,12 @@ edit to either step's text is refused (a step whose script is not its pinned tex
 the step and the first line that differs, and on that line each test its -run or -skip names and
 the pin does not, or the other way round) and the two cannot come to name different tests.
 ci_job_reads.py's hold_plugin_pack_tests() refuses, at import, a name in that list that the
-package no longer declares and a test of agentmodels_omp_test.go the list does not name. What CI
-does not see is what this script decides: a (package, function) pair two steps of one run run
-without a declared reason.
+package no longer declares and a test of agentmodels_omp_test.go the list does not name. And
+go-test-step-expansion.test.sh runs the step reader this script reads the steps with
+(.github/scripts/go_test_steps.py), with no `go` command, over every `go test` step of the head,
+so a step this script would refuse fails the pull request that makes it unreadable rather than
+the next hand run. What CI does not see is what this script decides: a (package, function) pair
+two steps of one run run without a declared reason.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the

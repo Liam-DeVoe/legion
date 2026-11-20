@@ -550,7 +550,8 @@ RULES = {
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:142")),
+    f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
+    f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
@@ -793,7 +794,7 @@ RULES = {
         for path in files_but_tests(f"{ENVOY}/internal/broker/judge")],
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
-    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
+    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:50"),
@@ -2297,7 +2298,36 @@ DATABASE_SKIPS_PATTERN = "|".join(
 # The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/broker
 # ran under it in the unit step before it moved to the count, so its limit does not fall.
 UNIT_TEST_TIMEOUT = "20m"
-DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
+
+# The tests envoy-go's step "Count the store-form rows on each backend" runs through
+# packages/envoy/scripts/backend-count.sh, by package, counting each one's `aws` and `gcp` passes
+# (the verification's check c8). It runs them in the same job, on the same runner and env, with
+# no -tags and no -race, as the unit step runs cmd/agent-secrets and the database-skips step runs
+# internal/broker/api, so a second run in either asked nothing the count does not: each skips
+# them by name, and the count is their one run (O15 of dispatch://INFRA-1408, which
+# go-test-step-expansion.py's duplicate verdict reads; go_test_steps.py's BACKEND_COUNT_TESTS,
+# which its AUDITED_SCRIPTS entry for backend-count.sh reads, is this list).
+BACKEND_COUNT_AGENT_SECRETS = "cmd/agent-secrets"
+BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
+BACKEND_COUNT_TESTS = {
+    BACKEND_COUNT_AGENT_SECRETS: ["TestEverySecretFormNamesTheSourceItUses", "TestNoSecretFormAsksTheBrokerForACredential",
+                                  "TestUseCommandOutsideASessionReachesTheMachineSource",
+                                  "TestTheChainSkipsAbsenceAndStopsOnABrokenSource"],
+    BACKEND_COUNT_BROKER_API: ["TestSettingsNameTheGoogleExchangeAudienceOnEitherStore"],
+}
+if DATABASE_SKIPS_PATTERN and re.search(DATABASE_SKIPS_PATTERN, f"/{BACKEND_COUNT_BROKER_API}"):
+    raise ValueError(f"{BACKEND_COUNT_BROKER_API} is out of the database-skips step, so its --skip below skips "
+                     "nothing; name the step that runs that package now and move the skip to it")
+
+
+def names_pattern(names):
+    """The anchored alternation of whole test names a step's -run or -skip writes, quoted for the
+    shell: `'^(Name|Name|…)$'`, the names sorted."""
+    return f"'^({'|'.join(sorted(names))})$'"
+
+
+DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
+                      f"--skip {names_pattern(BACKEND_COUNT_TESTS[BACKEND_COUNT_BROKER_API])}")
 # The counter's own test, which envoy-go runs before the count: its five controls run the counter
 # on these three packages, one at a time, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
@@ -2374,7 +2404,7 @@ WEB_FIXTURE_TESTS = ["TestWebDisplayFixture", "TestTheWebFixtureFindsItsFilesFro
 WEB_FIXTURE_PACKAGE = "internal/dispatch/pmdoc"
 WEB_FIXTURE_SOURCE = f"{ENVOY}/{WEB_FIXTURE_PACKAGE}"
 FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
-WEB_FIXTURE_PATTERN = f"'^({'|'.join(sorted(WEB_FIXTURE_TESTS))})$'"
+WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 FIXTURE_SCRIPT = f"go test -v -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
@@ -2389,6 +2419,12 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
     raise ValueError(f"the display-tree fixture tests are in {WEB_FIXTURE_PACKAGE}, which the unit step's "
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
+# The backend count's tests of cmd/agent-secrets (BACKEND_COUNT_TESTS above) are skipped here by
+# the same rule, and held to this step the same way.
+if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
+    raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step, "
+                     f"whose `grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
+                     f"that runs that package now and move the skip to it")
 
 
 # ---------------------------------------------------------------- the statement timings
@@ -2419,7 +2455,7 @@ STATEMENT_TIMING_TESTS = ["TestStatementTimings"]
 # 1 is ten times production's row counts.
 STATEMENT_TIMING_DATABASE = "dispatch_bench"
 STATEMENT_TIMING_SCALE = "0.01"
-STATEMENT_TIMING_PATTERN = f"'^({'|'.join(sorted(STATEMENT_TIMING_TESTS))})$'"
+STATEMENT_TIMING_PATTERN = names_pattern(STATEMENT_TIMING_TESTS)
 STATEMENT_TIMING_SCRIPT = "\n".join(
     ['docker exec "${{ job.services.postgres.id }}" createdb -U postgres ' + STATEMENT_TIMING_DATABASE,
      f'go run ./cmd/dispatch-seed --database-url "$DISPATCH_BENCH_DATABASE_URL" --scale {STATEMENT_TIMING_SCALE}']
@@ -2427,7 +2463,8 @@ STATEMENT_TIMING_SCRIPT = "\n".join(
 STATEMENT_TIMING_UNIT_SKIP = sorted(
     {test for package in STATEMENT_TIMING_PACKAGES if not re.search(UNIT_TEST_PATTERN, f"/{package}")
      for test in STATEMENT_TIMING_TESTS})
-UNIT_TEST_SKIP = f"'^({'|'.join(sorted(WEB_FIXTURE_TESTS + STATEMENT_TIMING_UNIT_SKIP))})$'"
+UNIT_TEST_SKIP = names_pattern(WEB_FIXTURE_TESTS + STATEMENT_TIMING_UNIT_SKIP
+                               + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
                     f"xargs go test -v -count=1 -timeout {UNIT_TEST_TIMEOUT} -skip {UNIT_TEST_SKIP}")
 
@@ -3194,7 +3231,13 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
         (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
         (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
+        (".github/workflows/ci-job-*.yaml", "its step-reader case reads every go test step of each workflow a job of ci.yaml calls, as the module's documents() loads them"),
+        (".github/workflows/browser-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/dispatch-browser.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/docs-site.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/worker-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
+        ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
     harness("check_test_reach_test", "Test the test-reach search", f"{SCRIPTS}/check-test-reach.test.sh", [
@@ -4127,8 +4170,9 @@ GATES = [
         # need not carry; the fixture step of envoy-go-checks runs both, with the check that
         # makes the first a requirement. It takes STATEMENT_TIMING_UNIT_SKIP out too, the
         # statement timings of the packages this step runs, which the statement-timing step
-        # below runs on the seeded database. The tests stay compiled into this step's binary,
-        # which is what a skipped test is.
+        # below runs on the seeded database, and the backend count's tests of cmd/agent-secrets
+        # (BACKEND_COUNT_TESTS), which the count step runs in this same job and environment. The
+        # tests stay compiled into this step's binary, which is what a skipped test is.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
@@ -4147,7 +4191,8 @@ GATES = [
         # DEFAULT_EXCEPT, which hold_database_skips_packages() holds to DATABASE_SKIPS_PATTERN); the
         # unit step leaves the whole table out. The Run names the tree's packages that pattern
         # keeps (packages_kept), as the unit step's does, so a lane package's files do not reach
-        # this step's reads.
+        # this step's reads. Its --skip takes the backend count's test of internal/broker/api out,
+        # as the unit step's -skip takes that count's other tests out of it.
         pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_RUN, [
             (ENVOY, packages_kept(ENVOY, DATABASE_SKIPS_PATTERN, DATABASE_SKIPS_TREE) + [f"./{DATABASE_SKIPS_COMMAND}/"],
              f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "
