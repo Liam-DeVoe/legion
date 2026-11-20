@@ -4,10 +4,10 @@
 # start_omp, and start_claude, which is launch_claude and then claude_started, a wait until the
 # server answers a tool: claude_answers_tools), one command written to a client's stdin and read
 # back off its stdout later (post, answer_to, has_answered) or waited for there (send), the
-# readers of that client's proxy log — the
-# claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder,
-# first_claim_arrived_at, made_claim, claims_answered, claim_count), the registrations it sent
-# (instance_id, registered_at, first_registered_at, first_registration_answered_at), the requests
+# readers of that client's proxy log — the claims it made (claim_status, claim_holder,
+# first_claim_status, first_claim_holder, first_claim_arrived_at, made_claim, claims_answered,
+# claim_count), the registrations it sent (instance_id, registered_at, first_registered_at,
+# first_registration_answered_at, second_registration_arrived_at), the requests
 # of either kind (claim_writes), its deregistration (delete_answer), its hand-backs
 # (release_status, release_instance, released) and how old a holder's renewal was when a claim
 # was weighed against it (renewal_age) — and the ways a row makes a holder answer for its claim
@@ -238,12 +238,12 @@ first_claim_holder() {
 }
 
 # first_claim_arrived_at LABEL SESSION PREVIOUS: when that client's first soft claim for SESSION
-# naming PREVIOUS reached its proxy (`<log>.arrived`), whether or not the listener has answered
-# it; empty when it made none.
+# naming PREVIOUS (`*`: any predecessor or none) reached its proxy (`<log>.arrived`), whether or
+# not the listener has answered it; empty when it made none.
 first_claim_arrived_at() {
   jq -rs --arg sid "$2" --arg previous "$3" \
     'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
-                and (.request.previous_session_id // "") == $previous) | .at)
+                and ($previous == "*" or (.request.previous_session_id // "") == $previous)) | .at)
      | if length == 0 then "" else (min | tostring) end' \
     "${proxy_log[$1]}.arrived" 2>/dev/null
 }
@@ -284,6 +284,15 @@ first_registration_answered_at() {
     'map(select(.path == "/v1/interests/subscribe" and .request.session_id == $sid) | .at + .ms)
      | if length == 0 then "" else (min | tostring) end' \
     "${proxy_log[$1]}" 2>/dev/null
+}
+
+# second_registration_arrived_at LABEL SESSION: when that client's second registration of
+# SESSION reached its proxy (`<log>.arrived`), empty when it sent fewer than two.
+second_registration_arrived_at() {
+  jq -rs --arg sid "$2" \
+    'map(select(.path == "/v1/interests/subscribe" and .request.session_id == $sid) | .at) | sort
+     | if length < 2 then "" else (.[1] | tostring) end' \
+    "${proxy_log[$1]}.arrived" 2>/dev/null
 }
 
 # claim_writes LABEL SESSION: how many of that client's requests for SESSION wrote the session's

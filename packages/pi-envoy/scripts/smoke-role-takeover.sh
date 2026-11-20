@@ -907,9 +907,17 @@ row5_claude() {
   begin_row "R8 row 5 (A5 scenario 2) — a Claude Code /clear handoff naming a predecessor live inside another client instance is refused"
   # A's handoff claims only while A's process holds the role, which the row before left with it.
   # So the row reads that first: where that row failed and B took the role, this one fails naming
-  # B's hold, and not on a handoff claim A never made.
-  expect "process A still holds the role under X, as the row before left it" \
-    "$(role_holder "$role") $(role_instance "$role")" "${x} ${instance_a}"
+  # B's hold, and not on a handoff claim A never made. B asks for the role on every heartbeat of
+  # its own, between the two rows too, and nothing renews A there. So the row reads the role,
+  # then weighs every claim of B up to that read against A's last answer, and only then reads who
+  # holds it: a lapse of A's window between the rows fails the row naming the window, not B's hold.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  read_at="$(now_ms)"
+  expect_renewed_inside "every claim B made before this row read the role was weighed inside the live window of A's last answer" \
+    cc-b "$x" "$x" cc-a "$x" "$read_at"
+  expect "the role is still held under X, as the row before left it" "$holder" "$x"
+  expect "process A still holds it, as the row before left it" "$holder_instance" "$instance_a"
   registered_last() {
     [[ "$(registered_at cc-b "$x")" -gt "$(registered_at cc-a "$x")" ]]
   }
@@ -938,18 +946,26 @@ row5_claude() {
   wait_for "$listener_wait_timeout" made_claim cc-a "$x2" "$x" || true
   wait_for 15 made_claim cc-a "$x2" "" || true
   # The claims of B's that A's role must outlast are those B made before A read the role record
-  # of X: up to A's handoff claim naming X, as it reached A's proxy, or, where A made none, up to
-  # the listener's answer to A's first registration of X2, right after which A reads that record
-  # (`adoptHandoff` in packages/claude-envoy/src/envoy-channel-server.ts: `register`, then
-  # `transferRole`). A claim of B's granted between A's deregistration of X and that read takes
-  # the role, and A then makes no handoff claim, so the refusal below would read <empty> while a
-  # window read up to the deregistration still read inside. Never up to the moment the row reads
-  # this: a client whose handoff never claims would then be weighed on every claim B made while
-  # the row waited for that claim, and the window would take the blame for the client. The /clear
-  # the row sent stands in where A registered no X2 at all.
-  handoff_at="$(first_claim_arrived_at cc-a "$x2" "$x")"
+  # of X. That read is not on the wire, so the row bounds it by the first request A sends once the
+  # read is done: A's first claim under X2, whatever it names, as it reached A's proxy. A makes
+  # that claim only after the read, in packages/claude-envoy/src/envoy-channel-server.ts:
+  # `restoreRole` reads the record (:1517) before it sends the handoff claim naming X (:1528),
+  # and `adoptHandoff` runs it, through `transferRole` (:1726), after the first registration of
+  # X2 (:1725); `reassertRole`, whose claim under X2 names none (:1618), runs on the heartbeat
+  # only once `adoptHandoff` has returned (:1842, :1856). Where A made no claim under X2, the
+  # bound is A's second registration of X2, that heartbeat's `register` (:1847); where A sent only
+  # one, the listener's answer to it; and the /clear the row sent where A registered no X2 at all.
+  # A claim of B's granted before the bound took the role while A's handoff was still on its way
+  # to that read, and A then makes no handoff claim, so the refusal below would read <empty>: the
+  # row fails naming the window first. Never up to the moment the row reads this: a client whose
+  # handoff never claims would then be weighed on every claim B made while the row waited for that
+  # claim, and the window would take the blame for the client. The row's limit is that order: a
+  # client that claimed under X2 before its read and then stalled past the window before reading
+  # is read as inside the window, and the row fails at its refusal.
+  handoff_at="$(first_claim_arrived_at cc-a "$x2" "*")"
+  [[ -n "$handoff_at" ]] || handoff_at="$(second_registration_arrived_at cc-a "$x2")"
   [[ -n "$handoff_at" ]] || handoff_at="$(first_registration_answered_at cc-a "$x2")"
-  expect_renewed_inside "every claim B made before A's handoff read the role record of X was weighed inside the live window of A's last answer" \
+  expect_renewed_inside "every claim B made before A's first request after its read of the role record of X was weighed inside the live window of A's last answer" \
     cc-b "$x" "$x" cc-a "$x" "${handoff_at:-$clear_at}"
   expect "process B's entry stayed: A's deregistration of X removed nothing" "$(delete_answer cc-a "$x" deleted)" "false"
   expect "the listener said why it stayed" "$(delete_answer cc-a "$x" reason)" "the registration belongs to another client instance"

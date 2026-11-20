@@ -173,10 +173,22 @@ heartbeat asks, until its start has ended. Before it reads a refusal, each such 
 the holder's last answer was at each claim it needs refused, off the two proxies' logs, and fails
 naming the window where a claim was not inside it. In the Claude Code `/clear` handoff (A5
 scenario 2) nothing renews the holder's claim once it has answered for the last time before the
-`/clear`, so the claims read are every claim the second process made up to the holder's handoff
-claim, or, where the holder made none, up to the listener's answer to its first registration of
-the new id, right after which it reads the role record: the handoff's own steps are inside the
-window. A row that waits the window out waits for the listener to say so, never for a sleep.
+`/clear`, so the claims read are every claim the second process made before the holder's handoff
+read the role record. That read is not on the wire, so the row reads them up to the first request
+the holder sends after it: its first claim under the new id, whatever predecessor it names. The
+channel server makes that claim only after the read
+(`packages/claude-envoy/src/envoy-channel-server.ts`): `restoreRole` reads the record (`:1517`)
+before it sends the handoff claim (`:1528`), run by `transferRole` (`:1726`) after the first
+registration of the new id (`:1725`), and `reassertRole` (`:1618`) claims on the heartbeat only
+once the handoff has returned (`:1842`, `:1856`). Where the holder made no such claim, the row
+reads up to its second registration of the new id, that heartbeat's (`:1847`), and where it sent
+only one, up to the listener's answer to it. A claim granted before that request took the role
+while the handoff was still on its way to the read, and
+the row fails naming the window; a client that claimed under the new id before its read and then
+stalled past the window would be read as inside it, and that order is the row's limit. The same
+row's first check reads the role, then the window at every claim of the second process up to that
+read, and only then who holds the role, since that process asks again on every heartbeat between
+the two rows. A row that waits the window out waits for the listener to say so, never for a sleep.
 
 Eighteen rows are printed, each with its outcome. A row that starts from where an earlier row of
 its scenario left the role (the release after the Oh My Pi takeover, the move and the holder's
