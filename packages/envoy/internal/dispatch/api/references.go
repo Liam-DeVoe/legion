@@ -540,7 +540,20 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 		}
 		return node, nil
 	}
-	at, err := refs.ItemBlockAt(ctx, pool, kind, item.ID, ref.Block, ref.Pin)
+	return pinnedItemBlockNode(ctx, pool, who, item, node, current, query.ID, ref)
+}
+
+// pinnedItemBlockNode is block nodeID of item, an ask or a comment, read at the revision ref pins
+// (ref.Pin is not 0), as a reference pinned to it reads it (itemBlockReferenceNode), where node and
+// current are what refs.Node answered for nodeID, its text the current one: the block with what
+// that revision recorded of it (model.BlockPin). A block no current revision holds is the node
+// refs.RemovedItemBlockNode builds, and a pin past the item's current revision or to one that did
+// not hold the block answers 404, each saying which. The lens read reads a pinned address of an
+// item's block the same way (lensReadNode).
+func pinnedItemBlockNode(ctx context.Context, q refs.Queryer, who model.Actor, item, node model.GraphNode, current bool, nodeID string, ref text.Ref) (model.GraphNode, error) {
+	kind := refs.ItemKind(ref.Item)
+	noun := itemBlockNoun(ref.Item)
+	at, err := refs.ItemBlockAt(ctx, q, kind, item.ID, ref.Block, ref.Pin)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -552,7 +565,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
-		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, who, kind, query.ID, at.RemovedRevision)
+		removed, held, err := refs.RemovedItemBlockNode(ctx, q, who, kind, nodeID, at.RemovedRevision)
 		if err != nil {
 			return model.GraphNode{}, err
 		}

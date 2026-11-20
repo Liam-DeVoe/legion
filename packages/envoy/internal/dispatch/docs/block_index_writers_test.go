@@ -659,8 +659,9 @@ var indexPasses = map[string]string{
 	"docs/removed_by.go#queueRemovals": "the answered asks a person's own write took the blocks of out and the person it was made for",
 	// The removal of an untouched document states its node gone before its row goes, caused by
 	// the artifact.removed event it appends, with each changed_by_run the node states now
-	// retracted - the store's own relations, retracted because the document they name has gone.
-	"api/artifact_removal.go#removeArtifact": "the document the request removes, the changed_by_run its node states, and the event it appended",
+	// retracted - the store's own relations, retracted because the document they name has gone -
+	// and every node that stands beneath it gone in the same batch.
+	"api/artifact_removal.go#removeArtifact": "the document the request removes, the changed_by_run its node states, every node beneath it, and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.

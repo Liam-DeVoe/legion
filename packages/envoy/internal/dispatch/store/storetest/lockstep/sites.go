@@ -151,9 +151,9 @@ var storeWriteCallSites = map[string]string{
 	"docs/ask_blocks.go#createAskBlock":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
-	// create would have written, for a document an earlier build made with none, then
-	// WriteUncaused, then the event and the gone statement in one batch, appendCausingEvent), with
-	// each changed_by_run of the node retracted.
+	// create would have written, for a document an earlier build made with none, then the
+	// document's node and every node beneath it in one batch, then the event and the gone
+	// statement in one batch, appendCausingEvent), with each changed_by_run of the node retracted.
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// A document's retirement, in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then

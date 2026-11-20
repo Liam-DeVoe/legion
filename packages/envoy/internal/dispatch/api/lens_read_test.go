@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -109,13 +108,10 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // kind's words, its author through authored_by, and the chain from both ends: placement and
 // trigger kept apart.
 //
-// Then a lens on what a version or a retirement takes out of an issue (spec v59 R5): the
-// Verification document of an issue holds the checks c-one and c-two at version 1, alice invokes a
-// BOTEC on c-two, and version 2 drops c-two, as the tester's run on a local server of e56f8d9b did.
-// The BOTEC stays live and names c-two at version 1, the last version that held it, in its on and
-// in its parent and parent_version, and the lens read of that pinned address answers it. A lens on
-// a block of a third document and one on that document itself do the same once the document is
-// retired, at the document's last version. No lens in any answer of the test reads on null.
+// No lens of that read answers on null (spec v59 R5). A lens on what a version or a retirement
+// takes out of an issue is TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent's
+// (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
+// removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
@@ -205,54 +201,6 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 		t.Errorf("the chain answers the pre-mortem triggered by %v and the trade-off triggering %v", chain.Lenses[1].TriggeredBy, chain.Lenses[0].Triggered)
 	}
 	requireEveryLensOn(t, "the read of the spec", read)
-
-	created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": "RSN", "title": "A lens keeps its place", "spec": ":::requirement{#r1}\nA lens keeps its place.\n:::\n",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create the issue whose Verification document drops a check: status=%d body=%s", created.Code, created.Body.String())
-	}
-	history := rig
-	history.issue = decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
-	owner := "/api/v1/issues/" + history.issue
-	served := refs.BlockRef("dispatch://"+history.issue+"/spec", "r1")
-	verification := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)+"\n"+checkServing("c-two", served))
-	cTwo := refs.BlockRef("dispatch://"+history.issue+"/artifact/"+verification.Artifact.Slug, "c-two")
-	botec := history.invoke(cTwo, "botec", "alice", nil)
-	if dropped := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)); dropped.Version.Number != 2 {
-		t.Fatalf("the upload that drops c-two is version %d of the Verification document, want 2", dropped.Version.Number)
-	}
-	requireLensAt(t, history, "the BOTEC", botec.Address, cTwo, 1)
-	requireOnPinned(t, rig, "the BOTEC", botec.Address, cTwo+"@v1")
-
-	notes := uploadDocument(t, rig.handler, owner, "notes.md", "# Notes\n\nOne paragraph.\n")
-	document := "dispatch://" + history.issue + "/artifact/" + notes.Artifact.Slug
-	block := refs.BlockRef(document, firstBlockOf(t, rig.handler, notes.Artifact.ID))
-	onBlock := history.invoke(block, "trade-off", "alice", nil)
-	onDocument := history.invoke(document, "trade-off", "alice", nil)
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement of %s: %v", document, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := docs.RetireDocument(ctx, tx, notes.Artifact.ID, model.Actor{Kind: "user", ID: "alice"}, "The test retires the notes."); err != nil {
-		t.Fatalf("retire %s: %v", document, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement of %s: %v", document, err)
-	}
-	last := notes.Version.Number
-	for _, retired := range []struct {
-		name, lens, on string
-	}{
-		{"the lens on a block of the retired document", onBlock.Address, block},
-		{"the lens on the retired document", onDocument.Address, document},
-	} {
-		requireLensAt(t, history, retired.name, retired.lens, retired.on, last)
-		requireOnPinned(t, rig, retired.name, retired.lens, fmt.Sprintf("%s@v%d", retired.on, last))
-	}
 }
 
 // requireOnPinned fails unless GET /api/v1/lenses?on= pinned, the address of a node at the last
