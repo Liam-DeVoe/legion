@@ -1002,8 +1002,9 @@ about or narrows a read, before any request, and of each item of such a flag's l
 `--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
 `--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
 `dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed
-by Go's white space, the set Dispatch trims a value by (`go-space.ts`), so a value of only white
-space is refused too, U+0085 among it. For a flag whose value goes into a URL path in some command,
+by Go's white space, the set Dispatch trims a value by (`goBlankPattern`,
+`@legion/contracts/go-blank`), so a value of only white space is refused too, U+0085 among it.
+For a flag whose value goes into a URL path in some command,
 which is `--issue`, `--project`, `--artifact`, `--retract`, `--comment` and `--session`, it
 refuses a value of only dots and slashes too, such as `.`, `..` or `./`. The other flags send `.`
 and `..` as they are. The refusal names the flag, and the command exits 2. Sent, such a value

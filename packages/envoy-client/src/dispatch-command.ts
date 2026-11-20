@@ -4,9 +4,10 @@ import {
   dispatchToolSpecs,
   zodSchemaApi,
 } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import { z } from "zod";
 import { messageFor } from "./errors";
-import { goBlankPattern, goSpaceAtEnds, pathNamesNothingPattern } from "./go-space";
+import { goSpaceAtEnds, pathNamesNothingPattern } from "./go-space";
 
 /**
  * The `dispatch` command surface: one command per Dispatch tool spec and one flag per field, all
@@ -566,11 +567,12 @@ export function parseCommand(
   // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
   // is how one is written. Each item of a list is read as a single value is (`dispatch priorities
   // --project`). Blank is Go's white space, since Dispatch trims a value by `strings.TrimSpace`
-  // (`go-space.ts`). A value of only dots and slashes names nothing either, of a flag whose value
-  // goes into a URL path in some command: there it names no step (`dispatch read --issue ..` asked
-  // `GET /api/v1/`), and no key or reference is made of dots and slashes where a command sends the
-  // value in its body or its query, or matches it against an issue's documents. So its refusal has
-  // one reason, true in each use, and names no place the value would go.
+  // (`goBlankPattern`, `@legion/contracts/go-blank`). A value of only dots and slashes names
+  // nothing either, of a flag whose value goes into a URL path in some command: there it names no
+  // step (`dispatch read --issue ..` asked `GET /api/v1/`), and no key or reference is made of dots
+  // and slashes where a command sends the value in its body or its query, or matches it against an
+  // issue's documents. So its refusal has one reason, true in each use, and names no place the
+  // value would go.
   for (const { field, noun, tools, path } of IDENTIFIER_FIELDS) {
     const given = args[field];
     if (tools !== undefined && !tools.includes(tool)) continue;

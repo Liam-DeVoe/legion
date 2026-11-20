@@ -34,6 +34,7 @@ import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
+  dryRunAsksDispatch,
   executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
@@ -8232,6 +8233,44 @@ describe("executeDispatchTool", () => {
     expect(asked).toEqual([]);
   });
 
+  // A CI job's record of a check of the spec files (`project`) has no dry run Dispatch answers: its
+  // route stores the result it is sent, so a session's dry run of it, run as the call, would store
+  // a real result. It prints the arguments and sends nothing, as a retraction's dry run does.
+  test("a session's dispatch_result dry run of a check of the spec files records nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      asked.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+      return response({}, 500);
+    };
+    const args = { project: "ACME", check: "p-1", verdict: "pass", commit: "0".repeat(40) };
+
+    const refused = await executeDispatchTool({
+      tool: "dispatch_result",
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      sessionId: "session-one",
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      dryRun: true,
+    }).then(
+      () => "it ran",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+
+    expect({
+      asked,
+      refused,
+      asksDispatch: dryRunAsksDispatch("dispatch_result", args),
+    }).toEqual({
+      asked: [],
+      refused: "dispatch dispatch_result's dry run asks Dispatch nothing",
+      asksDispatch: false,
+    });
+  });
+
   // One check with the three shapes a reader must tell apart: a result that stands at the head
   // the check compared with, a result retracted after it was recorded, and a result at a commit
   // that head is not. Every result prints, in the order the API served them, because the gate is
@@ -11767,7 +11806,7 @@ describe("executeDispatchTool", () => {
   });
 
   // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above
-  // (the comment of ../go-space.ts names the pair). So this create writes the held document's next
+  // (goBlankPattern's comment names the pair). So this create writes the held document's next
   // version over the text it holds, and what answers it is the same held-name refusal
   // "refuses an upload under a name the issue already holds, naming --force" reads for
   // `# Plan\n`. Read with `trim` the create was blank here, skipping both that refusal and the
