@@ -133,7 +133,8 @@ func StaleSQL(kindExpr, idExpr string) string {
 
 // staleOfKindSQL is StaleSQL over a node whose kind is the SQL kindExpr rather than a literal: run
 // only where that kind, as the graph addresses it, is a standing kind, and false for every other
-// node without reading anything.
+// node without reading anything. The planner charges the walk to every row even so, so a
+// predicate over a column that can hold no standing kind binds none of it (NodeKinds).
 func staleOfKindSQL(kindExpr, idExpr string) string {
 	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + quotedKinds(standingKinds) + `)
 		then ` + StaleSQL(kindExpr, idExpr) + ` else false end)`

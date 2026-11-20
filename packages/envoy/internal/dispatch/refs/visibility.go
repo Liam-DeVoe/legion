@@ -23,7 +23,9 @@ import (
 // document's address, and every node whose part_of walk reaches one, is answered as a gone node
 // is, absent from every list, chain and count and 404 NOT_FOUND by its own address. It rides in
 // the kind's predicate rather than beside each read's test of `state <> 'gone'`, so no read of
-// those kinds can leave it out.
+// those kinds can leave it out. A predicate over a node whose kind is a column binds it only where
+// that column can hold a standing kind (NodeKinds), since the planner charges it to every row the
+// predicate filters, whatever that row's kind.
 //
 // The test is bound into the SQL of each read and never applied in Go, so a count and the list
 // behind it cannot disagree: a row the count includes is a row the list shows.
@@ -502,18 +504,57 @@ func setStored(node *model.GraphNode, stored StoredNode) {
 	node.State, node.Visibility = StoredStateAndVisibility(stored)
 }
 
+// NodeKinds is what a read knows of the node an end of an edge names, for the predicate over that
+// end (VisibleEnd), whose kind is a column of the read's own query: the kinds, as the graph
+// addresses each (graphstore.AddressKind: a document's block is a block, a finding of a lens a
+// lens_block), that column can hold (KindsOf), or every kind (AnyKind) where the end can be any
+// node - the far end of a tuple. The predicate binds the staleness test (StaleSQL) only where one
+// of those kinds is a standing kind, so a read whose ends can be none of a lens, a finding, a risk
+// or a constraint carries none of it.
+//
+// The test is gated on the row's kind (staleOfKindSQL), so over any other kind it reads nothing,
+// but the planner costs a predicate by every branch it holds: it charges the test's recursive
+// walk, which it reckons at ten steps, to every row the predicate filters, whatever that row's
+// kind. Bound over the sources of an issue's references - asks, comments, messages and documents,
+// where it never runs - it costed the closure walk over c-read-cost's corpus (64,106 blocks) at
+// 985,892 where the same walk without it cost 74,308, past jit_above_cost and the inlining and
+// optimisation thresholds, so Postgres compiled the walk's 553 expressions on every read: 11.8 s,
+// past the walk's 2 s bound, where the walk itself reads in 0.1 s (dispatch://INFRA-1950).
+type NodeKinds struct {
+	kinds []string
+	any   bool
+}
+
+// AnyKind is an end that can be a node of any kind: the predicate over it tests the node for
+// stale wherever its kind is a standing one.
+var AnyKind = NodeKinds{any: true}
+
+// KindsOf is an end that can be a node of one of kinds and of no other, each as the graph
+// addresses it.
+func KindsOf(kinds ...string) NodeKinds {
+	return NodeKinds{kinds: slices.Clone(kinds)}
+}
+
+// mayBeStanding is whether an end of these kinds can be a node of a standing kind (standingKinds),
+// which the predicate over it then tests for stale.
+func (k NodeKinds) mayBeStanding() bool {
+	return k.any || slices.ContainsFunc(k.kinds, func(kind string) bool { return slices.Contains(standingKinds, kind) })
+}
+
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a
 // literal: one read of `graph_nodes` keyed on that column and on the id beside it, with the
 // address rewrites the registry declares applied per kind, the kind read as the store keys it
 // (storedKindSQL: an edge's lens_block is the store's block), and the comparison of the kind of
-// the row it reads (authorIsOfRow). byRefKey says the ids are the ones the to side of an edge
-// carries, which are already the ids the store keys a node by; the from side carries an
-// artifact's uuid instead, and that kind's rewrite translates it.
+// the row it reads (authorIsOfRow). kinds is what the read knows the column can hold (NodeKinds):
+// an end that can be a node of a standing kind is held to not stale (staleOfKindSQL), as
+// VisibleKind holds one, and any other end is not tested at all. byRefKey says the ids are the
+// ones the to side of an edge carries, which are already the ids the store keys a node by; the
+// from side carries an artifact's uuid instead, and that kind's rewrite translates it.
 //
 // A kind the registry does not hold passes: such an end resolves to no node and the read drops
 // its edge anyway (resolveNodes), and refusing here would refuse the whole read for one row a
 // newer build wrote.
-func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
+func VisibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
 	address := idExpr
 	if !byRefKey {
 		var rewrites strings.Builder
@@ -528,8 +569,12 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 			address = `case ` + kindExpr + rewrites.String() + ` else ` + idExpr + ` end`
 		}
 	}
+	stale := ""
+	if kinds.mayBeStanding() {
+		stale = ` and not ` + staleOfKindSQL(kindExpr, idExpr)
+	}
 	return VisibilityMarker + `every kind */(` + visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param)) +
-		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
+		stale + `)`
 }
 
 // VisibleNode is the predicate of a node whose kind is a column of the read's own query rather

@@ -397,7 +397,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
 		// artifact by its uuid (edgeFrom).
 		from := edgeFrom("g")
-		source += ` and ` + VisibleEnd("g.from_kind", from, false, seen)
+		source += ` and ` + VisibleEnd(AnyKind, "g.from_kind", from, false, seen)
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
@@ -431,30 +431,30 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// that ref_key.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
+			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.kind = '` + graphstore.TupleChangedByRun + `'
 			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)
-			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
+			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
 			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") + `
-			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
+			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
+			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id
 			where r.` + tables.item + ` = ` + blocks + `::uuid and b.position is not null
-			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd("r.to_kind", "r.to_id", true, seen)
+			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + `
-			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen)
+			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
 	}

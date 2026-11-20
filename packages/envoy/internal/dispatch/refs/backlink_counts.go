@@ -705,8 +705,8 @@ func BacklinkKinds() []string {
 //
 // Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
 // source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
-// the from side's spelling of an id), and each block arm's source is a block of the kind its
-// table holds.
+// the from side's spelling of an id, and over a refs row's source kinds, none of them standing:
+// refsSources), and each block arm's source is a block of the kind its table holds.
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
 	exclude := ""
 	if len(excludeKinds) > 0 {
@@ -726,7 +726,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// every other arm's from_kind is a literal, or one of a list of literals (storedSQL), of a
 		// kind nodeRegistry resolves, so the filter would drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
-			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
+			VisibleEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// block_refs_to (to_kind, to_id), over the rows that name no node. The view's own arm
 		// lists a block[] pointer's row only while block_ref_listed holds, the types test a
 		// typed block's pointer carries, and a row with no limit is listed without the call;

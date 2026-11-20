@@ -306,7 +306,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 				VisibleKindRow(kind, "n", "$2")+`)`, id, VisibilityArg(who), stored)
 		}},
 		{"VisibleEnd", false, func(t *testing.T, who model.Actor, kind, _, id string) bool {
-			return predicateHolds(t, ctx, tx, `select `+VisibleEnd("$3::text", "$1", true, "$2"), id, VisibilityArg(who), kind)
+			return predicateHolds(t, ctx, tx, `select `+VisibleEnd(AnyKind, "$3::text", "$1", true, "$2"), id, VisibilityArg(who), kind)
 		}},
 		{"VisibleNode", false, func(t *testing.T, who model.Actor, _, stored, id string) bool {
 			return predicateHolds(t, ctx, tx, `select `+VisibleNode("$3::text", "$1", "$2"), id, VisibilityArg(who), stored)
