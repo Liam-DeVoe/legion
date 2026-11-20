@@ -444,8 +444,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		labelsAfter = &labels
 	}
 	// The plan's one check (refuseIssueWritePlan) runs here, after the refusals above and under
-	// the owner locks the write holds: the issue's, its current parent's and its proposed
-	// parent's. R26 (legion_status_scope.go) judges the write first, and R24
+	// the owner locks the write holds: the issue's, and for a status or parent write its current
+	// and proposed parent's. R26 (legion_status_scope.go) judges the write first, and R24
 	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's.
 	//
 	// R26 judges every status write, label write and parent change, the write of the status the
@@ -594,8 +594,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.Status != nil {
 		afterStatus = status
 	}
-	if input.Labels != nil || input.LabelsAdd != nil {
-		afterRow.labels = labels
+	if labelsAfter != nil {
+		afterRow.labels = *labelsAfter
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),

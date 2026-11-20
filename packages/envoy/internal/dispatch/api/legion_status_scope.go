@@ -30,20 +30,33 @@ package api
 // every step of every plan, and it judges a call before R24 does.
 //
 // The refusal takes no lock on an ancestor, and needs none. The walk is one statement, so it
-// reads one snapshot of the chain. It runs after the write's own locks, which the caller of
-// refuseIssueWritePlan holds: the owner lock of each step's issue and of its current and new
-// parent (the PATCH's lockPatchOwners, lockPatchOwnersAndParent), and, for every parent write,
-// the deployment-wide dependency lock (lockIssueDependencyWrite). So, under READ COMMITTED, it
-// reads every write that those locks waited for. An ancestor that the write does not lock cannot
-// break the rule, for this reason. With the refusal on, a caller with neither scope can make no
-// issue stop being a Legion issue, because (b) and (c) refuse it. So a judgement read from a
-// chain that moves under it can go stale in two ways only:
+// reads one snapshot of the chain. It runs after the locks that its caller holds, so, under READ
+// COMMITTED, it reads every write that those locks waited for. The callers of
+// refuseIssueWritePlan hold these locks:
+//
+//   - The PATCH's write core, writeIssue, holds the owner lock of the issue, and for a status or
+//     parent write the owner locks of its current and new parent (lockPatchOwners,
+//     lockPatchOwnersAndParent). For every parent write, it holds the deployment-wide dependency
+//     lock too (lockIssueDependencyWrite).
+//   - The planning check of the status-change route (planStatusChangeUnderLocks) and that of
+//     R25's fix (planParentStatusFixUnderLocks) hold the owner lock of each step's issue and of
+//     its current and new parent (lockIssueWriteOwners), and no dependency lock. Then each step
+//     writes through writeIssue, which takes the locks of the item above and runs R26 again
+//     before it writes.
+//
+// An ancestor that the write does not lock cannot break the rule, for this reason. With the
+// refusal on, a caller with neither scope can make no issue stop being a Legion issue, because
+// (b) and (c) refuse it. So a judgement read from a chain that moves under it can go stale in two
+// ways only:
 //
 //   - A concurrent write made the issue a Legion issue (a label added, a move under a labelled
 //     issue). Then the write that the refusal let through comes first in a serial order, and
 //     nothing broke.
 //   - A concurrent write of a person, the daemon or the system writer made the issue stop being a
 //     Legion issue. Then the refusal comes first in a serial order, and the refusal was right.
+//
+// This holds for each judgement under its own locks: the planning check's, and each step's in
+// writeIssue.
 //
 // A loop made of moves (X under C while C goes under X, or a longer ring) cannot commit. Every
 // parent write takes the deployment-wide dependency lock, and validateIssueParent refuses the
@@ -82,7 +95,8 @@ const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 //
 // It reads the state of each step's issue before the call from the issue's stored row, never
 // from the step. The caller holds the owner lock of each step's issue, so the stored row is the
-// issue's state before the call. So no builder of a plan has to carry the issue's labels.
+// issue's state before the call. So R26 reads no builder's copy of the issue's labels. A builder
+// may still fill labelsBefore, and R26 does not read it.
 //
 // A refused step answers 403 codeLegionStatusScopeRequired. A read that fails is an error, which
 // the caller answers 500: the read gates a write, so a failed read never lets the write through.
@@ -108,8 +122,8 @@ func refuseLegionStatusWrite(ctx context.Context, q pgx.Tx, on bool, writer issu
 func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) error {
 	writesStatus := step.statusAfter != nil
 	walks := writesStatus || step.changesParent()
-	removesLabel := step.labelsAfter != nil && !holdsLegionLabel(*step.labelsAfter)
-	if !walks && !removesLabel {
+	leavesNoLegionLabel := step.labelsAfter != nil && !holdsLegionLabel(*step.labelsAfter)
+	if !walks && !leavesNoLegionLabel {
 		return nil
 	}
 	stored, before, err := legionIssueBefore(ctx, q, step.key, walks)
@@ -117,7 +131,7 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) 
 		return err
 	}
 	// (b) The removal of the legion label.
-	if removesLabel && holdsLegionLabel(stored) {
+	if leavesNoLegionLabel && holdsLegionLabel(stored) {
 		return legionStatusScopeRefusal(step.key, "the removal of the legion label")
 	}
 	if !walks {

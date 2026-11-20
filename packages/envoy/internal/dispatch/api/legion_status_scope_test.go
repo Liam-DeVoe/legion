@@ -29,7 +29,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The names of the four credentials of the inventory that a test selects by name.
@@ -1021,20 +1020,16 @@ func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
 	refused := rig.credential(t, legionSharedToken).send(t, http.MethodPatch, "/api/v1/issues/"+open, map[string]any{"parent": nil})
 	requireLegionStatusRefusal(t, refused)
 	requireLegionIssueUnchanged(t, rig.database, open, before)
-	hasParent(done)(t, readLegionIssue(t, rig.database, open))
 
-	rule, err := RunParentStatusFixAtBoot(t.Context(), rig.deps, storetest.Leases(t, rig.database.Pool), true)
-	if err != nil || !rule.On() {
-		t.Fatalf("the fix with both settings on answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
-	}
+	fix := fixRig{ruleRig: ruleRig{database: rig.database, deps: rig.deps}}
+	fix.fix(t)
 
 	unlinked := readLegionIssue(t, rig.database, open)
 	hasParent("")(t, unlinked)
 	hasStatus("todo")(t, unlinked)
 	hasStatus("in_progress")(t, readLegionIssue(t, rig.database, notStarted))
-	events := fixRig{ruleRig: ruleRig{database: rig.database}}
 	for field, want := range map[string][]string{"parent": {open}, "status": {notStarted}} {
-		if got := events.fixWrites(t, field); !slices.Equal(got, want) {
+		if got := fix.fixWrites(t, field); !slices.Equal(got, want) {
 			t.Errorf("the issue.updated events of parent-status-rule that changed %s are on %q, want %q", field, got, want)
 		}
 	}
@@ -1108,9 +1103,6 @@ func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
 		t.Run(write.name, func(t *testing.T) { rig.send(t, shared, write) })
 	}
 	for _, change := range legionStatusChanges() {
-		if !change.judged {
-			continue
-		}
 		judged++
 		t.Run(change.name, func(t *testing.T) { rig.sendStatusChange(t, shared, change) })
 	}
