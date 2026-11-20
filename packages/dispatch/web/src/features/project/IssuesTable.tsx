@@ -384,7 +384,9 @@ export function IssuesTable({
             <button
               type="button"
               disabled={busy}
-              onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
+              onClick={() =>
+                void newEpic(duplicateEpic.keys, duplicateEpic.title, true, duplicateEpic.intoWork)
+              }
             >
               Create anyway
             </button>
@@ -450,6 +452,7 @@ export function IssuesTable({
       {confirming === undefined ? null : (
         <ConfirmDialog
           body={confirming.body}
+          changes={confirming.changes}
           confirmLabel={confirming.confirmLabel}
           key={confirming.title}
           onCancel={cancelConfirming}

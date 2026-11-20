@@ -1,28 +1,18 @@
 import type {
   Advised,
-  BasisLearnedAt,
-  CheckBasis,
-  CheckBlock,
-  CheckCI,
-  CheckPassStands,
-  CheckResult,
   CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
-  IssueCheckResults,
   IssueComponents,
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
-  StatusChangeAnswer,
-  StatusChangeEntry,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT, ISSUE_STATUS_OPTIONS } from "@legion/contracts";
+import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import {
   type DispatchClient,
-  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -46,10 +36,23 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  type ClosingNote,
+  closeAccount,
+  dispatchAnswered,
+  refusalWithCode,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
+import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
+import {
+  issuesBeforeStatusChange,
+  statusChangeCommand,
+  statusChangeOptions,
+} from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
@@ -247,141 +250,6 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
-/** The reason a call posted before its close: the message's id and its `dispatch://` reference. */
-interface ClosingNote {
-  readonly id: string;
-  readonly ref: string;
-}
-
-type IssueStatusOption = (typeof ISSUE_STATUS_OPTIONS)[number];
-
-/** An issue as a read before a status change found it: its status, and its parent. */
-interface IssueBefore {
-  readonly status: string;
-  readonly parent: string | null;
-}
-
-/**
- * What a status change's options may move, as it stood before the call: the issue the call names
- * and its children, which the read of that issue holds, and, where an option moves the open issues
- * deeper under it (include_children) or the issues above it (include_parent), every issue of its
- * project, since a parent is always in its child's project. The route's answer names the status
- * and the parent each issue has after the call, so this read is what each line's "before" comes
- * from. It is made before anything is written, so a read that fails sends nothing.
- */
-async function issuesBeforeStatusChange(
-  client: DispatchClient,
-  before: IssueDetails,
-  options: readonly IssueStatusOption[]
-): Promise<ReadonlyMap<string, IssueBefore>> {
-  const issues = new Map<string, IssueBefore>([
-    [before.key, { status: before.status, parent: before.parent ?? null }],
-  ]);
-  for (const child of before.children ?? []) {
-    issues.set(child.key, { status: child.status, parent: before.key });
-  }
-  if (options.includes("include_children") || options.includes("include_parent")) {
-    try {
-      for (const row of await client.listAllIssues({ project: before.project })) {
-        issues.set(row.key, { status: row.status, parent: row.parent ?? null });
-      }
-    } catch (error) {
-      throw refusalWithCode(error);
-    }
-  }
-  return issues;
-}
-
-/** What a call whose closing reason landed says when its close then failed with `error`: where the
- *  reason is, and whether the close may have landed anyway, since a blind retry would post the
- *  reason a second time. A gateway's timeout or rate limit refused nothing there is to fix. */
-function closeAccount(error: unknown, closingNote: ClosingNote): string {
-  const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
-  const fix =
-    error instanceof DispatchGatewayError && error.transient
-      ? ""
-      : "fix what refused the close, then ";
-  return writeMayHaveLanded(error)
-    ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
-    : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
-}
-
-/**
- * The status change of `dispatch issue-update` with an option (`POST /api/v1/issues/{key}/status-change`),
- * sent after the closing reason, where the call has one, was posted. It prints one line for each
- * issue the call changed, in the order its steps ran: `KEY: status a -> b`, or `KEY: unlinked
- * from P` for a child the call removed from the issue. The issue the call names carries the
- * reason's line too, and is printed last when the call left its status as it was. A refusal keeps
- * what the steps before it changed, and the closing reason's account where one landed.
- */
-async function statusChangeCommand(
-  context: CommandContext,
-  before: IssueDetails,
-  options: readonly IssueStatusOption[],
-  issuesBefore: ReadonlyMap<string, IssueBefore>,
-  closingNote: ClosingNote | undefined
-): Promise<DispatchToolResult> {
-  const { args, client, actor, input, issue } = context;
-  const status = stringArg(args, "status");
-  const change = (entry: StatusChangeEntry): string => {
-    const was = issuesBefore.get(entry.key);
-    if (entry.key !== before.key && entry.parent === null && was?.parent === before.key) {
-      return `unlinked from ${before.key}`;
-    }
-    return was === undefined
-      ? `status -> ${entry.status}`
-      : `status ${was.status} -> ${entry.status}`;
-  };
-  let answer: StatusChangeAnswer;
-  try {
-    answer = await client.changeIssueStatus(issue(), {
-      status,
-      ...(options.includes("include_children") ? { include_children: true } : {}),
-      ...(options.includes("unlink_children") ? { unlink_children: true } : {}),
-      ...(options.includes("include_parent") ? { include_parent: true } : {}),
-      actor,
-    });
-  } catch (error) {
-    // The status change is this call's own last write: one that landed without its answer is
-    // the call's landing, which the caller reports as done.
-    if (error instanceof DispatchWriteLandedError) throw error;
-    // A call refused midway committed the steps before the refusal, each a write of its own.
-    const committed = error instanceof DispatchServiceError ? (error.changed ?? []) : [];
-    const changed =
-      committed.length === 0
-        ? ""
-        : `the steps before the refusal changed ${committed.map((entry) => `${entry.key} (${change(entry)})`).join(", ")}`;
-    if (closingNote === undefined) throw refusalWithCode(error, changed);
-    const landed = closeAccount(error, closingNote);
-    if (error instanceof DispatchServiceError) throw refusalWithCode(error, changed, landed);
-    throw withAccount(error, landed);
-  }
-  const suffix = await notSubscribed(issueTopic(before.key), input.subscriptions);
-  const namedLine = (after: string): string =>
-    `${before.key}: ${[
-      ...(closingNote === undefined
-        ? []
-        : [`reason posted as message ${closingNote.id} (${closingNote.ref})`]),
-      `status ${before.status} -> ${after}`,
-    ].join("; ")}${suffix}`;
-  const changed = answer.changed ?? [];
-  const lines = changed.map((entry) =>
-    entry.key === before.key ? namedLine(entry.status) : `${entry.key}: ${change(entry)}`
-  );
-  if (!changed.some((entry) => entry.key === before.key))
-    lines.push(namedLine(answer.issue.status));
-  return {
-    text: lines.join("\n"),
-    details: {
-      issue: before.key,
-      status: answer.issue.status,
-      external_links: (answer.issue.external_links ?? []).map((link) => link.url),
-      changed: changed.map(({ key, status, parent }) => ({ key, status, parent })),
-      ...(closingNote === undefined ? {} : { message: closingNote.id }),
-    },
-  };
-}
-
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. With an
  *  option of the status change, it sends that route in place of the PATCH. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -405,9 +273,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
-  // The options of the status change the call set to true. The schema refused one beside any
-  // field but status and reason, and include_children beside unlink_children.
-  const options = ISSUE_STATUS_OPTIONS.filter((option) => args[option] === true);
+  const options = statusChangeOptions(args);
   let before: IssueDetails;
   try {
     before = await client.getIssue(issueKey);
@@ -809,196 +675,6 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
           ].join("\n"),
     details: listing,
   };
-}
-
-/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
- *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
- *  that stands at none of the compared commits, and the whole of every other one. */
-const BRIEF_READING_CHARACTERS = 200;
-
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. */
-const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
-  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
-  repository_unreadable: "Dispatch cannot read the repository",
-  read_failed: "a read Dispatch made did not answer",
-};
-
-/** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
- *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
-function learnedText(learned: BasisLearnedAt): string {
-  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
-  return `GitHub updated it ${learned.at}`;
-}
-
-/** One thing a check compared its results with, as the head line names it. */
-function basisText(basis: CheckBasis): string {
-  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
-  if (basis.kind === "pull_request") {
-    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
-    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
-  }
-  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
-  return `the commit you named, ${basis.commit ?? ""}${learned}`;
-}
-
-/** Where a result's commit stands, as the basis it matched names that place. The head line has
- *  already printed each basis whole, so this names it short. */
-function basisPlace(basis: CheckBasis): string {
-  if (basis.kind === "pull_request") {
-    return basis.pull_request === undefined
-      ? "the head of a pull request"
-      : `the head of pull request #${basis.pull_request}`;
-  }
-  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
-  return "the commit you named";
-}
-
-/** The first of R4's two facts: where one result's commit stands against what its check compared
- *  with. A Dispatch server that does not answer it says so rather than reading as another
- *  commit. */
-function commitStandsText(stands: CheckResult["commit_stands"]): string {
-  if (stands === undefined) {
-    return "Where that commit stands is not known: this Dispatch server does not say";
-  }
-  if (stands.answer === "at_basis") {
-    return stands.basis === undefined
-      ? "That commit is one of the compared commits"
-      : `That commit is ${basisPlace(stands.basis)}`;
-  }
-  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
-  // The reason is the server's to give and may be absent, so the answer stands on its own
-  // where there is none.
-  return stands.reason === undefined
-    ? "Where that commit stands is not known"
-    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
-}
-
-/** R4's other fact: whether the check's words moved after the result was recorded. Both versions
- *  are named either way, because they are the handles a reader reads the two wordings with. */
-function checkWordsText(check: CheckBlock, result: CheckResult): string {
-  const versions = `result version ${result.check_version}, check version ${check.version}`;
-  if (result.check_words_moved === undefined) {
-    return `Whether the check's words moved is not known (${versions})`;
-  }
-  return result.check_words_moved
-    ? `The check's words moved after this result (${versions})`
-    : `The check's words did not move after this result (${versions})`;
-}
-
-/** R5 for one check: whether a pass of it stands, and from which roles. */
-function passStandsText(pass: CheckPassStands | undefined): string {
-  if (pass === undefined)
-    return "Whether a pass stands is not known: this Dispatch server does not say";
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
-  }
-  if (pass.answer === "no") return "A pass stands: no";
-  return "A pass stands: not known";
-}
-
-/** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
- *  whose result stands at none of the compared commits, and leaves every other reading whole: the
- *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
- *  stands. */
-function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
-  const observed = result.observed;
-  if (observed === "") return [`${indent}The role recorded no reading.`];
-  const cut = brief && result.commit_stands?.answer !== "at_basis";
-  if (cut && observed.length > BRIEF_READING_CHARACTERS) {
-    return [
-      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
-    ];
-  }
-  return [`${indent}Reading: ${observed}`];
-}
-
-/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
- *  facts, the time, the id, the retraction that stands against it, and the reading. */
-function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
-  const lines = [
-    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
-  ];
-  const retracted = result.retracted;
-  if (retracted !== undefined) {
-    lines.push(
-      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
-    );
-  }
-  return [...lines, ...readingLines(result, brief)];
-}
-
-/** A check CI proves, which Dispatch marks with `ci`: no role records its result, so the check and
- *  its one result read as one line. A derived result names its verdict, its commit, the producer
- *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
- *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
- *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
- *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
- *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
- *  then the run's reading: its conclusion, output and URL. */
-function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
-  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
-  const pullRequestLine = `  Pull request line: ${ci.line}`;
-  const derived = check.results?.[0];
-  if (derived === undefined) {
-    return [
-      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
-      passStandsLine,
-      pullRequestLine,
-    ];
-  }
-  const stands = commitStandsText(derived.commit_stands);
-  return [
-    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
-    passStandsLine,
-    pullRequestLine,
-    ...readingLines(derived, brief, "  "),
-  ];
-}
-
-/** One check: a head line naming what it compared with and whether a pass of it stands, the
- *  check's own words once, then every result recorded against it. */
-function checkLines(check: CheckBlock, brief: boolean): string[] {
-  if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
-  const bases = check.compared_with ?? [];
-  const reason = check.compared_nothing;
-  const compared =
-    bases.length > 0
-      ? `Compared with ${bases.map(basisText).join(", ")}`
-      : reason === undefined
-        ? "Compared with nothing, and this Dispatch server does not say why"
-        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
-  const results = check.results ?? [];
-  return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
-    `  The check's words: ${check.text}`,
-    ...(results.length === 0
-      ? ["  No result is recorded for this check."]
-      : results.flatMap((result) => resultLines(check, result, brief))),
-  ];
-}
-
-/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
- *  compared its results with, whether a pass of it stands, its own words once, and every result
- *  recorded against it in the order the API serves them. A check CI proves prints its derived
- *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
- *  check with no result says so, and an issue with no Verification document says that instead of
- *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. */
-function formatCheckResults(results: IssueCheckResults, brief = false): string {
-  if (results.verification_artifact_id === "") {
-    return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
-  }
-  const checks = results.checks ?? [];
-  if (checks.length === 0) {
-    return `${results.issue}'s Verification document holds no check blocks.`;
-  }
-  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
-  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a

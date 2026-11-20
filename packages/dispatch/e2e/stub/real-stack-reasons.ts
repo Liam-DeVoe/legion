@@ -8,7 +8,7 @@
  *  that is absent here, so the map stays complete and machine-checked either way.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
- *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
+ *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
  *  A file whose every row moved is absent from this list, and so is a file no project of this
@@ -182,6 +182,8 @@ export const realStackReasons: Record<string, string> = {
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-p.e2e.ts":
+    "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -229,6 +231,8 @@ export const realStackReasons: Record<string, string> = {
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
+  "parent-status-choice.e2e.ts":
+    "each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote",
   "parse-count.e2e.ts":
     "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
