@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { HEADER_SCROLLS_QUERY } from "../issue-page/identity-block";
 import {
   FIRST_SCREEN_MARGIN_PROPERTY,
   FIRST_SCREEN_SIDEBAR_PROPERTY,
@@ -69,13 +69,15 @@ test("the server's draw is reserved for at exactly the widths above the compact 
   expect(COMPACT_VIEWPORT_QUERY).toBe(`(width < ${XL_BREAKPOINT})`);
 });
 
-// Every width query of the sheet switches where one of the shell's own does: at Tailwind's `xl`,
-// written by the token the `xl:` classes compile from, which stands for the length the shell's
-// queries are built from; or, in the variant the broadcast composer compacts under
-// (`narrow-or-short`), at a phone's width, as `PHONE_VIEWPORT_QUERY` writes it. A block written in
-// a length of its own - `80rem` beside the token, or 1280 px, which a reader whose default font is
+// Every width query of the sheet switches where one of the page's own queries does: at Tailwind's
+// `xl`, written by the token the `xl:` classes compile from, which stands for the length the
+// shell's queries are built from; in the variant the broadcast composer compacts under
+// (`narrow-or-short`), at a phone's width, as `PHONE_VIEWPORT_QUERY` writes it; or, for the new
+// issue page's header, at the width its header scrolls away, as `HEADER_SCROLLS_QUERY` writes it
+// (a pixel width by design, paired with the header's `max-[761px]:` classes). A block written in a
+// length of its own - `80rem` beside the token, or 1280 px, which a reader whose default font is
 // not 16 px meets at another width than the shell's - fails it.
-test("every width @media of styles.css switches at a width one of the shell's queries does", () => {
+test("every width @media of styles.css switches at a width one of the page's queries does", () => {
   expect(themeLength("--breakpoint-xl"), "--breakpoint-xl is no longer the shell's xl").toBe(
     XL_BREAKPOINT
   );
@@ -90,7 +92,7 @@ test("every width @media of styles.css switches at a width one of the shell's qu
     widths.filter((prelude) => prelude === BELOW_XL || prelude === FROM_XL).length,
     "styles.css reads fewer xl queries than the five it writes"
   ).toBeGreaterThanOrEqual(5);
-  const known = new Set([BELOW_XL, FROM_XL, PHONE_VIEWPORT_QUERY]);
+  const known = new Set([BELOW_XL, FROM_XL, PHONE_VIEWPORT_QUERY, HEADER_SCROLLS_QUERY]);
   const strays = widths.filter((prelude) =>
     prelude
       .split(",")

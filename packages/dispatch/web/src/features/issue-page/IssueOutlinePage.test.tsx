@@ -42,6 +42,8 @@ function answerThePageReads(): void {
     http.get("/api/v1/reference-targets", () =>
       Response.json({ targets: [] } satisfies ReferenceTargets)
     ),
+    // The viewer's issue states, which the header's pin reads (`api.getMyState`).
+    http.get("/api/v1/me/state", () => Response.json({})),
     // The documents' blocks, the issue's asks and its decisions.
     ...documentSurfaceHandlers()
   );
