@@ -78,8 +78,6 @@ type heldFresh struct {
 var heldFreshContexts = map[string]heldFresh{
 	"(*github.com/sjawhar/envoy/internal/bus.Client).requestLife -> context.Background": {1,
 		"the life of a connection, which no request is made under: requests are bound to it and end at its end, the drop"},
-	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.PubOpt] -> context.Background": {1,
-		"the wrapper's fallback for a publish whose options carry no context; every publish envoy makes passes nats.Context(ctx) (sendStored's callers), which callContext returns, and the stored publish row reads it at run time"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.PubOpt] -> the field github.com/nats-io/nats.go.ContextOpt.Context": {2,
 		"the caller's own context, which its options carry (nats.Context(ctx)) and callContext returns: made by the caller, not here"},
 	"(*github.com/sjawhar/envoy/internal/bus.Client).requestLife -> the field github.com/sjawhar/envoy/internal/bus.Client.life": {1,
@@ -96,8 +94,6 @@ var heldFreshContexts = map[string]heldFresh{
 		"the forward's own context, which StartRequestStoredTo builds from its caller's (context.WithoutCancel, which keeps the caller's mark) and its own timeout; the forward row reads that at run time"},
 	"(*github.com/sjawhar/envoy/cmd/listener.keptRoleOwed).settle -> the field github.com/sjawhar/envoy/cmd/listener.keptRoleOwed.ctx": {1,
 		"the handover caller's own context with its cancellation taken off (newKeptRoleOwed), which no guard marks: settle reads its writes back with the guard given back (drainKeptRole, handOverSweptLane), and the settled-confirm row reads that at run time"},
-	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> context.Background": {1,
-		"the wrapper's fallback for a JetStream call whose options carry no context; the takeover records' read under the guard passes nats.Context(ctx) (bus.Client.TakeoverRecords), which callContext returns. This entry lets the fallback through whoever reaches it, and the check cannot see whether a caller under a guard passes nats.Context: a guarded caller that passes none would reach this fallback, under no mark, and the check would not name it"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> the field github.com/nats-io/nats.go.ContextOpt.Context": {2,
 		"the caller's own context, which its options carry (nats.Context(ctx)) and callContext returns: made by the caller, not here"},
 	"(github.com/sjawhar/envoy/internal/bus.contextRequests).with -> the field github.com/sjawhar/envoy/internal/bus.contextRequests.ctx": {1,
@@ -167,6 +163,10 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			"return roles.Get(context.Background(), role) })")
 		plantContext(t, overlay, "../../internal/bus/nats.go", "ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)",
 			"ctx, cancel := context.WithTimeout(context.Background(), timeout)")
+		// S2: a JetStream call under the role's guard whose options carry no nats.Context, which the
+		// wrapper's fallback would bind to a fresh context under no mark (bus.callContext).
+		plantContext(t, overlay, "../../internal/bus/takeover.go", "&nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))",
+			"&nats.StreamInfoRequest{SubjectsFilter: filter})")
 		plantContext(t, overlay, "role_keep_sweep.go", "head, err = readKeptLaneHead(locked, cfg.client, role)",
 			"head, err = readKeptLaneHead(context.Background(), cfg.client, role)\n\t\t\t_ = locked")
 		plantContext(t, overlay, "role_keep.go", "stored, err := cfg.client.NextStoredMessage(ctx, keptSubject, kept+1)",
@@ -185,6 +185,7 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			{"the forward's own context, reached through the forwardRole field", "(*github.com/sjawhar/envoy/internal/bus.Client).StartRequestStoredTo"},
 			{"the sweep's lane-head read, under a guard tryHold took", listenerPackage + ".sweptLaneHead"},
 			{"the walk's next-copy read, under a context kept in a package variable", listenerPackage + ".walkKeptRole"},
+			{"the takeover records' stream read with no nats.Context among its options (S2)", "(*github.com/sjawhar/envoy/internal/bus.Client).TakeoverRecords"},
 		} {
 			named := slices.ContainsFunc(found, func(fresh freshContext) bool { return fresh.caller == want.caller })
 			if !named {
@@ -297,6 +298,12 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 					site: siteIn(prog.Fset, read.pos), path: w.pathTo(fn),
 				})
 			}
+			for _, call := range jetStreamCallsWithoutContext(fn) {
+				fresh = append(fresh, freshContext{
+					caller: fn.String(), callee: "a JetStream call whose options carry no nats.Context (" + call.callee + ")",
+					site: siteIn(prog.Fset, call.pos), path: w.pathTo(fn),
+				})
+			}
 		}
 		if node := graph.Nodes[fn]; node != nil {
 			for _, edge := range node.Out {
@@ -310,7 +317,11 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 				if _, stop := walkStops[callee.String()]; stop {
 					continue
 				}
-				if envoyFunction(fn) && slices.Contains(freshContexts, callee.String()) {
+				// bus.callContext answers the context a JetStream call's options carry, and makes a
+				// fresh one only for options that carry none: that is a fact of the call site that
+				// built the options, which jetStreamCallsWithoutContext reads at every site the walk
+				// reaches, so the fallback itself is not named here.
+				if envoyFunction(fn) && slices.Contains(freshContexts, callee.String()) && !isCallContext(fn) {
 					fresh = append(fresh, freshContext{
 						caller: fn.String(), callee: callee.String(),
 						site: siteIn(prog.Fset, edge.Pos()), path: w.pathTo(fn),
@@ -577,6 +588,202 @@ func (w *lockWalk) pathTo(fn *ssa.Function) string {
 func envoyFunction(fn *ssa.Function) bool {
 	pkg := functionPackage(fn)
 	return pkg != nil && strings.HasPrefix(pkg.Path(), "github.com/sjawhar/envoy/")
+}
+
+// isCallContext is whether fn is an instance of bus.callContext, the JetStream wrapper's read of the
+// context a call's options carry.
+func isCallContext(fn *ssa.Function) bool {
+	origin := fn
+	if fn.Origin() != nil {
+		origin = fn.Origin()
+	}
+	return origin.String() == "github.com/sjawhar/envoy/internal/bus.callContext"
+}
+
+// contextOptionTypes are the option types of the JetStream calls whose options can carry the call's
+// context (nats.Context), which the bound wrapper reads (bus.callContext).
+var contextOptionTypes = []string{"github.com/nats-io/nats.go.JSOpt", "github.com/nats-io/nats.go.PubOpt"}
+
+// jetStreamCall is one call fn makes of a JetStream method with options that carry no context: what
+// it calls, and where.
+type jetStreamCall struct {
+	callee string
+	pos    token.Pos
+}
+
+// jetStreamCallsWithoutContext is every call fn makes of a method whose last parameter is a
+// variadic JSOpt or PubOpt, where the options fn passes carry no nats.Context: none at all, or a
+// list fn builds with no nats.Context in it, or a list the check cannot read. A list fn was handed
+// (its own parameter, passed on) is the list its own caller built, and that caller's call is read
+// where the walk reaches it. A method of *nats.Conn (its JetStream context's open) makes no request,
+// and is not read.
+func jetStreamCallsWithoutContext(fn *ssa.Function) []jetStreamCall {
+	var calls []jetStreamCall
+	for _, block := range fn.Blocks {
+		for _, instruction := range block.Instrs {
+			call, ok := instruction.(ssa.CallInstruction)
+			if !ok {
+				continue
+			}
+			if _, started := instruction.(*ssa.Go); started {
+				continue
+			}
+			common := call.Common()
+			sig := common.Signature()
+			if sig == nil || !sig.Variadic() || len(common.Args) == 0 {
+				continue
+			}
+			options := common.Args[len(common.Args)-1]
+			slice, ok := options.Type().Underlying().(*types.Slice)
+			if !ok || !slices.Contains(contextOptionTypes, types.TypeString(slice.Elem(), nil)) {
+				continue
+			}
+			callee := ""
+			switch {
+			case common.IsInvoke():
+				callee = types.TypeString(common.Value.Type(), nil) + "." + common.Method.Name()
+			case common.StaticCallee() != nil && common.StaticCallee().Signature.Recv() != nil:
+				callee = common.StaticCallee().String()
+				if types.TypeString(common.StaticCallee().Signature.Recv().Type(), nil) == "*github.com/nats-io/nats.go.Conn" {
+					continue
+				}
+			default:
+				continue
+			}
+			if !optionsCarryContext(options) {
+				calls = append(calls, jetStreamCall{callee: callee, pos: instruction.Pos()})
+			}
+		}
+	}
+	return calls
+}
+
+// optionsCarryContext is whether options, the variadic list a call passes, carries a nats.Context.
+// A list its function was handed counts as carrying one, since its caller's call is read where the
+// walk reaches it; so does a closure's captured list, read where the closure is made. A list built
+// carries one when a nats.ContextOpt is stored into it, an append when either of its lists does,
+// a join (a phi) when every list joined does, and a helper's answer when every list it returns does.
+// Any other list is read as carrying none.
+func optionsCarryContext(options ssa.Value) bool {
+	return carriesContext(options, 0)
+}
+
+func carriesContext(v ssa.Value, depth int) bool {
+	if depth > 6 {
+		return false
+	}
+	switch list := v.(type) {
+	case *ssa.Parameter:
+		return true
+	case *ssa.UnOp:
+		// A load of a cell: a list a closure captures is spilled to one, which holds what the
+		// function that made the closure stored into it.
+		if list.Op != token.MUL {
+			return false
+		}
+		return cellCarriesContext(list.X, depth+1)
+	case *ssa.FreeVar:
+		fn := list.Parent()
+		index := slices.Index(fn.FreeVars, list)
+		if fn.Parent() == nil || index < 0 {
+			return false
+		}
+		for _, block := range fn.Parent().Blocks {
+			for _, instruction := range block.Instrs {
+				if closure, ok := instruction.(*ssa.MakeClosure); ok && closure.Fn == fn {
+					return carriesContext(closure.Bindings[index], depth+1)
+				}
+			}
+		}
+		return false
+	case *ssa.Phi:
+		for _, edge := range list.Edges {
+			if !carriesContext(edge, depth+1) {
+				return false
+			}
+		}
+		return len(list.Edges) > 0
+	case *ssa.Call:
+		common := list.Common()
+		if builtin, ok := common.Value.(*ssa.Builtin); ok {
+			return builtin.Name() == "append" && slices.ContainsFunc(common.Args, func(arg ssa.Value) bool { return carriesContext(arg, depth+1) })
+		}
+		callee := common.StaticCallee()
+		if callee == nil || len(callee.Blocks) == 0 {
+			return false
+		}
+		returns := 0
+		for _, block := range callee.Blocks {
+			if len(block.Instrs) == 0 {
+				continue
+			}
+			if ret, ok := block.Instrs[len(block.Instrs)-1].(*ssa.Return); ok && len(ret.Results) == 1 {
+				returns++
+				if !carriesContext(ret.Results[0], depth+1) {
+					return false
+				}
+			}
+		}
+		return returns > 0
+	case *ssa.Slice:
+		array, ok := list.X.(*ssa.Alloc)
+		if !ok || array.Referrers() == nil {
+			return false
+		}
+		for _, use := range *array.Referrers() {
+			index, ok := use.(*ssa.IndexAddr)
+			if !ok || index.Referrers() == nil {
+				continue
+			}
+			for _, store := range *index.Referrers() {
+				stored, ok := store.(*ssa.Store)
+				if !ok {
+					continue
+				}
+				if made, ok := stored.Val.(*ssa.MakeInterface); ok && types.TypeString(made.X.Type(), nil) == "github.com/nats-io/nats.go.ContextOpt" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// cellCarriesContext is whether every list stored into cell carries a nats.Context: a cell a
+// function allocates, or a closure's captured cell, read where the closure is made.
+func cellCarriesContext(cell ssa.Value, depth int) bool {
+	if depth > 6 {
+		return false
+	}
+	if free, ok := cell.(*ssa.FreeVar); ok {
+		fn := free.Parent()
+		index := slices.Index(fn.FreeVars, free)
+		if fn.Parent() == nil || index < 0 {
+			return false
+		}
+		for _, block := range fn.Parent().Blocks {
+			for _, instruction := range block.Instrs {
+				if closure, ok := instruction.(*ssa.MakeClosure); ok && closure.Fn == fn {
+					return cellCarriesContext(closure.Bindings[index], depth+1)
+				}
+			}
+		}
+		return false
+	}
+	alloc, ok := cell.(*ssa.Alloc)
+	if !ok || alloc.Referrers() == nil {
+		return false
+	}
+	stores := 0
+	for _, use := range *alloc.Referrers() {
+		if store, ok := use.(*ssa.Store); ok && store.Addr == alloc {
+			stores++
+			if !carriesContext(store.Val, depth+1) {
+				return false
+			}
+		}
+	}
+	return stores > 0
 }
 
 // standardLibraryFunction is whether fn is the standard library's: its package path's first element
