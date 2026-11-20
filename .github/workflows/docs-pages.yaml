@@ -148,6 +148,7 @@ on:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
       - 'packages/envoy/going/agentwire/*'
+      - 'packages/envoy/going/agent/*'
       - 'packages/envoy/internal/bus/*'
       - 'packages/envoy/internal/cistore/*'
       - 'packages/envoy/internal/contracts/*'
