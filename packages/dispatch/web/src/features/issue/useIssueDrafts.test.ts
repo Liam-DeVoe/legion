@@ -763,20 +763,22 @@ async function explore(): Promise<Exploration> {
   return { broken, judged };
 }
 
-// The seven tests below share one exploration: it is the slow part, and it judges all seven at
-// once. It plays about 171,000 sequences of five events, which judge 186,538 sequences of one to
-// five, about 147 to 201 s in this pod on one core, so each of the seven has a time limit of its
-// own above the suite's minute: whichever runs first pays for the exploration.
+// The eight tests below - the seven checks and the count - share one exploration: it is the slow
+// part, and it judges all seven checks at once. It plays about 171,000 sequences of five events,
+// which judge 186,538 sequences of one to five, about 147 to 255 s in this pod on one core, so
+// each of the eight has a time limit of its own above the suite's minute: whichever runs first
+// pays for the exploration.
 let explored: Promise<Exploration> | undefined;
 function exploration(): Promise<Exploration> {
   explored ??= explore();
   return explored;
 }
 // Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest run on the slower of
-// the two pod shapes, which runs the suite 2.15 times slower. The 201 s measured here is about
-// 432 s there, derived rather than measured on that pod, and twice that is about 864 s; 860 s
-// rounds it down, since the 201 s is already the slowest of the runs here.
-const explorationTimeout = 860_000;
+// the two pod shapes, which runs the suite 2.15 times slower. The 255 s measured here (the eight
+// tests, beside other roles' work in the same pod) is about 548 s there, derived rather than
+// measured on that pod, and twice that is about 1,096 s; 1,100 s rounds it up, the 255 s being
+// the slowest of the runs here.
+const explorationTimeout = 1_100_000;
 
 // I2 and I3 each name a send that I1 also refuses, or one with nothing left to send. A value an
 // escape put away is not the reader's last ended choice: the escape withdrew that choice, and only

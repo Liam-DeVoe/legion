@@ -183,9 +183,10 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
  *   reference and asks for nothing; a changed one is queued as its text normalized, an ended
  *   choice, which the hook's drain then sends, and the draft takes that text too, as every end
  *   trims. The draft is then the value its write carries, so that write's settle hands it back
- *   as it lands, if the draft is still that value and nothing is queued then. Left as typed, an
- *   end on "a " sent "a" and kept the draft "a " the reader's through that landing: it did not
- *   follow another reader's next title, and the next end sent "a" over it.
+ *   as it lands, if the draft is still that value and nothing is queued then. So the field holds
+ *   what the end sent: left as typed, an end on "a " sent "a" and left "a " in the field, a
+ *   title the reader's record of their choice does not hold (the sequence test's I7 reads it at
+ *   the next end).
  * - `discard`, Escape or Cancel: the draft takes the reference and asks for nothing. While a
  *   write is out that is the value out, the value the issue is about to hold (decision 316).
  * - A draft that `request` or `discard` puts back to the reference is the reader's ended choice

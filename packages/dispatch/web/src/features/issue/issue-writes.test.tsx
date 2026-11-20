@@ -1604,9 +1604,9 @@ test("IssuePage keeps a space typed after a saved title while its write is out a
 // trims, so the end sends "a" and leaves the draft "a", which the write then lands with: its
 // settle hands the draft back to the issue (decision 332), the heading follows the title another
 // reader sets next, and the end of a later edit sends nothing over it. Dispatch's hook before this
-// change does the same: [a]. An end that sent "a" but left the draft "a " as typed kept it the
-// reader's through the settle, which compares the draft as typed: the heading stayed on "a " under
-// the other reader's title, and the later end sent "a" over it.
+// change does the same: [a]. That the end trims the draft itself is held by the sequence test
+// (I7 at the next end): an end that left "a " as typed is handed back at this landing all the
+// same, since the hand-back compares the draft trimmed, so this row passes either way.
 test("IssuePage gives the issue a title ended with a space after it as its write lands, so the heading follows another reader's title and a later end sends nothing", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
