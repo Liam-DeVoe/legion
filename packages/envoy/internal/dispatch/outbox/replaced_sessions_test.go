@@ -41,6 +41,7 @@ const (
 	wantCauseEndingFailed      = "the ending of its sessions failed"
 	wantCauseOutboxStopped     = "the outbox stopped"
 	wantCauseNotHolding        = "the publisher hold is no longer this process's"
+	wantCauseFirstReads        = "the first batch's reads did not answer within their bound"
 )
 
 // standbyOf is a standby outbox of process publishing through publisher, built as cmd/dispatch
@@ -302,6 +303,8 @@ type heldEnding struct {
 	letGo          <-chan struct{}
 	readHold       time.Duration
 	readUntilLetGo bool
+	// afterFirst, when set, is called as the first ending is let go.
+	afterFirst func()
 
 	begun    atomic.Int32
 	readOnce sync.Once
@@ -347,6 +350,9 @@ func (h *heldEnding) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data p
 		_ = conn.PgConn().Conn().Close()
 	case n == 1 && h.answerBefore > 0 && !deadline.IsZero():
 		time.Sleep(time.Until(deadline.Add(-h.answerBefore)))
+		if h.afterFirst != nil {
+			h.afterFirst()
+		}
 	case n >= 2 && h.letGo != nil:
 		<-h.letGo
 	default:
@@ -509,30 +515,72 @@ func TestAStandbyWhoseEndingOfTheOldSessionsIsSlowPublishesWithinWhatTheTakeOver
 	}
 }
 
+// slowStatusPublisher is a recordingPublisher whose status read, once armed, answers late once,
+// after hold, as a client whose lock nats.go holds a while does.
+type slowStatusPublisher struct {
+	recordingPublisher
+	hold  time.Duration
+	armed atomic.Bool
+}
+
+func (p *slowStatusPublisher) Connected() bool {
+	if p.armed.CompareAndSwap(true, false) {
+		time.Sleep(p.hold)
+	}
+	return true
+}
+
 // A standby whose ending of the replaced holder's sessions answers just before its deadline
-// takes over on time, and its first batch, whose read of the events the database answers 300 ms
-// late, still starts by the time the take-over was due: the ending's deadline leaves the first
-// batch its share of the six seconds (firstBatchShare), which a deadline at the budget itself
-// left nothing of.
+// takes over on time, and what runs between that ending and its first batch's first send is
+// bounded, so the first batch starts by the time the take-over was due: the ending's deadline
+// leaves firstBatchShare, the sum of serve's status read's bound (statusReadBound) and the first
+// scan's reads' (firstBatchReadBound). In the first row the status read and the first batch's
+// read of the events each take their bound less 100 ms, and the batch starts within the six
+// seconds on the database's clock. In the second the read takes 100 ms past its bound: the read
+// is cut, the take-over is logged late with that cause, and the next scan, with no bound,
+// publishes the event at once.
 func TestAStandbyWhoseEndingAnswersJustBeforeItsDeadlineStartsItsFirstBatchWithinTheSixSeconds(t *testing.T) {
-	ending := &heldEnding{answerBefore: 100 * time.Millisecond, readHold: 300 * time.Millisecond}
-	rig := startSlowEnding(t, ending)
-	waitFor(t, outboxHangGuard, "the standby's first batch", func() bool {
-		_, _, sent := recordOf(rig.recorder, sentBatchLine)
-		return sent
-	})
-	if late, _, found := recordOf(rig.recorder, lateTakeOverLine); found {
-		t.Errorf("the standby logged a late take-over with the cause %q, want its ending to have answered in time", stringAttribute(late, "cause"))
+	for _, row := range []struct {
+		name     string
+		readHold time.Duration
+		late     bool
+	}{
+		{"the status read and the first reads take nearly their bounds", firstBatchReadBound - 100*time.Millisecond, false},
+		{"the first reads run past their bound", firstBatchReadBound + 100*time.Millisecond, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			publisher := &slowStatusPublisher{hold: statusReadBound - 100*time.Millisecond}
+			ending := &heldEnding{answerBefore: 100 * time.Millisecond, readHold: row.readHold, afterFirst: func() { publisher.armed.Store(true) }}
+			rig := startSlowEndingWith(t, ending, publisher)
+			waitFor(t, outboxHangGuard, "the standby's first sent batch", func() bool {
+				_, _, sent := recordOf(rig.recorder, sentBatchLine)
+				return sent
+			})
+			_, replacedAt, _ := recordOf(rig.recorder, replacedSessionsLine)
+			_, tookAt, _ := recordOf(rig.recorder, tookHoldLine)
+			if replacedAt < 0 || replacedAt > tookAt {
+				t.Errorf("the replaced line came at %d and the took line at %d, want the sessions ended before the standby became the publisher: %q", replacedAt, tookAt, loggedMessages(rig.recorder))
+			}
+			if held := ending.statements(); len(held) != 1 || held[0].cut != nil {
+				t.Errorf("the ending statements were %+v, want one, answered before its deadline", held)
+			}
+			if _, _, failed := recordOf(rig.recorder, "dispatch outbox: scan"); failed {
+				t.Errorf("the standby logged a failed scan: %q", loggedMessages(rig.recorder))
+			}
+			late, _, found := recordOf(rig.recorder, lateTakeOverLine)
+			if !row.late {
+				if found {
+					t.Errorf("the standby logged a late take-over with the cause %q, want none", stringAttribute(late, "cause"))
+				}
+				rig.requireFirstBatchWithinTheTakeOver(t, "the status read and the first reads 100 ms short of their bounds")
+				return
+			}
+			if cause := stringAttribute(late, "cause"); cause != wantCauseFirstReads {
+				t.Errorf("the late take-over's cause is %q, want %q: %q", cause, wantCauseFirstReads, loggedMessages(rig.recorder))
+			}
+			t.Logf("the first batch, after the cut read, started %v after the row lapsed", rig.firstBatchStarted(t).Sub(rig.lapsed.after).Round(time.Millisecond))
+		})
 	}
-	_, replacedAt, _ := recordOf(rig.recorder, replacedSessionsLine)
-	_, tookAt, _ := recordOf(rig.recorder, tookHoldLine)
-	if replacedAt < 0 || replacedAt > tookAt {
-		t.Errorf("the replaced line came at %d and the took line at %d, want the sessions ended before the standby became the publisher: %q", replacedAt, tookAt, loggedMessages(rig.recorder))
-	}
-	if held := ending.statements(); len(held) != 1 || held[0].cut != nil {
-		t.Errorf("the ending statements were %+v, want one, answered before its deadline", held)
-	}
-	rig.requireFirstBatchWithinTheTakeOver(t, "the ending answered 100 ms before its deadline and the first read 300 ms late")
 }
 
 // A standby whose ending of the replaced holder's sessions fails - the statement's connection to

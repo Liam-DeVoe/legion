@@ -177,9 +177,11 @@ func readBatch(ctx context.Context, deps Deps) (pending []pendingEvent, stopped,
 func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pendingEvent, stopped bool, err error) {
 	deps.lanes.lock()
 	defer deps.lanes.unlock()
-	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight)
+	reads, endReads := deps.reads(ctx)
+	defer endReads()
+	rows, err := deps.Store.Pool.Query(reads, readBatchSQL, batchSize, inFlight)
 	if err != nil {
-		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
+		return nil, false, fmt.Errorf("read the outbox's batch: %w", boundedRead(ctx, reads, err))
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -250,7 +252,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 	// idempotent, so the deferred one above still stands.
 	rows.Close()
 	if err := rows.Err(); err != nil && !stopped {
-		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
+		return nil, false, fmt.Errorf("read the outbox's batch: %w", boundedRead(ctx, reads, err))
 	}
 	return pending, stopped, nil
 }

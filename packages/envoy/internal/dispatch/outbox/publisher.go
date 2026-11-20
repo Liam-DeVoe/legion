@@ -141,6 +141,32 @@ type Deps struct {
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
 	// leaves none out of its read and takes no lock.
 	lanes *lanes
+	// readsBy, when set, is the moment by which a batch's reads before its first send - its claim
+	// of events (readRows), the lookups of their destinations (resolveDestinations) and the reads
+	// of their roles' holders (resolveRoleHolders) - must have answered (reads). The outbox's scan
+	// sets it for the batches of a take-over's first scan (firstBatchReadBound) and no other.
+	readsBy time.Time
+}
+
+// errReadsBound marks a batch whose reads ran past Deps.readsBy (boundedRead): a take-over's
+// first scan whose reads did not answer within firstBatchReadBound.
+var errReadsBound = errors.New("the batch's reads did not answer within their bound")
+
+// reads is ctx bounded by d.readsBy when it is set, and ctx itself when it is not.
+func (d Deps) reads(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d.readsBy.IsZero() {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, d.readsBy)
+}
+
+// boundedRead is err, a read's under reads, marked errReadsBound when reads's own bound ended it
+// while ctx, the batch's, still runs.
+func boundedRead(ctx, reads context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && errors.Is(reads.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", errReadsBound, err)
+	}
+	return err
 }
 
 // forwardAckTimeout is the wait this outbox's role forwards give the stream's acknowledgement of
@@ -307,11 +333,14 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.release(owner)
 		}
 	}()
-	resolvedRoles, err := resolveDestinations(ctx, deps, events)
+	reads, endReads := deps.reads(ctx)
+	resolvedRoles, err := resolveDestinations(reads, deps, events)
 	if err != nil {
-		return batchResult{}, err
+		endReads()
+		return batchResult{}, boundedRead(ctx, reads, err)
 	}
-	resolveRoleHolders(ctx, deps, events, resolvedRoles)
+	resolveRoleHolders(reads, deps, events, resolvedRoles)
+	endReads()
 	chains := planChains(events)
 
 	changed := deps.Publisher.ConnectionChanged()

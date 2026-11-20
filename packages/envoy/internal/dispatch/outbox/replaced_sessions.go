@@ -24,15 +24,19 @@ const endedSessionLine = "dispatch outbox: ended a database session of the publi
 // holder's sessions.
 const replacedSessionsLine = "dispatch outbox: replaced the publisher hold's lapsed row and ended its holder's sessions"
 
-// lateTakeOverLine is the line tryHold logs at WARN when it takes the hold over without having
-// ended the previous holder's sessions by the ending's deadline, with one of the causes below.
-const lateTakeOverLine = "dispatch outbox: late take-over of the publisher hold: the previous holder's sessions were not ended before this process began to publish"
+// lateTakeOverLine is the line logged at WARN, with one of the causes below, when a take-over
+// that replaced a lapsed row may start its first batch past takeOverWithin: tryHold's, when it
+// did not end the previous holder's sessions by the ending's deadline, and scan's, when the first
+// scan's reads did not answer within their bound.
+const lateTakeOverLine = "dispatch outbox: late take-over of the publisher hold"
 
-// The causes tryHold names on lateTakeOverLine.
+// The causes tryHold names on lateTakeOverLine, and scan the last of them, when the take-over's
+// first scan's reads did not answer within firstBatchReadBound.
 const (
 	lateCauseTakeAfterDeadline = "the take came after the ending's deadline"
 	lateCauseEndingTimedOut    = "the ending of its sessions did not answer by its deadline"
 	lateCauseEndingFailed      = "the ending of its sessions failed"
+	lateCauseFirstReads        = "the first batch's reads did not answer within their bound"
 )
 
 // untakenLine is the line tryHold logs when the process stopped while it ended the previous
