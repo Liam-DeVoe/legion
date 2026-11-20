@@ -353,7 +353,7 @@ runs every command but a `jj git push` through that `jj` unchanged.
 Before a `jj git push`, it runs the push step, and every jj command of the step runs with
 `--ignore-working-copy`.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
-role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 196).
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 200).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
 first `Legion-Role` trailer of each of those commits.
 Where a commit's author is not the identity that the table gives the trailer's role, the step
@@ -513,7 +513,7 @@ minted from Dispatch's Settings → Agent tokens
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for
 `agent-secrets machine login`. The helper spends that credential on the broker's own routes
-(`packages/envoy/internal/broker/helper/broker.go`) and asks the broker for no Dispatch token. The
+(`packages/envoy/internal/cipher/helper/broker.go`) and asks the broker for no Dispatch token. The
 broker can exchange such a login's access token for one (`docs/kubernetes.md`, "The Dispatch
 identity the broker can issue"), and nothing on this box does that at this release.
 `dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
