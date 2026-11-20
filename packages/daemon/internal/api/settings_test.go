@@ -362,7 +362,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	kubernetesKeys := keysOf(t, runtimeKeys["kubernetes"])
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
-		"agent_secrets", "plugins", "setup", "test_postgres", "repository_cache", "idle_release",
+		"agent_secrets", "plugins", "setup", "test_postgres", "test_postgres_disk", "repository_cache", "idle_release",
 		"memory_guard", "volume_trim", "sandbox",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.volume_trim", keysOf(t, kubernetesKeys["volume_trim"]), []string{
@@ -934,14 +934,19 @@ func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
 
 // runtime.kubernetes.test_postgres_disk reaches the settings as the size the file wrote where it
 // sets one, and is absent where it does not, so a deployment that never set it reads byte for byte
-// as before the key existed.
+// as before the key existed. The maximal fixture sets the test database and its disk, so that
+// the answer's field walk realises the key, and each case writes its own lines in their place.
 func TestPGDiskTheSettingsNameTheTestDatabasesDiskOnlyWhereItIsSet(t *testing.T) {
+	base := strings.Replace(settingsFixtureFile, "    test_postgres: true\n    test_postgres_disk: 8Gi\n", "", 1)
+	if base == settingsFixtureFile {
+		t.Fatal("the maximal settings fixture no longer sets the test database and its disk")
+	}
 	for name, tc := range map[string]struct{ block, want string }{
 		"set":   {"    test_postgres: true\n    test_postgres_disk: 20Gi\n", "20Gi"},
 		"unset": {"    test_postgres: true\n", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block)))
+			encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, base+tc.block)))
 			if err != nil {
 				t.Fatal(err)
 			}
