@@ -34,9 +34,10 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
-     Wait for a run that has not concluded, and read again where GitHub could not be read.
+     A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI.
+     Name it in step 5's message and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
-     Neither wait nor that finding moves the issue back.
+     Neither that run nor that finding moves the issue back.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
      `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or, where the task has a tester step, `to: testing` for the tester's result;

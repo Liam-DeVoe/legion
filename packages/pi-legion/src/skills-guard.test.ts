@@ -779,6 +779,21 @@ test("each phase of the implementer names a declined bot thread in its own place
   expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
 
+// Retro is the implementer's phase, so the implementer's daemon part, which forbids waiting for CI,
+// is retro's prompt too, and the retro skill holds a `ci_check` run still going the same way.
+test("retro never waits for a CI run, as the implementer's prompt says", () => {
+  expect(
+    collapsed(
+      path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "go", "implementer.md")
+    )
+  ).toContain("Never wait for, watch or poll the pull request's remote CI");
+  expect(
+    lacks("legion-retro/SKILL.md", [
+      /run that has not concluded[^.]*never wait for, watch or poll it/,
+    ])
+  ).toEqual([]);
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.
