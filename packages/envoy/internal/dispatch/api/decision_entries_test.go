@@ -1139,6 +1139,46 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
 }
 
+// INFRA-1150, test round 2, the defect INFRA-1152's implementer found at 44f1abef1605 and the
+// architect sent to this round: the release before answered the text of a document with no ask
+// block with no asks member at all, and this build adds "asks":[]. The field carries omitzero,
+// which leaves out a nil slice and keeps an empty one, so a writer that fills the field with an
+// empty slice changes the shape of every such read, which the basebuild store census reads as the
+// two builds answering differently. A document with an ask block still answers its asks member.
+func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
+	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec with no ask block.\n")
+	settleIssue(t, documents, issue.Key)
+	members := func(what, path string) map[string]json.RawMessage {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: GET %s: status=%d body=%s", what, path, response.Code, response.Body.String())
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode GET %s: %v: %s", what, path, err, response.Body.String())
+		}
+		return body
+	}
+	for _, path := range []string{
+		"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text",
+		"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text?blocks=true",
+		"/api/v1/issues/" + issue.Key + "/artifacts/spec/text",
+	} {
+		if asks, held := members("the spec with no ask block", path)["asks"]; held {
+			t.Errorf("GET %s answers the member \"asks\":%s for a document with no ask block, want no asks member, as the release before answered", path, asks)
+		}
+	}
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	if _, held := members("asks.md", "/api/v1/issues/"+issue.Key+"/artifacts/asks-md/text")["asks"]; !held {
+		t.Errorf("the text of asks.md, which holds the ask block a1, answers no asks member, want one")
+	}
+}
+
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
 // transaction: a version that removes a decision and the reading under another leaves both out

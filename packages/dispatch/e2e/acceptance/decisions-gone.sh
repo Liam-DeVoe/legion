@@ -19,7 +19,8 @@
 #                                      thing; or the reading of a retired document's slug
 #                                      (refs.RetiredDecisionsSlug), or a citation
 #                                      dispatch://KEY/artifact/decisions-md in
-#                                      packages/envoy/cmd/listener/api.go
+#                                      packages/envoy/cmd/listener/api.go or
+#                                      packages/daemon/internal/pause/pause.go
 #     hit <path>:<n>: <line>           a production line that still spells one, which fails
 # The step's Go code calls decisions_documents() and spells no slug, so no line under the id
 # `decisions-step` is admitted. Before it reads the checkout, the sweep reads a planted instance
@@ -141,8 +142,8 @@ sweep_grep() {
 readonly literal='decisions\.md|decisions-md|ArtifactRoleDecisions|GatedStepDecisions|DesignStepDecisions'
 readonly catalog_migration=packages/envoy/internal/dispatch/store/migrations/20261117093337_decisions_documents.up.sql
 readonly applied_migration=packages/envoy/internal/dispatch/store/migrations/20261101162254_decision_records.up.sql
-# The citation packages/envoy/cmd/listener/api.go carries: a retired decisions document's address
-# under any issue key.
+# The citation packages/envoy/cmd/listener/api.go and packages/daemon/internal/pause/pause.go
+# carry: a retired decisions document's address under any issue key.
 readonly retired_citation='dispatch://[A-Z][A-Z0-9]*-[0-9]+/artifact/decisions-md'
 
 # The ids the root's list holds, with their things.
@@ -222,7 +223,8 @@ literal_sweep() {
       admitted=$((admitted + 1))
       continue
     fi
-    if [[ "$path" == packages/envoy/cmd/listener/api.go && "$text" =~ $retired_citation ]]; then
+    if [[ ("$path" == packages/envoy/cmd/listener/api.go || "$path" == packages/daemon/internal/pause/pause.go) &&
+      "$text" =~ $retired_citation ]]; then
       printf 'admitted %s:%s serves a citation dispatch://KEY/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
       admitted=$((admitted + 1))
       continue

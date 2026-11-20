@@ -80,6 +80,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	// (dispatch://INFRA-1950/spec#b-r-proposed), so goingToolRoutes gives it no row for the reason
 	// it gives the review routes none. Keep it here; never give it a row.
 	"POST /api/v1/issues/{key}/nodes/{id}/settle",
+	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
+	"POST /api/v1/issues/{key}/results/dry-run",
 	"POST /api/v1/machine-logins/{id}/revoke",
 	"POST /api/v1/markdown/round-trip",
 	"POST /api/v1/me/agent-tokens",
