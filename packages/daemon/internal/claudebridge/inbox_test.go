@@ -220,3 +220,27 @@ func TestInboxTakePendingAnswersWhetherTheTakeHoldsATask(t *testing.T) {
 		r.quiet()
 	})
 }
+
+// The running task's own number can reach the bridge at a newer revision during its own turn: the
+// daemon writes a value again wherever the bucket holds anything but its own last write (valueRead,
+// internal/supervise/taskvalue.go). The bridge takes nothing for it, since that turn's end holds
+// the number finished, so no take of it is pending, and claude-envoy's Stop hook must still block
+// that turn's stop with its reminder (R6) rather than let it end for a take that never comes.
+func TestInboxTakePendingIsFalseForTheRunningTasksOwnNumberWrittenAgain(t *testing.T) {
+	d := newTaskDaemon(t)
+	d.answerTake = func(claim.TakeRequest) (int, any) { return accepted("wait t1") }
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.pendingIs("in the task's own turn,", TakePendingAnswer{})
+	r.handTask(testTask, 2)
+	r.pendingIs("in the task's own turn, with its number written again at a newer revision,", TakePendingAnswer{})
+	r.release("t1")
+	r.untilTurnEnds()
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
+		t.Fatalf("the bridge asked to take %q, want task 7 once", takes)
+	}
+}
