@@ -58,18 +58,27 @@ func newHeldCopies(now func() time.Time) *heldCopies {
 	return &heldCopies{now: now, rows: map[heldCopyKey]*heldCopy{}}
 }
 
-// register adds the record's two gauges to registry, once; a nil registry adds none.
+// register adds the record's two gauges to registry, once; a nil registry adds none. They are one
+// gauge group (metrics.NewGaugeGroupFunc), so a scrape reads both from one samples: a scrape that
+// counts a copy reads that copy's age, even when a pass forgets it during the scrape.
 func (h *heldCopies) register(registry *metrics.Registry) {
 	if h == nil || registry == nil {
 		return
 	}
 	h.registered.Do(func() {
-		registry.NewGaugeFunc("envoy_dispatch_outbox_fallback_copies_held",
-			"Fallback copies of comment mentions that wait behind an earlier event of their owner the outbox still owes a send their session may take",
-			func() int64 { count, _ := h.samples(h.now()); return count })
-		registry.NewGaugeFunc("envoy_dispatch_outbox_fallback_copy_held_oldest_seconds",
-			"How long the oldest fallback copy of a comment mention has waited behind an earlier event of its owner, in whole seconds",
-			func() int64 { _, oldest := h.samples(h.now()); return int64(oldest / time.Second) })
+		registry.NewGaugeGroupFunc([]metrics.GaugeSpec{
+			{
+				Name: "envoy_dispatch_outbox_fallback_copies_held",
+				Help: "Fallback copies of comment mentions that wait behind an earlier event of their owner the outbox still owes a send their session may take",
+			},
+			{
+				Name: "envoy_dispatch_outbox_fallback_copy_held_oldest_seconds",
+				Help: "How long the oldest fallback copy of a comment mention has waited behind an earlier event of its owner, in whole seconds",
+			},
+		}, func() []int64 {
+			count, oldest := h.samples(h.now())
+			return []int64{count, int64(oldest / time.Second)}
+		})
 	})
 }
 
