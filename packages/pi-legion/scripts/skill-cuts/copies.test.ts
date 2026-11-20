@@ -1,13 +1,27 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parseConfig } from "./config";
 import {
+  CopyIndex,
   type GhResult,
+  keepsEntry,
   lenientFields,
+  listCopies,
   MANIFEST_KINDS,
+  type Manifest,
   type ManifestKind,
+  MEMORY_LIMIT_BYTES,
   main,
   manifestKind,
   mentions,
@@ -17,7 +31,9 @@ import {
   prefixMatches,
   type QueryRecord,
   type ReaderSkill,
+  resolveInstallers,
   SKILL_COPIES_COLUMNS,
+  type SkillCopy,
   searchTerms,
   skillFields,
   TREE_JOBS,
@@ -107,8 +123,50 @@ function madeUpFiles(): MadeFile[] {
 const skill = (frontmatter: string, body = "# A made-up skill\n") =>
   `---\n${frontmatter}\n---\n\n${body}`;
 
+/** A skills-sources.json, the Oh My Pi extension that reads it and the installer that links that
+ *  extension, each in the shape of a real dotfiles repository's file (its skills-sources.json, its
+ *  omp/extensions/dotfiles-skills.ts, and the ensure_link line of its installers/omp.sh). */
+const SKILL_SOURCES_TEXT = `${JSON.stringify(
+  {
+    sources: [
+      { root: "plugins/acme-tools" },
+      { root: "plugins/plugin-gamma", omp: false },
+      { root: "vendor/acme-pack" },
+      { root: "../src/acme-elsewhere", ompSkillsDir: "~/src/acme-elsewhere/skills" },
+    ],
+  },
+  null,
+  2
+)}\n`;
+const EXTENSION_TEXT = [
+  "// A made-up Oh My Pi extension of a fixture: feeds the skill pools to Oh My Pi.",
+  'import * as fs from "node:fs";',
+  'import * as path from "node:path";',
+  'const MANIFEST = path.join(process.env.ACME_DIR ?? ".", "skills-sources.json");',
+  "export default function (pi) {",
+  '  pi.on("resources_discover", async () => ({',
+  '    skillPaths: JSON.parse(fs.readFileSync(MANIFEST, "utf8")).sources.map((source) =>',
+  '      source.ompSkillsDir ?? path.join(path.dirname(MANIFEST), source.root, "skills")',
+  "    ),",
+  "  }));",
+  "}",
+  "",
+].join("\n");
+const OMP_INSTALLER_TEXT = [
+  "#!/bin/bash",
+  "# A made-up installer of a fixture: links the skill-pool extension into Oh My Pi.",
+  'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
+  'OMP_AGENT_DIR="$HOME/.omp/agent"',
+  'mkdir -p "$OMP_AGENT_DIR/extensions"',
+  'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$OMP_AGENT_DIR/extensions/skill-pools.ts"',
+  "",
+].join("\n");
+
 /** acme/skills beside the F6-madeup files. */
 const ACME_FILES: MadeFile[] = [
+  { path: "skills-sources.json", text: SKILL_SOURCES_TEXT },
+  { path: "omp/extensions/skill-pools.ts", text: EXTENSION_TEXT },
+  { path: "installers/omp.sh", text: OMP_INSTALLER_TEXT },
   {
     path: ".claude-plugin/marketplace.json",
     text: `${JSON.stringify(
@@ -241,6 +299,9 @@ class World {
   private readonly searched = new Set<string>();
   private readonly firstSearches = Promise.withResolvers<void>();
   private searchCalls = 0;
+  /** `<repository>:<commit>:<path>` → the blob id of each file of a repository's whole tree, which
+   *  a GraphQL `object(expression: "<commit>:<path>")` field answers by. */
+  readonly filesAt = new Map<string, string>();
 
   readonly now = () => this.clock;
   readonly sleep = async (ms: number) => {
@@ -254,14 +315,21 @@ class World {
     entries: readonly TreeEntry[],
     rootSha = sha1(`root ${repository}`)
   ) {
-    this.commits.set(repository, [
-      { sha: sha1(`commit ${repository}`), commit: { tree: { sha: rootSha } } },
-    ]);
+    const commit = sha1(`commit ${repository}`);
+    this.commits.set(repository, [{ sha: commit, commit: { tree: { sha: rootSha } } }]);
     this.trees.set(`${repository} ${rootSha} recursive`, {
       sha: rootSha,
       tree: entries,
       truncated: false,
     });
+    this.addFilesAt(repository, commit, entries);
+  }
+
+  addFilesAt(repository: string, commit: string, entries: readonly TreeEntry[]) {
+    for (const entry of entries) {
+      if (entry.type === "blob")
+        this.filesAt.set(`${repository}:${commit}:${entry.path}`, entry.sha);
+    }
   }
 
   addFiles(files: readonly MadeFile[]) {
@@ -299,14 +367,27 @@ class World {
       ) {
         return fail(`gh: Could not resolve to a Repository with the name '${query}'.`);
       }
-      const fields = [...query.matchAll(/(b\d+): object\(oid: "([0-9a-f]{40})"\)/g)];
+      // A field names a blob by its id (`oid`) or by `<commit>:<path>` (`expression`).
+      const fields = [
+        ...query.matchAll(/(b\d+): object\((oid|expression): ("(?:[^"\\]|\\.)*")\)/g),
+      ].map(([, alias = "", how = "", literal = '""']) => {
+        const value = JSON.parse(literal) as string;
+        return {
+          alias,
+          sha: how === "oid" ? value : this.filesAt.get(`${owner}/${name}:${value}`),
+        };
+      });
       this.batches.push({ repository: `${owner}/${name}`, blobs: fields.length });
       const repository = Object.fromEntries(
-        fields.map(([, alias = "", sha = ""]) => {
-          const text = this.blobs.get(sha);
-          if (text === undefined || this.failingBlobs.has(sha)) return [alias, null];
+        fields.map(({ alias, sha }) => {
+          const text = sha === undefined ? undefined : this.blobs.get(sha);
+          if (sha === undefined || text === undefined || this.failingBlobs.has(sha))
+            return [alias, null];
           const binary = text.includes("\u0000");
-          return [alias, { isBinary: binary, isTruncated: false, text: binary ? null : text }];
+          return [
+            alias,
+            { oid: sha, isBinary: binary, isTruncated: false, text: binary ? null : text },
+          ];
         })
       );
       return ok({ data: { repository } });
@@ -379,7 +460,18 @@ class World {
       for (let turn = 0; turn < this.treeTurns; turn++) await Promise.resolve();
       this.treeReads--;
       const found = this.trees.get(`${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`);
-      return found === undefined ? fail("gh: Not Found (HTTP 404)") : answer(found);
+      if (found === undefined) return fail("gh: Not Found (HTTP 404)");
+      if (typeof found === "string") return fail(found);
+      if (!args.includes("--jq")) return fail("stand-in gh: a tree read without --jq");
+      // gh's jq of copies.ts's TREE_JQ: the truncated flag, then one JSON array per entry.
+      const { tree: entries, truncated } = found as { tree: TreeEntry[]; truncated?: boolean };
+      const lines = [
+        String(truncated === true),
+        ...entries.map((entry) =>
+          JSON.stringify([entry.path, entry.mode, entry.type, entry.sha, entry.size ?? -1])
+        ),
+      ];
+      return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
     }
     const blob = /^repos\/([^/]+\/[^/]+)\/git\/blobs\/([0-9a-f]+)$/.exec(endpoint);
     if (blob !== null) {
@@ -434,6 +526,7 @@ function world(): World {
   w.commits.set("cybermonklabs/legion", fixtureJson("F6-commits.json"));
   const legion = legionTree();
   w.trees.set(`cybermonklabs/legion ${LEGION_ROOT} recursive`, fixtureJson("F6-tree.json"));
+  w.addFilesAt("cybermonklabs/legion", "63b3a613feb15cb191f87f4239467cdd37b62c82", legion.entries);
   for (const name of readdirSync(TESTDATA).filter((file) => file.startsWith("F6-contents-"))) {
     const contents = fixtureJson(name) as { sha: string; content: string };
     w.blobs.set(
@@ -498,15 +591,20 @@ afterAll(() => {
 interface Run {
   readonly code: number;
   readonly errors: string[];
+  readonly out: string;
   text(name: string): string;
   table(name: string): Record<string, string>[];
   queries(): Record<string, unknown>[];
 }
 
+/** The peak resident memory the stand-in reports unless a test gives another. */
+const PEAK_BYTES = 100 * 1024 ** 2;
+
 async function run(
   w: World,
   args: readonly string[] = [],
-  config: Record<string, unknown> = {}
+  config: Record<string, unknown> = {},
+  peakRssBytes: () => number = () => PEAK_BYTES
 ): Promise<Run> {
   const dir = mkdtempSync(path.join(tmpdir(), "copies-test-"));
   scratch.push(dir);
@@ -520,11 +618,13 @@ async function run(
     now: w.now,
     out: () => {},
     err: (line) => errors.push(line),
+    peakRssBytes,
   });
   const text = (name: string) => readFileSync(path.join(out, name), "utf8");
   return {
     code,
     errors,
+    out,
     text,
     table: (name) => parseTsv(text(name)),
     queries: () =>
@@ -629,7 +729,100 @@ const KIND_EXAMPLES: Record<
     says: "links ../../../skills/beta (skills/beta)",
     row: "links link:packages/acme-envoy/skills/beta beta acme/skills skills/beta",
   },
+  "omp-skill-sources": {
+    repository: "acme/skills",
+    path: "skills-sources.json",
+    says: "skill pools: plugins/acme-tools, plugins/plugin-gamma (omp: false), vendor/acme-pack, ../src/acme-elsewhere (skills at ~/src/acme-elsewhere/skills)",
+    row: "installs pool:plugins/acme-tools tool-loop-alpha acme/skills plugins/acme-tools/skills/tool-loop-alpha",
+  },
+  "omp-extension": {
+    repository: "acme/skills",
+    path: "omp/extensions/skill-pools.ts",
+    says: "an Oh My Pi extension that reads skills-sources.json",
+    row: "",
+  },
 };
+
+describe("skill pools an Oh My Pi extension reads from skills-sources.json", () => {
+  const repository = "acme/dotfiles";
+  const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
+    repository,
+    path: file,
+    kind,
+    source: "tree",
+    ...parseManifest(kind, file, text),
+    error: "",
+    rows: 0,
+  });
+  const copyAt = (dir: string): SkillCopy => ({
+    repository,
+    path: dir,
+    file: `${dir}/SKILL.md`,
+    blob: sha1(dir),
+    fork: false,
+    archived: false,
+    parent: "",
+    name: path.posix.basename(dir),
+    nameFrom: "frontmatter",
+    description: "",
+    descriptionBytes: 0,
+    fault: "",
+  });
+  const copies = [
+    copyAt("plugins/acme-tools/skills/alpha"),
+    copyAt("plugins/plugin-gamma/skills/gamma-one"),
+  ];
+  const sources = manifestOf("skills-sources.json", "omp-skill-sources", SKILL_SOURCES_TEXT);
+  const extension = manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT);
+  const installer = manifestOf("installers/omp.sh", "installer-script", OMP_INSTALLER_TEXT);
+  const resolve = (manifests: Manifest[]) => resolveInstallers(manifests, new CopyIndex(copies));
+  const poolRows = (manifests: Manifest[]) =>
+    resolve(manifests)
+      .rows.filter((row) => row.unit.startsWith("pool:"))
+      .map((row) => `${row.action} ${row.unit} ${row.host} ${row.skill} ${row.copyPath}`);
+  const notes = (manifests: Manifest[]) => resolve(manifests).notes.map((note) => note.note);
+
+  test("with the extension that reads it and the installer that links it, each pool in the tree installs its skills into Oh My Pi", () => {
+    expect(poolRows([sources, extension, installer])).toEqual([
+      "installs pool:plugins/acme-tools omp alpha plugins/acme-tools/skills/alpha",
+    ]);
+    expect(resolve([sources, extension, installer]).prefixes.map((row) => row.prefix)).toEqual([
+      "**/plugins/acme-tools/skills/alpha/",
+    ]);
+  });
+
+  test("a pool with omp: false installs nothing and is no note", () => {
+    expect(
+      poolRows([sources, extension, installer]).some((row) => row.includes("plugin-gamma"))
+    ).toBe(false);
+    expect(
+      notes([sources, extension, installer]).some((note) => note.includes("plugin-gamma"))
+    ).toBe(false);
+  });
+
+  test("a pool outside the repository's tree is a note on the manifest, never an installer row", () => {
+    expect(notes([sources, extension, installer])).toEqual([
+      "pool vendor/acme-pack: its skills (vendor/acme-pack/skills) are not in the repository's tree, so R4 cannot list them",
+      "pool ../src/acme-elsewhere: its skills (~/src/acme-elsewhere/skills) are not in the repository's tree, so R4 cannot list them",
+    ]);
+  });
+
+  test("a skills-sources.json no extension reads, or whose extension no installer links, installs nothing", () => {
+    const unread = manifestOf(
+      "omp/extensions/other.ts",
+      "omp-extension",
+      "export default () => {};\n"
+    );
+    expect(poolRows([sources, unread, installer])).toEqual([]);
+    expect(notes([sources, unread, installer])).toEqual([
+      "no Oh My Pi extension of the repository reads it, so it installs nothing",
+    ]);
+    expect(poolRows([sources, extension])).toEqual([]);
+    expect(notes([sources, extension])).toEqual([
+      "no installer of the repository links omp/extensions/skill-pools.ts into Oh My Pi, so it installs nothing",
+    ]);
+  });
+});
 
 describe("the full run over the owners", () => {
   const w = world();
@@ -1182,6 +1375,65 @@ describe("a truncated tree", () => {
     ).toBe(true);
     expect(byDirectory.text("skill-copies.tsv")).toBe(whole.text("skill-copies.tsv"));
     expect(byDirectory.text("manifests.tsv")).toBe(whole.text("manifests.tsv"));
+  });
+});
+
+describe("the memory a run holds", () => {
+  test("a tree keeps only the entries the list uses, and counts the rest", async () => {
+    const w = world();
+    const result = await listCopies(
+      parseConfig(CONFIG),
+      { at: AT, only: [], maxSearchCalls: 0 },
+      { gh: w.gh, sleep: w.sleep, now: w.now, out: () => {}, err: () => {}, peakRssBytes: () => 0 }
+    );
+    const wholeTrees: [string, TreeEntry[]][] = [
+      ["cybermonklabs/legion", legionTree().entries],
+      ["acme/skills", treeOf("acme/skills", [...madeUpFiles(), ...ACME_FILES])],
+      ["acme/old-skills", treeOf("acme/old-skills", OLD_FILES)],
+    ];
+    for (const [repository, entries] of wholeTrees) {
+      const repo = result.repositories.find((candidate) => candidate.repository === repository);
+      expect(repo?.treeEntries).toBe(entries.length);
+      const kept = entries.filter((entry) => keepsEntry(entry, repo?.fork ?? false));
+      expect(repo?.tree.map((entry) => entry.path).sort()).toEqual(
+        kept.map((entry) => entry.path).sort()
+      );
+      expect(kept.length).toBeLessThan(entries.length);
+    }
+    const tree = (repository: string) =>
+      result.repositories
+        .find((candidate) => candidate.repository === repository)
+        ?.tree.map((entry) => entry.path)
+        .sort();
+    // No directory, no reference file of a skill, no plain file of a repository that is no fork.
+    expect(tree("cybermonklabs/legion")?.some((file) => file.includes("/references/"))).toBe(false);
+    expect(tree("acme/skills")).not.toContain("docs/guide.md");
+    // A fork keeps the text files its scan reads.
+    expect(tree("acme/old-skills")).toEqual([
+      "README.md",
+      "assets/data.json",
+      "notes/big.md",
+      "skills/alpha/SKILL.md",
+    ]);
+  });
+
+  test("the run's peak resident memory is in its summary", async () => {
+    const r = await run(world(), ["--only", "cybermonklabs/legion", "--max-search-calls", "0"]);
+    expect(r.text("skill-copies.md")).toContain(
+      "Peak resident memory 100 MiB (the run stops above 1536 MiB)."
+    );
+  });
+
+  test("a run whose memory passes 1.5 GiB stops with a clear message and writes nothing", async () => {
+    let reads = 0;
+    const r = await run(world(), ["--only", "cybermonklabs/legion"], {}, () =>
+      ++reads > 5 ? MEMORY_LIMIT_BYTES + 10 * 1024 ** 2 : PEAK_BYTES
+    );
+    expect(r.code).toBe(3);
+    expect(r.errors).toContain(
+      "copies: the run stops: its resident memory reached 1546 MiB, above the limit of 1536 MiB; nothing is written"
+    );
+    expect(existsSync(r.out)).toBe(false);
   });
 });
 

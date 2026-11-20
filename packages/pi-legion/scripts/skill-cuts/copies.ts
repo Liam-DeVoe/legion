@@ -1,5 +1,5 @@
 /**
- * R4 of INFRA-4676 without reads: every skill copy of the configured GitHub owners' repositories,
+ * The runner's R4 without reads: every skill copy of the configured GitHub owners' repositories,
  * the manifests and installers that ship, install or load each, the files outside a skill that name
  * one, and the copy-path prefix table R1's attribution reads.
  *
@@ -17,14 +17,22 @@
  * what the pod's gh routes a GraphQL call by, so it takes that owner's token; a blob a batch does
  * not give whole (binary, truncated, missing) is read alone with `gh api repos/<r>/git/blobs/<sha>`.
  *
+ * The run's peak resident memory (memory.ts) is checked before every gh call and at each step:
+ * above MEMORY_LIMIT_BYTES (1.5 GiB) the run stops, exit 3, writing nothing; it is in the summary
+ * line and skill-copies.md otherwise.
+ *
  * 1. Repositories. `gh repo list <owner> --limit 2000 --json nameWithOwner,isFork,isArchived,
  *    defaultBranchRef,parent` for each configured owner (with `--only`, for the owners of the named
  *    repositories, keeping those alone). For each repository, the default branch's commit at `--at`
  *    (`repos/<r>/commits?sha=<branch>&until=<at>&per_page=1`) and that commit's tree
- *    (`git/trees/<tree>?recursive=1`). A tree GitHub answers `truncated` is read again by
- *    directory: each subtree is read recursively, and one that is truncated too is read one level
- *    down. A listing, commit or tree read that fails names its repository with gh's error. Forks
- *    and archived repositories stay, marked (a fork with its parent).
+ *    (`git/trees/<tree>?recursive=1`, through gh's jq as one line per entry, so the answer's JSON
+ *    never sits in this process). Of each tree only the entries this list uses are kept
+ *    (`keepsEntry`: each `SKILL.md`, each file of a manifest kind, and in a fork each text file its
+ *    scan may read); the rest are counted (`repositories.tsv`'s `tree_entries`) and dropped. A tree
+ *    GitHub answers `truncated` is read again by directory: each subtree is read recursively, and
+ *    one that is truncated too is read one level down. A listing, commit or tree read that fails
+ *    names its repository with gh's error. Forks and archived repositories stay, marked (a fork
+ *    with its parent).
  * 2. Skills. Each `SKILL.md` blob outside a configured `excludePaths` prefix of its repository: its
  *    frontmatter `name` (else its directory's name) and `description`, read from the blob. The
  *    frontmatter is read as YAML (Bun.YAML); one that is not valid YAML is read by `lenientFields`
@@ -41,9 +49,11 @@
  *    name, once per owner whose listing succeeded (`org:` or `user:`, as `users/<owner>` gives its
  *    type) or, with `--only`, once per named repository (`repo:`). One search stands for the brief's
  *    five patterns (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the
- *    quoted name): `searchTerms` says why. Each hit file is read, at its repository's commit of
- *    step 1, and kept only where the skill's name is in it as a whole name (not inside a longer
- *    name), outside a skill; `mentions` then sorts each mention by those patterns. Each query's
+ *    quoted name): `searchTerms` says why. Each hit file is read by its path at its repository's
+ *    commit of step 1 (GraphQL batches of 50, routed by owner, a REST read where a batch fails),
+ *    once for every name whose search hit it, and dropped once checked; it is kept only where the
+ *    skill's name is in it as a whole name (not inside a longer name), outside a skill;
+ *    `mentions` then sorts each mention by those patterns. Each query's
  *    `total_count` and `incomplete_results`, its hits and their verdicts, and each failure go to
  *    `queries.jsonl`. An owner's query whose `total_count` reaches 1,000 is run again once per
  *    repository of that owner that holds a skill; so is an owner's query of a name in
@@ -109,6 +119,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { loadConfig, type SkillCutsConfig } from "./config";
+import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 
 // ---------------------------------------------------------------------------------------------
 // gh
@@ -143,14 +154,37 @@ export interface CopiesIo {
   out(text: string): void;
   /** One progress or refusal line. */
   err(text: string): void;
+  /** The process's peak resident memory so far, in bytes; memory.ts's `procPeakRssBytes` when
+   *  absent (cli.ts's `skill-cuts copies`, whose io already samples it). */
+  peakRssBytes?(): number;
+}
+
+/** The peak resident memory above which a run stops: it would crowd the pod's other runs. */
+export const MEMORY_LIMIT_BYTES = 1.5 * 1024 ** 3;
+
+/** A run stopped because its peak resident memory passed MEMORY_LIMIT_BYTES. */
+export class MemoryStop extends Error {
+  constructor(readonly peakBytes: number) {
+    super(
+      `its resident memory reached ${Math.round(peakBytes / 1024 ** 2)} MiB, above the limit of ${MEMORY_LIMIT_BYTES / 1024 ** 2} MiB`
+    );
+  }
+}
+
+/** Throws `error` again when it is a MemoryStop: a step that records its own failures and goes
+ *  on must not record the run's stop as one of them. */
+function rethrowStop(error: unknown): void {
+  if (error instanceof MemoryStop) throw error;
 }
 
 const RATE_LIMITED = /rate limit|HTTP 429/i;
 const MAX_RATE_RETRIES = 5;
 const REST_JOBS = 4;
 /** The most tree reads in flight at once, across a run: a truncated tree's subtrees are read at
- *  once under this cap, which keeps a run under GitHub's 15,000 REST calls an hour per token. */
-export const TREE_JOBS = 8;
+ *  once under this cap. Each read is a gh process of its own, about 110 MB resident in the pod
+ *  whatever the tree (measured 2026-11-20), so the cap is what the run costs the pod beside its
+ *  own memory; it also keeps a run under GitHub's 15,000 REST calls an hour per token. */
+export const TREE_JOBS = 4;
 /** The most blobs, and bytes of blobs, one GraphQL read asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 2_000_000;
@@ -192,19 +226,14 @@ const Commits = z.array(
     commit: z.looseObject({ tree: z.looseObject({ sha: z.string() }) }),
   })
 );
-const GitTree = z.looseObject({
-  tree: z.array(
-    z.looseObject({
-      path: z.string(),
-      mode: z.string(),
-      type: z.string(),
-      sha: z.string(),
-      size: z.number().optional(),
-    })
-  ),
-  truncated: z.boolean().optional(),
-});
+/** gh's jq filter for a tree read: the answer's `truncated` flag, then one JSON array per entry,
+ *  `[path, mode, type, sha, size]` (size -1 for a tree). gh reads the answer's JSON, which can be
+ *  megabytes, so this process never holds it whole. */
+const TREE_JQ =
+  "(.truncated // false | tostring), (.tree[] | [.path, .mode, .type, .sha, (.size // -1)] | @json)";
+const TreeLine = z.tuple([z.string(), z.string(), z.string(), z.string(), z.number()]);
 const GitBlob = z.looseObject({ content: z.string(), encoding: z.string() });
+const ContentsFile = z.looseObject({ type: z.string(), sha: z.string() });
 const SearchAnswer = z.looseObject({
   total_count: z.number(),
   incomplete_results: z.boolean(),
@@ -232,14 +261,61 @@ const BlobBatch = z.looseObject({
       .nullable(),
   }),
 });
+const FileBatch = z.looseObject({
+  data: z.looseObject({
+    repository: z
+      .record(
+        z.string(),
+        z
+          .looseObject({
+            oid: z.string(),
+            isBinary: z.boolean().nullable(),
+            isTruncated: z.boolean(),
+            text: z.string().nullable(),
+          })
+          .nullable()
+      )
+      .nullable(),
+  }),
+});
 
-/** gh's reads, with a blob cache and a sleep to the reset when the core limit is spent. */
+/** A file read by its path at a commit: its blob and text (undefined for a binary file), not at
+ *  that path, or a read that failed. */
+export type FileRead =
+  | { readonly kind: "file"; readonly oid: string; readonly text: string | undefined }
+  | { readonly kind: "missing" }
+  | { readonly kind: "failed"; readonly error: string };
+
+/** gh's reads, with a blob cache, a sleep to the reset when the core limit is spent, and the run's
+ *  memory limit checked before each call. */
 class Github {
   private readonly blobs = new Map<string, Promise<string>>();
   private treeReads = 0;
   private readonly treeReadQueue: (() => void)[] = [];
+  /** The largest peak resident memory read so far, in bytes. */
+  peakBytes = 0;
 
-  constructor(readonly io: CopiesIo) {}
+  constructor(
+    readonly io: CopiesIo,
+    private readonly peakRss: () => number
+  ) {}
+
+  /** The peak resident memory so far, in bytes, read again now. */
+  readPeak(): number {
+    this.peakBytes = Math.max(this.peakBytes, this.peakRss());
+    return this.peakBytes;
+  }
+
+  /** Reads the peak resident memory; throws MemoryStop above MEMORY_LIMIT_BYTES. */
+  checkMemory(): void {
+    if (this.readPeak() > MEMORY_LIMIT_BYTES) throw new MemoryStop(this.peakBytes);
+  }
+
+  /** gh with `args`, once the memory limit holds. */
+  call(args: readonly string[]): Promise<GhResult> {
+    this.checkMemory();
+    return this.io.gh(args);
+  }
 
   /** `read`, run once fewer than TREE_JOBS tree reads are in flight; a read that ends hands its
    *  slot to the next one waiting. */
@@ -259,22 +335,25 @@ class Github {
     }
   }
 
-  /** gh's answer to `args`, parsed by `schema`; throws gh's first error line, or the faults. */
-  async json<T>(args: readonly string[], schema: z.ZodType<T>): Promise<T> {
+  /** gh's standard output for `args`; throws gh's first error line. */
+  async text(args: readonly string[]): Promise<string> {
     for (let attempt = 0; ; attempt++) {
-      const result = await this.io.gh(args);
-      if (result.code === 0) {
-        const parsed = schema.safeParse(parseJson(result.stdout));
-        if (!parsed.success)
-          throw new Error(`gh's answer is not of its shape: ${schemaFaults(parsed.error)}`);
-        return parsed.data;
-      }
+      const result = await this.call(args);
+      if (result.code === 0) return result.stdout;
       if (attempt < MAX_RATE_RETRIES && RATE_LIMITED.test(result.stderr)) {
         await this.io.sleep(await this.waitForReset("core"));
         continue;
       }
       throw new Error(firstLine(result.stderr) || `gh exited ${result.code}`);
     }
+  }
+
+  /** gh's answer to `args`, parsed by `schema`; throws gh's first error line, or the faults. */
+  async json<T>(args: readonly string[], schema: z.ZodType<T>): Promise<T> {
+    const parsed = schema.safeParse(parseJson(await this.text(args)));
+    if (!parsed.success)
+      throw new Error(`gh's answer is not of its shape: ${schemaFaults(parsed.error)}`);
+    return parsed.data;
   }
 
   api<T>(endpoint: string, schema: z.ZodType<T>): Promise<T> {
@@ -284,7 +363,7 @@ class Github {
   /** The milliseconds to the reset `gh api rate_limit` gives for `resource`, at most an hour; a
    *  minute when it gives none or one already past. */
   async waitForReset(resource: "core" | "code_search"): Promise<number> {
-    const result = await this.io.gh(["api", "rate_limit"]);
+    const result = await this.call(["api", "rate_limit"]);
     const parsed = RateLimit.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
     const reset = parsed.success ? parsed.data.resources[resource]?.reset : undefined;
     const until = reset === undefined ? 0 : reset * 1000 + 1000;
@@ -297,25 +376,25 @@ class Github {
   blob(repository: string, sha: string): Promise<string> {
     let text = this.blobs.get(sha);
     if (text === undefined) {
-      text = this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob).then((blob) => {
-        if (blob.encoding !== "base64")
-          throw new Error(`the blob is encoded ${blob.encoding}, not base64`);
-        return Buffer.from(blob.content, "base64").toString("utf8");
-      });
+      text = this.readBlob(repository, sha);
       this.blobs.set(sha, text);
     }
     return text;
   }
 
-  /** Reads the blobs `entries` of `repository` into the cache in GraphQL batches, up to BLOB_BATCH
-   *  blobs and BLOB_BATCH_BYTES bytes a call: one call where each blob alone would take one. The
-   *  owner and name go in as the fields `owner` and `name` (the query's variables): a `gh api
-   *  graphql` call names no repository, and the pod's gh routes one by its `owner` field, so the
-   *  call takes that owner's token (GH_REPO does not route it: gh reads GH_REPO only for a
-   *  placeholder). A blob a batch does not give whole (binary, truncated, missing, or in a batch
+  /** The text of the blob `sha` of `repository`, read alone and not cached. */
+  private async readBlob(repository: string, sha: string): Promise<string> {
+    const blob = await this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob);
+    if (blob.encoding !== "base64")
+      throw new Error(`the blob is encoded ${blob.encoding}, not base64`);
+    return Buffer.from(blob.content, "base64").toString("utf8");
+  }
+
+  /** Reads the blobs `entries` of `repository` into the cache in GraphQL batches (`graphqlArgs`),
+   *  up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call: one call where each blob alone
+   *  would take one. A blob a batch does not give whole (binary, truncated, missing, or in a batch
    *  that fails) is left to `blob`, which reads it alone. */
   async prefetch(repository: string, entries: readonly TreeEntry[]): Promise<void> {
-    const [owner = "", name = ""] = repository.split("/");
     const wanted = new Map<string, TreeEntry>();
     for (const entry of entries) {
       if (!this.blobs.has(entry.sha) && /^[0-9a-f]{40}$/.test(entry.sha))
@@ -345,16 +424,7 @@ class Github {
         )
         .join(" ");
       const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-      const result = await this.io.gh([
-        "api",
-        "graphql",
-        "-f",
-        `owner=${owner}`,
-        "-f",
-        `name=${name}`,
-        "-f",
-        `query=${query}`,
-      ]);
+      const result = await this.call(graphqlArgs(repository, query));
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) {
         const why = firstLine(result.stderr) || "an answer not of its shape";
@@ -371,6 +441,82 @@ class Github {
       });
     }
   }
+
+  /** The files `paths` of `repository` at `commit`, read by path in one GraphQL batch (routed as
+   *  `prefetch` is) and cached nowhere: a caller checks each and drops it. A file the batch does
+   *  not give whole (truncated, or a batch that fails) is read alone over REST. */
+  async filesAt(
+    repository: string,
+    commit: string,
+    paths: readonly string[]
+  ): Promise<Map<string, FileRead>> {
+    const fields = paths
+      .map(
+        (file, index) =>
+          `b${index}: object(expression: ${JSON.stringify(`${commit}:${file}`)}) { ... on Blob { oid isBinary isTruncated text } }`
+      )
+      .join(" ");
+    const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+    const result = await this.call(graphqlArgs(repository, query));
+    const parsed = FileBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
+    if (!parsed.success) {
+      const why = firstLine(result.stderr) || "an answer not of its shape";
+      this.io.err(
+        `copies: a batch of ${paths.length} files of ${repository} failed (${why}); each is read alone`
+      );
+    }
+    const found = new Map<string, FileRead>();
+    for (const [index, file] of paths.entries()) {
+      const blob = parsed.success ? parsed.data.data.repository?.[`b${index}`] : undefined;
+      if (parsed.success && (blob === null || blob === undefined))
+        found.set(file, { kind: "missing" });
+      else if (blob?.isBinary === true)
+        found.set(file, { kind: "file", oid: blob.oid, text: undefined });
+      else if (blob !== undefined && blob !== null && !blob.isTruncated && blob.text !== null)
+        found.set(file, { kind: "file", oid: blob.oid, text: blob.text });
+      else found.set(file, await this.fileAlone(repository, commit, file, blob?.oid));
+    }
+    return found;
+  }
+
+  /** The file `file` of `repository` at `commit`, read alone: its blob `oid` when a batch gave it,
+   *  else the contents API's (`repos/<r>/contents/<path>?ref=<commit>`, 404 when it is not there). */
+  private async fileAlone(
+    repository: string,
+    commit: string,
+    file: string,
+    oid: string | undefined
+  ): Promise<FileRead> {
+    try {
+      let sha = oid;
+      if (sha === undefined) {
+        const encoded = file.split("/").map(encodeURIComponent).join("/");
+        const answer = await this.api(
+          `repos/${repository}/contents/${encoded}?ref=${commit}`,
+          ContentsFile
+        );
+        if (answer.type !== "file") return { kind: "failed", error: `${file} is a ${answer.type}` };
+        sha = answer.sha;
+      }
+      const text = await this.readBlob(repository, sha);
+      return { kind: "file", oid: sha, text: text.includes("\u0000") ? undefined : text };
+    } catch (error) {
+      rethrowStop(error);
+      const message = (error as Error).message;
+      return /\(HTTP 404\)/.test(message)
+        ? { kind: "missing" }
+        : { kind: "failed", error: message };
+    }
+  }
+}
+
+/** gh's arguments for a GraphQL `query` over `repository`, whose owner and name go in as the
+ *  fields `owner` and `name` (the query's variables): a `gh api graphql` call names no repository,
+ *  and the pod's gh routes one by its `owner` field, so the call takes that owner's token (GH_REPO
+ *  does not route it: gh reads GH_REPO only for a placeholder). */
+function graphqlArgs(repository: string, query: string): string[] {
+  const [owner = "", name = ""] = repository.split("/");
+  return ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${query}`];
 }
 
 async function mapLimit<T, R>(
@@ -448,59 +594,94 @@ export interface Repository {
   readonly parent: string;
   readonly branch: string;
   commit: string;
+  /** The entries of its tree this list uses (`keepsEntry`); the rest are counted, not kept. */
   tree: TreeEntry[];
+  /** How many entries its whole tree holds. */
+  treeEntries: number;
   /** `whole`, or `by directory, <n> reads` for a truncated tree. */
   treeRead: string;
   error: string;
 }
 
-/** The tree `sha` of `repository`, whole; a truncated answer is read again by directory: each
- *  subtree recursively, and one truncated too one level at a time. A truncated tree's subtrees
- *  are read at once, at most TREE_JOBS reads in flight across the run (a data repository's
- *  directory of a hundred samples is a hundred reads). */
+/** Whether a tree entry is one this list uses, of a fork's tree when `fork`: a `SKILL.md`, a file
+ *  of a manifest kind, or, in a fork, a text file its scan may read. Every other entry is
+ *  counted and dropped as the tree is read: a data repository's tree holds hundreds of thousands
+ *  of entries, and a hit file is read by its path, not looked up in the tree. */
+export function keepsEntry(
+  entry: Pick<TreeEntry, "path" | "mode" | "type">,
+  fork: boolean
+): boolean {
+  if (entry.type !== "blob") return false;
+  const name = path.posix.basename(entry.path);
+  return (
+    name === "SKILL.md" ||
+    manifestKind(entry) !== undefined ||
+    (fork &&
+      entry.mode !== "120000" &&
+      (Object.hasOwn(TEXT_EXTENSIONS, path.posix.extname(entry.path).toLowerCase()) ||
+        Object.hasOwn(TEXT_NAMES, name)))
+  );
+}
+
+/** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. A truncated
+ *  answer is read again by directory: each subtree recursively, and one truncated too one level
+ *  at a time. A truncated tree's subtrees are read at once, at most TREE_JOBS reads in flight
+ *  across the run (a data repository's directory of a hundred samples is a hundred reads). Each
+ *  read comes through gh's jq (TREE_JQ), one line per entry, and only kept entries outlive it. */
 export async function readTree(
   github: Github,
   repository: string,
-  sha: string
-): Promise<{ entries: TreeEntry[]; reads: number; truncated: boolean }> {
+  sha: string,
+  keep: (entry: TreeEntry) => boolean
+): Promise<{ entries: TreeEntry[]; count: number; reads: number; truncated: boolean }> {
   let reads = 0;
   const read = async (treeSha: string, prefix: string, recursive: boolean) => {
     reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-    const tree = await github.treeRead(() => github.api(endpoint, GitTree));
-    const entries = tree.tree.map(
-      (entry): TreeEntry => ({
-        path: prefix === "" ? entry.path : `${prefix}/${entry.path}`,
-        mode: entry.mode,
-        type: entry.type,
-        sha: entry.sha,
-        ...(entry.size === undefined ? {} : { size: entry.size }),
-      })
-    );
-    return { entries, truncated: tree.truncated === true };
+    const lines = (
+      await github.treeRead(() => github.text(["api", endpoint, "--jq", TREE_JQ]))
+    ).split("\n");
+    const flag = lines[0];
+    if (flag !== "true" && flag !== "false") throw new Error("the tree answer is not of its shape");
+    const kept: TreeEntry[] = [];
+    const subtrees: TreeEntry[] = [];
+    let count = 0;
+    for (const line of lines.slice(1)) {
+      if (line === "") continue;
+      const parsed = TreeLine.safeParse(parseJson(line));
+      if (!parsed.success)
+        throw new Error(`a tree answer line is not of its shape: ${schemaFaults(parsed.error)}`);
+      const [entryPath, mode, type, entrySha, size] = parsed.data;
+      const entry: TreeEntry = {
+        path: prefix === "" ? entryPath : `${prefix}/${entryPath}`,
+        mode,
+        type,
+        sha: entrySha,
+        ...(size >= 0 ? { size } : {}),
+      };
+      count++;
+      if (keep(entry)) kept.push(entry);
+      if (!recursive && type === "tree") subtrees.push(entry);
+    }
+    return { kept, subtrees, count, truncated: flag === "true" };
   };
   const walk = async (
     treeSha: string,
     prefix: string
-  ): Promise<{ entries: TreeEntry[]; truncated: boolean }> => {
+  ): Promise<{ entries: TreeEntry[]; count: number }> => {
     const whole = await read(treeSha, prefix, true);
-    if (!whole.truncated) return whole;
+    if (!whole.truncated) return { entries: whole.kept, count: whole.count };
     const level = await read(treeSha, prefix, false);
     if (level.truncated)
       throw new Error(`the tree of ${shown(prefix)} is truncated even one level at a time`);
-    const below = await Promise.all(
-      level.entries.map((entry) =>
-        entry.type === "tree" ? walk(entry.sha, entry.path) : undefined
-      )
-    );
-    const entries: TreeEntry[] = [];
-    level.entries.forEach((entry, index) => {
-      entries.push(entry, ...(below[index]?.entries ?? []));
-    });
-    return { entries, truncated: true };
+    const below = await Promise.all(level.subtrees.map((tree) => walk(tree.sha, tree.path)));
+    return {
+      entries: [...level.kept, ...below.flatMap((subtree) => subtree.entries)],
+      count: below.reduce((sum, subtree) => sum + subtree.count, level.count),
+    };
   };
-  const { entries, truncated } = await walk(sha, "");
-  return { entries, reads, truncated };
+  const { entries, count } = await walk(sha, "");
+  return { entries, count, reads, truncated: reads > 1 };
 }
 
 async function readRepository(github: Github, repo: Repository, at: string): Promise<void> {
@@ -522,14 +703,19 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
     repo.commit = first.sha;
     treeSha = first.commit.tree.sha;
   } catch (error) {
+    rethrowStop(error);
     repo.error = `commit read failed: ${(error as Error).message}`;
     return;
   }
   try {
-    const tree = await readTree(github, repo.repository, treeSha);
+    const tree = await readTree(github, repo.repository, treeSha, (entry) =>
+      keepsEntry(entry, repo.fork)
+    );
     repo.tree = tree.entries;
+    repo.treeEntries = tree.count;
     repo.treeRead = tree.truncated ? `by directory, ${tree.reads} reads` : "whole";
   } catch (error) {
+    rethrowStop(error);
     repo.error = `tree read failed: ${(error as Error).message}`;
   }
 }
@@ -787,6 +973,19 @@ export const MANIFEST_KINDS = [
     path: /(^|\/)skills\/[^/]+$/,
     listed: "always",
   },
+  {
+    kind: "omp-skill-sources",
+    about:
+      "a skills-sources.json: skill pools an Oh My Pi extension of the same repository feeds to Oh My Pi",
+    path: /(^|\/)skills-sources\.json$/,
+    listed: "always",
+  },
+  {
+    kind: "omp-extension",
+    about: "an Oh My Pi extension that reads skills-sources.json (read where that file is)",
+    path: /(^|\/)extensions\/[^/]+\.(ts|js|mjs)$/,
+    listed: "when of its kind",
+  },
 ] as const;
 
 export type ManifestKind = (typeof MANIFEST_KINDS)[number]["kind"];
@@ -865,7 +1064,22 @@ type Fact =
       readonly assumed: string;
     }
   | { readonly type: "links-config"; readonly file: string }
-  | { readonly type: "skill-link"; readonly link: string; readonly target: string };
+  | { readonly type: "skill-link"; readonly link: string; readonly target: string }
+  | {
+      readonly type: "skill-sources";
+      readonly base: string;
+      readonly sources: readonly SkillSource[];
+    }
+  | { readonly type: "reads-skill-sources"; readonly name: string }
+  | { readonly type: "links-extension"; readonly file: string };
+
+/** One skill pool of a skills-sources.json: its root (its skills at `<root>/skills`), or the
+ *  skills directory `ompSkillsDir` instead, and `omp: false` to leave it out of Oh My Pi. */
+export interface SkillSource {
+  readonly root: string;
+  readonly ompSkillsDir?: string | undefined;
+  readonly omp?: boolean | undefined;
+}
 
 /** What one manifest file says. */
 export interface ParsedManifest {
@@ -939,6 +1153,17 @@ const OmpConfigFile = z.looseObject({
 const ProjectFile = z.looseObject({
   key: z.string().optional(),
   verificationSkillsLeaveOut: z.array(z.string()).nullish(),
+});
+/** The skill-pool manifest an Oh My Pi extension may read (`omp-skill-sources`). */
+const SKILL_SOURCES = "skills-sources.json";
+const SkillSourcesFile = z.looseObject({
+  sources: z.array(
+    z.looseObject({
+      root: z.string(),
+      ompSkillsDir: z.string().optional(),
+      omp: z.boolean().optional(),
+    })
+  ),
 });
 
 /** `text` as JSON or YAML, parsed by `schema`; throws naming each fault. */
@@ -1176,14 +1401,21 @@ function parseBuildScript(file: string, text: string): ParsedManifest {
   };
 }
 
-/** Shell variable assignments of a script, the last one of each name winning. */
+/** Shell variable assignments of a script, the last one of each name winning. Only a line that is
+ *  an assignment alone counts (one quoted string, one command substitution, or one bare word): a
+ *  line that sets a variable for one command (`NAME="$NAME" "$NAME/bin/tool"`) sets none. */
 function shellVariables(text: string): Map<string, string> {
   const vars = new Map<string, string>();
   for (const match of text.matchAll(
     /^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=(\S.*)$/gm
   )) {
     const value = (match[2] ?? "").trim();
-    if (!value.startsWith("(")) vars.set(match[1] ?? "", unquote(value));
+    const whole =
+      /^"\$\(.*\)"$/.test(value) ||
+      /^"[^"]*"$/.test(value) ||
+      /^'[^']*'$/.test(value) ||
+      /^[^\s"'(]+$/.test(value);
+    if (whole) vars.set(match[1] ?? "", unquote(value));
   }
   return vars;
 }
@@ -1265,6 +1497,17 @@ function parseInstaller(file: string, text: string): ParsedManifest {
     }
   }
   for (const raw of lines) {
+    if (raw.trim().startsWith("#") || /^\s*(echo|printf)\b/.test(raw)) continue;
+    for (const word of raw.trim().split(/\s+/).map(unquote)) {
+      if (!/\/extensions\/[^/\s]+\.(ts|js|mjs)$/.test(word)) continue;
+      const { dir } = shellPath(word, vars);
+      // A link's other end in a home directory (`$HOME/.omp/agent/extensions/…`) is no file here.
+      if (dir.startsWith(".")) continue;
+      facts.push({ type: "links-extension", file: dir });
+      says.push(`links ${dir} as an Oh My Pi extension`);
+    }
+  }
+  for (const raw of lines) {
     if (!raw.includes(".omp/agent/config.yml") || raw.trim().startsWith("#")) continue;
     const source = raw
       .trim()
@@ -1335,6 +1578,30 @@ export function parseManifest(kind: ManifestKind, file: string, text: string): P
       return parseInstaller(file, text);
     case "python-loader":
       return parsePythonLoader(text);
+    case "omp-skill-sources": {
+      const sources = parseFile(SkillSourcesFile, text, "json").sources;
+      return {
+        facts: [{ type: "skill-sources", base: dirOf(file), sources }],
+        ofKind: true,
+        says: `skill pools: ${sources
+          .map((source) =>
+            [
+              source.root,
+              source.ompSkillsDir === undefined ? "" : ` (skills at ${source.ompSkillsDir})`,
+              source.omp === false ? " (omp: false)" : "",
+            ].join("")
+          )
+          .join(", ")}`,
+      };
+    }
+    case "omp-extension": {
+      const reads = text.includes(SKILL_SOURCES);
+      return {
+        facts: reads ? [{ type: "reads-skill-sources", name: SKILL_SOURCES }] : [],
+        ofKind: reads,
+        says: reads ? `an Oh My Pi extension that reads ${SKILL_SOURCES}` : "no skill pools",
+      };
+    }
     case "skill-link": {
       const target = joinPath(dirOf(file), text.trim());
       return {
@@ -1462,11 +1729,20 @@ function nameGlob(pattern: string): RegExp {
   return new RegExp(`^${pattern.split("*").map(escapeRegExp).join(".*")}$`);
 }
 
-/** What the installers give: their rows, the units that ship skills, and the prefix rows. */
+/** What the installers give: their rows, the units that ship skills, the prefix rows, and notes on
+ *  manifests whose skills R4 cannot list (a skill pool outside the repository's tree). */
 export interface Resolved {
   readonly rows: InstallerRow[];
   readonly units: Unit[];
   readonly prefixes: PrefixRow[];
+  readonly notes: ManifestNote[];
+}
+
+/** A note on one manifest, which skill-copies.md prints under its line. */
+export interface ManifestNote {
+  readonly repository: string;
+  readonly path: string;
+  readonly note: string;
 }
 
 /** The facts of one type across the manifests, each with its manifest. */
@@ -1481,10 +1757,11 @@ function factsOf<T extends Fact["type"]>(
   );
 }
 
-/** The installer rows, units and prefix rows of the manifests read, against the copies. */
+/** The installer rows, units, prefix rows and notes of the manifests read, against the copies. */
 export function resolveInstallers(manifests: readonly Manifest[], index: CopyIndex): Resolved {
   const rows: InstallerRow[] = [];
   const units: Unit[] = [];
+  const notes: ManifestNote[] = [];
   const row = (
     manifest: Manifest,
     action: string,
@@ -1683,6 +1960,62 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
     });
   }
 
+  // Skill pools: a skills-sources.json that an Oh My Pi extension of the same repository reads,
+  // the extension linked into Oh My Pi by an installer of that repository (dotfiles-skills.ts
+  // answers `resources_discover` with each pool's skills directory). Each pool whose skills are in
+  // the tree installs them into Oh My Pi; a pool outside it (another checkout, a vendor clone, a
+  // home directory) is a note, since R4 cannot list its skills.
+  for (const { manifest, fact } of factsOf(manifests, "skill-sources")) {
+    const sameRepository = <T>(entries: { manifest: Manifest; fact: T }[]) =>
+      entries.filter((entry) => entry.manifest.repository === manifest.repository);
+    const readers = sameRepository(factsOf(manifests, "reads-skill-sources")).filter(
+      ({ fact: reads }) => reads.name === path.posix.basename(manifest.path)
+    );
+    const links = sameRepository(factsOf(manifests, "links-extension"));
+    const linked = readers.filter((reader) =>
+      links.some(({ fact: link }) => link.file === reader.manifest.path)
+    );
+    if (linked.length === 0) {
+      notes.push({
+        repository: manifest.repository,
+        path: manifest.path,
+        note:
+          readers.length === 0
+            ? "no Oh My Pi extension of the repository reads it, so it installs nothing"
+            : `no installer of the repository links ${readers.map((reader) => reader.manifest.path).join(", ")} into Oh My Pi, so it installs nothing`,
+      });
+      continue;
+    }
+    for (const source of fact.sources) {
+      if (source.omp === false) continue;
+      const skills = source.ompSkillsDir ?? joinPath(source.root, "skills");
+      const dir = /^[~/]/.test(skills) ? undefined : joinPath(fact.base, skills);
+      const members =
+        dir === undefined || dir === ".." || dir.startsWith("../")
+          ? []
+          : index
+              .childrenOf(manifest.repository, dir)
+              .map(({ child, copy }) => ({ copy, rel: child }));
+      if (dir === undefined || members.length === 0) {
+        notes.push({
+          repository: manifest.repository,
+          path: manifest.path,
+          note: `pool ${source.root}: its skills (${skills}) are not in the repository's tree, so R4 cannot list them`,
+        });
+        continue;
+      }
+      units.push({
+        id: `pool:${source.root}`,
+        host: "omp",
+        manifest,
+        action: "installs",
+        members,
+        locations: [`**/${dir}/`],
+        note: `read by ${linked.map((reader) => reader.manifest.path).join(", ")}`,
+      });
+    }
+  }
+
   for (const unit of units) {
     if (unit.members.length === 0)
       row(unit.manifest, unit.action, unit.id, unit.host, "", undefined, unit.note);
@@ -1822,6 +2155,7 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
   return {
     rows,
     units,
+    notes,
     prefixes: [...prefixes.values()].sort(
       (a, b) => a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository)
     ),
@@ -2128,7 +2462,7 @@ class CodeSearch {
       this.calls++;
       record.calls++;
       pace.starts.push(io.now());
-      const result = await io.gh([
+      const result = await this.github.call([
         "api",
         "-i",
         "-X",
@@ -2206,6 +2540,7 @@ async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord
     try {
       answer = await search.page(job, record.q, page, record);
     } catch (error) {
+      rethrowStop(error);
       record.status = "failed";
       record.error = (error as Error).message;
       return;
@@ -2543,6 +2878,8 @@ export interface CopiesResult {
   readonly manifests: Manifest[];
   readonly notOfKind: Map<string, number>;
   readonly rows: InstallerRow[];
+  /** Notes on manifests whose skills R4 cannot list (`Resolved.notes`). */
+  readonly notes: ManifestNote[];
   readonly prefixes: PrefixRow[];
   readonly offTargets: PrefixRow[];
   readonly targetsUnused: string[];
@@ -2552,6 +2889,8 @@ export interface CopiesResult {
   readonly forksNotScanned: string[];
   readonly failures: string[];
   readonly searchCalls: number;
+  /** The run's peak resident memory, in bytes. */
+  readonly peakBytes: number;
   readonly budget: number;
 }
 
@@ -2605,7 +2944,8 @@ function markdown(result: CopiesResult): string {
     `${result.repositories.length} repositories listed: ${readable.length} read, ${failed.length} not read. ` +
       `${result.copies.length} skill copies, ${new Set(result.copies.map((copy) => copy.name)).size} names. ` +
       `${result.manifests.length} manifests, ${result.rows.length} installer rows, ${result.loaders.length} loader rows. ` +
-      `${result.searchCalls} code search calls (budget ${Number.isFinite(result.budget) ? result.budget : "none"}).`,
+      `${result.searchCalls} code search calls (budget ${Number.isFinite(result.budget) ? result.budget : "none"}). ` +
+      `Peak resident memory ${Math.round(result.peakBytes / 1024 ** 2)} MiB (the run stops above ${MEMORY_LIMIT_BYTES / 1024 ** 2} MiB).`,
     "",
     "Same-job pairs and the follow-the-code sentence are not in this list yet: they wait for the `read` command (task t3), which reads skills.jsonl.",
     "",
@@ -2644,6 +2984,11 @@ function markdown(result: CopiesResult): string {
     say(
       `- ${manifest.repository}:${manifest.path} (${manifest.kind}${found}): ${says} [${manifest.rows} rows]`
     );
+    for (const { note } of result.notes.filter(
+      (candidate) =>
+        candidate.repository === manifest.repository && candidate.path === manifest.path
+    ))
+      say(`  - ${note}`);
   }
   if (result.notOfKind.size > 0) {
     const counts = [...result.notOfKind].map(([kind, count]) => `${count} ${kind}`).join(", ");
@@ -2776,7 +3121,7 @@ export function writeOutputs(out: string, result: CopiesResult): string[] {
           yesNo(repo.fork),
           yesNo(repo.archived),
           repo.parent,
-          repo.tree.length,
+          repo.treeEntries,
           repo.treeRead,
           copiesOf(repo.repository),
           repo.error,
@@ -2863,7 +3208,9 @@ export async function listCopies(
   options: CopiesOptions,
   io: CopiesIo
 ): Promise<CopiesResult> {
-  const github = new Github(io);
+  const github = new Github(io, () =>
+    io.peakRssBytes === undefined ? procPeakRssBytes() : io.peakRssBytes()
+  );
   const failures: string[] = [];
   /** Reads the blobs of `wanted` into the cache, a GraphQL batch at a time per repository. */
   const prefetch = async (wanted: readonly { repository: string; entry: TreeEntry }[]) => {
@@ -2911,11 +3258,13 @@ export async function listCopies(
           branch: entry.defaultBranchRef?.name ?? "",
           commit: "",
           tree: [],
+          treeEntries: 0,
           treeRead: "",
           error: "",
         });
       }
     } catch (error) {
+      rethrowStop(error);
       listingErrors.push({ owner, error: (error as Error).message });
     }
   }
@@ -2944,6 +3293,7 @@ export async function listCopies(
       else skillFiles.push({ repo, entry });
     }
   }
+  github.checkMemory();
   io.err(`copies: reading ${skillFiles.length} SKILL.md files`);
   await prefetch(skillFiles.map(({ repo, entry }) => ({ repository: repo.repository, entry })));
   const copies = await mapLimit(
@@ -2966,6 +3316,7 @@ export async function listCopies(
           ...skillFields(dir, repo.repository, await github.blob(repo.repository, entry.sha)),
         };
       } catch (error) {
+        rethrowStop(error);
         const fault = `SKILL.md read failed: ${(error as Error).message}`;
         failures.push(`${repo.repository}:${entry.path}: ${fault}`);
         const name = dir === "" ? (repo.repository.split("/")[1] ?? "") : path.posix.basename(dir);
@@ -2997,15 +3348,22 @@ export async function listCopies(
   // 4. Manifests.
   const candidates: { repo: Repository; entry: TreeEntry; kind: ManifestKind }[] = [];
   for (const repo of repositories) {
+    // An extension is read only where a skills-sources.json is, which it may read.
+    const sources = repo.tree.some((entry) => path.posix.basename(entry.path) === SKILL_SOURCES);
     for (const entry of repo.tree) {
       const kind = manifestKind(entry);
-      if (kind === undefined || (kind === "omp-package" && !withSkill.has(repo.repository)))
+      if (
+        kind === undefined ||
+        (kind === "omp-package" && !withSkill.has(repo.repository)) ||
+        (kind === "omp-extension" && !sources)
+      )
         continue;
       if (kind !== "skill-link" && insideSkill(copiesIn(repo.repository), entry.path) !== undefined)
         continue;
       candidates.push({ repo, entry, kind });
     }
   }
+  github.checkMemory();
   io.err(`copies: reading ${candidates.length} manifest files`);
   await prefetch(candidates.map(({ repo, entry }) => ({ repository: repo.repository, entry })));
   const read = await mapLimit(
@@ -3026,6 +3384,7 @@ export async function listCopies(
           error: "",
         };
       } catch (error) {
+        rethrowStop(error);
         const message = (error as Error).message;
         failures.push(`${repo.repository}:${entry.path} (${kind}): ${message}`);
         return { ...base, facts: [], ofKind: true, says: "", error: message };
@@ -3074,6 +3433,7 @@ export async function listCopies(
         if ((await github.api(`users/${owner}`, GithubUser)).type === "Organization")
           qualifier = "org";
       } catch (error) {
+        rethrowStop(error);
         failures.push(`users/${owner}: ${(error as Error).message}; searched as user:${owner}`);
       }
       scopes.push({ scope: `${qualifier}:${owner}`, owner, reason: "owner" });
@@ -3093,19 +3453,10 @@ export async function listCopies(
     rerunsOf(job, record, holders)
   );
 
-  // Each hit file, read at its repository's commit, kept where it names the skill.
+  // Each hit file, read by its path at its repository's commit (the trees keep only the entries
+  // this list uses), and kept where it names the skill. Each file is read once for all the names
+  // whose searches hit it, a batch of files at a time per repository, and dropped once checked.
   const byRepository = new Map(repositories.map((repo) => [repo.repository.toLowerCase(), repo]));
-  const treeIndex = new Map<Repository, Map<string, TreeEntry>>();
-  const entryAt = (repo: Repository, file: string) => {
-    let entries = treeIndex.get(repo);
-    if (entries === undefined) {
-      entries = new Map(
-        repo.tree.filter((entry) => entry.type === "blob").map((entry) => [entry.path, entry])
-      );
-      treeIndex.set(repo, entries);
-    }
-    return entries.get(file);
-  };
   const loaders = new Map<string, LoaderRow>();
   const addLoader = (
     repository: string,
@@ -3124,68 +3475,64 @@ export async function listCopies(
     if (!known.source.split(", ").includes(source)) known.source = `${known.source}, ${source}`;
   };
   const hits = records.flatMap((record) => record.hits.map((hit) => ({ record, hit })));
+  github.checkMemory();
   io.err(`copies: checking ${hits.length} search hits`);
-  const toRead: { repository: string; entry: TreeEntry }[] = [];
-  for (const { hit } of hits) {
-    const repo = byRepository.get(hit.repository.toLowerCase());
-    const entry = repo === undefined || repo.error !== "" ? undefined : entryAt(repo, hit.path);
-    if (
-      repo !== undefined &&
-      entry !== undefined &&
-      insideSkill(copiesIn(repo.repository), hit.path) === undefined
-    ) {
-      toRead.push({ repository: repo.repository, entry });
-    }
-  }
-  await prefetch(toRead);
-  const extraManifests: Manifest[] = [];
-  await mapLimit(hits, REST_JOBS, async ({ record, hit }) => {
+  const filesByRepository = new Map<
+    Repository,
+    Map<string, { record: QueryRecord; hit: SearchHit }[]>
+  >();
+  for (const { record, hit } of hits) {
     const repo = byRepository.get(hit.repository.toLowerCase());
     if (repo === undefined || repo.error !== "") {
       hit.verdict = "repository not read";
-      return;
-    }
-    const entry = entryAt(repo, hit.path);
-    if (entry === undefined) {
-      hit.verdict = `not in the tree at ${repo.commit}`;
-      return;
+      continue;
     }
     const inside = insideSkill(copiesIn(repo.repository), hit.path);
     if (inside !== undefined) {
       hit.verdict = `inside the skill ${shown(inside.path)}`;
-      return;
+      continue;
     }
-    let body: string;
-    try {
-      body = await github.blob(repo.repository, entry.sha);
-    } catch (error) {
-      hit.verdict = `read failed: ${(error as Error).message}`;
-      failures.push(`${repo.repository}:${hit.path} (a search hit): ${(error as Error).message}`);
-      return;
+    let files = filesByRepository.get(repo);
+    if (files === undefined) {
+      files = new Map();
+      filesByRepository.set(repo, files);
     }
-    const kinds = mentions(body, record.name, pluginsOf.get(record.name) ?? [], hit.path);
-    if (kinds.length === 0) {
-      hit.verdict = body.includes(record.name)
-        ? "dropped: only inside a longer name"
-        : "dropped: the name is not in it";
-      return;
+    files.set(hit.path, [...(files.get(hit.path) ?? []), { record, hit }]);
+  }
+  const extraManifests: Manifest[] = [];
+  const checkFile = (
+    repo: Repository,
+    file: string,
+    body: string,
+    named: { record: QueryRecord; hit: SearchHit }[]
+  ) => {
+    let kept = false;
+    for (const { record, hit } of named) {
+      const kinds = mentions(body, record.name, pluginsOf.get(record.name) ?? [], file);
+      if (kinds.length === 0) {
+        hit.verdict = body.includes(record.name)
+          ? "dropped: only inside a longer name"
+          : "dropped: the name is not in it";
+        continue;
+      }
+      kept = true;
+      hit.verdict = "kept";
+      hit.match = kinds.join(",");
+      addLoader(repo.repository, file, record.name, kinds, "code search");
     }
-    hit.verdict = "kept";
-    hit.match = kinds.join(",");
-    addLoader(repo.repository, hit.path, record.name, kinds, "code search");
     const kind =
-      manifestKind(entry) ??
-      (hit.path.endsWith(".py") && SKILLS_LIST.test(body) ? "python-loader" : undefined);
+      manifestKind({ path: file, mode: "100644", type: "blob" }) ??
+      (file.endsWith(".py") && SKILLS_LIST.test(body) ? "python-loader" : undefined);
     const known = [...manifests, ...extraManifests].some(
-      (manifest) => manifest.repository === repo.repository && manifest.path === hit.path
+      (manifest) => manifest.repository === repo.repository && manifest.path === file
     );
-    if (kind === undefined || known) return;
+    if (!kept || kind === undefined || known) return;
     try {
-      const parsed = parseManifest(kind, hit.path, body);
+      const parsed = parseManifest(kind, file, body);
       if (parsed.ofKind) {
         extraManifests.push({
           repository: repo.repository,
-          path: hit.path,
+          path: file,
           kind,
           source: "code search",
           ...parsed,
@@ -3195,12 +3542,37 @@ export async function listCopies(
       }
     } catch (error) {
       failures.push(
-        `${repo.repository}:${hit.path} (${kind}, a search hit): ${(error as Error).message}`
+        `${repo.repository}:${file} (${kind}, a search hit): ${(error as Error).message}`
       );
+    }
+  };
+  await mapLimit([...filesByRepository], REST_JOBS, async ([repo, files]) => {
+    const paths = [...files.keys()];
+    for (let start = 0; start < paths.length; start += BLOB_BATCH) {
+      const chunk = paths.slice(start, start + BLOB_BATCH);
+      const read = await github.filesAt(repo.repository, repo.commit, chunk);
+      for (const file of chunk) {
+        const named = files.get(file) ?? [];
+        const found: FileRead = read.get(file) ?? { kind: "missing" };
+        if (found.kind === "file" && found.text !== undefined) {
+          checkFile(repo, file, found.text, named);
+          continue;
+        }
+        if (found.kind === "failed")
+          failures.push(`${repo.repository}:${file} (a search hit): ${found.error}`);
+        const verdict =
+          found.kind === "missing"
+            ? `not in the tree at ${repo.commit}`
+            : found.kind === "failed"
+              ? `read failed: ${found.error}`
+              : "dropped: a binary file";
+        for (const { hit } of named) hit.verdict = verdict;
+      }
     }
   });
 
   // Forks: read from their trees when they hold a skill.
+  github.checkMemory();
   const forkScans: ForkScanRecord[] = [];
   const forksNotScanned: string[] = [];
   const longestFirst = [...names].sort((a, b) => b.length - a.length).map(escapeRegExp);
@@ -3239,6 +3611,7 @@ export async function listCopies(
       try {
         body = await github.blob(repo.repository, entry.sha);
       } catch (error) {
+        rethrowStop(error);
         scan.failures.push(`${entry.path}: ${(error as Error).message}`);
         return;
       }
@@ -3261,6 +3634,7 @@ export async function listCopies(
   }
 
   // Resolve with the manifests the hits found too, and list what each manifest names as a loader.
+  github.checkMemory();
   const allManifests = [...manifests, ...extraManifests].sort(
     (a, b) => a.repository.localeCompare(b.repository) || a.path.localeCompare(b.path)
   );
@@ -3306,6 +3680,7 @@ export async function listCopies(
     manifests: allManifests,
     notOfKind,
     rows: resolved.rows,
+    notes: resolved.notes,
     prefixes,
     offTargets: resolved.prefixes.filter((row) => !targets.has(row.repository.toLowerCase())),
     targetsUnused: config.targets.filter((target) => !mapped.has(target.toLowerCase())),
@@ -3320,6 +3695,7 @@ export async function listCopies(
     forksNotScanned,
     failures,
     searchCalls: search.calls,
+    peakBytes: github.readPeak(),
     budget: options.maxSearchCalls,
   };
 }
@@ -3327,7 +3703,8 @@ export async function listCopies(
 const USAGE =
   "usage: copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>]";
 
-/** The command. Returns the exit status: 0 (the list is written), 1 (the run failed), 2 (refused). */
+/** The command. Returns the exit status: 0 (the list is written), 1 (the run failed), 2 (refused),
+ *  3 (stopped: the peak resident memory passed MEMORY_LIMIT_BYTES; nothing is written). */
 export async function main(argv: readonly string[], io: CopiesIo): Promise<number> {
   const refuse = (why: string) => {
     io.err(`copies: ${why}`);
@@ -3393,17 +3770,23 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
     const written = writeOutputs(values.out, result);
     io.out(
       `${result.repositories.length} repositories, ${result.copies.length} skill copies, ${result.manifests.length} manifests, ` +
-        `${result.loaders.length} loader rows, ${result.prefixes.length} prefix rows, ${result.searchCalls} code search calls\n` +
+        `${result.loaders.length} loader rows, ${result.prefixes.length} prefix rows, ${result.searchCalls} code search calls, ` +
+        `peak memory ${Math.round(result.peakBytes / 1024 ** 2)} MiB\n` +
         written.map((file) => `${file}\n`).join("")
     );
     return 0;
   } catch (error) {
+    if (error instanceof MemoryStop) {
+      io.err(`copies: the run stops: ${error.message}; nothing is written`);
+      return 3;
+    }
     io.err(`copies: ${(error as Error).stack ?? (error as Error).message}`);
     return 1;
   }
 }
 
 if (import.meta.main) {
+  startPeakRssSampling();
   process.exit(
     await main(Bun.argv.slice(2), {
       gh: spawnGh,
@@ -3411,6 +3794,7 @@ if (import.meta.main) {
       now: () => Date.now(),
       out: (text) => process.stdout.write(text),
       err: (text) => process.stderr.write(`${text}\n`),
+      peakRssBytes: procPeakRssBytes,
     })
   );
 }
