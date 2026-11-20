@@ -364,7 +364,8 @@ test("at a 20 px default font the navigation is reachable and the shell draws no
     ]) {
       const at = `at ${width} px with a ${LARGE_FONT} px default font`;
       await page.setViewportSize({ height: 900, width });
-      await page.goto("/inbox");
+      // The Inbox's own address: `/inbox` is no route of the app, and draws the not-found page.
+      await page.goto("/");
       const main = page.getByTestId("main-content");
       // The Inbox page's first row: its heading, which the page draws before its list arrives.
       const firstRow = main.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
