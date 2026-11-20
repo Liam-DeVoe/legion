@@ -192,7 +192,16 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import Filter, PathsFilter, events, glob_regex, unread_filter_patterns, unread_patterns, walk
+from workflow_paths import (
+    Filter,
+    PathsFilter,
+    dockerignore_filter,
+    events,
+    glob_regex,
+    unread_filter_patterns,
+    unread_patterns,
+    walk,
+)
 
 WORKFLOWS = Path(".github/workflows")
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
@@ -338,32 +347,6 @@ class AnyOf:
 
     def covers(self, path: str) -> bool:
         return any(f.covers(path) for f in self.filters)
-
-
-def dockerignore_filter(path: str | None):
-    """True for a context path the .dockerignore drops: a pattern matches the path or a
-    directory above it, and a later `!` line takes it back."""
-    if path is None:
-        return lambda _: False
-    rules = []
-    for line in Path(path).read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        negated = line.startswith("!")
-        pattern = posixpath.normpath(line.removeprefix("!").lstrip("/"))
-        rules.append((negated, glob_regex(pattern)))
-
-    def ignored(relative: str) -> bool:
-        parts = relative.split("/")
-        prefixes = ["/".join(parts[: n + 1]) for n in range(len(parts))]
-        dropped = False
-        for negated, regex in rules:
-            if any(regex.fullmatch(prefix) for prefix in prefixes):
-                dropped = not negated
-        return dropped
-
-    return ignored
 
 
 def joined_lines(text: str):

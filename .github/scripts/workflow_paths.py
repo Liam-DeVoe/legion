@@ -1,12 +1,14 @@
 """What a GitHub Actions workflow's path filters cover, read as GitHub and dorny/paths-filter read
 them: a walk of the repository's files, a path glob as a regex, an ordered pattern list where `!`
-negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events.
+negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events. And
+what a Docker build's context holds: a `.dockerignore` read as Docker reads it.
 
-check-image-trigger-paths.sh and check-ci-filters.sh (through ci_filter_coverage.py) import it from
-the repository they check, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
-from that repository's root.
+check-image-trigger-paths.sh, check-image-build-inputs.sh and check-ci-filters.sh (through
+ci_filter_coverage.py) import it from the repository they check, running
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root.
 """
 
+import posixpath
 import re
 from pathlib import Path
 
@@ -61,6 +63,33 @@ def glob_regex(pattern: str) -> re.Pattern:
             out += re.escape(pattern[index])
             index += 1
     return re.compile(out)
+
+
+def dockerignore_filter(path: str | None):
+    """True for a context path the .dockerignore drops: a pattern matches the path or a
+    directory above it, and a later `!` line takes it back."""
+    if path is None:
+        return lambda _: False
+    rules = []
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        pattern = posixpath.normpath(line.removeprefix("!").lstrip("/"))
+        rules.append((negated, glob_regex(pattern)))
+
+    def ignored(relative: str) -> bool:
+        parts = relative.split("/")
+        prefixes = ["/".join(parts[: n + 1]) for n in range(len(parts))]
+        dropped = False
+        for negated, regex in rules:
+            if any(regex.fullmatch(prefix) for prefix in prefixes):
+                dropped = not negated
+        return dropped
+
+    return ignored
+
 
 
 class Filter:

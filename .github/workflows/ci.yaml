@@ -360,6 +360,7 @@ jobs:
       check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
+      check_image_build_inputs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_build_inputs_test }}
       check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
       mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
       ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
@@ -1486,6 +1487,15 @@ jobs:
               - '.github/scripts/check-image-trigger-paths.sh'
               # :34 symlinks in the path model the script imports.
               - '.github/scripts/workflow_paths.py'
+            check_image_build_inputs_test: &check_image_build_inputs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-image-build-inputs.test.sh'
+              - '.github/scripts/check-image-build-inputs.sh'
+              # Every fixture symlinks in the path model the script imports; each writes its own
+              # table in place of image_build_entries.py.
+              - '.github/scripts/workflow_paths.py'
             check_ci_images_test: &check_ci_images_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1820,6 +1830,7 @@ jobs:
               - *check_gitleaks_version_test
               - *workflow_paths_test
               - *check_image_trigger_paths_test
+              - *check_image_build_inputs_test
               - *check_ci_images_test
               - *mirror_ci_images_test
               - *ci_tools_test
@@ -5361,6 +5372,7 @@ jobs:
       check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
+      check_image_build_inputs_test: ${{ needs.changes.outputs.check_image_build_inputs_test }}
       check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}
       mirror_ci_images_test: ${{ needs.changes.outputs.mirror_ci_images_test }}
       ci_tools_test: ${{ needs.changes.outputs.ci_tools_test }}

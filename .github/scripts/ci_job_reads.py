@@ -2315,6 +2315,11 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-image-trigger-paths.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
     ]),
+    harness("check_image_build_inputs_test", "Test the image build input check",
+            f"{SCRIPTS}/check-image-build-inputs.test.sh", [
+        (f"{SCRIPTS}/check-image-build-inputs.sh", "the script under test, symlinked into every fixture"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-image-build-inputs.test.sh:30 symlinks in the path model the script imports"),
+    ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-ci-images.test.sh:108 symlinks in the path model its sweep walks the tree with"),
