@@ -1148,10 +1148,11 @@ type Deps struct {
 	// it came to — stored, refused, failed or abandoned at its budget — the daemon hands copied
 	// back to the machine's Handle, as it hands every other runtime fact, and never from inside
 	// this call. budget is the most the copy takes, which bounds how long a stop held for the
-	// turn's end waits for it (waitForTurnCopy); started is false where no copy was started — a
-	// controller's claim, a claim of no issue, a daemon that bundles no workspace or one that is
-	// stopping — and copied is then never handed back. nil starts no copy, and no stop waits for
-	// one.
+	// turn's end, or asked while the copy is taken, waits for it (waitForTurnCopy); started is
+	// false where no copy was started — a controller's claim, a claim of no issue, a daemon that
+	// bundles no workspace, one that keeps no store or one that is stopping, and a daemon's
+	// supervisor before its workflow has attached the copy — and copied is then never handed back.
+	// nil starts no copy, and no stop waits for one.
 	CopyTurnEnd func(c Claim, copied TurnEndCopied) (budget time.Duration, started bool)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
@@ -1524,9 +1525,10 @@ type Machine struct {
 	// (Deps.CopyTurnEnd, copyTurnEnd), while the machine has not heard it end: nil once its end
 	// has come back (TurnEndCopied), once a held stop's wait for it has run out (TimerTurnCopy),
 	// and once the process whose turn it copies is let go (letGo). A stop held for a turn's end
-	// waits for it (waitForTurnCopy). turnCopies numbers the copies the machine has started, so
-	// the end of an earlier one decides nothing about a later one (fence). Both are memory only,
-	// as the held suspension is: a restart forgets the wait with the hold it was for.
+	// waits for it, and so does a suspension that reaches the claim while it is being taken
+	// (waitForTurnCopy, suspend). turnCopies numbers the copies the machine has started, so the
+	// end of an earlier one decides nothing about a later one (fence). Both are memory only, as
+	// the held suspension is: a restart forgets the wait with the hold it was for.
 	turnCopy   *turnCopy
 	turnCopies uint64
 	// processGone is what the runtime's last report of the process the claim records found
@@ -2364,10 +2366,11 @@ func (m *Machine) unlock() {
 // working, idle and failed. Two of them are terminal for the workflow, and the daemon reads a
 // turn starting to stamp a woken pod's first turn. A turn ending is reported idle as well, but the
 // copy of the issue workspace's unpushed work that the turn's end owes is not taken from that
-// report: a turn that ends straight into a stop held for it never goes durably idle, so the
-// machine starts that copy from the turn's end itself (Deps.CopyTurnEnd, copyTurnEnd). The
-// callback runs after the transition's claim write has succeeded, and a machine keeps one, so a
-// daemon that observes more than one of them observes them in that one callback.
+// report: without the copy started at the turn's end, a turn that ended into a held stop would be
+// stopped before any idle report, so the machine starts that copy from the turn's end itself
+// (Deps.CopyTurnEnd, copyTurnEnd), and the held stop waits for it. The callback runs after the
+// transition's claim write has succeeded, and a machine keeps one, so a daemon that observes more
+// than one of them observes them in that one callback.
 func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

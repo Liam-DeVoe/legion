@@ -203,7 +203,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 
 	apply("c0", "c2")
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 1)
-	rig.w.copyWorkspaceAtTurnEnd(rig.storedClaim(t), nil)
+	rig.w.copyWorkspaceAtTurnEnd(rig.storedImplementer(t), nil)
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 2)
 	// The release's save started the issue's period as it gave the issue's place back, so the
 	// cadence finds the issue due only once that period has passed.
@@ -234,7 +234,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 	next := copyRigBundle
 	next.Bundle, next.PodUID = []byte("PACK the next pod's work"), "pod-that-replaces-it"
 	rig.bundler.answers(next, nil)
-	rig.w.copyWorkspaceAtTurnEnd(rig.storedClaim(t), nil)
+	rig.w.copyWorkspaceAtTurnEnd(rig.storedImplementer(t), nil)
 	rig.awaitCopy(t, len(next.Bundle))
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the bundler was asked %v, want the one copy of the next pod", asked)

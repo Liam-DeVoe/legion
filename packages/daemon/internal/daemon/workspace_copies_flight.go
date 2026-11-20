@@ -3,7 +3,7 @@ package daemon
 // The per-issue single flight of the running copy (R1 of dispatch://INFRA-1117): what the
 // cadence holds in memory of each issue's copies (runningCopies) — the one place in flight that a
 // copy or an idle release's save takes, the copy owed behind it and whom that copy asks and
-// answers (owedCopy), the push that overtook it, the retry a copy that came to nothing owes, and
+// answers (copyAsk), the push that overtook it, the retry a copy that came to nothing owes, and
 // the start the next period runs from. workspace_copies.go holds the copies themselves: the
 // cadence's tick, a turn's end, a push, and the take and the store of one copy.
 
@@ -57,7 +57,7 @@ type runningCopies struct {
 	// (workflowRuntime.startOwedCopy), set where the daemon attaches the cadence (attach), because
 	// the save runs in the outbox, which holds this memory and nothing that starts a copy. nil
 	// starts nothing, which is a daemon whose runtime bundles no workspace and so owes no copy.
-	startOwed func(owed owedCopy)
+	startOwed func(owed copyAsk)
 	// now is the cadence's clock, which starts an issue's period and reads it (take, untaken,
 	// giveBack, copyWorkingWorkspaces): the wall clock when nil, and a test's own clock where the
 	// test set one, so a test moves the cadence's time rather than waiting it out.
@@ -73,7 +73,7 @@ func (c *runningCopies) runUnder(ctx context.Context) {
 
 // startsOwedWith makes start what takes a copy owed behind a release's save
 // (runningCopies.startOwed).
-func (c *runningCopies) startsOwedWith(start func(owed owedCopy)) {
+func (c *runningCopies) startsOwedWith(start func(owed copyAsk)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startOwed = start
@@ -101,8 +101,8 @@ type runningCopy struct {
 	// flight reads the workspace as it stands then and so holds the work of all six turns; a
 	// queue would buy nothing but one `git bundle create` per turn end in a workspace a role is
 	// working in. Whom that one copy asks, and whom it answers once it has ended, is what it
-	// carries of the asks it stands for (owedCopy).
-	owed *owedCopy
+	// carries of the asks it stands for (copyAsk, owing).
+	owed *copyAsk
 	// pushed is whether the daemon recorded a push of the issue's branch while this copy was in
 	// flight. Such a copy may have read the workspace before the pushed commits were made, so it
 	// is not stored (storeRunningCopy), and the push's own copy, owed behind it, is; or, where the
@@ -147,42 +147,55 @@ type runningCopy struct {
 // inFlight is whether a copy of the issue or a release's save holds the issue's place.
 func (held runningCopy) inFlight() bool { return held.free != nil }
 
-// owedCopy is the one copy of an issue owed behind the copy in flight or a release's save
-// (runningCopy.owed): the claim of the role it asks, and the end of every turn whose own copy it
-// now stands for, each told once it has ended.
+// copyAsk is what one copy of an issue's workspace is asked with, and what the one copy owed
+// behind the copy in flight or a release's save carries of every ask it stands for
+// (runningCopy.owed, owing): the claim of the role it asks, whether a turn's end asks it, and the
+// end of each turn whose copy it stands for, each told once it has ended.
 //
-// It asks the role of the last turn's end that owed it: the copy holds that turn's end, and a stop
-// held for that end waits for it, so that role's process is the one no stop can take before the
-// copy has asked it, and the last turn's end is the one whose wait has the most of its bound left.
-// A copy owed only by the cadence or a push asks the role that caller chose, and a turn's end
-// owing it afterwards takes it over; a push or the cadence owing it after a turn's end leaves it
-// to that turn's role. The copy is handed its claim and reads no claims of its own, as the turn's
-// end hands its own copy the claim whose turn ended (takeRunningCopyOf).
-type owedCopy struct {
-	// asks is the claim of the role the owed copy asks, which names the pod it would be taken off.
-	asks supervise.Claim
+// The owed copy asks the role of the last turn's end that owed it. The copy holds that turn's end,
+// and a stop of that role waits for it — one held for that end, or one that reaches the role while
+// the copy of its turn's end is still being taken (supervise's suspend) — so that role's process is
+// stopped only once the copy has asked it or the wait has run out. The wait lasts at most the
+// copy's budget from the turn's end and never past the stop's own deadline, an operator's stop
+// timeout above all, which the copy in flight or a release's save ahead of the owed copy can
+// outlast, and a suspension that may not be held (supervise.RequestSuspend.NeverHold), the fresh
+// session's, waits for no copy at all. Of the turn's ends the copy stands for, the last is the one
+// whose wait has the most of its bound left. A copy owed only by the cadence or a push asks the
+// role that caller chose, and a turn's end owing it afterwards takes it over; a push or the cadence
+// owing it after a turn's end leaves it to that turn's role. Which asks are a turn's end each ask
+// says itself (turnEnd), and nothing reads it from whether the ask brings an end to tell, so a
+// turn's end handed no callback is owed as a turn's end all the same. The copy is handed its claim
+// and reads no claims of its own, as the turn's end hands its own copy the claim whose turn ended
+// (takeRunningCopyOf).
+type copyAsk struct {
+	// of is the claim of the role the copy asks, which names the pod it would be taken off.
+	of supervise.Claim
+	// turnEnd is whether a turn's end asks for the copy (copyWorkspaceAtTurnEnd): this ask is one,
+	// or, for an owed copy, one of the asks it stands for was.
+	turnEnd bool
 	// finished is the end of each turn whose copy this one stands for (copyWorkspaceAtTurnEnd):
-	// the machine's stop held for that end waits for it, and each is called once the owed copy
-	// has ended, whatever it came to, or once it can no longer be started (startOwedCopy).
+	// the machine's stop held for that end waits for it, and each is called once the copy has
+	// ended, whatever it came to, or once it can no longer be started (startOwedCopy).
 	finished []func()
 }
 
-// owing is owed with one more ask for the copy: asked's, whose turn's end, if it is one, is told
-// through finished. A nil owed is the first ask.
-func owing(owed *owedCopy, asked supervise.Claim, finished []func()) *owedCopy {
+// owing is owed with one more ask for the copy, ask. A nil owed is the first ask, which the owed
+// copy is then taken with.
+func owing(owed *copyAsk, ask copyAsk) *copyAsk {
 	if owed == nil {
-		return &owedCopy{asks: asked, finished: finished}
+		return &ask
 	}
-	if len(finished) > 0 || len(owed.finished) == 0 {
-		owed.asks = asked
+	if ask.turnEnd || !owed.turnEnd {
+		owed.of = ask.of
 	}
-	owed.finished = append(owed.finished, finished...)
+	owed.turnEnd = owed.turnEnd || ask.turnEnd
+	owed.finished = append(owed.finished, ask.finished...)
 	return owed
 }
 
-// tellCopied tells the end of each turn in finished that its copy has ended.
-func tellCopied(finished []func()) {
-	for _, f := range finished {
+// tellCopied tells the end of each turn the ask stands for that its copy has ended.
+func (ask copyAsk) tellCopied() {
+	for _, f := range ask.finished {
 		f()
 	}
 }
@@ -234,11 +247,10 @@ func (c *runningCopies) giveBack(issue string, retry bool) runningCopy {
 	return held
 }
 
-// begin takes the issue's one place in flight for a copy asking asked's role, answering false when
-// a copy of asked's issue or a release's save already holds it, and marking that refused copy
-// owed so that the copy in flight takes it when it ends (done). The owed copy asks the role and
-// answers the turn's ends the asks for it name (owing): finished is the end of the turn this copy
-// is of, told once the copy that holds it has ended, and nil for a copy no turn's end asked for.
+// begin takes the issue's one place in flight for a copy asked with ask, answering false when a
+// copy of ask's issue or a release's save already holds it, and marking that refused copy owed so
+// that the copy in flight takes it when it ends (done). The owed copy asks the role and answers the
+// turn's ends the asks for it name (owing).
 //
 // A refused copy is owed and not dropped because the copy in flight read the workspace before
 // the work that asked for this one was written. The copy which closes a turn is the case that
@@ -247,13 +259,13 @@ func (c *runningCopies) giveBack(issue string, retry bool) runningCopy {
 // dropped would leave the newest copy of a pod whose roles have all gone idle short of the work
 // its last turn ended with, and an eviction of that idle pod would then lose the end of the turn
 // — which is exactly what the daemon holds itself to (R1).
-func (c *runningCopies) begin(asked supervise.Claim, finished ...func()) bool {
+func (c *runningCopies) begin(ask copyAsk) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	held, took := c.take(asked.Issue)
+	held, took := c.take(ask.of.Issue)
 	if !took {
-		held.owed = owing(held.owed, asked, finished)
-		c.issues[asked.Issue] = held
+		held.owed = owing(held.owed, ask)
+		c.issues[ask.of.Issue] = held
 	}
 	return took
 }
@@ -329,12 +341,12 @@ func (c *runningCopies) hold(ctx context.Context, issue string) (func(), error) 
 // (runningCopy.retry) — retry, or one a copy beside it left owed (runningCopy.missed) — and answers
 // the copy of the issue that is owed, nil for none: one was asked for while this one was in
 // flight, and the caller takes it now, asking the role and answering the turn's ends it carries
-// (owedCopy). Only the caller whose begin answered true calls it.
+// (copyAsk). Only the caller whose begin answered true calls it.
 //
 // The owed copy it reports is cleared by the reading: the copy the caller then starts takes the
 // issue's place in flight again and is owed another only if a third is asked for while it runs,
 // so a storm of turn ends is one copy after the one in flight rather than one copy per end.
-func (c *runningCopies) done(issue string, retry bool) *owedCopy {
+func (c *runningCopies) done(issue string, retry bool) *copyAsk {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.giveBack(issue, retry).owed

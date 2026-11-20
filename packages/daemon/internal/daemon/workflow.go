@@ -1754,10 +1754,10 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 //     ready, and the woken role took its work at the first turn (podResume).
 //
 // A turn that ended is reported idle, and the copy of the issue's workspace it owes is not taken
-// from that report: a turn that ends straight into a stop held for it never goes durably idle, so
-// every machine starts that copy from the turn's end itself (copyWorkspaceAtTurnEnd,
-// supervise.Deps.CopyTurnEnd), and a copy taken here as well would be the same turn's end copied
-// twice.
+// from that report: without the copy started at the turn's end, a turn that ended into a held stop
+// would be stopped before any idle report, so every machine starts that copy from the turn's end
+// itself (copyWorkspaceAtTurnEnd, supervise.Deps.CopyTurnEnd), and a copy taken here as well would
+// be the same turn's end copied twice.
 //
 // It runs on the machine's own goroutine, so what it does with a transition is either a write of
 // its own (terminal, whose fact the daemon's boot replays when it fails) or a goroutine's.

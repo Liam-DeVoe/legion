@@ -1291,13 +1291,14 @@ func fillTable(t *builder) {
 	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
 
 	// The end of the copy of the issue's workspace that a turn's end started (TurnEndCopied), and
-	// the bound of a held stop's wait for it (TimerTurnCopy). A stop held for that turn's end
-	// waits for the copy in the state the end gave the claim back in, ready or idle, and runs at
-	// whichever of the two comes first (waitForTurnCopy); a claim in a turn again leaves its held
-	// stop to that turn's end, and the copy no stop waits for ends with nothing run. Every other
-	// state holds no process whose turn the copy was of: the let-go that left the claim there
-	// dropped the wait with the process (letGo), so the fence drops the copy's end and the timer
-	// before either reaches a row (Machine.fence); each is still the table's word for the state.
+	// the bound of a held stop's wait for it (TimerTurnCopy). A stop held for that turn's end, or
+	// asked of the claim while the copy is still being taken (suspend), waits for the copy in the
+	// state the end gave the claim back in, ready or idle, and runs at whichever of the two comes
+	// first (waitForTurnCopy); a claim in a turn again leaves its held stop to that turn's end, and
+	// the copy no stop waits for ends with nothing run. Every other state holds no process whose
+	// turn the copy was of: the let-go that left the claim there dropped the wait with the process
+	// (letGo), so the fence drops the copy's end and the timer before either reaches a row
+	// (Machine.fence); each is still the table's word for the state.
 	t.row(onTurnCopied, "the copy the turn's end started is over: run the held stop that waited for it", turnCopyEnded,
 		[]ClaimState{StateSuspended}, StateReady, StateIdle, StateWorking)
 	t.ignore(onTurnCopied, "no turn of the process this claim runs now has ended, so no stop waits for a copy of one", StateLaunching, StateShimConnected, StateRegistered)
@@ -2108,12 +2109,13 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // Every turn's end starts the copy of the issue workspace's unpushed work that the end owes (R1
 // of dispatch://INFRA-1117), here, from the end itself (copyTurnEnd, Deps.CopyTurnEnd): the work
 // of a turn is in the workspace from the moment the turn ends, whatever the claim goes to next,
-// and a turn that ends straight into a stop held for it never goes durably idle. The copy is
-// handed this claim, its role and the process it ran in, before anything of the end can stop
-// that process, so it asks that role's shim rather than looking for a live role after the fact.
-// It runs on the daemon's goroutine, and no turn waits for it (R2): a turn with no stop held goes
-// idle and is sent its next task while the copy is built. A turn that ends under a compaction
-// starts its copy here too, though the claim stays working until the compaction ends.
+// and without the copy started at the turn's end, a turn that ended into a held stop would be
+// stopped before any idle report. The copy is handed this claim, its role and the process it ran
+// in, before anything of the end can stop that process, so it asks that role's shim rather than
+// looking for a live role after the fact. It runs on the daemon's goroutine, and no turn waits
+// for it (R2): a turn with no stop held goes idle and is sent its next task while the copy is
+// built. A turn that ends under a compaction starts its copy here too, though the claim stays
+// working until the compaction ends.
 //
 // The claim going idle is reported to the daemon as a durable transition of its own
 // (durableWrite, OnDurableState), as the turn's start is. The report follows the claim write, so a
@@ -2167,9 +2169,8 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.askFirst, m.busyTurn = false, false
 	if m.held != nil && !m.stopWaitsForResult() {
-		if m.waitForTurnCopy() {
-			m.claim.State = StateIdle
-			return m.durableWrite(ctx, StateIdle, m.persist)
+		if waits, err := m.heldStopWaitsAtEnd(ctx, StateIdle); waits {
+			return err
 		}
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {

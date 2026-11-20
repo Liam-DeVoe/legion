@@ -9,7 +9,7 @@ import (
 )
 
 // ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn, or while
-// a stop held for a turn's end waits for the copy that end started (waitForTurnCopy): the machine
+// the copy the claim's last turn's end started is still being taken (waitForTurnCopy): the machine
 // holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller that
 // keeps the request durably asks again, and the claim answers nil once it is suspended.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
@@ -31,22 +31,31 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
 // task it kept (SuspendSource.RetiresPhaseTask).
 //
-// A claim whose held stop waits for the copy its turn's end started (waitForTurnCopy) is idle or
-// ready, and a suspension reaching it — the outbox asking its row again, an operator's own — is
-// held with that stop rather than run (holdRequest): stopped now, it would take the process the
-// copy is asking, which is the stop the wait is for. It joins the held stop as a suspension
-// arriving in a turn does, its deadline moving the stop earlier, and it is answered ErrSuspendHeld.
-// A suspension that may not be held (RequestSuspend.NeverHold) is decided now, as it always was
-// for a claim in no turn: its asker read the claim in no turn and is owed the stop at once.
+// A claim whose last turn's end started a copy that is still being taken (Machine.turnCopy) is idle
+// or ready, and a suspension reaching it — the outbox asking its row again, an operator's own, a
+// project pause's stop — is held rather than run (holdRequest), whether or not a stop was held for
+// that turn's end, and waits for that copy as a stop held for the end does (waitForTurnCopy): at
+// most the copy's budget from the turn's end, and never past the suspension's own deadline.
+// Stopped now, it would take the process the copy is asking, and a pause stops an idle role at
+// once, so a role whose turn ended a moment before the pause would lose the copy of that turn to
+// it. A held stop already waiting is joined as a suspension arriving in a turn joins it, its
+// deadline moving the stop earlier. Either is answered ErrSuspendHeld. A suspension that may not be
+// held (RequestSuspend.NeverHold) is decided now, as it always was for a claim in no turn: its asker
+// read the claim in no turn and is owed the stop at once.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
 	}
-	if asked := ev.(RequestSuspend); m.stopWaitsForTurnCopy() && !asked.NeverHold {
-		return m.holdRequest(request, asked)
+	asked := ev.(RequestSuspend)
+	if m.turnCopy == nil || asked.NeverHold {
+		return m.suspendNow(ctx, request, false)
 	}
-	return m.suspendNow(ctx, request, false)
+	err = m.holdRequest(request, asked)
+	if !m.stopWaitsForTurnCopy() {
+		m.waitForTurnCopy()
+	}
+	return err
 }
 
 // holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
@@ -134,11 +143,11 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // holdRequest holds request, which is asked as its row decided it (suspendRequest), for the end
-// the machine holds its stop for: the turn's end (holdSuspension), or the end of the copy a held
-// stop waits for (suspend, waitForTurnCopy). It records the hold, or takes a standing one over,
-// moves its deadline earlier, and answers ErrSuspendHeld. The flag and the deadline are the
-// asker's own, read from asked: suspendRequest hands a daemon's request under the operator's hold
-// the operator's source, which must not give it the operator's stop timeout too.
+// the machine holds its stop for: the turn's end (holdSuspension), or the end of the copy the
+// claim's last turn's end started (suspend, waitForTurnCopy). It records the hold, or takes a
+// standing one over, moves its deadline earlier, and answers ErrSuspendHeld. The flag and the
+// deadline are the asker's own, read from asked: suspendRequest hands a daemon's request under the
+// operator's hold the operator's source, which must not give it the operator's stop timeout too.
 func (m *Machine) holdRequest(request, asked RequestSuspend) error {
 	deadline := asked.Deadline
 	if asked.By == SuspendedByOperator {
@@ -488,7 +497,9 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 }
 
 // dropHeld ends the held suspension without running it, and with it a wait of that stop's for
-// the copy its turn's end started (waitForTurnCopy): the copy goes on and its end runs nothing.
+// the copy its turn's end started (waitForTurnCopy): the copy goes on and its end runs nothing,
+// and a suspension that reaches the claim while the copy is still being taken starts a wait of its
+// own, bounded again at the copy's budget (suspend).
 func (m *Machine) dropHeld() {
 	m.held, m.heldLaunch = nil, false
 	m.disarm(TimerSuspend)

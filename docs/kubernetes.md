@@ -7138,9 +7138,11 @@ A push's copy would hold that work too, but a pod whose roles are idle may see n
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
 A stop held for a turn's end waits for that turn's end copy, for at most the copy's budget of 4 minutes and never past the stop's own deadline, and a copy that fails or times out lets the stop go.
-That stop is one asked while the turn ran, such as an operator's suspend, a project's pause or a tree's linger, which the daemon holds until the turn is over rather than cut the turn off; a turn with no stop held goes idle at once and takes its next task while its copy is built.
+That stop is one asked while the turn ran, such as an operator's suspend, a project's pause or a tree's linger, which the daemon holds until the turn is over rather than cut the turn off, unless that stop's own deadline comes first: an operator's suspend stops the agent mid-turn once its stop timeout has passed since it was asked.
+A turn with no stop held goes idle at once and takes its next task while its copy is built.
 The budget runs from the turn's end, and the stop's own deadline is the operator's stop timeout or a deadline the daemon names, such as the linger expiry of a carried child's old tree; a pause's stop names none.
-While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it again in that time is held with that stop.
+A suspension asked of a role whose turn-end copy is still being taken waits for that copy the same way, though nothing held it for the turn's end, so a pause or an operator's suspend that reaches a role a moment after its turn ended stops no process the copy is still asking.
+While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it in that time is held with that stop, except the suspend a fresh session makes (`legion claims retry --fresh-session`), which stops the role at once.
 A stop that waits for the result of the turn's prompt, as a pause's does, waits for the copy once that result has come.
 
 The copy a turn's end takes is asked of the role whose turn ended, in the process that turn ran in, which the daemon hands the copy before anything can stop that role, and a copy owed behind one in flight is asked of the role of the last turn's end that owed it.
@@ -7185,6 +7187,7 @@ The store refuses both writes to every caller alike (`ErrIssueNotRecorded`, `int
 A project's pause stops none of these copies ([Pausing a project](#pausing-a-project)).
 While the project is paused, the cadence still copies each turn that runs, and each turn's end is still copied, as at any other time: a pause stops a role in a turn only when that turn ends, so a pause that took no copy would leave exactly that turn's end in none.
 A pause stops a role in a turn with a stop held for that turn's end, and a stop held for a turn's end waits for that turn's end copy, for at most the copy's budget of 4 minutes and never past the stop's own deadline, which a pause's stop does not name; a copy that fails or times out lets the stop go, and owes a retry, which runs once a role of the issue is live again.
+A pause that reaches a role a moment after its turn ended waits for that turn's end copy the same way.
 A pod that ends during the pause, at a close, a park or an end from outside it, loses the work done since its last copy, as at any other time: the next pod restores that copy.
 Only an end from outside the pod leaves a kept volume standing with that work on it; a park or a linger deletes the kept volume too, and a close ends the issue's work.
 
@@ -7422,7 +7425,8 @@ Once the transaction has committed, the daemon asks the stop of each live role t
 The pause is answered then.
 The stops themselves run in the outbox, so a pause of several hundred roles does not wait on each of them.
 
-- An idle or ready role stops at once.
+- An idle or ready role stops at once, unless the copy of the issue's workspace that its last turn's end started is still being taken.
+  Then the stop waits for that copy, for at most 4 minutes from the turn's end, as the stop of a role in a turn does (below).
 
 - A role in a turn stops when that turn ends, with no deadline.
   The stop waits for the result of the turn's prompt, so a role whose turn a provider refused keeps its task and is owed a launch for it.

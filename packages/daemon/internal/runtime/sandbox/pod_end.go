@@ -593,8 +593,12 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 // read neither way charged as the claim's own death wherever that claim had work outstanding — so
 // each claim's own supervise line says what that claim got (supervise's endedFromOutside, died).
 // One line per pod end and not one per role: a pod's six roles end together, and the runtime knows
-// every watched claim whose locator names the pod. A reader of the line tells a restart an eviction
-// caused from one an out-of-memory kill caused.
+// every watched claim whose locator names the pod. A restart an eviction from outside the pod
+// caused has this line, and one an out-of-memory kill caused has none, which is how a reader tells
+// the two apart. An eviction for the pod's own use — `Evicted` with no DisruptionTarget condition,
+// or one for node pressure whose message names a container of the pod over its request
+// (evictedForItsOwnUse, evictedOverRequest) — is read neither way and has no line either, as such a
+// kill has none, so the line tells no such eviction from that kill.
 const podEndLine = "sandbox runtime: read what ended a watched pod"
 
 // logPodEnd writes that line for end, the reading just made of pod's end, where that reading

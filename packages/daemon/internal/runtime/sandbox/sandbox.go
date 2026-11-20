@@ -989,10 +989,13 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 // daemonSuspendedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
 // that end is a suspension with no words of its own: every suspension setMode sends, and each
 // suspendOver whose caller passes it as its act — an issue's close and release (endIssuePod), a
-// launch's suspension over a Sandbox already Suspended (relaunch) or of a pod whose end carries no
-// reason to record (suspendRecordingEnd), and a failed launch's (suspendFailedLaunch). It is
-// passed, never read from the shape of the patch, so it is recorded whichever patch suspends the
-// Sandbox: the JSON patch setMode sends, or the merge patch a reset mark makes of it (suspendOver).
+// launch's suspension of a pod whose end carries no reason to record (suspendRecordingEnd), and a
+// failed launch's (suspendFailedLaunch). suspendOver records it only where it suspends a Sandbox
+// not yet Suspended: one already Suspended takes no patch that ends its pod, so it records nothing
+// whatever act it is passed, and the launch that writes the reset mark on such a Sandbox (relaunch)
+// passes none. It is passed, never read from the shape of the patch, so it is recorded whichever
+// patch suspends the Sandbox: the JSON patch setMode sends, or the merge patch a reset mark makes of
+// it (suspendOver).
 const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
 
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first

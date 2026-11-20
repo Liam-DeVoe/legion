@@ -107,7 +107,7 @@ const (
 // death and no launch failure charged however often the cluster ends it. An Evicted end with no
 // DisruptionTarget condition, and a node-pressure eviction whose message names a container of the
 // pod over its memory or its ephemeral-storage request, are the pod's own and are counted as a
-// stop of each role's process (capturePodEnd, docs/kubernetes.md, "An end from outside the pod").
+// stop of each role's process (readPodEnd, docs/kubernetes.md, "An end from outside the pod").
 // A node disk-pressure eviction for the pod's own use of its emptyDir volumes on the node's disk
 // names no container, and is continued as a neighbour's.
 const (

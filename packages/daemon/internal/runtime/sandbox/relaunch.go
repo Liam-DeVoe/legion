@@ -327,8 +327,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// mark, so a launch that resets its kept volume for the pod's fault writes the mark in
 			// a patch of its own (suspendOver), before it waits the pod out and deletes the
 			// Sandbox. A launch that stops before that delete thus leaves the reset to the next
-			// launch.
-			if s, err = r.suspendOver(bounded, s, pod, daemonSuspendedAct, nil); err != nil {
+			// launch. That patch ends no pod, so it names no act: this case reads the Sandbox
+			// Suspended, where suspendOver records nothing whatever act it is passed and never
+			// reaches the suspension that refuses no act with no annotation.
+			if s, err = r.suspendOver(bounded, s, pod, "", nil); err != nil {
 				return fail("mark its kept volume for the reset", err)
 			}
 		}
@@ -1559,9 +1561,10 @@ func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *core
 // the caller's act records no end of the daemon's here, its own annotations recording what the act
 // needs: a displacement records its own end before it calls (suspendDisplacing), and a pod whose
 // end the patch records ended of its own (suspendRecordingEnd). An issue's close and release
-// (endIssuePod), a launch over a Sandbox already Suspended (relaunch), a launch's suspension of a
-// pod whose end carries no reason to record (suspendRecordingEnd) and a failed launch's suspension
-// (suspendFailedLaunch) pass daemonSuspendedAct. The end is recorded from act alone, before the
+// (endIssuePod), a launch's suspension of a pod whose end carries no reason to record
+// (suspendRecordingEnd) and a failed launch's suspension (suspendFailedLaunch) pass
+// daemonSuspendedAct. A launch over a Sandbox already Suspended (relaunch) passes "": its patch
+// writes the reset mark alone and ends no pod. The end is recorded from act alone, before the
 // patch is sent, and never from whether there are annotations, so the reset mark, which turns a
 // suspension with no annotation of the caller's into a merge patch, leaves what is recorded as the
 // suspension without it would have recorded.
@@ -1574,8 +1577,8 @@ func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *core
 // annotation has said neither what the daemon's end of the pod is nor what its own act records. A
 // Sandbox already Suspended takes a merge patch of the annotations alone (annotate), of those it
 // does not carry with the same value already, and no write where there is none; it records
-// nothing, since no such patch ends the pod. It returns the Sandbox as the patch left it, and s
-// where it wrote no merge patch.
+// nothing whatever act it is passed, since no such patch ends the pod. It returns the Sandbox as
+// the patch left it, and s where it wrote no merge patch.
 func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, act string, annotations map[string]*string) (*sandbox, error) {
 	if fault := volumeFault(s, pod); fault != "" {
 		if annotations == nil {

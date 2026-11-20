@@ -68,9 +68,11 @@ A push's copy would hold that work too, but a pod whose roles are idle may see n
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
 A stop held for a turn's end waits for that turn's end copy, for at most the copy's budget of 4 minutes and never past the stop's own deadline, and a copy that fails or times out lets the stop go.
-That stop is one asked while the turn ran, such as an operator's suspend, a project's pause or a tree's linger, which the daemon holds until the turn is over rather than cut the turn off; a turn with no stop held goes idle at once and takes its next task while its copy is built.
+That stop is one asked while the turn ran, such as an operator's suspend, a project's pause or a tree's linger, which the daemon holds until the turn is over rather than cut the turn off, unless that stop's own deadline comes first: an operator's suspend stops the agent mid-turn once its stop timeout has passed since it was asked.
+A turn with no stop held goes idle at once and takes its next task while its copy is built.
 The budget runs from the turn's end, and the stop's own deadline is the operator's stop timeout or a deadline the daemon names, such as the linger expiry of a carried child's old tree; a pause's stop names none.
-While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it again in that time is held with that stop.
+A suspension asked of a role whose turn-end copy is still being taken waits for that copy the same way, though nothing held it for the turn's end, so a pause or an operator's suspend that reaches a role a moment after its turn ended stops no process the copy is still asking.
+While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it in that time is held with that stop, except the suspend a fresh session makes (`legion claims retry --fresh-session`), which stops the role at once.
 A stop that waits for the result of the turn's prompt, as a pause's does, waits for the copy once that result has come.
 
 The copy a turn's end takes is asked of the role whose turn ended, in the process that turn ran in, which the daemon hands the copy before anything can stop that role, and a copy owed behind one in flight is asked of the role of the last turn's end that owed it.

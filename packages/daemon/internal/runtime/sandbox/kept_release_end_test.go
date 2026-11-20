@@ -23,14 +23,9 @@ func TestAReleaseEndsAPodWhoseInitFailedOnItsKeptVolumeAsTheDaemonsOwn(t *testin
 	if err := g.r.Suspend(g.ctx, old); err != nil {
 		t.Fatal(err)
 	}
-	ended := func(container string, code int32, reason string) corev1.ContainerStatus {
-		return corev1.ContainerStatus{Name: container, State: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{ExitCode: code, Reason: reason},
-		}}
-	}
 	g.editPod(name, "the pod store to see the failed init container", func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-			ended(fetchContainer, 0, "Completed"), ended(initContainer, 1, "Error"),
+			terminated(fetchContainer, 0, "Completed"), terminated(initContainer, 1, "Error"),
 		}}
 	})
 

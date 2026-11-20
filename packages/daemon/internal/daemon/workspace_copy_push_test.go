@@ -407,19 +407,6 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 			}
 		}
 	}
-	// holdBundler makes the bundler hold each copy until the call it answers is made.
-	holdBundler := func() func() {
-		release := make(chan struct{})
-		rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
-			select {
-			case <-release:
-			case <-ctx.Done():
-				return runtime.WorkspaceBundle{}, ctx.Err()
-			}
-			return copyRigBundle, nil
-		})
-		return func() { close(release) }
-	}
 	// entry is the issue's place in the cadence as it stands.
 	entry := func() runningCopy {
 		rig.w.copies.mu.Lock()
@@ -439,7 +426,7 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 	// A copy is in flight when the role goes and the push arrives: the push's copy finds no role
 	// while that copy still holds the issue's place, and is not owed behind it.
 	rig.setClaimState(t, "idle")
-	release := holdBundler()
+	release := rig.heldBundler()
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), nil)
 	rig.awaitAsks(t, 1)
 	rig.setClaimState(t, "suspended")
@@ -482,15 +469,7 @@ func TestAPushCopyThatFindsNoRoleBesideACopyInFlightLeavesTheOvertakenCopyOwingA
 	ctx := context.Background()
 	rig.clock.advance(0)
 	apply := rig.pushEngine(t)
-	release := make(chan struct{})
-	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return runtime.WorkspaceBundle{}, ctx.Err()
-		}
-		return copyRigBundle, nil
-	})
+	release := rig.heldBundler()
 	// The turn's end's copy is still being built when the role goes and the push arrives.
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), nil)
 	rig.awaitAsks(t, 1)
@@ -498,7 +477,7 @@ func TestAPushCopyThatFindsNoRoleBesideACopyInFlightLeavesTheOvertakenCopyOwingA
 	apply("c1", "c2")
 	rig.awaitUnsaved(t, runningCopyNoRole, 1)
 	rig.setClaimState(t, "idle")
-	close(release)
+	release()
 
 	rig.awaitLine(t, runningCopyOvertakenLine)
 	rig.awaitQuiet(t)

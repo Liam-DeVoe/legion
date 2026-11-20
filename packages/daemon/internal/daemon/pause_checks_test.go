@@ -98,7 +98,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// due five minutes on, on the wall clock (runningCopyPeriod), and once D's turn has ended W is
 	// in no turn and owes no retry, so a later copy of W that this test reads is the end of D's turn.
 	testwait.Eventually(t, "the cadence to copy W while D's turn runs", func() bool {
-		return slices.Contains(r.runningCopies(), W)
+		return slices.Contains(r.copiedIssues(), W)
 	})
 	r.parkRelaunch(E)
 	if started := r.linesOf(turnStartedLine(), A); len(started) != 0 {
@@ -156,13 +156,13 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// A's turn ends, and its process stops although its session reported background work. The
 	// turn ends straight into the pause's stop, and that stop waits for the copy the turn's end
 	// started, which asks A for X's workspace (supervise's waitForTurnCopy).
-	copiedX := len(r.runningCopies())
+	copiedX := len(r.copiedIssues())
 	r.handle(A, supervise.StreamTurnEnd{Claim: A})
 	if a := r.awaitState(A, supervise.StateSuspended, "A stops when its turn ends"); !a.Released() {
 		t.Fatalf("A after its turn is suspended by %s, want released", a.SuspendedBy)
 	}
-	if !slices.Contains(r.runningCopies()[copiedX:], X) {
-		t.Fatalf("the running copies since A's turn ended are %v, want X's: the end of A's turn is in no copy", r.runningCopies()[copiedX:])
+	if !slices.Contains(r.copiedIssues()[copiedX:], X) {
+		t.Fatalf("the running copies since A's turn ended are %v, want X's: the end of A's turn is in no copy", r.copiedIssues()[copiedX:])
 	}
 	if got := r.rt.suspendedOf(A); got != 1 {
 		t.Fatalf("A's process was stopped %d times, want once at its turn's end", got)
@@ -175,15 +175,15 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// waits for the prompt's result (supervise's stopWaitsForResult) and then for the copy the
 	// turn's end started, which the end handed D's claim, so it asks D for W's workspace whatever
 	// the stop that follows the result does.
-	copied := len(r.runningCopies())
+	copied := len(r.copiedIssues())
 	r.handle(D, supervise.StreamTurnEnd{Claim: D})
 	// The prompt's request id carries its delivery's id (the worker stream's promptDelivery), which
 	// is what the stream hands the machine.
 	dDelivery, _, _ := strings.Cut(dPrompt.ID, ".")
 	r.handle(D, supervise.StreamPromptResult{Claim: D, DeliveryID: dDelivery, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
 	d := r.awaitState(D, supervise.StateSuspended, "D stops when its turn ends")
-	if !slices.Contains(r.runningCopies()[copied:], W) {
-		t.Fatalf("the running copies since D's turn ended are %v, want W's: the end of D's turn is in no copy", r.runningCopies()[copied:])
+	if !slices.Contains(r.copiedIssues()[copied:], W) {
+		t.Fatalf("the running copies since D's turn ended are %v, want W's: the end of D's turn is in no copy", r.copiedIssues()[copied:])
 	}
 	if !d.Released() || d.Pending == nil || !strings.HasSuffix(d.Pending.Task, "Resume the existing phase work.") {
 		t.Fatalf("D after its turn = %s by %s holding %+v; want released and holding its task", d.State, d.SuspendedBy, d.Pending)

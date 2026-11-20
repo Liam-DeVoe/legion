@@ -1,8 +1,9 @@
 package supervise
 
 // The copy each turn's end owes (R1 of dispatch://INFRA-1117), as the machine meets it: it starts
-// the copy from the turn's end itself, and a stop held for that end waits for the copy before it
-// stops the process the copy asks, never longer than the copy's budget or the stop's own deadline.
+// the copy from the turn's end itself, and a stop held for that end, or asked while the copy is
+// still being taken, waits for the copy before it stops the process the copy asks, never longer
+// than the copy's budget or the stop's own deadline.
 
 import (
 	"context"
@@ -26,16 +27,18 @@ type turnCopy struct {
 // process. The daemon is handed the claim as it stands at the end, so its copy asks the shim of
 // the role whose turn ended, in the process recorded for it, and needs no read of the claims to
 // find a live role after the fact (Deps.CopyTurnEnd). The daemon decides which claims it copies:
-// it starts none for the controller, for a claim of no issue, or where it bundles no workspace,
-// and the machine then has no copy to wait for.
+// it starts none for the controller or for a claim of no issue, and none where it bundles no
+// workspace, keeps no store, is stopping or has not attached its workflow yet, and the machine
+// then has no copy to wait for.
 //
 // It returns at once, and nothing of the turn waits for the copy: a turn's end with no stop held
 // goes on to idle and to the next task while the copy is built (R2). What the copy is is only
-// what a stop held for this end waits on (waitForTurnCopy). A stop already waiting for an earlier
-// turn's copy — a turn that ended while the stop waited, one the daemon never saw begin among
-// them — waits for this copy instead, under this copy's budget: it holds the later end, and the
-// daemon takes it behind the earlier one (internal/daemon's runningCopies). A turn's end that
-// started no copy leaves the copy before it, if one is still being taken, as what a stop waits for.
+// what a stop held for this end, or asked while the copy is taken, waits on (waitForTurnCopy,
+// suspend). A stop already waiting for an earlier turn's copy — a turn that ended while the stop
+// waited, one the daemon never saw begin among them — waits for this copy instead, under this
+// copy's budget: it holds the later end, and the daemon takes it behind the earlier one
+// (internal/daemon's runningCopies). A turn's end that started no copy leaves the copy before it,
+// if one is still being taken, as what a stop waits for.
 func (m *Machine) copyTurnEnd() {
 	if m.deps.CopyTurnEnd == nil {
 		return
@@ -53,12 +56,13 @@ func (m *Machine) copyTurnEnd() {
 	}
 }
 
-// waitForTurnCopy is how a stop held for a turn's end waits for the copy that end started: it
-// reports whether the stop waits, and arms the wait's bound where it does. Every such stop asks
-// it before it runs — the turn's own end (turnEnded), the end of a compaction (compactEnded), and
-// the prompt's result a pause's hold waited for (stopAtResult) — because the stop takes the
-// process whose shim the copy is asking, and a copy cut off by it leaves the turn's end in no
-// copy at all once the role is stopped.
+// waitForTurnCopy is how a stop waits for the copy a turn's end started: it reports whether the
+// stop waits, and arms the wait's bound where it does. Every stop held for a turn's end asks it
+// before it runs — the turn's own end (turnEnded), the end of a compaction (compactEnded), and the
+// prompt's result a pause's hold waited for (stopAtResult) — and so does a suspension that reaches
+// a ready or idle claim while the copy of its last turn's end is still being taken, though nothing
+// held it for that end (suspend): the stop takes the process whose shim the copy is asking, and a
+// copy cut off by it leaves the turn's end in no copy at all once the role is stopped.
 //
 // The wait is bounded by the smaller of the copy's own budget, counted from the turn's end
 // (TimerTurnCopy at turnCopy.due), and what is left of the stop's own deadline: the operator's
@@ -71,9 +75,11 @@ func (m *Machine) copyTurnEnd() {
 //
 // The claim waits in the state the end gives it back in, ready or idle, holding the stop: it is
 // handed nothing (sendPending), and a suspension that reaches it meanwhile is held with this one
-// (suspend, holdRequest). The machine never waits on its own goroutine: the wait is this mark and
-// a timer, and the copy's end is an event of its own. No copy still being taken — the daemon
-// started none, or its end has come back — waits nothing, and the stop runs at once.
+// (suspend, holdRequest). A suspension that may not be held (RequestSuspend.NeverHold) waits for no
+// copy: its asker read the claim in no turn and is owed the stop at once. The machine never waits
+// on its own goroutine: the wait is this mark and a timer, and the copy's end is an event of its
+// own. No copy still being taken — the daemon started none, or its end has come back — waits
+// nothing, and the stop runs at once.
 func (m *Machine) waitForTurnCopy() bool {
 	c := m.turnCopy
 	if c == nil {
@@ -90,6 +96,19 @@ func (m *Machine) waitForTurnCopy() bool {
 // started (waitForTurnCopy).
 func (m *Machine) stopWaitsForTurnCopy() bool {
 	return m.held != nil && m.turnCopy != nil && m.turnCopy.stopWaits
+}
+
+// heldStopWaitsAtEnd is the wait of a stop held for the end of a turn or of a compaction for the
+// copy a turn's end started (waitForTurnCopy), made where that end gives the claim back in back
+// (turnEnded, compactEnded): it reports whether the stop waits, and where it does the claim is
+// given back in back, holding the stop, and that state is written and reported to the daemon as a
+// durable transition (durableWrite), as the end's own idle is. The error is that write's.
+func (m *Machine) heldStopWaitsAtEnd(ctx context.Context, back ClaimState) (bool, error) {
+	if !m.waitForTurnCopy() {
+		return false, nil
+	}
+	m.claim.State = back
+	return true, m.durableWrite(ctx, back, m.persist)
 }
 
 // turnCopyEnded is the end of the copy the claim's last turn's end started (TurnEndCopied),
@@ -123,10 +142,10 @@ func (m *Machine) endTurnCopyWait(ctx context.Context, bound bool) error {
 		m.log.Info("supervise: the copy of the turn's end is over and the claim is in a turn again; the held stop waits for that turn's end", "copy", c.seq)
 		return nil
 	}
+	write, line := m.log.Info, "supervise: the copy of the turn's end is over; the held stop runs now"
 	if bound {
-		m.log.Warn("supervise: the copy of the turn's end did not end within its budget; the held stop runs without it", "copy", c.seq, "due", c.due, "by", m.held.By)
-	} else {
-		m.log.Info("supervise: the copy of the turn's end is over; the held stop runs now", "copy", c.seq, "by", m.held.By)
+		write, line = m.log.Warn, "supervise: the copy of the turn's end did not end within its budget; the held stop runs without it"
 	}
+	write(line, "copy", c.seq, "due", c.due, "by", m.held.By)
 	return m.suspendHeld(ctx)
 }

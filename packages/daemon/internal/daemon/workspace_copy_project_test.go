@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -47,7 +46,7 @@ func TestACopyOfAnIssueTheProjectDoesNotRecordIsLoggedAndWritesNothing(t *testin
 			answer.At = time.Now().UTC()
 			rig.bundler.answers(answer, nil)
 
-			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 
 			line := rig.awaitLine(t, runningCopyUnsavedLine)
 			if line["reason"] != runningCopyNotRecorded || line["level"] != "INFO" || line["issue"] != rig.issue.Key ||

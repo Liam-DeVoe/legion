@@ -159,6 +159,29 @@ func (r *copyRig) setClaimState(t *testing.T, state string) {
 	}
 }
 
+// storedImplementer is the rig's implementer as the store holds it, which a test hands the copy
+// of a turn's end where the store records a process the machine's own claim does not
+// (setLocatorPod writes the store alone).
+func (r *copyRig) storedImplementer(t *testing.T) supervise.Claim {
+	t.Helper()
+	return r.storedClaim(t, r.token)
+}
+
+// heldBundler makes the rig's bundler hold every copy until the call it answers is made, and
+// then answer copyRigBundle.
+func (r *copyRig) heldBundler() func() {
+	release := make(chan struct{})
+	r.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		select {
+		case <-release:
+			return copyRigBundle, nil
+		case <-ctx.Done():
+			return runtime.WorkspaceBundle{}, ctx.Err()
+		}
+	})
+	return func() { close(release) }
+}
+
 // heldCopy is what an issue's running copy says of itself without its bytes, read off its row:
 // the store serves no such read, since nothing in the daemon decides on it but the restore's own
 // transaction (store.TakeWorkspaceCopyForRestore), and a test asks what the cadence stored.
@@ -581,7 +604,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			}
 			tc.fail(t, rig)
 
-			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 
 			line := rig.awaitLine(t, runningCopyUnsavedLine)
 			if got := line["reason"]; got != tc.reason {
@@ -605,7 +628,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			taken := copyRigBundle
 			taken.Bundle, taken.Head, taken.Tips, taken.At = []byte("PACK the work the next period copied"), "f00d", []string{"f00d"}, time.Now().UTC()
 			rig.bundler.answers(taken, nil)
-			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 			if stored, held := rig.facts(t); !held || stored.Size != len(taken.Bundle) {
 				t.Fatalf("the copy of the next period = %+v (held %v), want the %d bytes it took", stored, held, len(taken.Bundle))
 			}
@@ -639,7 +662,7 @@ func TestACopyWhoseTakeCannotReadTheStoresClockAsksNoShimAndKeepsTheIssuesCopy(t
 	closed.Close()
 	rig.w.copyStore = closed
 
-	rig.w.takeRunningCopy(ctx, rig.issue.Key, claims, slog.LevelWarn)
+	rig.w.takeRunningCopy(ctx, rig.issue.Key, claims)
 
 	line := rig.awaitLine(t, runningCopyUnsavedLine)
 	if got := line["reason"]; got != runningCopyClockUnread {
@@ -669,7 +692,7 @@ func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
 	empty.Bundle, empty.Head, empty.Tips, empty.At = nil, "", nil, time.Now().UTC()
 	rig.bundler.answers(empty, nil)
 
-	rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
+	rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 
 	if facts, held := rig.facts(t); held {
 		t.Fatalf("the issue still holds %+v, want the copy of work that has since been pushed dropped", facts)
@@ -724,7 +747,7 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	clock.advance(0)
 	copies := runningCopies{now: clock.Now}
 	for _, issue := range []string{"INFRA-1", "INFRA-2", "INFRA-4"} {
-		if !copies.begin(supervise.Claim{Issue: issue}) {
+		if !copies.begin(copyAsk{of: supervise.Claim{Issue: issue}}) {
 			t.Fatalf("the cadence refused the first copy of %s", issue)
 		}
 	}
@@ -732,7 +755,7 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	copies.done("INFRA-2", false)
 	copies.done("INFRA-4", true)
 	clock.advance(2 * runningCopyPeriod)
-	if !copies.begin(supervise.Claim{Issue: "INFRA-3"}) {
+	if !copies.begin(copyAsk{of: supervise.Claim{Issue: "INFRA-3"}}) {
 		t.Fatal("the cadence refused the first copy of INFRA-3")
 	}
 

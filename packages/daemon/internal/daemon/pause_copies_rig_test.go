@@ -40,9 +40,9 @@ func pauseOverrides(rt *pauseRuntime, record *built) overrides {
 	return o
 }
 
-// runningCopies is every issue the daemon's running copy has asked to bundle so far, in order,
+// copiedIssues is every issue the daemon's running copy has asked to bundle so far, in order,
 // through every boot of the rig.
-func (r *pauseDaemonRig) runningCopies() []string {
+func (r *pauseDaemonRig) copiedIssues() []string {
 	copies := r.o.copyBundler.(*pauseCopies)
 	copies.mu.Lock()
 	defer copies.mu.Unlock()

@@ -433,9 +433,8 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if m.held != nil {
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
-		if m.waitForTurnCopy() {
-			m.claim.State = run.back
-			if err := m.durableWrite(ctx, run.back, m.persist); err != nil {
+		if waits, err := m.heldStopWaitsAtEnd(ctx, run.back); waits {
+			if err != nil {
 				return err
 			}
 			return ErrCompactSuspended
