@@ -1,14 +1,14 @@
 // cmd/broker/airlock_reread_test.go
-// One row against the REAL compiled broker: a reread of a secret's name reaches the airlock's
-// proxy, so the values the proxy holds for a grant are read again before the next request is
-// decided. It is driven through the reread route a person actually uses — POST
+// Rows against the REAL compiled broker: a reread of a secret's name reaches the airlock's proxy,
+// so the values the proxy holds for a grant are read again before the next request is decided.
+// They are driven through the reread route a person actually uses — POST
 // /v1/secrets/{name}/reread on the broker's own port — rather than by calling the proxy's
-// DropName, because what this row is about is the wiring between the two.
+// DropName, because what these rows are about is the wiring between the two.
 //
-// What it reads is the audit trail: every read the proxy makes writes one grant.used row marked
-// airlock, which is the same row a session's own release writes. The profile the broker is given
+// What they read is the audit trail: every read the proxy makes writes one grant.used row marked
+// airlock, which is the same row a session's own release writes. Each profile the broker is given
 // allows no method or path at all, so every request through the proxy is refused by the
-// airlock's own decision — which runs after the values are read — and the row needs no service
+// airlock's own decision — which runs after the values are read — and the rows need no service
 // for the proxy to reach.
 package main
 
@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
@@ -75,36 +77,50 @@ func airlockOf(b podBroker, p pod, grantID string) (password string, slots map[s
 	return release.Airlock.ProxyPassword, slots
 }
 
-// TestARereadOfASecretReachesTheAirlocksProxy: a new version of a stored value moves neither the
-// policy's version nor the set of names it serves, so the reread of the name is the only signal
-// the broker gets that the value its proxy is holding is the old one. This row drives that
-// signal through the real route and reads, in the audit trail, that the proxy read the grant's
-// values again.
-func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
-	const (
-		podAudience  = "example-broker-pod"
-		service      = "example-service"
-		loginAccount = "system:serviceaccount:example-system:example-service-login"
-		podAccount   = "system:serviceaccount:example:example-worker"
-		secretName   = "AIRLOCK_TOKEN"
-		// boundHost is a name no resolver answers, which BROKER_AIRLOCK_TEST_RESOLVE gives
-		// boundAddress, RFC 5737's TEST-NET-1, so that the CONNECT this row makes is neither
-		// refused as a local address nor dependent on a resolver this process may not have, and
-		// no request of this test can reach the internet. The entry binds the name rather than
-		// the address, since the rules validation refuses an address literal: a TLS client sends
-		// no server name for one, and the airlock refuses a request whose server name is not its
-		// CONNECT host.
-		boundHost    = "reread.airlock.test"
-		boundAddress = "192.0.2.1"
-	)
+// The rows' service, its accounts and the pod audience their broker verifies.
+const (
+	rereadPodAudience  = "example-broker-pod"
+	rereadService      = "example-service"
+	rereadLoginAccount = "system:serviceaccount:example-system:example-service-login"
+	rereadPodAccount   = "system:serviceaccount:example:example-worker"
+	// rereadBoundAddress is RFC 5737's TEST-NET-1, which BROKER_AIRLOCK_TEST_RESOLVE gives each
+	// bound host, names no resolver answers, so that the CONNECT a row makes is neither refused
+	// as a local address nor dependent on a resolver this process may not have, and no request
+	// of these rows can reach the internet. An entry binds the name rather than the address,
+	// since the rules validation refuses an address literal: a TLS client sends no server name
+	// for one, and the airlock refuses a request whose server name is not its CONNECT host.
+	rereadBoundAddress = "192.0.2.1"
+)
+
+// airlockRereadRig is one compiled broker with an airlock, the one stored secret AIRLOCK_TOKEN
+// (the service's, agent tier, so its pod is granted at once) and the profiles it was started
+// with, and a pod of the service enrolled on it.
+type airlockRereadRig struct {
+	t                   *testing.T
+	broker              *brokerProcess
+	api                 podBroker
+	pod                 pod
+	databaseURL         string
+	db                  *pgx.Conn
+	certFile, proxyAddr string
+}
+
+// startAirlockReread starts the rig's broker serving profiles, the whole profiles file, with each
+// of hosts resolved to rereadBoundAddress.
+func startAirlockReread(t *testing.T, profiles string, hosts ...string) *airlockRereadRig {
+	t.Helper()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	writeWhole(t, fakeSecretsFile, `{"secrets": [
 		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
-		 "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "the-real-airlock-token"}
+		 "tags": {"owner": "`+rereadService+`", "tier": "agent"}, "value": "the-real-airlock-token"}
 	]}`)
+	resolve := make([]string, len(hosts))
+	for i, host := range hosts {
+		resolve[i] = host + "=" + rereadBoundAddress
+	}
 	certFile, keyFile := airlockCAFiles(t)
 	broker := startBroker(t, brokerOptions{Env: []string{
 		"BROKER_DATABASE_URL=" + databaseURL,
@@ -112,102 +128,162 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
-		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
-		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,
-		"BROKER_SERVICES=" + service + "=" + podAccount,
+		"BROKER_K8S_OIDC_AUDIENCE=" + rereadPodAudience,
+		"BROKER_SERVICE_LOGINS=" + rereadService + "=" + rereadLoginAccount,
+		"BROKER_SERVICES=" + rereadService + "=" + rereadPodAccount,
 		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
-		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
-		"BROKER_PROFILES_FILE=" + profilesFile(t,
-			`{"profiles": [{"name": "`+secretName+`", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`),
+		"BROKER_AIRLOCK_TEST_RESOLVE=" + strings.Join(resolve, " "),
+		"BROKER_PROFILES_FILE=" + profilesFile(t, profiles),
 	}})
 	requireHealthy(t, broker.Addr)
-	proxyAddr := airlockProxyAddr(t, broker)
+	r := &airlockRereadRig{t: t, broker: broker, databaseURL: databaseURL, certFile: certFile, proxyAddr: airlockProxyAddr(t, broker)}
+	r.api = podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: rereadPodAudience}
+	r.pod = r.api.enroll(r.api.logIn(rereadService, rereadLoginAccount), "airlock-pod", rereadPodAccount, "")
+	r.db = connectToBroker(t, databaseURL)
+	return r
+}
 
-	api := podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: podAudience}
-	launcher := api.logIn(service, loginAccount)
-	p := api.enroll(launcher, "airlock-pod", podAccount, "")
-	granted := api.ask(p, secretName)
+// proxied is a grant of name the rig's pod is granted at once, and a command's own client of it:
+// the proxy as its HTTPS_PROXY with the grant's password, the broker's airlock authority as the
+// one thing it trusts, and the placeholder it puts where the token would be.
+type proxied struct {
+	grantID, placeholder string
+	client               *http.Client
+}
+
+// grant asks for name as the rig's pod and opens the command's client of the grant.
+func (r *airlockRereadRig) grant(name string) proxied {
+	r.t.Helper()
+	granted := r.api.ask(r.pod, name)
 	if granted.GrantID == nil {
-		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
+		r.t.Fatalf("the pod's request for %s = %+v, want a grant at once", name, granted)
 	}
-	grantID := *granted.GrantID
-	password, slots := airlockOf(api, p, grantID)
+	password, slots := airlockOf(r.api, r.pod, *granted.GrantID)
 	placeholder := slots[requests.SlotValue]
 	if password == "" || placeholder == "" {
-		t.Fatalf("the release carries no proxy password or no value placeholder: %q, %v", password, slots)
+		r.t.Fatalf("the release of %s carries no proxy password or no value placeholder: %q, %v", name, password, slots)
 	}
-
-	// A command's own client: the proxy as its HTTPS_PROXY, the broker's airlock authority as
-	// the one thing it trusts, and the placeholder where the token would be.
 	anchor := x509.NewCertPool()
-	certificate, err := os.ReadFile(certFile)
+	certificate, err := os.ReadFile(r.certFile)
 	if err != nil {
-		t.Fatal(err)
+		r.t.Fatal(err)
 	}
 	if !anchor.AppendCertsFromPEM(certificate) {
-		t.Fatalf("the airlock authority's certificate did not parse: %s", certFile)
+		r.t.Fatalf("the airlock authority's certificate did not parse: %s", r.certFile)
 	}
-	proxyURL, err := url.Parse("http://agent:" + password + "@" + proxyAddr)
+	proxyURL, err := url.Parse("http://agent:" + password + "@" + r.proxyAddr)
 	if err != nil {
-		t.Fatal(err)
+		r.t.Fatal(err)
 	}
-	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+	return proxied{grantID: *granted.GrantID, placeholder: placeholder, client: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: &tls.Config{RootCAs: anchor, MinVersion: tls.VersionTLS12},
-	}}
-	call := func(path string) {
-		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.Header.Set("Authorization", "Bearer "+placeholder)
-		answer, err := client.Do(request)
-		if err != nil {
-			t.Fatalf("GET %s through the airlock's proxy: %v", path, err)
-		}
-		defer answer.Body.Close()
-		// The entry's allow list is empty, which allows nothing, so the decision refuses every
-		// request - after the values the decision needs have been read, which is what this row
-		// counts - and nothing is forwarded or dialled.
-		body, _ := io.ReadAll(answer.Body)
-		if answer.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "not allowed by rule") {
-			t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the entry allows nothing", path, answer.StatusCode, body)
-		}
-	}
+	}}}
+}
 
-	ctx := context.Background()
-	db := connectToBroker(t, databaseURL)
-	// Every read the proxy makes writes one grant.used row marked airlock; a session's own
-	// release writes one without that mark, which is why the mark is in the predicate.
-	proxyReads := func() int {
-		t.Helper()
-		var reads int
-		if err := db.QueryRow(ctx, `select count(*) from audit
-			where kind='grant.used' and grant_id=$1 and detail->>'airlock'='true'`, grantID).Scan(&reads); err != nil {
-			t.Fatalf("count the proxy's reads of grant %s: %v", grantID, err)
-		}
-		return reads
+// call sends GET https://host/path through the proxy on g's client. The entry's allow list is
+// empty, which allows nothing, so the decision refuses every request - after the values the
+// decision needs have been read, which is what these rows count - and nothing is forwarded or
+// dialled.
+func (r *airlockRereadRig) call(g proxied, host, path string) {
+	r.t.Helper()
+	request, err := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	if err != nil {
+		r.t.Fatal(err)
 	}
+	request.Header.Set("Authorization", "Bearer "+g.placeholder)
+	answer, err := g.client.Do(request)
+	if err != nil {
+		r.t.Fatalf("GET %s through the airlock's proxy: %v", path, err)
+	}
+	defer answer.Body.Close()
+	body, _ := io.ReadAll(answer.Body)
+	if answer.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "not allowed by rule") {
+		r.t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the entry allows nothing", path, answer.StatusCode, body)
+	}
+}
 
-	call("/v1/first")
-	if reads := proxyReads(); reads != 1 {
-		t.Fatalf("the proxy read the grant's values %d times for its first request; want once", reads)
+// proxyReads counts the proxy's reads of g's values: every read the proxy makes writes one
+// grant.used row marked airlock; a session's own release writes one without that mark, which is
+// why the mark is in the predicate.
+func (r *airlockRereadRig) proxyReads(g proxied) int {
+	r.t.Helper()
+	var reads int
+	if err := r.db.QueryRow(context.Background(), `select count(*) from audit
+		where kind='grant.used' and grant_id=$1 and detail->>'airlock'='true'`, g.grantID).Scan(&reads); err != nil {
+		r.t.Fatalf("count the proxy's reads of grant %s: %v", g.grantID, err)
 	}
-	call("/v1/second")
-	if reads := proxyReads(); reads != 1 {
-		t.Fatalf("the proxy read the grant's values %d times for two requests; want once: the answer is held", reads)
-	}
+	return reads
+}
 
-	if status, _, reread := broker.sessionReread(t, databaseURL, secretName); status != http.StatusOK || reread["served"] != true {
-		t.Fatalf("a session's reread of %s = status %d, %v; want 200 and served", secretName, status, reread)
+// reread rereads name through the route a session uses, failing r's test unless the broker
+// serves the stored secret it read.
+func (r *airlockRereadRig) reread(name string) {
+	r.t.Helper()
+	if status, _, reread := r.broker.sessionReread(r.t, r.databaseURL, name); status != http.StatusOK || reread["served"] != true {
+		r.t.Fatalf("a session's reread of %s = status %d, %v; want 200 and served", name, status, reread)
 	}
+}
 
-	call("/v1/third")
-	if reads := proxyReads(); reads != 2 {
-		t.Fatalf("the proxy read the grant's values %d times after the reread; want twice: the reread of the name is what says the value may be new", reads)
+// requireReads fails r's test unless the proxy has read g's values want times, saying when.
+func (r *airlockRereadRig) requireReads(g proxied, want int, when string) {
+	r.t.Helper()
+	if reads := r.proxyReads(g); reads != want {
+		r.t.Fatalf("the proxy read grant %s's values %d times %s; want %d", g.grantID, reads, when, want)
 	}
+}
+
+// TestARereadOfASecretReachesTheAirlocksProxy: a new version of a stored value moves neither the
+// policy's version nor the set of names it serves, so the reread of the name is the only signal
+// the broker gets that the value its proxy is holding is the old one. This row drives that
+// signal through the real route and reads, in the audit trail, that the proxy read the grant's
+// values again.
+func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
+	const boundHost = "reread.airlock.test"
+	r := startAirlockReread(t,
+		`{"profiles": [{"name": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`,
+		boundHost)
+	token := r.grant("AIRLOCK_TOKEN")
+
+	r.call(token, boundHost, "/v1/first")
+	r.requireReads(token, 1, "for its first request")
+	r.call(token, boundHost, "/v1/second")
+	r.requireReads(token, 1, "for two requests: the answer is held")
+
+	r.reread("AIRLOCK_TOKEN")
+	r.call(token, boundHost, "/v1/third")
+	r.requireReads(token, 2, "after the reread: the reread of the name is what says the value may be new")
+}
+
+// TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt: the proxy holds a grant's values
+// by the name the grant was released under, which for a profile of another name is the
+// profile's and not its source's. So a reread of the source AIRLOCK_TOKEN, which a `secret put`
+// of a new value makes, has the proxy read the values of a grant of its profile AIRLOCK_READ
+// again, and a reread of AIRLOCK_READ, which rereads that same stored value, has it read the
+// values of a grant of the sibling profile AIRLOCK_SECOND again too, rather than going on
+// swapping the old value into their requests until each grant ends: a stored value has no expiry.
+func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
+	const readHost, secondHost = "read.airlock.test", "second.airlock.test"
+	r := startAirlockReread(t, `{"profiles": [
+		{"name": "AIRLOCK_READ", "source": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+readHost+`"], "headers": ["authorization"], "allow": []}},
+		{"name": "AIRLOCK_SECOND", "source": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+secondHost+`"], "headers": ["authorization"], "allow": []}}
+	]}`, readHost, secondHost)
+	read, second := r.grant("AIRLOCK_READ"), r.grant("AIRLOCK_SECOND")
+	r.call(read, readHost, "/v1/first")
+	r.call(second, secondHost, "/v1/first")
+	r.requireReads(read, 1, "for its first request")
+	r.requireReads(second, 1, "for its first request")
+
+	r.reread("AIRLOCK_TOKEN")
+	r.call(read, readHost, "/v1/second")
+	r.requireReads(read, 2, "after a reread of its source")
+	r.call(second, secondHost, "/v1/second")
+	r.requireReads(second, 2, "after a reread of its source")
+
+	r.reread("AIRLOCK_READ")
+	r.call(second, secondHost, "/v1/third")
+	r.requireReads(second, 3, "after a reread of its sibling profile, which rereads their one source")
 }

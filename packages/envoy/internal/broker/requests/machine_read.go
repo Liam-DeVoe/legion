@@ -142,10 +142,10 @@ type grantRelease struct {
 // policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to)
 // — that the current policy still allows the session, with the names its operator withheld from
 // it, every granted name under the login that decided it, or, for a grant the model judge
-// decided, under the judge the rules still give that name (stillAllowed), that no granted name's
-// max-grant is now shorter than the lifetime the grant's request signed (overMaxGrant), and that
-// no granted name's profile has changed since the request recorded its fingerprint, which ends
-// the grant for good.
+// decided, under the judge the rules still give that name (stillAllowed), and that no granted
+// name's max-grant is now shorter than the lifetime the grant's request signed (overMaxGrant).
+// On every release, whatever the version says, no granted name's profile may differ from the
+// one its request recorded as decided under, which ends the grant for good.
 //
 // For a person's pod, the session is the pod as requester reads it now. When the setting no
 // longer maps the pod's account to its person, an automatic grant the pod got as that person is
@@ -200,16 +200,19 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
-		if err != nil {
+	recheck := policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr)
+	var requester policy.Requester
+	if recheck {
+		if requester, err = m.requester(ctx, m.Store.Pool, enr); err != nil {
 			return grantRelease{}, err
 		}
-		for _, g := range granted {
+	}
+	for _, g := range granted {
+		if recheck {
 			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
-				// A grant whose frozen source is not the one the name is served from now (its type
-				// was changed or removed) ends for good: setting the type back serves the same
-				// source again, and the grant must not come back with it. So does one whose
+				// A grant whose frozen source is not the one the name is served from now (its
+				// type was changed or removed) ends for good: setting the type back serves the
+				// same source again, and the grant must not come back with it. So does one whose
 				// requesters tag no longer lists this session: listing the person again must not
 				// revive a grant made while they were off the list. So does a judged grant of a
 				// secret the policy now tags as an administrator's: a person approves every
@@ -221,22 +224,23 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 				return grantRelease{}, err
 			}
 			// A max-grant added or lowered since the request was decided ends this grant for
-			// good, as a raise later must not bring it back: the version covers the tag, so this
-			// runs whenever it moved.
+			// good, as a raise later must not bring it back: the version covers the tag, so
+			// this runs whenever it moved.
 			if limit, over := overMaxGrant(set, g.name, lifetime); over {
 				return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %w: %s now allows grants of at most %s", ErrGrantNotLive, ErrGrantRequiresLifetime, g.name, limit))
 			}
-			// A name whose profile is not the one its request recorded ends this grant for
-			// good: what was granted was decided under the old entry, so putting the entry
-			// back does not bring the grant back. The comparison is per name, so only the
-			// grants an entry's change affects end. It sits inside this block because an
-			// entry's change moves the policy version (policy.NewSet folds the fingerprint
-			// in), so the block runs whenever any entry changed and the common path pays
-			// nothing for this. During a roll the two pods may read different files for a
-			// moment; a grant the one with the newer file ends is simply asked for again.
-			if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
-				return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, g.name))
-			}
+		}
+		// A name whose profile is not the one its request recorded ends this grant for good:
+		// what was granted was decided under the old entry, so putting the entry back does not
+		// bring the grant back. The comparison is per name, so only the grants an entry's change
+		// affects end. It runs on every release, outside the re-check the version gates: an
+		// approval records the entry it was given under and leaves the request's version as it
+		// was (decidedUnder), so a file that rolls back to the entry the request was made under
+		// brings the version back to the request's while the grant was decided under another
+		// entry. During a roll the two pods may read different files for a moment; a grant the
+		// one with the newer file ends is simply asked for again.
+		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
+			return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, g.name))
 		}
 	}
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
@@ -1698,14 +1702,19 @@ type RecordDetail struct {
 }
 
 // RecordProfile is one profile a record asks for: its name, its entry of the profiles file as the
-// live policy serves it, and the target the record's signed request narrows it to
-// (record.AuthorizationDetail.Target), worded as a refusal of a target words one (targetWords),
-// "" for a record that names none. The profile is the live one, not one frozen with the record:
-// an edit of the entry since the request ends the grant an approval would make (checkRelease), so
-// what an approval can release is what the live entry says.
+// live policy serves it, that entry's fingerprint (policy.Secret.ProfileDigest), and the target
+// the record's signed request narrows it to (record.AuthorizationDetail.Target), worded as a
+// refusal of a target words one (targetWords), "" for a record that names none. The profile is
+// the live one, not one frozen with the record: an approval binds its grant to the entry live
+// when it is given (decidedUnder), however the entry was when the request was made, and an edit
+// of the entry after the approval ends that grant (checkRelease). So what an approval can release
+// is what the live entry says, and the approval page binds a person's approval to the entry it
+// printed by carrying Digest back in its decision form, refusing the approval when the live
+// fingerprint is another.
 type RecordProfile struct {
 	Name    string
 	Profile *policy.Profile
+	Digest  string
 	Target  string
 }
 
@@ -1767,9 +1776,9 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		if !agentSecret {
 			continue
 		}
-		if profile := set.Secrets[d.Identifier].Profile; profile != nil {
+		if served := set.Secrets[d.Identifier]; served.Profile != nil {
 			account, repositories := d.Target()
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: profile, Target: targetWords(account, repositories)})
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: targetWords(account, repositories)})
 		}
 	}
 	detail := RecordDetail{

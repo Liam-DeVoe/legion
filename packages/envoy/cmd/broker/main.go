@@ -262,14 +262,14 @@ func main() {
 	// notification — are wired before it is built: the listener's goroutine is already running
 	// when it is stored, so the store and those reads are on different goroutines.
 	var airlockProxy atomic.Pointer[airlockproxy.Server]
-	// dropAirlockName is what one reread of a secret's name does to the proxy: it drops that
-	// name's value from every grant the proxy holds values for, so the next request of such a
-	// grant reads the value again and mints again from it. The reread of the name is the
-	// signal, not the policy version: a new version of a secret's value moves neither the
-	// policy's version nor the set of names it serves, so nothing else this process sees says
-	// that the value the proxy is holding is the old one. Nothing to do when there is no
-	// proxy, which is both a deployment with no airlock and the window between the listener
-	// starting and the proxy being built.
+	// dropAirlockName is what one reread of a secret's name does to the proxy, for each name the
+	// reread may have given a new value (dropReread): it drops that name's value from every
+	// grant the proxy holds values for, so the next request of such a grant reads the value again
+	// and mints again from it. The reread of the name is the signal, not the policy version: a
+	// new version of a secret's value moves neither the policy's version nor the set of names it
+	// serves, so nothing else this process sees says that the value the proxy is holding is the
+	// old one. Nothing to do when there is no proxy, which is both a deployment with no airlock
+	// and the window between the listener starting and the proxy being built.
 	dropAirlockName := func(name string) {
 		if proxy := airlockProxy.Load(); proxy != nil {
 			proxy.DropName(name)
@@ -681,8 +681,8 @@ func main() {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from
 			// the airlock proxy's own cache before the peers are told, since the reread of the
-			// name is the signal (dropAirlockName).
-			dropAirlockName(name)
+			// name is the signal (dropReread).
+			dropReread(current, name, dropAirlockName)
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
@@ -1085,7 +1085,7 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
 // told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
-// proxy may be holding the old value of that name: dropAirlockName drops it whatever the reread
+// proxy may be holding the old value of that name: dropReread drops it whatever the reread
 // answered, since the reread of the name is the signal. A reread whose context ended during its
 // value read alone (policy.ErrValueUnchecked) has merged the tags it read, which this pod now
 // serves, so it is a reread that ran: it answers nil, and the next load reads the value again.
@@ -1093,11 +1093,25 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 func peerReread(current *policy.Current, dropAirlockName func(string)) func(context.Context, string) error {
 	return func(ctx context.Context, name string) error {
 		_, err := current.RefreshOne(ctx, name)
-		dropAirlockName(name)
+		dropReread(current, name, dropAirlockName)
 		if errors.Is(err, policy.ErrValueUnchecked) {
 			return nil
 		}
 		return err
+	}
+}
+
+// dropReread drops from the airlock proxy's held values, through drop, every name a reread of
+// name may have given a new value (policy.Current.RereadNames): the stored secret it read, and
+// each profile served from that secret. The proxy holds a grant's values by the name the grant
+// was released under, which for a profile of another name is the profile's own, so a reread of a
+// source drops its profiles, and a reread of a profile drops its source and its sibling
+// profiles; dropping the reread name alone left the old value in every request of the others
+// until their grants ended, and a stored value has no expiry. The mapping is the live policy's,
+// which is the one RefreshOne reads by.
+func dropReread(current *policy.Current, name string, drop func(string)) {
+	for _, affected := range current.RereadNames(name) {
+		drop(affected)
 	}
 }
 

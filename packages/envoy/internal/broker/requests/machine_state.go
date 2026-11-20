@@ -90,10 +90,13 @@ var (
 	// ErrRequestPending means this session already has a person deciding one of the requested
 	// names. Its returned error names that pending request.
 	ErrRequestPending = errors.New("a request for one or more of these secrets is already pending")
-	// ErrTargetRefused is Create's refusal of the target a request's signed locations name
-	// (record.AuthorizationDetail.Target), before anybody is asked: one outside its profile, one
-	// on a name with no github block, or none on a value-token profile that names more than one
-	// account. Its returned error names the profile's accounts and repositories.
+	// ErrTargetRefused is the refusal of the target a request's signed locations name
+	// (record.AuthorizationDetail.Target) that its profile cannot serve: one outside its profile,
+	// one on a name with no github block, or none on a value-token profile that names more than
+	// one account. Create refuses it before anybody is asked, an approval refuses it again where a
+	// profiles roll since the request took the target out of its profile (checkTarget), and a
+	// release mints nothing for it (gitHubScope). Its returned error names the profile's accounts
+	// and repositories.
 	ErrTargetRefused = errors.New("the request's target is refused")
 	// ErrSessionIDInvalid: the request's own session_id override (requests.session_id — an
 	// unsigned claim any enrolled process may send, never verified against a signature) is too
@@ -115,7 +118,7 @@ func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
 var refusals = []error{
 	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
-	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+	ErrRequestPending, ErrTargetRefused, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
 }
 
 // IsRefusal reports whether err is one of this package's own refusals, as against a read that
@@ -834,14 +837,16 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	return req, nil
 }
 
-// checkTarget is Create's refusal of a request's target (ErrTargetRefused), nil where every name
-// can be served with it. account and repositories are the target the request's signed locations
-// name, "" for none; set is the snapshot Create evaluates names against. A name set does not serve
-// is passed over, since the evaluation answers it with the policy's own error. A target outside a
-// name's profile, and a target on a name with no github block, are gitHubScope's refusal, the
-// rule the release mints by. A value-token profile, whose release is one account's bare token,
-// asked for with no target while more than one account is in effect is refused too: the minter
-// would refuse that release (secrets.GitHubScope), and here nobody is asked to approve it first.
+// checkTarget is the refusal of a request's target (ErrTargetRefused) that Create makes, and an
+// approval that would grant makes again (applyDecisionAttempt), nil where every name can be
+// served with it. account and repositories are the target the request's signed locations name,
+// "" for none; set is the snapshot Create or the approval evaluates names against. A name set
+// does not serve is passed over, since the evaluation answers it with the policy's own error. A
+// target outside a name's profile, and a target on a name with no github block, are gitHubScope's
+// refusal, the rule the release mints by. A value-token profile, whose release is one account's
+// bare token, asked for with no target while more than one account is in effect is refused too:
+// the minter would refuse that release (secrets.GitHubScope), and here nobody is asked to approve
+// it first.
 func checkTarget(set *policy.Set, names []string, account string, repositories []string) error {
 	for _, name := range names {
 		served, ok := set.Secrets[name]
@@ -2162,6 +2167,22 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		return Decision{}, false, fmt.Errorf("decide record %s: %w", recordID, ErrJudgeHoldEnded)
 	case !who.isJudge() && held:
 		return Decision{}, false, fmt.Errorf("decide record %s: %w", recordID, ErrJudgeHolds)
+	}
+	// An approval that would grant holds the request's target to the profile it is given under,
+	// as Create held it to the profile the request was made under: the request may have waited
+	// across a profiles roll that took the target's account or repositories out of its profile.
+	// Refused here, before decidedUnder binds the grant to the new entry's fingerprint, rather
+	// than granted with every release refusing the target (gitHubScope); the request stays
+	// pending for its approver, or for a profile that holds the target again.
+	if approve && mayGrant && denied == nil {
+		names := make([]string, len(requested))
+		for i, g := range requested {
+			names[i] = g.name
+		}
+		account, repositories := obj.Details[0].Target()
+		if err := checkTarget(set, names, account, repositories); err != nil {
+			return Decision{}, false, err
+		}
 	}
 
 	event, by := "denied", who.actor()

@@ -316,6 +316,31 @@ func profileLookup(set *Set, name string) Lookup {
 	return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}
 }
 
+// RereadNames is every name a reread of name may have given a new value: the stored secret the
+// reread reads, which is name or, for a profile's name, the profile's source (RefreshOne), and
+// each profile of that source in the live policy (Set.ProfilesOf), since every one of them is
+// served from that one stored value. The airlock's proxy holds a grant's values by the name the
+// grant was released under, a profile's own name for a profile, so a reread drops each of these
+// from it (cmd/broker), and a new value of a source reaches every profile of it rather than only
+// a grant of the name that was reread. A name no profile is of, or that the policy has never
+// heard of, is itself alone.
+func (c *Current) RereadNames(name string) []string {
+	source := name
+	if profile := c.loader.Profiles.Lookup(name); profile != nil {
+		source = profile.Source
+	}
+	names := []string{source}
+	for _, profile := range c.Get().ProfilesOf[source] {
+		if !slices.Contains(names, profile) {
+			names = append(names, profile)
+		}
+	}
+	if !slices.Contains(names, name) {
+		names = append(names, name)
+	}
+	return names
+}
+
 // reread is RefreshOne up to its value read, under the writer lock: the reread, its merge into
 // base and the publish of a change, answering the reread's Lookup and the value read it calls for
 // (listOne), if any.

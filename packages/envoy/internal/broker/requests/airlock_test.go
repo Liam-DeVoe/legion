@@ -190,3 +190,38 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)
 	}
 }
+
+// TestAGrantDecidedUnderAnotherEntryEndsWhenTheVersionReturnsToTheRequests: an approval records
+// the entry it was given under (decidedUnder) and leaves the request's policy version as the
+// request was written under, so a profiles file that rolls from one entry to another while the
+// card waits, is approved under the second, and then rolls back to the first brings the live
+// version back to the request's own. The release compares each name's fingerprint all the same,
+// whatever the version says: what the person approved was the second entry, and the first, which
+// may be the wider, is not what was granted. The grant ends for good, as any other moved entry
+// ends it.
+func TestAGrantDecidedUnderAnotherEntryEndsWhenTheVersionReturnsToTheRequests(t *testing.T) {
+	one, two := proxied("one.example.com", "SHARED_KEY"), proxied("two.example.com", "SHARED_KEY")
+	m, enr, key := newAirlockFixture(t, one)
+	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
+	}
+	written := m.PolicyVersion()
+
+	rollProfiles(t, m, two)
+	decided, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
+	if err != nil || decided.GrantID == "" {
+		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decided, err)
+	}
+	rollProfiles(t, m, one)
+	if got := m.PolicyVersion(); got != written {
+		t.Fatalf("the policy version after the roll back = %q; want the request's own %q, which is the case this row is about", got, written)
+	}
+	if release, err := m.Values(t.Context(), decided.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values under the entry the request was made under, not the one it was approved under = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
+	}
+	if by, audits := endedForGood(t, m, decided.GrantID); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)
+	}
+}

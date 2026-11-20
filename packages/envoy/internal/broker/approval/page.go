@@ -81,11 +81,13 @@ type recordView struct {
 
 // profileView is one profile a record asks for as the page prints it: its name and its source,
 // and, for a GitHub profile, its accounts, its repositories, its permissions and the target the
-// record narrows it to, and, for a profile behind the proxy, the hosts its credential may go to.
-// A field the profile has none of is "", and the page prints no line for it.
+// record narrows it to, for a Google profile the scopes its token is minted for, and, for a
+// profile behind the proxy, the hosts its credential may go to. A field the profile has none of
+// is "", and the page prints no line for it.
 type profileView struct {
 	Name, Source                                string
 	Accounts, Repositories, Permissions, Target string
+	GoogleScopes                                string
 	ProxyHosts                                  string
 }
 
@@ -109,6 +111,9 @@ func profileViewOf(p requests.RecordProfile) profileView {
 		v.Permissions = strings.Join(levels, ", ")
 		v.Target = cmp.Or(p.Target, "none: the whole profile above")
 	}
+	if block := p.Profile.Google; block != nil {
+		v.GoogleScopes = strings.Join(block.Scopes, ", ")
+	}
 	if proxy := p.Profile.Proxy; proxy != nil {
 		v.ProxyHosts = strings.Join(proxy.Hosts, ", ")
 	}
@@ -116,11 +121,26 @@ func profileViewOf(p requests.RecordProfile) profileView {
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
-// a button, the token binding them to the session, and its expiry.
+// a button, the token binding them to the session, its expiry, and the fingerprint of each
+// profile those records ask for as the page printed it (profileDigestFields), which an approval
+// is refused against when the live one is another (profilesMoved).
 type tokenFields struct {
-	Printed []string
-	Token   string
-	Expires string
+	Printed  []string
+	Token    string
+	Expires  string
+	Profiles []string
+}
+
+// profileDigestFields are the profile_digest fields a decision form carries for the profiles d
+// asks for, one each: the record's id, the profile's name and its fingerprint as the page printed
+// it, separated by single spaces. None of the three holds a space: a record id is hex, a secret's
+// name is letters, digits and underscores, and a fingerprint is hex.
+func profileDigestFields(d requests.RecordDetail) []string {
+	fields := make([]string, len(d.Profiles))
+	for i, profile := range d.Profiles {
+		fields[i] = d.RecordID + " " + profile.Name + " " + profile.Digest
+	}
+	return fields
 }
 
 // pageView is the record page.
@@ -194,9 +214,10 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		writeUnavailable(w, "read the decided requests", err)
 		return
 	}
-	var printed []string
+	var printed, digests []string
 	if main.Buttons {
 		printed = append(printed, id)
+		digests = append(digests, profileDigestFields(detail)...)
 	}
 	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
@@ -219,11 +240,12 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		if v := p.recordView(other, sess.Login, now); v.Buttons {
 			view.Records = append(view.Records, v)
 			printed = append(printed, v.ID)
+			digests = append(digests, profileDigestFields(other)...)
 		}
 	}
 	if len(printed) > 0 {
 		expires := now.Add(tokenLifetime).Unix()
-		view.Form = tokenFields{Printed: printed, Token: pageToken(sess.secret, expires, printed), Expires: strconv.FormatInt(expires, 10)}
+		view.Form = tokenFields{Printed: printed, Token: pageToken(sess.secret, expires, printed), Expires: strconv.FormatInt(expires, 10), Profiles: digests}
 	}
 	if len(printed) > 1 {
 		view.ApproveAll = printed
@@ -442,10 +464,13 @@ func firstRecordID(values []string) string {
 // answers 200 with a page linking the first record the form names: the page's
 // Content-Security-Policy has form-action 'self', which forbids answering a form post with a
 // redirect to the sign-in provider, so the person follows that link and signs in from the
-// record's own page. Each record is then decided on its own by requests.Machine.ApplyDecision as
-// the session's person, so who may decide, the current policy and RECORD_TERMINAL stay that
-// function's: a replayed form decides nothing again. It answers 303 to the first record's page
-// with the decided ids, whose outcomes that page reads from the records themselves.
+// record's own page. An approval is refused too, deciding nothing, when a record it names asks
+// for a profile whose live fingerprint is not the one its page printed (profilesMoved): a
+// profiles roll between the page and the click would otherwise grant a scope the person did not
+// read. Each record is then decided on its own by requests.Machine.ApplyDecision as the session's
+// person, so who may decide, the current policy and RECORD_TERMINAL stay that function's: a
+// replayed form decides nothing again. It answers 303 to the first record's page with the
+// decided ids, whose outcomes that page reads from the records themselves.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
 		refuseOrigin(w)
@@ -501,6 +526,18 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 			return
 		}
 	}
+	if approve {
+		moved, err := p.profilesMoved(r.Context(), decide, profileDigests(form["profile_digest"]))
+		if err != nil {
+			writeUnavailable(w, "read the requests", err)
+			return
+		}
+		if moved {
+			writeMessage(w, http.StatusForbidden, codeProfileChanged, say("Profile changed",
+				"A profile this page printed has changed since the page was made, so nothing was decided. Open the request again to read what an approval grants now."))
+			return
+		}
+	}
 	decided := false
 	for _, id := range decide {
 		outcome, made := p.decide(r.Context(), id, approve, sess.Login)
@@ -516,6 +553,55 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		p.recordDecision(r.Context())
 	}
 	redirect(w, http.StatusSeeOther, "/approve/"+decide[0]+"?decided="+strings.Join(decide, ","))
+}
+
+// profileDigests reads a decision form's profile_digest fields (profileDigestFields) as each
+// record's profiles and the fingerprint the page printed for each. A field that is not three
+// words is left out, so the profile it would have named reads as one the page printed no
+// fingerprint for.
+func profileDigests(values []string) map[string]map[string]string {
+	digests := map[string]map[string]string{}
+	for _, value := range values {
+		words := strings.Fields(value)
+		if len(words) != 3 {
+			continue
+		}
+		if digests[words[0]] == nil {
+			digests[words[0]] = map[string]string{}
+		}
+		digests[words[0]][words[1]] = words[2]
+	}
+	return digests
+}
+
+// profilesMoved reports whether a record of ids names a secret whose live profile fingerprint is
+// not the one printed holds for it: "" for a name the live policy serves as no profile, and for
+// one the page printed none for. So a profile edited since the page, one added to a name the page
+// printed as a stored secret, and one taken away are each a move, since each changes what an
+// approval would grant. A record the broker no longer has, and a machine login, are left to
+// decide's own answer.
+func (p *Page) profilesMoved(ctx context.Context, ids []string, printed map[string]map[string]string) (bool, error) {
+	for _, id := range ids {
+		detail, err := p.cfg.Machine.ReadRecord(ctx, id)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			continue
+		case err != nil:
+			return false, err
+		case detail.Kind != record.KindAgentSecret:
+			continue
+		}
+		live := make(map[string]string, len(detail.Profiles))
+		for _, profile := range detail.Profiles {
+			live[profile.Name] = profile.Digest
+		}
+		for _, name := range detail.Identifiers {
+			if live[name] != printed[id][name] {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // decide decides one record as login and answers what became of it, for the log, and whether this

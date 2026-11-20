@@ -573,14 +573,17 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 		// current policy moved while the judge was reading: the session's operator withheld
 		// a key or its owner tagged it an administrator's (the two guards
 		// currentPolicyAdmits makes for the judge alone), the key's owner changed, or its
-		// max-grant fell below the request's lifetime. Each is the ordinary outcome of losing
-		// a race and no fault of the judge's (D10), and the policy's four all answer
-		// record.ErrNotApprover. Any other refusal is one the judge should not have reached
-		// at all. Either way the approval wrote nothing; the row below hands a request still
-		// pending to its person, and keeps the verdict as the record of what was asked.
+		// max-grant fell below the request's lifetime, all four of which answer
+		// record.ErrNotApprover; or a profiles roll took the request's target out of its
+		// profile, which the approval's own target check answers requests.ErrTargetRefused.
+		// Each is the ordinary outcome of losing a race and no fault of the judge's (D10).
+		// Any other refusal is one the judge should not have reached at all. Either way the
+		// approval wrote nothing; the row below hands a request still pending to its person,
+		// and keeps the verdict as the record of what was asked.
 		row.notApplied = err
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) ||
-			errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover) {
+			errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover) ||
+			errors.Is(err, requests.ErrTargetRefused) {
 			slog.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
 		} else {

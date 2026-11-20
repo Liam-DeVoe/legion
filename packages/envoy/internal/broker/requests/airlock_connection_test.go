@@ -123,6 +123,32 @@ func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
 	}
 }
 
+// TestAirlockConnectionDropsAProfileOfAWithheldSource: a session's operator who withholds a source
+// withholds each profile of it (policy.Set.Withholds), so a connection whose grant holds a proxied
+// profile of another name is refused with ErrAirlockNoNames once the source alone is withheld, as
+// it is when the profile's own name is.
+func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
+	file := policytest.ProfilesFile(`{"name": "AUTO_TOKEN_PROXY", "source": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`)
+	m, enr, key := newAirlockFixture(t, file)
+	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = policytest.Profiles(t, file, fixtureService).ProxyRules(), testProxyURL, testCACertificate
+	_, grantID := grantOf(t, m, enr, key, "read it through the proxy", "AUTO_TOKEN_PROXY")
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	placeholder := release.Airlock.ProxyPassword
+	if conn, err := m.AirlockConnection(t.Context(), placeholder); err != nil || !slices.Equal(slices.Sorted(maps.Keys(conn.Names)), []string{"AUTO_TOKEN_PROXY"}) {
+		t.Fatalf("AirlockConnection before the withhold = %+v, %v; want AUTO_TOKEN_PROXY carried", conn, err)
+	}
+
+	if _, err := m.Store.Pool.Exec(t.Context(), `insert into withheld_secrets (enrollment_id, name) values ($1,'AUTO_TOKEN')`, enr); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := m.AirlockConnection(t.Context(), placeholder); !errors.Is(err, ErrAirlockNoNames) {
+		t.Fatalf("AirlockConnection with the profile's source withheld = %+v, %v; want ErrAirlockNoNames", conn, err)
+	}
+}
+
 // TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames: what the proxy swaps in, and the
 // policy version the checks ran under, which the proxy holds beside them. The names the
 // rules do not hold back are no part of it, since the session already holds them.

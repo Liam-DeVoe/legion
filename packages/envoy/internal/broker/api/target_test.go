@@ -171,3 +171,37 @@ func TestAValueTokenProfileWithNoTargetIsRefusedBeforeAnyoneIsAsked(t *testing.T
 		})
 	}
 }
+
+// TestAReleaseOfATargetOutsideItsProfileIs400TargetRefused: a grant whose recorded target its
+// live profile does not hold refuses its release 400 TARGET_REFUSED on POST
+// /v1/grants/{id}/values, naming the profile's accounts and repositories, with nothing minted and
+// nothing released, rather than the 500 of an error the route does not know. A broker that bound
+// an approval to an entry edited since the request, before approvals held the target to the
+// profile, left such a grant; the row is written directly here, its target moved outside the
+// profile, which is the state that grant is in.
+func TestAReleaseOfATargetOutsideItsProfileIs400TargetRefused(t *testing.T) {
+	s := newTargetServer(t)
+	status, body := s.request(t, "PROOFS_READ", map[string]any{"request": signTargetRequest(t, s.key, s.URL, "PROOFS_READ", "https://github.com/ada/lean")})
+	created := decode[wireCreateRequestResponse](t, body)
+	if status != http.StatusOK || created.GrantID == nil {
+		t.Fatalf("POST /v1/requests for PROOFS_READ --target ada/lean = %d %s, want an automatic grant", status, body)
+	}
+	if _, err := s.Store.Pool.Exec(t.Context(), `update request_secrets set target_repositories = '{site}' where name = 'PROOFS_READ'`); err != nil {
+		t.Fatalf("move the recorded target: %v", err)
+	}
+	s.take()
+
+	status, body = s.values(t, *created.GrantID, nil)
+	reply := decode[wireError](t, body)
+	if status != http.StatusBadRequest || reply.Code != "TARGET_REFUSED" || strings.Contains(string(body), `"values"`) {
+		t.Fatalf("POST values = %d %s, want 400 TARGET_REFUSED and no value", status, body)
+	}
+	for _, word := range []string{"PROOFS_READ", "ada/site", "ada/lean, ada/proofs"} {
+		if !strings.Contains(reply.Error, word) {
+			t.Errorf("the refusal says %q; want it to name %q", reply.Error, word)
+		}
+	}
+	if minted := s.take(); len(minted) != 0 {
+		t.Fatalf("the minter was asked %d times for a target outside its profile; want never", len(minted))
+	}
+}

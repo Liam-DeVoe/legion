@@ -537,8 +537,9 @@ type AirlockGrantName struct {
 // AirlockConnection answers what the placeholder a proxy connection authenticated with proves. It
 // refuses with ErrGrantNotLive when no row holds that placeholder, when its grant is revoked or
 // expired, or when its enrollment is revoked or its lease lapsed; it drops every name the
-// enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
-// the proxy answers 407.
+// enrollment's operator withheld, read as policy.Set.Withholds reads them, so a profile whose
+// source they withheld is dropped too, and refuses with ErrAirlockNoNames when that leaves none,
+// which the proxy answers 407.
 //
 // This runs on every connection, so it is indexed reads alone and nothing else: the row by its
 // primary key with its grant and enrollment joined in, the grant's other placeholders by
@@ -583,9 +584,10 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		return AirlockConnection{}, err
 	}
 	set := m.Policy.Get()
+	requester := policy.Requester{Withheld: withheld}
 	conn.Names = map[string]AirlockGrantName{}
 	for name, slots := range held {
-		if slices.Contains(withheld, name) {
+		if set.Withholds(requester, name) {
 			continue
 		}
 		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}

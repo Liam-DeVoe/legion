@@ -99,3 +99,33 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 		t.Fatalf("the table drove %d rows, want 2", driven)
 	}
 }
+
+// TestAPeersRereadDropsEveryNameServedFromTheValueItRead: the airlock's proxy holds a grant's
+// values by the name the grant was released under, a profile's own name for a profile, so a
+// peer's reread of a source drops that source's profiles from the proxy's cache too, and a reread
+// of a profile drops its source and its sibling profiles, which are served from the one stored
+// value the reread read (policy.Current.RereadNames). Dropping the reread name alone left the
+// source's old value in every request of a profile of another name until its grant ended.
+func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
+	local := secrets.NewLocal(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"))
+	loader := policytest.Loader(local)
+	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(
+		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+	))
+	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Put(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v2"))
+	want := []string{"STORED_TOKEN", "STORED_TOKEN_READ", "STORED_TOKEN_SECOND"}
+	for _, name := range []string{"STORED_TOKEN", "STORED_TOKEN_READ"} {
+		var dropped []string
+		if err := peerReread(current, func(name string) { dropped = append(dropped, name) })(t.Context(), name); err != nil {
+			t.Fatalf("a peer's reread of %s = %v", name, err)
+		}
+		if got := slices.Sorted(slices.Values(dropped)); !slices.Equal(got, want) {
+			t.Errorf("a peer's reread of %s dropped %q from the airlock proxy's cache; want %q", name, got, want)
+		}
+	}
+}

@@ -498,6 +498,13 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrSecretNotInStore):
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
+	case errors.Is(err, requests.ErrTargetRefused):
+		// The target the grant's request recorded is outside the live profile, which an approval
+		// a broker bound to an entry edited since the request leaves (Create and an approval
+		// refuse it now). The message names the profile's accounts and repositories, and nothing
+		// was minted or released.
+		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
+		return
 	case errors.Is(err, requests.ErrMintFailed):
 		// The type's upstream (GitHub or Google) refused or failed a mint the profile's scope is
 		// not at fault for: an App with no installation, a Google login that needs a new sign-in,

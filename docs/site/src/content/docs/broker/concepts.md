@@ -688,11 +688,15 @@ The broker evaluates every name
   it holds no more than the request asked, for every profile, and gives back one that holds more
   (`502 MINT_FAILED`). A target is an entry of the signed request's `locations`, so the record a
   person approves holds it and the approval page prints it beside the profile's source,
-  permissions, accounts, repositories and proxy hosts. A target outside the profile, a target on a
-  name with no `github` block, and no target on a `value: token` profile of more than one account
-  are refused `400 TARGET_REFUSED` before anybody is asked, naming the profile's accounts and
-  repositories. A body that carries `github_app`, the narrowing the broker took before profiles,
-  is refused `400 GITHUB_APP_FIELD_REMOVED` on `POST /v1/requests` and
+  permissions, accounts, repositories and proxy hosts, and a Google profile's scopes. A target
+  outside the profile, a target on a name with no `github` block, and no target on a
+  `value: token` profile of more than one account are refused `400 TARGET_REFUSED` before anybody
+  is asked, naming the profile's accounts and repositories. An approval given after a profiles
+  roll took the target out of its profile is refused the same way and grants nothing, and a
+  release of a grant whose target its live profile does not hold answers `400 TARGET_REFUSED`
+  too (`403 TARGET_REFUSED` at the airlock's proxy) and mints nothing. A body that carries
+  `github_app`, the narrowing the broker took before profiles, is refused
+  `400 GITHUB_APP_FIELD_REMOVED` on `POST /v1/requests` and
   `POST /v1/grants/{id}/values`, never `INVALID_REQUEST`, so a client of an earlier release does
   not send its request again without it. Where a person must approve a request that names a GitHub
   profile, the broker first mints the token the release would mint, for the target's account or
@@ -1129,7 +1133,14 @@ not bound. On an entry that lists methods and paths, a request carrying
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
 Each profile's own fingerprint, its whole entry but the guidance, is part of what a grant was
-decided under, so an edit to one profile's entry ends that profile's grants and no others.
+decided under, so an edit to one profile's entry ends that profile's grants and no others. The
+fingerprint a grant is held to is its approval's, the entry the approval was given under, and
+every release compares it: a grant approved after an entry's edit ends when the file rolls back
+to the entry the request was made under. The proxy keeps the values it read for a grant until
+the policy moves, a minted value nears its expiry, or a name served from that value is reread: a
+reread of a source, or of any profile of it, rereads the one stored value they are all served
+from, so the proxy reads each of their grants' values again and a source's new value reaches
+every profile's requests.
 
 What the airlock does not stop is as much of the design as what it does:
 
@@ -1150,7 +1161,10 @@ What the airlock does not stop is as much of the design as what it does:
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
   can be made again: a store down for a minute ends no grant, and would otherwise send every
-  agent in the middle of a call to ask for a new one.
+  agent in the middle of a call to ask for a new one. A refusal of the grant's release that no
+  retry clears is `403` in the broker's words, under the code the release itself answers: a
+  profile's scope its minter refuses is `PROFILE_MINT_REFUSED`, and a target its live profile
+  does not hold is `TARGET_REFUSED`.
 
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
   whose own identity reads every secret. So is an address inside the broker cluster's own
@@ -1186,6 +1200,11 @@ broker refuses it to the listed service `DECIDE_ON_BROKER_PAGE`, naming the page
 request the model judge holds, `JUDGE_DECIDES`, naming no page. Those routes read no record for a
 caller the broker has not authenticated: one with no ServiceAccount token, or one it does not
 accept, is refused alike for every record id, so it learns nothing of which records exist.
+An approval is bound to the profiles its page printed too: the page's forms carry the fingerprint
+of each profile it printed, and an approval is refused `403 PROFILE_CHANGED`, deciding nothing,
+when a profile it names has another fingerprint by then, as a profiles roll between the page and
+the click leaves it. Opened again, the page prints the profile as the broker now serves it, and
+its approval grants that.
 
 A broker that signs nobody in, `BROKER_SIGNIN=off`
 ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no

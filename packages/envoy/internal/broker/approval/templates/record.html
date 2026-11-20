@@ -1,5 +1,6 @@
 {{define "token"}}
 {{- range .Printed}}<input type="hidden" name="printed" value="{{.}}">{{end -}}
+{{- range .Profiles}}<input type="hidden" name="profile_digest" value="{{.}}">{{end -}}
 <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="expires" value="{{.Expires}}">
 {{- end}}
 
@@ -37,6 +38,10 @@
 <dd>{{.Permissions}}</dd>
 <dt>Target</dt>
 <dd>{{.Target}}</dd>
+{{- end}}
+{{- if .GoogleScopes}}
+<dt>Google scopes</dt>
+<dd>{{.GoogleScopes}}</dd>
 {{- end}}
 {{- if .ProxyHosts}}
 <dt>Proxy hosts</dt>

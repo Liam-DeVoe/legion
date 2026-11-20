@@ -9,8 +9,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +174,60 @@ func TestAPendingRequestIsJoinedOnlyForTheSameTarget(t *testing.T) {
 		if !errors.Is(err, ErrRequestPending) || other.ID != "" {
 			t.Fatalf("Create(APP_KEY, %s) = %+v, %v; want ErrRequestPending, not the request of another target", name, other, err)
 		}
+	}
+}
+
+// TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder: Create holds a request's target to the
+// profile the request is made under, and an approval holds it again to the profile the approval
+// is given under (checkTarget), since a request waits for its approver up to PendingTTL and a
+// profiles roll can take the target out of its profile meanwhile. Such an approval is refused
+// with ErrTargetRefused, naming the profile, and writes nothing: no event, no grant, and the
+// request still pending with the fingerprint it was made under, so no grant is bound to an entry
+// whose every release would refuse its target. A target the rolled profile still holds is
+// approved across the same roll as before.
+func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
+	const block = `"permissions": {"contents": "read", "metadata": "read"}`
+	before := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
+	after := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean"], ` + block + `}}`)
+	m, enrollmentID, key := targetFixture(t, policy.TierHuman, before)
+	dropped, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada/proofs"), "")
+	if err != nil || dropped.State != "pending" || dropped.RecordID == nil {
+		t.Fatalf("Create(APP_KEY --target ada/proofs) = %+v, %v; want it pending", dropped, err)
+	}
+	otherID, otherKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+	kept, err := m.Create(t.Context(), otherID, signTargetRequest(t, m, otherKey, "APP_KEY", "https://github.com/ada/lean"), "")
+	if err != nil || kept.State != "pending" || kept.RecordID == nil {
+		t.Fatalf("Create(APP_KEY --target ada/lean) = %+v, %v; want it pending", kept, err)
+	}
+
+	rollProfiles(t, m, after)
+	dec, err := m.ApplyDecision(t.Context(), *dropped.RecordID, true, fixtureOperator)
+	if !errors.Is(err, ErrTargetRefused) || dec.GrantID != "" {
+		t.Fatalf("ApplyDecision of the ada/proofs request once the profile dropped ada/proofs = %+v, %v; want ErrTargetRefused and no grant", dec, err)
+	}
+	for _, word := range []string{"APP_KEY", "ada/proofs", "ada/lean"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal says %q; want it to name %q", err, word)
+		}
+	}
+	if got := readDecided(t, m, *dropped.RecordID); got.events != 0 || got.state != "pending" || len(got.approvers) != 0 {
+		t.Fatalf("after the refused approval = %+v; want the request untouched and pending, with no grant", got)
+	}
+	if got, want := recordedDigests(t, m, dropped.ID)["APP_KEY"], profileDigest(t, before, "APP_KEY"); got != want {
+		t.Fatalf("the refused request records the fingerprint %q; want %q, the entry it was made under", got, want)
+	}
+
+	if dec, err := m.ApplyDecision(t.Context(), *kept.RecordID, true, fixtureOperator); err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision of the ada/lean request across the roll = %+v, %v; want a grant", dec, err)
+	}
+}
+
+// TestATargetRefusalIsOneOfThisPackagesRefusals: ErrTargetRefused is a sentinel of this package,
+// which every reader of IsRefusal must read as the broker's answer about a request or a grant
+// rather than as a read that did not happen, wrapped as gitHubScope and checkTarget wrap it.
+func TestATargetRefusalIsOneOfThisPackagesRefusals(t *testing.T) {
+	if err := fmt.Errorf("%w: APP_KEY: the target ada/site is outside the profile", ErrTargetRefused); !IsRefusal(err) {
+		t.Fatalf("IsRefusal(%v) = false; want true", err)
 	}
 }
 

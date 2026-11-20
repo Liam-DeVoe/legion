@@ -605,3 +605,40 @@ func TestEveryPublishedSetHoldsTheProfiles(t *testing.T) {
 	}
 	holds("a value read that readValues records", "")
 }
+
+// TestARereadNamesEveryNameServedFromTheValueItReads: a reread of a name reads one stored
+// secret, the name itself or the source of the profile that holds it (Current.RefreshOne), and a
+// new value of that secret is the value of every name served from it: the source's own name and
+// each profile of it (Set.ProfilesOf). The airlock's proxy holds a grant's values by the name the
+// grant was released under, so RereadNames is every name whose held values a reread must drop. A
+// profile's reread names its source and its siblings, a source's names its profiles, and a name
+// no profile is of names itself alone, as does a name the policy has never heard of.
+func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
+	store := secrets.NewLocal(appSource(),
+		policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"),
+		policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1"))
+	cur := policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(
+		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", `+apiProxy+`}`,
+		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+		`{"name": "`+appSourceName+`", `+acmeRead+`}`,
+		readProfile,
+	), daemonService)
+	stored := []string{"STORED_TOKEN", "STORED_TOKEN_READ", "STORED_TOKEN_SECOND"}
+	app := []string{"GITHUB_READ", appSourceName}
+	for _, row := range []struct {
+		name string
+		want []string
+	}{
+		{"STORED_TOKEN", stored},
+		{"STORED_TOKEN_READ", stored},
+		{"STORED_TOKEN_SECOND", stored},
+		{appSourceName, app},
+		{"GITHUB_READ", app},
+		{"PLAIN_KEY", []string{"PLAIN_KEY"}},
+		{"NO_SUCH_KEY", []string{"NO_SUCH_KEY"}},
+	} {
+		if got := slices.Sorted(slices.Values(cur.RereadNames(row.name))); !slices.Equal(got, row.want) {
+			t.Errorf("RereadNames(%s) = %v; want %v", row.name, got, row.want)
+		}
+	}
+}
