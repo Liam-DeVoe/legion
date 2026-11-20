@@ -38,7 +38,10 @@ func TestTheOriginalConditionsLeaveTheLaunchersOwnRootAndTheUnreadableGitRule(t 
 	if os.Getuid() == 0 {
 		t.Skip("root reads every process's open files, so no process is unreadable to this test")
 	}
-	if err := exec.Command("sudo", "-n", "-u", "nobody", "true").Run(); err != nil {
+	// The probe runs from /, as the other user's git below does: a directory that user can stand in.
+	probe := exec.Command("sudo", "-n", "-u", "nobody", "true")
+	probe.Dir = "/"
+	if err := probe.Run(); err != nil {
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			t.Fatalf("a process of another user needs sudo -n -u nobody, which CI's runner gives: %v", err)
 		}
