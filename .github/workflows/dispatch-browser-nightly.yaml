@@ -3,16 +3,18 @@ name: Dispatch browser nightly
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
 # recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
 # carries no `full-ci` label, the rows a pull request is held to, and the full lane - every project
-# the shard job's browser step names for it, the three `-alone` ones and the two-process job - on
-# every other run, so the merge group runs it on the tree a change lands as. The full lane's jobs
-# are dispatch-browser.yaml's, whose head names them and the machines they take; full-lane run
-# 44286153772 (2026-11-18) ran them as seven jobs on eight machines. Measured at b724461b on
-# 2026-11-17, run 44147547896, that lane cost 2,398 machine-seconds for 1,493 rows, 1.61 s a row,
-# where the default branch's twelve-job lane cost a median of 3,292 s for 1,479 rows, 2.23 s a row,
-# over that day's 20 green runs. This run covers a day with no such event, and is what runs the full
-# lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds every step). The
-# re-record job's own head, below, says what it guards and why it is here rather than in a file of
-# its own.
+# the shard job's browser step names for it (.github/scripts/dispatch-browser-shard-suite.sh), the
+# three `-alone` ones and the two-process job - on every other run, so the merge group runs it on
+# the tree a change lands as. The full lane's jobs are dispatch-browser.yaml's, whose notes name
+# them and the machines they take
+# (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
+# full-lane run 44286153772 (2026-11-18) ran them as seven jobs on eight machines. Measured at
+# b724461b on 2026-11-17, run 44147547896, that lane cost 2,398 machine-seconds for 1,493 rows,
+# 1.61 s a row, where the default branch's twelve-job lane cost a median of 3,292 s for 1,479
+# rows, 2.23 s a row, over that day's 20 green runs. This run covers a day with no such event,
+# and is what runs the full lane on main's tip (.github/workflows/dispatch-browser.yaml, which
+# holds every step). The re-record job's own head, below, says what it guards and why it is here
+# rather than in a file of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run. GitHub notifies one person that a
@@ -72,9 +74,10 @@ jobs:
   # here. `contents: read` is the `actions/checkout` step every one of its jobs starts with, and the
   # pinned tools its setup steps download; `actions: read` is the merge job's "Reading one, the
   # rows" step, which reads this run's own attempt's jobs by running
-  # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
-  # same file). No `checks: write`, which the ci-ok report would need: this call passes no
-  # `ci-ok-changes`, so that step does not run and this workflow posts no check.
+  # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" and "Reading
+  # five" steps read that same file). No `checks: write`, which the ci-ok report would need:
+  # this call passes no `ci-ok-changes`, so that step does not run and this workflow posts no
+  # check.
   #
   # Every run but the re-record's schedule, whose cron the `if:` below names:
   # `github.event.schedule` is the cron that started a scheduled run and is empty on a
@@ -114,7 +117,7 @@ jobs:
   # lane a day, eight machines for 16 to 19 minutes of wall time by pull request #3513's full-lane
   # runs of 2026-11-15, to keep this job dispatchable, which the conditions keep at no such cost.
   #
-  # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
+  # The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,
   # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
   # none. The recording step runs every stubbed row once against one harness stack, measured at
@@ -129,7 +132,8 @@ jobs:
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the
-    # harness, which a `container:` job may not (that job's head says why).
+    # harness, which a `container:` job may not
+    # (.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget says why).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -156,8 +160,9 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
-      # reason it gives: Playwright's Node runner reads `@legion/contracts` out of a build this
+      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
+      # gives: Playwright's Node runner reads `@legion/contracts` out of a build this
       # checkout has to make before the config loads, of the entries Dispatch imports alone.
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch

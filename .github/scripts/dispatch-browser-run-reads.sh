@@ -69,9 +69,9 @@
 # status on record, which is an attempt whose status file was never written.
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the merge job's `run:` body
-# exports the token - and never from a step `env:` key, for the reason the shard job's head
-# gives.
+# GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the step "Reading one, the
+# rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds - and never
+# from an argument, which every process of the runner can read on the command line.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>,
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused, or
@@ -395,7 +395,8 @@ case "$mode" in
     # 43667557013), whose real-stack row medians were 2,746 and 3,126 ms: the lane's cost tracked
     # the runner and not the rows. The default branch moved with it, as it always does - the
     # thirteen green merge-queue runs of that day up to 15:03Z cost 2,975 to 3,347 s with their
-    # merge jobs, with a median of 3,126 s (dispatch-browser.yaml's head) - which is why the ratio
+    # merge jobs, with a median of 3,126 s (.github/ci-notes/dispatch-browser.md's section on
+    # what the job set costs) - which is why the ratio
     # is what R5 and R4 read and this ceiling is not. It became 3,200 s on 2026-11-17, when pull
     # request #3513's full lanes at 61e5c402 and 1ba866a9 read 2,062 to 2,484 s at this step,
     # the worst of them 6.5 per cent under 2,656 s, so a slow fleet or the rows the default
