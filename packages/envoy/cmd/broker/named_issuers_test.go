@@ -3,7 +3,8 @@
 // on a real Postgres and over HTTP alone: each token is checked by the issuer it names, an issuer
 // the broker cannot read stops neither the boot nor the other issuer and its tokens are answered
 // 503 until it can be read, the token exchange takes the issuers BROKER_EXCHANGE_K8S_ISSUER names,
-// a listed account is taken only from the issuers its entry names, and an account
+// a listed account is taken only from the issuers its entry names, a person's pod
+// (BROKER_POD_OPERATORS) logs in only from the issuers its login entry names, and an account
 // BROKER_SESSION_ACCOUNT_PAIRS pairs with a name's holder takes the name only with a token its own
 // entry took. Every request and answer is logged, with no token, as the live run's transcript.
 package main
@@ -25,8 +26,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -147,8 +150,14 @@ func codeOf(answer []byte) string {
 // tokenLogin logs namedService in with token, its key key, and answers the credential it issued.
 func (c namedClient) tokenLogin(token string, key *ecdsa.PrivateKey) (int, string, launcher) {
 	c.t.Helper()
+	return c.tokenLoginAs(namedService, token, key)
+}
+
+// tokenLoginAs logs service in with token, its key key, and answers the credential it issued.
+func (c namedClient) tokenLoginAs(service, token string, key *ecdsa.PrivateKey) (int, string, launcher) {
+	c.t.Helper()
 	request, err := record.Sign(key, c.base, []record.AuthorizationDetail{
-		{Type: record.KindLauncherCredential, Identifier: "example-host-" + namedService, Service: namedService},
+		{Type: record.KindLauncherCredential, Identifier: "example-host-" + service, Service: service},
 	}, "", "", nil, time.Now())
 	if err != nil {
 		c.t.Fatal(err)
@@ -231,6 +240,28 @@ func (c namedClient) authenticates(by launcher) (int, string) {
 	}
 	status, answer := c.send(http.MethodDelete, path, map[string]string{"Proof": signed}, nil)
 	return status, codeOf(answer)
+}
+
+// operatorOf is the operator GET /v1/enrollments/self names for p's enrollment, the person it runs
+// for, "" for none.
+func (c namedClient) operatorOf(p pod) string {
+	c.t.Helper()
+	const path = "/v1/enrollments/self"
+	signed, err := proof.Sign(p.key, p.enrollmentID, http.MethodGet, c.base+path, time.Now())
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	status, answer := c.send(http.MethodGet, path, map[string]string{"Proof": signed}, nil)
+	var self struct {
+		Operator *string `json:"operator"`
+	}
+	if err := json.Unmarshal(answer, &self); status != http.StatusOK || err != nil {
+		c.t.Fatalf("GET %s as enrollment %s answered %d %q, want 200 naming its operator", path, p.enrollmentID, status, codeOf(answer))
+	}
+	if self.Operator == nil {
+		return ""
+	}
+	return *self.Operator
 }
 
 // namedRoute is one call a row makes and the answer it wants.
@@ -1013,4 +1044,84 @@ func TestAPairedAccountsPodTakesNoNameWithATokenOfAnIssuerItsEntryDoesNotName(t 
 	}
 	broker.AwaitRecord(t, enrollmentTookName, map[string]any{"session": namedSession, "from": movedPrincipal, "to": oldPrincipal})
 	holds(oldPrincipal, 1, 1)
+}
+
+// TestAPersonsPodLogsInThroughTheIssuersItsLoginNames: BROKER_POD_OPERATORS maps ada's account to
+// ada, and names no issuer, and the account's BROKER_SERVICE_LOGINS entry names A alone of three
+// named issuers: A and B, which the broker reads, and C, whose discovery document fails at boot.
+// Ada's pod logs in with a token of A bound to it, enrols itself under that login with no session
+// name, its enrollment names ada as its operator, and it is granted ada's own agent-tier secret
+// with no approval: it acts as ada. The same pod's token of B, an issuer the broker trusts and the
+// entry does not name, is refused 403 ACCOUNT_NOT_LISTED at the token login, as every account's
+// token of an issuer its entry does not name is, so it logs in for no one; and its token of C is
+// answered 503 OIDC_ISSUER_UNAVAILABLE.
+func TestAPersonsPodLogsInThroughTheIssuersItsLoginNames(t *testing.T) {
+	const (
+		person  = "ada@example.com"
+		account = "system:serviceaccount:people:ada"
+		service = "person-ada"
+		secret  = "ADA_AGENT_TOKEN"
+		podUID  = "ada-pod-1"
+	)
+	a, b, c := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	aKey, bKey, cKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key"), c.PublishKey(t, "c-key")
+	c.FailDiscovery(http.StatusServiceUnavailable)
+	store := &requesterStore{
+		path: filepath.Join(t.TempDir(), "fake-secrets.json"),
+		rows: []secrets.LocalSecret{requesterRow(secret, person, policy.TierAgent, "ada-agent-token-value", nil)},
+	}
+	store.write(t)
+	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b)+",c="+c.URL(),
+		"BROKER_SERVICE_LOGINS="+service+"="+account+"=a",
+		"BROKER_POD_OPERATORS="+person+"="+account,
+		// namedIssuersEnv names a store that holds no secret. The broker reads the last value a
+		// setting is given, so it reads this store, which holds ada's own secret.
+		"BROKER_FAKE_SECRETS_FILE="+store.path,
+	)})
+	if want := (map[string]any{"name": "c", "url": c.URL(), "read": false}); len(recordsWith(broker.Boot, issuerBootMessage, want)) != 1 {
+		t.Fatalf("the boot log holds no one line %q carrying %v: C must be unread for its token's 503 below:\n%s", issuerBootMessage, want, broker.Boot)
+	}
+	client := namedClient{t: t, base: "http://" + broker.Addr}
+
+	var login launcher
+	var enrolled pod
+	t.Run("a token of A, which its login entry names, logs ada's pod in", func(t *testing.T) {
+		status, code, issued := client.tokenLoginAs(service, clusterToken(t, a, aKey, account, podUID), proofKey(t))
+		if status != http.StatusOK || issued.credentialID == "" {
+			t.Fatalf("answered %d %q, want 200 with a credential", status, code)
+		}
+		login = issued
+	})
+	t.Run("the pod enrols itself under that login, and its enrollment acts as ada", func(t *testing.T) {
+		if login.credentialID == "" {
+			t.Fatal("the token login above issued no credential to enrol with")
+		}
+		status, code, p := client.enroll(login, podUID, clusterToken(t, a, aKey, account, podUID))
+		if status != http.StatusCreated || p.enrollmentID == "" {
+			t.Fatalf("answered %d %q, want 201 with an enrollment", status, code)
+		}
+		enrolled = p
+		if operator := client.operatorOf(enrolled); operator != person {
+			t.Fatalf("the pod's enrollment %s names the operator %q, want %s: a pod-bound token of an account BROKER_POD_OPERATORS maps logs in as its person", enrolled.enrollmentID, operator, person)
+		}
+	})
+	t.Run("the pod is granted ada's own agent-tier secret with no approval", func(t *testing.T) {
+		if enrolled.enrollmentID == "" {
+			t.Fatal("the enrollment above made no enrollment to ask with")
+		}
+		reply := podBroker{t: t, base: client.base, issuer: a, key: aKey, audience: enrolmentAudience}.ask(enrolled, secret)
+		if reply.State != "granted" || reply.GrantID == nil {
+			t.Fatalf("the pod's request for %s answered %q, want granted: the pod acts as ada, whose own agent-tier secret needs no approval", secret, reply.State)
+		}
+	})
+	expect(t, "the same pod's token login ", []namedRoute{
+		{"with a token of B, which its login entry does not name, is refused 403 ACCOUNT_NOT_LISTED", func() (int, string) {
+			status, code, _ := client.tokenLoginAs(service, clusterToken(t, b, bKey, account, podUID), proofKey(t))
+			return status, code
+		}, http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
+		{"with a token of C, which the broker cannot read, gets 503 OIDC_ISSUER_UNAVAILABLE", func() (int, string) {
+			status, code, _ := client.tokenLoginAs(service, clusterToken(t, c, cKey, account, podUID), proofKey(t))
+			return status, code
+		}, http.StatusServiceUnavailable, issuerUnavailable},
+	})
 }

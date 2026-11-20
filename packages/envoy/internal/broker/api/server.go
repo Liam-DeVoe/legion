@@ -274,8 +274,9 @@ const (
 // (serviceAuth) — first spends its source address's bucket (DefaultAccountLimit), a refusal
 // being 429 RATE_LIMITED with Retry-After, so a flood of forged tokens past that bucket costs no
 // verification and no fetch of the issuer's keys; a listed caller must then hold the power its
-// row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists. The
-// approval page's routes spend that same bucket, for the same reason: see the authSignIn case.
+// row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
+// BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
+// bucket, for the same reason: see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -538,6 +539,13 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // 503 OIDC_ISSUER_UNAVAILABLE; a broker that trusts no Kubernetes token issuer answers 401
 // ACCOUNT_TOKENS_OFF, as this class's routes then authenticate no one. No refusal repeats the
 // token.
+//
+// A verified account that BROKER_POD_OPERATORS maps to a person (machine.ServiceAccount.Person)
+// is 403 PERSON_ACCOUNT, and the refusal names the account. A mapped account is a person's
+// account, and it is never a service's caller. So a person's pod calls no route of this class.
+// The refusal is the same for a token bound to a pod and for a token bound to no pod. A mapped
+// account's token from an issuer its BROKER_SERVICE_LOGINS entry does not name is refused 403
+// ACCOUNT_NOT_LISTED before that, as every account's is.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
@@ -558,6 +566,11 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
+		return caller{}, false
+	}
+	if account.Person != "" {
+		writeError(w, http.StatusForbidden, "PERSON_ACCOUNT",
+			fmt.Sprintf("BROKER_POD_OPERATORS maps the ServiceAccount %s to a person, and a person's account calls no service route", account.Subject))
 		return caller{}, false
 	}
 	return caller{service: account}, true

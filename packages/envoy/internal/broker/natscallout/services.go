@@ -97,9 +97,8 @@ func parseService(text string, issuers []oidc.NamedIssuer) (ServiceEntry, error)
 	form := func() error {
 		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account>[=<issuer name>[,<issuer name>…]] entries, the kind one of dispatch, listener, daemon or measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", ServicesVariable, text)
 	}
-	withAccount, names, named := config.CutIssuerNames(text)
-	head, account, ok := strings.Cut(withAccount, "=")
-	if !ok || !named {
+	head, account, names, ok := config.CutNATSServiceEntry(text)
+	if !ok {
 		return ServiceEntry{}, form()
 	}
 	parts := strings.Split(head, "/")

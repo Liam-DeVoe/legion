@@ -82,6 +82,20 @@ func hubURLRefusal(entry string) string {
 	return ""
 }
 
+// CutNATSServiceEntry splits a BROKER_NATS_SERVICES entry, <kind>/<machine id or ->/<* or
+// ->=<account>[=<issuer name>[,<issuer name>…]], into the head before its first =, the account
+// after it, and the issuer names after the account's = (CutIssuerNames), nil where it names none.
+// ok is false for an entry with no =, and for one that ends in the account's = with no issuer
+// name after it. It is the one reading of an entry's account: natscallout.ParseServices parses
+// the head, holds the account to ParseAccount's form and the names to AccountIssuers', and
+// mappedAccountRefusal matches the account against BROKER_POD_OPERATORS, so the two cannot read
+// one entry two ways.
+func CutNATSServiceEntry(text string) (head, account string, names []string, ok bool) {
+	withAccount, names, named := CutIssuerNames(text)
+	head, account, ok = strings.Cut(withAccount, "=")
+	return head, account, names, ok && named
+}
+
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting
 // and never the seed, when path is unset or unreadable or its trimmed contents are not a seed of
 // kind. It is the one reader of the NATS auth service's seeds: the broker's start checks each with
