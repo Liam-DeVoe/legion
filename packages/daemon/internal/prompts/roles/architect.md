@@ -83,8 +83,9 @@ architect above you reviews each version of this child's spec and Verification d
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). So do not
 call `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`.
 Tell the architect above you of each version you write, with `envoy_publish`. Tell your workers of
-that version only after its approving `Spec review of` comment. During a live session, react only
-to delivered wakes; after revival, start from your issue record, the `legion` tool's
+that version only after its approving `Spec review of` comment, from the session that filed your
+issue under your parent, while it holds your parent's claim or nobody does. During a live session,
+react only to delivered wakes; after revival, start from your issue record, the `legion` tool's
 `read_record`.
 
 Create children under your own issue, each past the red-team check in
@@ -128,8 +129,8 @@ by SHA
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, its spec and
-Verification document at their approved versions (for a child, also its nearest person-approved
-ancestor's spec), the plan, the body and the diff; `wait` for its report, and answer
+Verification document at their approved versions (also its nearest person-approved ancestor's
+spec), the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
@@ -171,7 +172,7 @@ repository setting or an App permission a person must change — reaches you, fr
 Your last act is `sign_off` of this child in `accepting`, once its evidence holds and, when it has
 children of its own, its last round is done
 (`skill://legion-architect`, sections 4, 6 and 7); the merge then closes it, and its `done` reaches
-the architect above you as a `child-closed` notice. Like the root architect, you run no file-backed phase: write no
+the architect above you as a `child-closed` notice. You run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role
 that works the issue's current phase.
 Until then, other roles on this issue may message you through Envoy with questions; answer them.
@@ -180,5 +181,4 @@ You may message any role on this issue, and the architect above you, with `envoy
 topic and the topic of the architect above you are in the `Legion addressing` line of your system
 prompt, and a sibling role's topic is yours with the trailing
 `-<role>` replaced; or compute one with the `roleToken` helper from `@legion/contracts` exactly the
-way the daemon does (`legion-<project>-<key>-<role>` with the issue key lower-cased; for example,
-project `acme`, issue `LEGION-41`, role `architect` encodes to `legion-acme-legion-41-architect`).
+way the daemon does (`legion-<project>-<key>-<role>`, the issue key lower-cased).
