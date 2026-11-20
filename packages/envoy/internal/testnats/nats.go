@@ -70,11 +70,8 @@ var (
 // start time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s for
 // 5,000).
 //
-// The servers are never reloaded to declare more (Server.Reload refuses one): a reload meets the
-// clients of every test on the server. nats-server v2.15.1 reads its options without their lock
-// as it serves a direct get, as a KV get is (getDirectRequest, server/stream.go:6365), and a
-// reload replaces them under that lock (setOpts, server/server.go:1224), which the race detector
-// reports against whichever test is running.
+// The servers are never reloaded to declare more (Server.Reload refuses one): a reload holds the
+// clients of every test on the server still.
 const accountsPerServer = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
@@ -411,13 +408,19 @@ func (s *Server) Freeze(t testing.TB) func() {
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
 // own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
 //
-// The barrier does not order nats-server's read of its options as it serves a direct get, as a KV
-// get is (getDirectRequest, server/stream.go:6365 in 2.15.1), before the reload's write of them
-// (setOpts, server/server.go:1224) for the race detector: the read takes no lock, and the detector
-// sees no order in a PING and its PONG crossing a socket. So a reload after a direct get on the same
-// server can be reported as a data race, and Reload refuses a server the package's tests share
-// (URL), whose other tests' direct gets it would meet: a test that reloads its server starts one of
-// its own (Start, StartConfig, StartNkeyGranted).
+// The barrier also orders nats-server's read of its options as it serves a direct get, as a KV get
+// is (getDirectRequest, server/stream.go:6365 in 2.15.1), which takes no lock, before the reload's
+// write of them under their lock (setOpts, server/server.go:1224). The race detector sees no order
+// in a PING and its PONG crossing a socket, so Reload states the order in locks it can see: the
+// goroutine that serves a client takes and releases the client's lock as it answers the PING
+// (processPing, server/client.go:2805), after the requests before it, and before the PONG leaves;
+// once every PONG is in, Reload takes each open client's lock in turn through Connz
+// (server/monitor.go:456-457) before it reloads. A direct get the relay did not hold, such as one
+// on a connection to the server's own port, still meets the reload unordered.
+//
+// Reload refuses a server the package's tests share (URL): it would hold every test's clients still,
+// and the account server that hands those servers out starts a new one instead. A test that
+// reloads its server starts one of its own (Start, StartConfig, StartNkeyGranted).
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	if s.shared {
@@ -452,6 +455,11 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	if err != nil {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
+	}
+	// The barrier's order, in the client locks the race detector sees (above).
+	if _, err := srv.Connz(&natsserver.ConnzOptions{}); err != nil {
+		release()
+		t.Fatalf("take each client's lock after the barrier: %v", err)
 	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
