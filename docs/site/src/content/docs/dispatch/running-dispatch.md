@@ -807,8 +807,9 @@ such as `bücher.example`, or as its A-labels, `xn--bcher-kva.example`: the two 
 and an address written either way is on it. List every other domain the organization
 owns: then a personal Google account holding one of your people's addresses cannot sign in with
 it, even before your person ever has. Your own people sign in at an address on any of them as
-before, and without `DISPATCH_SIGNIN_OUTSIDE=1` the setting changes nothing. On a domain the
-organization owns that the setting does not list, an outside account still never takes the
+before, and without `DISPATCH_SIGNIN_OUTSIDE=1` or `DISPATCH_SIGNIN_PASSKEY=1` the setting
+changes nothing. On a domain the organization owns that the setting does not list, an outside
+account still never takes the
 address of one of your people once they have signed in with it: it reaches a page saying the
 address belongs to a member of the organization, and your person stays signed in. An outside
 account that signed in with such an address before your person first did loses it at that first
@@ -824,7 +825,8 @@ more, that their address signs in only as an account of the organization, or tha
 longer signs in accounts from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
 `reason` of `NOT_LISTED`, `WORKSPACE_ADDRESS` or `OUTSIDE_SIGNIN_OFF` beside their address as
 `login`. A person who signs out, or whose sign-in simply expires, is told nothing more, and a
-deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
+deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_PASSKEY` answers as it
+always did.
 
 The agent tokens such a person makes in **Settings → Agent tokens**, and the tokens the secrets
 broker issues to their agents, follow the very rule that signs the person in, checked at every
@@ -857,18 +859,24 @@ A link to a Dispatch page written on either address opens on the address the rea
 with both), lets a person from outside sign in with a passkey and no Google account at all. It needs
 `DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google then signs in your own people alone,
 and a person from outside signs in only at the outside address, where Dispatch serves no Google
-sign-in. A project's owner puts the person's email on the project's access list, then makes an
+sign-in. So the Google client lists no callback on the outside address, only
+`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience can stay Internal. A
+project's owner puts the person's email on the project's access list, then makes an
 invitation link for them on the project's **Access** tab and hands it over however they like. The
 link works once, within 24 hours, for that person only, and making a new one ends the old one. With
 it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
 The owner sees on the Access tab when each passkey was enrolled, so a link someone else used first
-shows up there. **Reset** ends the person's sign-in, deletes their passkeys and the machine logins
-they approved at the secrets broker, and keeps them on the list, so they enroll again with a new
-link. Taking the person off the last list that names them does the same at once, and Dispatch also
-checks at least hourly, as above. No link is made for an address on a domain the organization owns
-(`DISPATCH_SIGNIN_DOMAIN`, a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of
-one): list every domain the organization owns there. Turning the setting off signs every such
-person out at their next request, and stops their agent tokens as above.
+shows up there. **Reset** ends the person's sign-in, deletes their passkeys, revokes the machine
+logins they approved at the secrets broker, and keeps them on the list, so they enroll again with
+a new link. Taking the person off the last list that names them does the same at once, and
+Dispatch also checks at least hourly, as above. No link is made for an address on a domain the
+organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or
+a subdomain of one), nor for one of your people who has signed in with Google. List every domain
+the organization owns there: a domain left out is not the organization's to Dispatch, so an owner
+can make a link for an address of one of your people there before they first sign in with Google,
+and the passkey enrolled with it keeps signing in as that address after your organization removes
+that person, since no passkey sign-in asks Google. Turning the setting off signs every such person
+out at their next request, and stops their agent tokens as above.
 
 ## Behind Identity-Aware Proxy
 
