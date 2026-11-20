@@ -1979,6 +1979,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  held by a test of a runner that answers only after the command's bound: false fails the
    *  request with a 503. */
   let runnerHold: Promise<boolean> = Promise.resolve(true);
+  /** How many turns of the event loop the runner's token endpoint lets pass before it records a
+   *  request: 0 by default, more for a row that holds a request on its way, as a loaded machine
+   *  does, while the call's own timeouts run on the fake clock. */
+  let runnerTurns = 0;
   let dispatchAnswer: () => Response | Promise<Response>;
   /** Whether the stand-in answers the write naming no key back, as something in Dispatch's place
    *  does: Dispatch's own answer to a keyed write always names it. */
@@ -1994,6 +1998,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
+      await turns(runnerTurns);
       runnerAsked.push({
         authorization: request.headers.get("Authorization"),
         audience: new URL(request.url).searchParams.get("audience"),
@@ -2054,6 +2059,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     trades.length = 0;
     written.length = 0;
     runnerHold = Promise.resolve(true);
+    runnerTurns = 0;
     forgetBrokerClients();
     brokerAnswer = () =>
       Response.json(
@@ -2142,6 +2148,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  headers came (`answersHeard`). */
   const watches = new Set<{ readonly met: () => boolean; readonly resolve: () => void }>();
   let answersHeard = 0;
+  /** How many requests the call has sent and had no answer to yet, on the fake clock
+   *  (`onFakeClock`): one a stand-in has not yet recorded is out too. */
+  let requestsOut = 0;
   function asked(): void {
     for (const watch of watches) {
       if (!watch.met()) continue;
@@ -2187,7 +2196,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
    * the 60 s bound once read 246,969 ms on a loaded host. The stand-ins answer on real sockets,
    * and the clock stands still while they do, so `drive` moves it only once the call waits on
    * it: a stand-in holds its request (`arrived`), or the call has set the timer of a wait
-   * (`timerSet`). After `drive`, the call has the event loop's turns to end in, and no time.
+   * (`timerSet`). Every request the call sends goes through a `fetch` that counts it out until
+   * its answer (`requestsOut`), so a driver can tell a request on its way, which no stand-in has
+   * recorded yet, from none. After `drive`, the call has the event loop's turns to end in, and no
+   * time.
    */
   async function onFakeClock(
     argv: readonly string[],
@@ -2209,6 +2221,17 @@ describe("dispatch result --project, as a CI job writes it", () => {
       return faked(handler, delay, ...rest);
     }) as unknown as typeof setTimeout;
     answersHeard = 0;
+    requestsOut = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestsOut += 1;
+      try {
+        return await realFetch(input, init);
+      } finally {
+        requestsOut -= 1;
+        asked();
+      }
+    }) as typeof fetch;
     const heard = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await fetch(input, init);
       answersHeard += 1;
@@ -2240,6 +2263,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         ? { code: Number.NaN, stdout: "", stderr: "", ms: undefined }
         : { ...ran, ms };
     } finally {
+      globalThis.fetch = realFetch;
       globalThis.setTimeout = faked;
       jest.useRealTimers();
     }
@@ -2259,10 +2283,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  token client's retry loop sets waits of its own (15 s, doubling) that a row's short bound
    *  never reaches, and a wait past the bound would move the clock past it. A trade a moved wait
    *  lets go runs on real sockets (the runner's endpoint, then the broker), so before the next move
-   *  the event loop takes some turns, and where a trade is under way (the runner asked and the
-   *  broker not yet, or the broker holds it) the driver waits for the broker's answer, so the clock
-   *  never moves the trade's own 30 s bound past a trade the stand-ins answer. A row whose broker
-   *  holds a trade on purpose says `settle: false`. */
+   *  the event loop takes some turns, and while any request of the call is out (sent and not
+   *  answered, recorded by a stand-in or still on its way) or the broker holds a trade, the driver
+   *  waits for its answer: a move while a request is on its way fires that request's own timeouts
+   *  (the runner's, the trade's 30 s) on the fake clock, though the stand-in answers it at once.
+   *  A row whose broker holds a trade on purpose says `settle: false`. */
   const waitsUntil =
     (limitMs: number, settle = true) =>
     async (clock: FakeClock): Promise<void> => {
@@ -2277,7 +2302,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
         if (settle) {
           await Promise.race([
             clock.ended,
-            arrived(() => trades.length >= runnerAsked.length && tradesOut === 0),
+            arrived(
+              () => requestsOut === 0 && trades.length >= runnerAsked.length && tradesOut === 0
+            ),
           ]);
           await turns(20);
         }
@@ -3000,32 +3027,42 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // with no fault of its own: the token client's retry loop trades again on its own schedule (15 s,
   // jittered, `RETRY_FIRST_WAIT_MS`), each presentation before then is told the trade goes on
   // (`TradeRetryingError`), the call asks again inside its one bound, and the result is stored
-  // once. It runs on the fake clock, moved over each wait the call and the loop set.
-  test("a trade the broker's rate limit refuses is traded again on the token client's schedule, and the result is stored", async () => {
-    const answer = brokerAnswer;
-    brokerAnswer = () => (trades.length <= 1 ? rateLimited("1") : answer());
-    const { code, stdout, stderr, ms } = await onFakeClock(
-      record,
-      jobEnvironment(),
-      undefined,
-      waitsUntil(60_000)
-    );
-    expect({
-      code,
-      stderr,
-      trades: trades.length,
-      waited: ms !== undefined && ms >= 7_500,
-    }).toEqual({
-      code: 0,
-      stderr: "",
-      trades: 2,
-      waited: true,
-    });
-    expect(JSON.parse(stdout)).toEqual(stored);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-  }, 15_000);
+  // once. It runs on the fake clock, moved over each wait the call and the loop set. The second
+  // row's runner lets 3,000 turns of the event loop pass before it records a request, as a loaded
+  // machine delays one on its way: a driver that moved the clock while the retried trade's request
+  // was on its way fired that request's own timeouts and ended the call with one trade (3 of 30
+  // runs did so on a loaded machine with no delay).
+  for (const [name, turnsOnTheWay] of [
+    ["", 0],
+    [", with the runner's request on its way for 3,000 turns", 3_000],
+  ] as const) {
+    test(`a trade the broker's rate limit refuses is traded again on the token client's schedule, and the result is stored${name}`, async () => {
+      runnerTurns = turnsOnTheWay;
+      const answer = brokerAnswer;
+      brokerAnswer = () => (trades.length <= 1 ? rateLimited("1") : answer());
+      const { code, stdout, stderr, ms } = await onFakeClock(
+        record,
+        jobEnvironment(),
+        undefined,
+        waitsUntil(60_000)
+      );
+      expect({
+        code,
+        stderr,
+        trades: trades.length,
+        waited: ms !== undefined && ms >= 7_500,
+      }).toEqual({
+        code: 0,
+        stderr: "",
+        trades: 2,
+        waited: true,
+      });
+      expect(JSON.parse(stdout)).toEqual(stored);
+      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+        ["POST", "/api/v1/projects/ACME/results"],
+      ]);
+    }, 15_000);
+  }
 
   // A limit that never lets the trade through ends inside the command's one bound, with one line
   // that says so, and no write_outcome_unknown: nothing reached Dispatch. The token client's retry
