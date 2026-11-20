@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4589
+body: The daemon API fixtures (`fixtures/daemon-api/version.json`, `state.json`) carry contract 198, and `LegionOperatorClaimResponse` names the optional `resumeOwed`, the sentence of an operator's resume that a release of the claim's issue pod made wait.

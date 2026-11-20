@@ -2505,4 +2505,24 @@ package api
 // #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
 // #4030, and nothing at 189. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 189
+//
+// 198: the operator's resume of a claim whose issue pod a release's teardown has taken, which the
+// launch of the claim would stand in while the pod is deleted, is owed rather than refused
+// (cybermonklabs/legion#4589): `POST /legion/v1/operator/claims/{token}/resume` answers `202
+// Accepted` with the claim, and `api.OperatorClaim` gains the optional member `resumeOwed`, the
+// sentence that names the release and says the daemon resumes the claim once that release ends,
+// in a new pod (supervise.ResumeOwedError). Every other answer leaves it off. An operator's spawn
+// or retry refused by such a take answers `409 Conflict` where it answered 500. No plugin reads
+// the operator's routes, and the answer side of every schema of `packages/contracts` strips a key
+// it does not name (`LegionOperatorClaimResponse` names this one), so a plugin of an earlier
+// contract reads every body as before; the number moves because a `legion` binary of an earlier
+// contract refuses the one body that carries the member (cmd/legion's decodeAnswer refuses a key
+// it does not know), and the resume is owed all the same. No shape of `GET /legion/v1/state`
+// moves.
+// (This entry takes 198, the lowest number above main's 189 that no open pull request declared
+// when main stood at f04a1a3b548f: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head,
+// made between 2026-11-20T19:07:04Z and 19:10:40Z, for each open pull request, of 290, whose
+// file list names this file or is longer than one read lists, found 197 the highest declared, by
+// #4065, #4553 and #4578, and nothing at 198. Read the base's own number and every open pull
+// request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 198

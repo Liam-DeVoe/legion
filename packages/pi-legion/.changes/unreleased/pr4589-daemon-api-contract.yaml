@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4589
+body: Speaks daemon API contract 198, in which an operator's resume of a claim whose issue pod a release is deleting is owed and runs once the release ends.
