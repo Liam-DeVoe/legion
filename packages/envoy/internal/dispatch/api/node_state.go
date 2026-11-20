@@ -120,22 +120,24 @@ type stateTarget struct {
 	end           storedEnd
 }
 
-// goneNodeUnderIssueQuery is whether the store holds gone ($3) the node whose stored kind and id
-// are $1 and $2, standing under the issue $4 (refs.StandingIssueSQL), for a reader ($5) the node's
-// own kind's predicate admits (refs.VisibleRow).
+// goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
+// $2 as one every read answers as gone - gone, or a stale node of a standing kind - standing under
+// the issue $3 (refs.StandingIssueSQL), for a reader ($4) the node's own kind's predicate admits
+// but for that (refs.VisibleGoneRow).
 var goneNodeUnderIssueQuery = `
 	select true from graph_nodes held
-	where held.kind = $1 and held.id = $2 and held.state = $3
-	  and ` + refs.StandingIssueSQL(`held.kind`, `held.id`) + ` = $4
-	  and ` + refs.VisibleRow("held", "$5")
+	where held.kind = $1 and held.id = $2
+	  and ` + refs.StandingIssueSQL(`held.kind`, `held.id`) + ` = $3
+	  and ` + refs.VisibleGoneRow("held", "$4")
 
 // findWrittenNode is the node a write is made on, which id names under the issue key, read for
 // who: the node whose state the write moves, or the node a lens is invoked on, a finding is added
 // to, a risk is written under or a pointer goes out of. It is FindNodeUnderIssue's node, with the
 // end a tuple names it by (findEndUnderIssue). Where that function answers the node does not exist
-// and the store holds it gone under the issue for a reader who may see it, which every read of the
-// graph leaves out, the write is 409 NODE_GONE, naming the node as id names it (nodeGone): gone is
-// final, so no write is made on a gone node. Anything else is FindNodeUnderIssue's own 404, word
+// and the store holds it gone, or stale (refs.StaleSQL), under the issue for a reader who may see
+// it, which every read of the graph leaves out, the write is 409 NODE_GONE, naming the node as id
+// names it (nodeGone): gone is final, so no write is made on a gone node, and a stale node and
+// everything under it are answered as gone ones. Anything else is FindNodeUnderIssue's own 404, word
 // for word, so a refusal tells nothing of a node the caller may not see, gone or not. A far end of
 // a tuple a write appends - the lens a lens is triggered by, a pointer's target - is found
 // through findEndUnderIssue or pointerEnd instead, so a gone one keeps that 404.
@@ -151,7 +153,7 @@ func findWrittenNode(ctx context.Context, q refs.Queryer, who model.Actor, key, 
 	}
 	stored := storedEnd{kind: kind, id: address}.stored()
 	var gone bool
-	readErr := q.QueryRow(ctx, goneNodeUnderIssueQuery, stored.kind, stored.id, graphstore.StateGone, key, refs.VisibilityArg(who)).Scan(&gone)
+	readErr := q.QueryRow(ctx, goneNodeUnderIssueQuery, stored.kind, stored.id, key, refs.VisibilityArg(who)).Scan(&gone)
 	if errors.Is(readErr, pgx.ErrNoRows) {
 		return model.GraphNode{}, storedEnd{}, err
 	}

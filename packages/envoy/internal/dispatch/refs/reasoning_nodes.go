@@ -35,8 +35,13 @@ import (
 // standingKinds are the kinds of node that stand on another through their part_of tuple and no
 // projection row, as the graph addresses each, sorted: the kinds standingText states the text of.
 // The walk of StandingIssueSQL passes through every one of them to the node at the foot of the
-// chain.
-var standingKinds = slices.Sorted(maps.Keys(standingText))
+// chain. It is filled at init rather than in its own declaration because the predicate of each of
+// those kinds tests staleness over them (StaleSQL) and standingText reads that predicate, which as
+// the variable's initializer is an initialization cycle the compiler refuses; no initializer of the
+// package reads it.
+var standingKinds []string
+
+func init() { standingKinds = slices.Sorted(maps.Keys(standingText)) }
 
 // StandingIssueSQL is the key of the issue the node whose kind and store id are the SQL kindExpr
 // and idExpr stands under, as a scalar expression, null where it stands under none. kindExpr may
@@ -69,6 +74,79 @@ func StandingIssueSQL(kindExpr, idExpr string) string {
 		from standing
 		where ` + address + ` not in (` + quotedKinds(standingKinds) + `)
 		limit 1)`
+}
+
+// StaleSQL is the one test of a stale node (spec v71 R5), true of the node of a standing kind
+// whose kind and store id are the SQL kindExpr and idExpr: one whose part_of walk, up through
+// every node of a standing kind as StandingIssueSQL walks it, reaches a stale lens, the node itself
+// among them. A lens is stale where it records a document's row (graphstore.AttributeArtifactID)
+// and no row with that id stands at the address of the node it stands on - the document itself, or
+// the document whose block it is, `<ref_key>#<block id>`: that row is gone, or another row stands
+// at the address. So a lens on a removed document, the findings under it, the risks under it and
+// every lens on one of those are stale, whatever build removed the document and whatever build made
+// a row at its address since, since a row's id never moves and no build gives a new row an old
+// one's. A lens on a retired document, or on a block a version removed, is not stale: the row
+// stands. A lens that records no row - one on no document, or one the store holds from before the
+// rule - is not stale either, and neither is a node of any other kind, whose walk stops at itself.
+//
+// Only the lens at the foot of the walk, the one that stands on no node of a standing kind, can
+// record a row, so the test is of that one: the walk carries each node's child where the child is
+// a lens, and the node it ends at names the lens beneath it (stale_foot.below). Each step reads
+// the node's current part_of tuple through graph_tuples_current, the lens's recorded row is one
+// probe of the graph_nodes primary key, and the row at its document's address one probe of the
+// artifacts table's unique index on ref_key, so a lens on a document costs two tuple probes and two
+// row probes, and a node deeper down one tuple probe more for each step. Both probes are written as
+// subqueries of one row each - the lens's row as a lateral subquery that ends in `offset 0`, the
+// address's row as a scalar one - so the planner keeps each a probe of its key rather than a join it
+// may hash from a scan of every lens or every document, as it planned the two when they were joins.
+// Every read of the lens, finding, risk and constraint kinds binds it through the kind's predicate
+// (VisibleKind, VisibleKindRow, VisibleEnd, VisibleNode, VisibleRow), beside the state those reads
+// hold to not gone, so a stale node answers as a gone one does: 404 NOT_FOUND by its address, as an
+// address nobody holds answers, and in no list, chain or count.
+func StaleSQL(kindExpr, idExpr string) string {
+	walked := graphstore.AddressKindSQL(`stale_walk.kind`, `stale_walk.id`)
+	foot := graphstore.AddressKindSQL(`stale_foot.kind`, `stale_foot.id`)
+	standing := quotedKinds(standingKinds)
+	return `exists (with recursive stale_walk (kind, id, below) as (
+			select (` + kindExpr + `)::text, (` + idExpr + `)::text, null::text
+			union
+			select placed.to_kind, placed.to_id,
+			       case when stale_walk.kind = '` + graphstore.KindLens + `' then stale_walk.id end
+			from stale_walk
+			cross join lateral (
+				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(`stale_walk.kind`), `stale_walk.id`, graphstore.TuplePartOf) + `
+			) placed
+			where ` + walked + ` in (` + standing + `)
+		)
+		select 1 from stale_walk stale_foot
+		cross join lateral (
+			select stale_lens.attributes->>'` + graphstore.AttributeArtifactID + `' as recorded
+			from graph_nodes stale_lens
+			where stale_lens.kind = '` + graphstore.KindLens + `' and stale_lens.id = stale_foot.below
+			offset 0
+		) stale_lens
+		where ` + foot + ` not in (` + standing + `)
+		  and stale_lens.recorded is not null
+		  and (select stale_row.id::text from artifacts stale_row
+		       where stale_row.ref_key = split_part(stale_foot.id, '#', 1)) is distinct from stale_lens.recorded)`
+}
+
+// staleOfKindSQL is StaleSQL over a node whose kind is the SQL kindExpr rather than a literal: run
+// only where that kind, as the graph addresses it, is a standing kind, and false for every other
+// node without reading anything.
+func staleOfKindSQL(kindExpr, idExpr string) string {
+	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + quotedKinds(standingKinds) + `)
+		then ` + StaleSQL(kindExpr, idExpr) + ` else false end)`
+}
+
+// notStaleOfLiteralKind is StaleSQL negated and opened with ` and `, over the node of kind whose
+// id address names, for a predicate over one kind: the test for a standing kind, read under the
+// kind the store keys it by, and nothing for every other kind.
+func notStaleOfLiteralKind(kind, address string) string {
+	if !slices.Contains(standingKinds, kind) {
+		return ""
+	}
+	return ` and not ` + StaleSQL(`'`+StoredKindOf(kind)+`'`, address)
 }
 
 // CurrentFarEndSQL is the read of the far end of the current tuple of kind out of the node whose

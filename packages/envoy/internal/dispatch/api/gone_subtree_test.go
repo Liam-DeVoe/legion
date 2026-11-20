@@ -383,15 +383,6 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 // `dispatch://KEY/artifact/<slug>#b-<id>@v<N>`, or as the retired document's at its last version,
 // `dispatch://KEY/artifact/<slug>@v<N>`, and GET /api/v1/references answers the node's `parent`
 // naming that block or document with `parent_version` N.
-//
-// Then the cases of c-lens-page as the tester's run on a local server of e56f8d9b drove them, on an
-// issue of their own: the Verification document of that issue holds the checks c-one and c-two at
-// version 1, alice invokes a BOTEC on c-two, and version 2 drops c-two. The BOTEC stays live and
-// names c-two at version 1, the last version that held it, in its on and in its parent and
-// parent_version, and the lens read of that pinned address lists it on it. A lens on a block of a
-// third document and one on that document itself do the same once the document is retired, at the
-// document's last version. No lens in any answer of these cases reads on null (requireLensAt,
-// requireOnPinned).
 func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 	rig := newReasoningRig(t)
 	onBlock := rig.invoke(rig.secondCheck, "trade-off", "alice", nil)
@@ -433,54 +424,6 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 			t.Errorf("the lens read of %s answers on=%v, want %s@v1, at the last version of the retired document", address, lensOn(read), on)
 		}
 		requireNamedParent(t, rig, address, on, 1)
-	}
-
-	created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": "RSN", "title": "A lens keeps its place", "spec": ":::requirement{#r1}\nA lens keeps its place.\n:::\n",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create the issue whose Verification document drops a check: status=%d body=%s", created.Code, created.Body.String())
-	}
-	history := rig
-	history.issue = decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
-	owner := "/api/v1/issues/" + history.issue
-	served := refs.BlockRef("dispatch://"+history.issue+"/spec", "r1")
-	verification := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)+"\n"+checkServing("c-two", served))
-	cTwo := refs.BlockRef("dispatch://"+history.issue+"/artifact/"+verification.Artifact.Slug, "c-two")
-	botec := history.invoke(cTwo, "botec", "alice", nil)
-	if dropped := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)); dropped.Version.Number != 2 {
-		t.Fatalf("the upload that drops c-two is version %d of the Verification document, want 2", dropped.Version.Number)
-	}
-	requireLensAt(t, history, "the BOTEC", botec.Address, cTwo, 1)
-	requireOnPinned(t, rig, "the BOTEC", botec.Address, cTwo+"@v1")
-
-	third := uploadDocument(t, rig.handler, owner, "notes.md", "# Notes\n\nOne paragraph.\n")
-	thirdDocument := "dispatch://" + history.issue + "/artifact/" + third.Artifact.Slug
-	thirdBlock := refs.BlockRef(thirdDocument, firstBlockOf(t, rig.handler, third.Artifact.ID))
-	onThirdBlock := history.invoke(thirdBlock, "trade-off", "alice", nil)
-	onThirdDocument := history.invoke(thirdDocument, "trade-off", "alice", nil)
-	retirement, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement of %s: %v", thirdDocument, err)
-	}
-	defer func() { _ = retirement.Rollback(ctx) }()
-	if _, err := docs.RetireDocument(ctx, retirement, third.Artifact.ID, model.Actor{Kind: "user", ID: "alice"}, "The test retires the notes."); err != nil {
-		t.Fatalf("retire %s: %v", thirdDocument, err)
-	}
-	if err := retirement.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement of %s: %v", thirdDocument, err)
-	}
-	last := third.Version.Number
-	for _, retired := range []struct {
-		name, lens, on string
-	}{
-		{"the lens on a block of the retired document", onThirdBlock.Address, thirdBlock},
-		{"the lens on the retired document", onThirdDocument.Address, thirdDocument},
-	} {
-		requireLensAt(t, history, retired.name, retired.lens, retired.on, last)
-		requireOnPinned(t, rig, retired.name, retired.lens, fmt.Sprintf("%s@v%d", retired.on, last))
 	}
 }
 

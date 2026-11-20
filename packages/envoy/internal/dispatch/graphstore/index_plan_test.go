@@ -985,9 +985,11 @@ func writeSubtree(t *testing.T, ctx context.Context, pool *store.Pool) {
 		partOf(KindLens, subtreeMoved, KindLens, subtreeRoot, placed, true),
 		partOf(KindLens, subtreeUnderMoved, KindLens, subtreeMoved, placed, true),
 	}, "the subtree")
+	// The move is to an issue's node: a lens placed on a document at whose address no artifacts row
+	// stands is refused (NoDocumentRowError), and this store holds no artifacts row.
 	writeInOneTransaction(t, ctx, pool, nil, []Tuple{
 		partOf(KindLens, subtreeMoved, KindLens, subtreeRoot, moved, false),
-		partOf(KindLens, subtreeMoved, KindArtifact, "GRAPH/elsewhere", moved, true),
+		partOf(KindLens, subtreeMoved, KindIssue, "GRAPH-1", moved, true),
 	}, "the moved lens's move")
 }
 

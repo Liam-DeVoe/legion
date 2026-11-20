@@ -152,8 +152,10 @@ var storeWriteCallSites = map[string]string{
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then the
-	// document's node and every node beneath it in one batch, then the event and the gone
-	// statement in one batch, appendCausingEvent), with each changed_by_run of the node retracted.
+	// document's node, then the event and the gone statement in one batch, appendCausingEvent),
+	// with each changed_by_run of the node retracted; after the row's delete it runs the stale
+	// lenses' statement for the document's address (graphcensus/orphans.go#StateStaleLensesGone)
+	// where a lens stands on the node, under the issue's owner lock it holds from the start.
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// A document's retirement, in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
@@ -207,8 +209,16 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The block-index tick's sweep of the documents a build before this one removed, which states
 	// each orphaned node gone as this build's removal does: the issue's owner lock, then the
-	// node's row, then the state tuple, under the removal's own event.
+	// node's row, then the nodes - the document's and every node beneath it - and then the state
+	// tuples, the document's under the removal's own event.
 	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
+	// The statement that states every stale lens gone with all that stands under it, in its
+	// caller's transaction (the block-index tick's own, a document's removal's): the owner lock of
+	// each issue a stale lens's document names first, then one Write of the lenses and the nodes
+	// beneath them in ascending (kind, id) and their state tuples at the sentinel, appending no
+	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
+	// owner locks writeNodeState takes first too.
+	"graphcensus/orphans.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.

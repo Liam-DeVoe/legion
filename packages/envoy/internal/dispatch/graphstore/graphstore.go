@@ -135,6 +135,24 @@ type Node struct {
 	Changed bool
 }
 
+// TakenGone answers nodes, as NodesBeneath read them, each to be written again gone by who at at,
+// as the state route's gone writes each node beneath the one it takes (api's writeNodeState): the
+// node as the store holds it but for its state, which the write moves (Restates false), keeping
+// the cause the store holds of it (KeepsCause), marked changed, and at the sentinel, so its write
+// states one state tuple at the sentinel signed by who. It sets them in place. Every writer that
+// takes a node's subtree gone beside a write of its own reads and writes it so: the orphan sweep
+// of a document node it states gone (graphcensus's StateOrphanedGone), and the statement that
+// takes every stale lens gone with all that stands under it (graphcensus's StateStaleLensesGone),
+// which the sweep and a document's removal (api's removeArtifact) run.
+func TakenGone(nodes []Node, at time.Time, who model.Actor) []Node {
+	for index := range nodes {
+		each := &nodes[index]
+		each.State, each.Restates, each.KeepsCause, each.Changed = StateGone, false, true, true
+		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
+	}
+	return nodes
+}
+
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is
 // the value itself; any other ToKind makes it a relation, whose ToKind and ToID address the far
 // end. LegacySourceSeq is the `source_seq` of the row a projection's own write came from, and is

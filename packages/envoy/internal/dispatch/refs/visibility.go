@@ -18,6 +18,13 @@ import (
 // node, from the backlink counts, from search, and from a read of its own `dispatch://` address,
 // which answers exactly what an address nobody holds answers.
 //
+// The predicate of each standing kind - a lens, a finding of a lens, a risk, a constraint - also
+// holds its node to not stale (StaleSQL): a lens whose recorded row no longer stands at its
+// document's address, and every node whose part_of walk reaches one, is answered as a gone node
+// is, absent from every list, chain and count and 404 NOT_FOUND by its own address. It rides in
+// the kind's predicate rather than beside each read's test of `state <> 'gone'`, so no read of
+// those kinds can leave it out.
+//
 // The test is bound into the SQL of each read and never applied in Go, so a count and the list
 // behind it cannot disagree: a row the count includes is a row the list shows.
 //
@@ -374,13 +381,18 @@ func VisibilityArg(who model.Actor) any {
 // only once it has an entry here, exactly as that entry's loader decides whether the kind
 // resolves at all.
 // TestEveryNodeKindAnswersAVisibilityPredicate is what keeps that branch unreachable.
+//
+// A node of a standing kind - a lens, a finding, a risk, a constraint - that is stale (StaleSQL)
+// is no node the person may see either, as a gone one is none any read answers: the predicate of
+// each such kind holds the node to not stale, so no read of these kinds can answer one.
 func VisibleKind(kind, address, param string) string {
 	entry, held := nodeRegistry[kind]
 	if !held {
 		return "false"
 	}
-	return VisibilityMarker + kind + ` */` +
-		visibleWhere(`'`+StoredKindOf(kind)+`'`, address, entry.visibility.compares.authorIs(`visible_node.made_by`, param))
+	return VisibilityMarker + kind + ` */(` +
+		visibleWhere(`'`+StoredKindOf(kind)+`'`, address, entry.visibility.compares.authorIs(`visible_node.made_by`, param)) +
+		notStaleOfLiteralKind(kind, address) + `)`
 }
 
 // StoredNodeMarker opens the one read of `visibility` that is no test of it: the column a loader
@@ -516,7 +528,8 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 			address = `case ` + kindExpr + rewrites.String() + ` else ` + idExpr + ` end`
 		}
 	}
-	return VisibilityMarker + `every kind */` + visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param))
+	return VisibilityMarker + `every kind */(` + visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param)) +
+		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
 }
 
 // VisibleNode is the predicate of a node whose kind is a column of the read's own query rather
@@ -528,18 +541,33 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 // does. A block's kind is read off its id (graphstore.AddressKind): a finding of a lens is a
 // lens_block, a block of a document a block.
 //
-// A node the store holds no row for is visible, as VisibleKind reads one.
+// A node the store holds no row for is visible, as VisibleKind reads one. A stale node of a
+// standing kind is not (staleOfKindSQL), as VisibleKind holds one.
 func VisibleNode(kindExpr, idExpr, param string) string {
 	return VisibilityMarker + `the row's own kind */(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` +
-		registrySQL.kinds + `) and ` + visibleWhere(storedKindSQL(kindExpr), idExpr, authorIsOfRow(`visible_node`, param)) + `)`
+		registrySQL.kinds + `) and ` + visibleWhere(storedKindSQL(kindExpr), idExpr, authorIsOfRow(`visible_node`, param)) +
+		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
 }
 
 // VisibleRow is the predicate over a `graph_nodes` row a read already holds, whatever its kind:
 // the same test, with the comparison of the row's own kind (authorIsOfRow) and no second read of
 // the table to make it. A read that walks the store's own table binds it (loadStoreNodes), and so
-// does the count of an arm whose tuples come out of nodes of several kinds (liveVisibleNodeOf).
+// does the count of an arm whose tuples come out of nodes of several kinds (liveVisibleNodeOf). A
+// stale row of a standing kind is no row it admits (staleOfKindSQL), as VisibleKind holds one.
 func VisibleRow(alias, param string) string {
-	return VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, authorIsOfRow(alias, param))
+	return VisibilityMarker + `the row's own kind */(` + visibleHeldRow(alias, authorIsOfRow(alias, param)) +
+		` and not ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `)`
+}
+
+// VisibleGoneRow is the predicate over a `graph_nodes` row a read already holds that every read
+// answers as gone, for a reader the row's own kind admits but for that: its state is gone, or it
+// is a stale node of a standing kind (StaleSQL), and the comparison of its own kind
+// (authorIsOfRow) admits the reader as VisibleRow's does. The one read of it is a write's, which
+// refuses a write on a node it finds so 409 NODE_GONE (api's findWrittenNode), and answers a node
+// the reader may not see, gone or not, with the 404 every read answers it.
+func VisibleGoneRow(alias, param string) string {
+	return `(` + alias + `.state = '` + graphstore.StateGone + `' or ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `) and ` +
+		VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, authorIsOfRow(alias, param))
 }
 
 // VisibleKindRow is one node kind's predicate over a `graph_nodes` row a read already holds:
@@ -552,13 +580,15 @@ func VisibleRow(alias, param string) string {
 //
 // The rule VisibleKind states for a node the store holds no row for - that it is visible - is
 // the one difference, and it is the caller's to keep: a test over a row is a test of a row that
-// is there, and a read binds this only where it answers nothing for a node that has none.
+// is there, and a read binds this only where it answers nothing for a node that has none. A stale
+// row of a standing kind is no row it admits, as VisibleKind holds one.
 func VisibleKindRow(kind, alias, param string) string {
 	entry, held := nodeRegistry[kind]
 	if !held {
 		return "false"
 	}
-	return VisibilityMarker + kind + ` */` + visibleHeldRow(alias, entry.visibility.compares.authorIs(alias+`.made_by`, param))
+	return VisibilityMarker + kind + ` */(` + visibleHeldRow(alias, entry.visibility.compares.authorIs(alias+`.made_by`, param)) +
+		notStaleOfLiteralKind(kind, alias+`.id`) + `)`
 }
 
 // visibleHeldRow is the body both of those render: the row itself says whether the acting

@@ -203,67 +203,6 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	requireEveryLensOn(t, "the read of the spec", read)
 }
 
-// requireOnPinned fails unless GET /api/v1/lenses?on= pinned, the address of a node at the last
-// version of its document that held it, answers that node at that address with lens, called name,
-// among the lenses on it, on that address.
-func requireOnPinned(t *testing.T, rig reasoningRig, name, lens, pinned string) {
-	t.Helper()
-	response := rig.lensesResponse(pinned, "alice")
-	if response.Code != http.StatusOK {
-		t.Errorf("GET /api/v1/lenses?on=%s answers %d %s, want the node with %s %s among the lenses on it",
-			pinned, response.Code, response.Body.String(), name, lens)
-		return
-	}
-	read := decodeBody[nodeLenses](t, response)
-	requireEveryLensOn(t, "the read of "+pinned, read)
-	if read.On.Address != pinned {
-		t.Errorf("GET /api/v1/lenses?on=%s answers the node %+v, want it at %s", pinned, read.On, pinned)
-	}
-	for _, listed := range read.Lenses {
-		if listed.Address == lens {
-			if listed.On == nil || *listed.On != pinned {
-				t.Errorf("GET /api/v1/lenses?on=%s answers %s %s on %s, want it on %s", pinned, name, lens, lensOn(nodeLenses{Lens: &listed}), pinned)
-			}
-			return
-		}
-	}
-	t.Errorf("GET /api/v1/lenses?on=%s answers the lenses %v, want %s %s among them", pinned, readAddresses(read.Lenses), name, lens)
-}
-
-// requireLensAt fails unless the lens at lens, called name, reads live and names parent at the
-// version of its document that last held it: GET /api/v1/lenses answers its on as
-// `<parent>@v<version>`, and GET /api/v1/references answers its node's parent naming parent,
-// pinned or not, with parent_version version (spec v59 R5). Each failure names the lens and parent.
-func requireLensAt(t *testing.T, rig reasoningRig, name, lens, parent string, version int) {
-	t.Helper()
-	pinned := fmt.Sprintf("%s@v%d", parent, version)
-	if state := storedStateOf(t, rig, lens); state != graphstore.StateLive {
-		t.Errorf("%s %s on %s is %s, want live: for a lens its parent is history, not a node taken gone", name, lens, pinned, state)
-	}
-	read := rig.lenses(lens, "alice")
-	requireEveryLensOn(t, "the read of "+name+" "+lens, read)
-	if read.Lens == nil || read.Lens.On == nil || *read.Lens.On != pinned || read.Lens.State != graphstore.StateLive {
-		t.Errorf("GET /api/v1/lenses?on=%s answers %s on %s, want it live on %s, the last version of its document that held it",
-			lens, name, lensOn(read), pinned)
-	}
-	response := dispatchReferences(t, rig.handler, lens, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/references?to=%s, %s: status=%d body=%s", lens, name, response.Code, response.Body.String())
-	}
-	node := decodeBody[model.GraphReferences](t, response).Node
-	if node.Parent == nil || (node.Parent.Ref != parent && node.Parent.Ref != pinned) {
-		t.Errorf("GET /api/v1/references?to=%s answers %s with parent %+v, want one naming %s", lens, name, node.Parent, parent)
-	}
-	if node.ParentVersion == nil || *node.ParentVersion != version {
-		held := "null"
-		if node.ParentVersion != nil {
-			held = fmt.Sprint(*node.ParentVersion)
-		}
-		t.Errorf("GET /api/v1/references?to=%s answers %s with parent_version %s, want %d, the last version that held %s",
-			lens, name, held, version, parent)
-	}
-}
-
 // requireEveryLensOn fails, naming each lens, where read answers a lens with on null: the node
 // itself where it is a lens, each lens on it and each lens of its chains. No read answers a lens
 // with on null (spec v59 R5).

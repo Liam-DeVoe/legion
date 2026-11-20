@@ -340,9 +340,10 @@ var rollNow time.Time
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
 // the object pass (readEventsAfterCursor's owed), it writes the node of every issue, document, ask
 // and message whose row names none, through the backfill's object pass (graphcensus's
-// WriteOwedObjectNodes), and states gone the node of every document a build before this one
-// removed (graphcensus's OrphanedDocumentNodes and StateOrphanedGone). It counts both in tick, and
-// answers whether it stopped with work left.
+// WriteOwedObjectNodes), states gone the node of every document a build before this one removed,
+// with every node beneath it (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then
+// states every stale lens gone with everything under it (graphcensus's StateStaleLensesGone). It
+// counts each in tick, and answers whether it stopped with work left.
 //
 // The release before this one writes those four kinds' rows with no node, as it writes a
 // version's block rows with none, and nothing else would give them one until someone ran the
@@ -355,10 +356,19 @@ var rollNow time.Time
 // document node with no row behind it can mean nothing else: every writer of this build writes a
 // node in the transaction that writes its row, and the pass writes one only for a row that stands
 // under the owner locks it takes. The sweep states such a node gone as this build's own removal of
-// the document states it (api's removeArtifact), under the removal's own event, so the store keeps
-// every statement it held and the history of a removed document is one whichever build served the
-// removal; a node whose row a create of this build commits meanwhile is left, since the sweep
-// reads under its lock of the node whether a row stands.
+// the document states it (api's removeArtifact), under the removal's own event, and takes every
+// node beneath it - each lens invoked on the document and all that stands under each - to gone in
+// the same transaction, so the store keeps every statement it held and the history of a removed
+// document is one whichever build served the removal; a node whose row a create of this build
+// commits meanwhile is left, since the sweep reads under its lock of the node whether a row stands.
+//
+// Then, in one transaction of its own, it states gone every lens whose recorded row no longer
+// stands at its document's address, each with its whole part_of subtree (graphcensus's
+// StateStaleLensesGone), whatever the state of the node at that address: a build before this one
+// removes a document and states nothing, or states its node gone and nothing beneath it, or makes a
+// new document at the address, and none of them takes a lens gone, while every read answers such a
+// lens as gone already (refs.StaleSQL). So no lens a removal by an earlier build left stale stays
+// live in the store.
 //
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
@@ -366,8 +376,8 @@ var rollNow time.Time
 // read's while it takes them. It writes at most objectPassBatches batches and states at most
 // orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
 // nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
-// that finishes clears, so no row is left without its node and no node without its row. A node
-// the sweep leaves is logged with the reason.
+// that finishes clears, so no row is left without its node, no node without its row and no stale
+// lens live. A node the sweep leaves is logged with the reason.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
 	if owed == nil {
 		return false, nil
@@ -393,6 +403,14 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 		default:
 			tick.OrphansGone++
 		}
+	}
+	if err := pgx.BeginFunc(ctx, s.store.Pool, func(tx pgx.Tx) error {
+		gone, err := graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
+		tick.StaleLensesGone = gone
+		return err
+	}); err != nil {
+		tick.StaleLensesGone = 0
+		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))
 	}
 	switch err := errors.Join(failed...); {
 	case err != nil:
