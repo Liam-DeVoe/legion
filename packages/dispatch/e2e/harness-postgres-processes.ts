@@ -335,8 +335,8 @@ function topOf(path: string, mounts: ReadonlyMap<string, Mount>): string {
 /** How many reads of where paths lead this process has made, which numbers each (`identities`). */
 let reads = 0;
 
-/** Each path a holder read of this process did not reach, since the read of the machine's own
- *  filesystems stopped at a path before it that answered no stat (`identities`), with that path. */
+/** Each path a holder read of this process did not reach, since the read of its group stopped at
+ *  a path before it that answered no stat (`identities`), with that path. */
 const notReached = new Map<string, string>();
 
 /** At most how many of the paths that read left unread a line names, before it counts the rest. */
@@ -346,18 +346,16 @@ const namedLeft = 5;
  *  (`statInChild`): its device and inode, "<dev>:<ino>", or null where it names nothing. The paths
  *  are grouped by the mount they are on (`topOf`, by the mount table `reader.mounts`): the paths of
  *  the filesystems the kernel answers itself in one group, and those of each other mount in one of
- *  its own. Each group is read by children of its own, and the children of the groups are started
+ *  its own. Each group is read by a child of its own, and the children of the groups are started
  *  at the same time, so mounts that hang run out their bounds together: two that hang cost one
  *  bound, not two, and a path of a mount that answers is read at once. Within a group each
  *  directory is read before the paths under it. A path that answered no stat within the reader's
  *  bound (`StatReader.statMs`), or is under one, here or earlier in this process (`unanswered`),
  *  has no entry and is not asked: where a child waits on a path past that bound, the path joins
- *  `unanswered`, and a line names it at once, with `directory`, whose holders the read is for. On
- *  another mount a child of its own then reads the paths of that mount after it that are not under
- *  it; on the machine's own filesystems, which hang only where the kernel does, the read stops
- *  there, and leaves the paths after it unread (`notReached`), and the line names them. A child
- *  that did not start leaves the paths it was given without an entry, and they are asked again at
- *  the next read. */
+ *  `unanswered`, and a line names it at once, with `directory`, whose holders the read is for. The
+ *  read of that group stops there, whichever mount it is of, and leaves the paths after it unread
+ *  (`notReached`), and the line names them. A child that did not start leaves the paths it was
+ *  given without an entry, and they are asked again at the next read. */
 async function identities(
   paths: readonly string[],
   reader: StatReader,
@@ -389,35 +387,32 @@ async function identities(
   notReached.clear();
   await Promise.all(
     [...tops].map(async ([top, those]) => {
-      let rest = those.sort(
+      const sorted = those.sort(
         (first, second) =>
           depth(first) - depth(second) || (first < second ? -1 : first > second ? 1 : 0)
       );
-      while (rest.length > 0) {
-        const { started, read: answers } = await statInChild(rest, reader, `${read} ${top}`);
-        for (const [at, identity] of answers.entries()) found.set(rest[at] ?? "", identity);
-        const hung = rest[answers.length];
-        if (!started || hung === undefined) break;
-        unanswered.set(hung, reader.statMs);
-        const after = rest.slice(answers.length + 1).filter((path) => !underUnanswered(path));
-        // The read of this group stops here, whichever mount it is of, and leaves the paths after
-        // the hung one unread (`notReached`), which the line names: a group that read on would
-        // start a second reader, and wait a second bound, which a row that counts one holder read
-        // of this group has not counted. The `dispatch-ui` job and the harness lane's rounds 1 and
-        // 2 of run 44647294777 met that at `c07d6906ed5`, where a path answered no stat under load
-        // and its group read on: "the row's limit counts 1 holder reads, and its sweeps made 2". A
-        // path left unread leaves its process unjudged (`whyUnread`), so the start leaves the
-        // directory for a later one, which is what an unanswered path already did.
-        for (const path of after) notReached.set(path, hung);
-        const left =
-          after.length === 0
-            ? ""
-            : `, and reads none of the ${after.length} paths of ${top === local ? "the machine's own filesystems" : top} after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`;
-        console.error(
-          `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${reader.statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
-        );
-        break;
-      }
+      const { started, read: answers } = await statInChild(sorted, reader, `${read} ${top}`);
+      for (const [at, identity] of answers.entries()) found.set(sorted[at] ?? "", identity);
+      const hung = sorted[answers.length];
+      if (!started || hung === undefined) return;
+      unanswered.set(hung, reader.statMs);
+      const after = sorted.slice(answers.length + 1).filter((path) => !underUnanswered(path));
+      // The read of this group stops here, whichever mount it is of, and leaves the paths after
+      // the hung one unread (`notReached`), which the line names: a group that read on would
+      // start a second reader, and wait a second bound, which a row that counts one holder read
+      // of this group has not counted. The `dispatch-ui` job and the harness lane's rounds 1 and
+      // 2 of run 44647294777 met that at `c07d6906ed5`, where a path answered no stat under load
+      // and its group read on: "the row's limit counts 1 holder reads, and its sweeps made 2". A
+      // path left unread leaves its process unjudged (`whyUnread`), so the start leaves the
+      // directory for a later one, which is what an unanswered path already did.
+      for (const path of after) notReached.set(path, hung);
+      const left =
+        after.length === 0
+          ? ""
+          : `, and reads none of the ${after.length} paths of ${top === local ? "the machine's own filesystems" : top} after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`;
+      console.error(
+        `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${reader.statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
+      );
     })
   );
   return found;
@@ -449,9 +444,9 @@ export interface Holding {
 }
 
 /** Why `path` has no answer of a holder read, as a line says it: it answered no stat within the
- *  bound of the reader that read it, or a directory above it did (`unanswered`); the read of the
- *  machine's own filesystems stopped at a path before it (`notReached`), which answered no stat
- *  within that bound; or the reader that was to read it did not start within `statStartMs`. */
+ *  bound of the reader that read it, or a directory above it did (`unanswered`); the read of its
+ *  group stopped at a path before it (`notReached`), which answered no stat within that bound; or
+ *  the reader that was to read it did not start within `statStartMs`. */
 function whyUnread(path: string): string {
   const hung = (at: string): string =>
     `answered no stat within ${(unanswered.get(at) ?? Number.NaN) / 1000} s`;

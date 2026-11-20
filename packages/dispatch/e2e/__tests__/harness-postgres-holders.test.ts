@@ -506,9 +506,10 @@ test.skipIf(!onLinux)(
 
 /** What each of the next rows waits for (`Waits`): the holder, a child, with its arguments, at
  *  most `claimEventMs`; and one sweep, a child, whose holder read before its claim of the data
- *  directory starts a reader that never answers a path the holder names, and a second reader for
- *  the paths after it that are not under it. */
-const neverAnswers: Waits = { children: 2, reads: 2, bounds: [claimEventMs] };
+ *  directory starts one reader, which never answers a path the holder names: the read of that
+ *  group stops there and reads no path after it (`notReached` of
+ *  `e2e/harness-postgres-processes.ts`), so it starts no second reader. */
+const neverAnswers: Waits = { children: 2, reads: 1, bounds: [claimEventMs] };
 
 /** How long the start of the next rows waits on one path that answers no stat (`StatReader.statMs`
  *  of the row's stand-in reader, `neverAnswering`): the row's own, 3 s, through the same parameter
