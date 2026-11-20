@@ -146,6 +146,29 @@ describe("envoyToolSpecs", () => {
     );
   });
 
+  // R7 of dispatch://INFRA-3589: the listener's publish route refuses Dispatch's and GitHub's
+  // lanes by name, as it refuses the agent topics. So the publish tool lists none of them among
+  // the topics a publish stores, and says why; the subscribe tool still lists every stored lane.
+  test("tells an agent that a publish to an agent topic or to Dispatch's or GitHub's lane is refused", () => {
+    const subscribe = envoyToolSpecs.find((spec) => spec.name === "envoy_subscribe");
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+
+    expect(subscribe?.description).toContain(
+      "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team;"
+    );
+    expect(publish?.description).toContain(
+      "A publish to an agent topic is refused by name: envoy_send sends to one session."
+    );
+    expect(publish?.description).toContain(
+      "A publish to a topic under notifications.dispatch. or notifications.github. is refused by name too: only Dispatch publishes on Dispatch's lane, and only the listener that receives GitHub's webhooks publishes on GitHub's."
+    );
+    expect(publish?.description).toContain(
+      "Every other topic a publish names is stored (slack, legion, ghostwispr, whatsapp, team;"
+    );
+    expect(publish?.description).not.toContain("dispatch, github");
+    expect(publish?.description).not.toContain("Every notification topic is stored");
+  });
+
   test("tells an agent the three answers a role message has, the kept one as a success", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 

@@ -6,14 +6,19 @@ body: |-
   ends the hold with nothing said, and only a refusal at or after its end tells the session.
   `inboundUnavailableNoticeText` words a `why` that begins with `BUS_UNANSWERED_PREFIX` as a
   registration the listener did not record, which Envoy messages may still reach, not as a
-  session with no durable consumer. `restored` takes the `why` the outage told, and so does
+  session with no durable consumer. `restored` takes the last `why` the outage told, and so does
   `inboundRestoredNoticeText`. After such a `why`, the restored notice says that the listener
   recorded a registration of this session, and that a message the stream stored that has not
   reached the session arrives now. It
   does not say that the session receives again, as it still does after any other `why`. The new
   `isUnrecordedRegistration(why)` says whether a told `why` is a registration the listener did
   not record, so each host picks the words of its own one-line texts by it and does not test the
-  prefix itself.
+  prefix itself. A refusal or a lost relay subject after a told bus-outage 503 is told once more,
+  because it says that the session receives nothing, and the restored notice after it is worded
+  for that later `why`. A
+  `subscribe` an attempt of which got the bus-outage 503 now fails with that 503 also where its
+  retry got no answer or another 5xx, so the hold and the words above apply to it. A 4xx on the
+  retry is still the refusal, and every other call still throws what its last attempt got.
 time: 2026-11-20T00:04:51Z
 custom:
     Issue: pr4194

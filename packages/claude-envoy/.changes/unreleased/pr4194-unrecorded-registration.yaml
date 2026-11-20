@@ -13,7 +13,10 @@ body: |-
   session, and that a message the stream stored that has not reached the session arrives now. The
   stderr line is `envoy-channel: the listener recorded a registration of this session`. Neither
   says that the session receives again. A notice that cannot be written is reported on stderr
-  with the same words.
+  with the same words. A registration whose first attempt got that 503 and whose retry got no
+  answer is held and told the same way. A refusal or a lost relay subject after the session was
+  told that the listener did not record its registration is told once more, and the restored
+  notice after it says that the session receives again.
 time: 2026-11-20T00:04:52Z
 custom:
     Issue: pr4194

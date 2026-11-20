@@ -836,8 +836,10 @@ export class EnvoyApiError extends Error {
  * bus did not answer, and says `bus: NATS is reconnecting` when NATS was reconnecting. The work
  * the listener did before that call can have landed: an unsubscribe gets this answer after it
  * wrote the session's record, when only the update of the consumer's filter met the reconnect.
- * `request` throws the error of its last attempt alone, so a first attempt that got this answer
- * and a retry that failed another way reads false here.
+ * A registration (`subscribe`) that got this answer on an attempt fails with it, also where a
+ * later attempt got no answer or another 5xx (`busUnansweredStands`), so this reads true for it.
+ * Every other call throws the error of its last attempt alone, so a first attempt that got this
+ * answer and a retry that failed another way reads false here.
  */
 export function isBusUnanswered(error: unknown): boolean {
   return (
@@ -945,6 +947,15 @@ type RequestOptions = {
   readonly onNotSent?: () => void;
   /** Called as each attempt starts, so a caller can say how many it made. */
   readonly onAttempt?: () => void;
+  /**
+   * Whether an attempt's bus-outage 503 (`isBusUnanswered`) is the call's error when a later
+   * attempt gets no answer, sends nothing or gets another 5xx. A registration sets it. The
+   * listener did not record that registration, and a retry that then got no answer tells nothing
+   * more, so the session is told that the registration was not recorded (`inboundUnavailable`).
+   * A 4xx on a later attempt is still the call's error. Every other call throws what its last
+   * attempt got, because its callers read that: a send's unconfirmed error names it.
+   */
+  readonly busUnansweredStands?: boolean;
   /**
    * The session this call acts for, where its body names one the listener binds to the
    * credential: a subscribe, an unsubscribe, a deregistration, a role claim, and a
@@ -1105,6 +1116,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
+    // The last bus-outage 503 an attempt got, where the caller asked for it (`busUnansweredStands`).
+    let busUnanswered: EnvoyApiError | undefined;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
       const outcome = await attemptOnce(
@@ -1119,7 +1132,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           await waitForRetry(retryDelayMs);
           continue;
         }
-        throw outcome.unanswered;
+        throw busUnanswered ?? outcome.unanswered;
       }
       if ("notSent" in outcome) {
         if (attempt + 1 < tries) {
@@ -1127,7 +1140,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           continue;
         }
         options.onNotSent?.();
-        throw outcome.notSent;
+        throw busUnanswered ?? outcome.notSent;
       }
       const { response, body } = outcome;
       if (response.ok) return body;
@@ -1150,10 +1163,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
+        if (options.busUnansweredStands === true && isBusUnanswered(error)) busUnanswered = error;
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
           continue;
         }
+        throw busUnanswered ?? error;
       }
       throw error;
     }
@@ -1211,8 +1226,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             "/v1/interests/subscribe",
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
-            // own credential, since the listener binds a broker token's session to it.
-            { actingSession: input.sessionID }
+            // own credential, since the listener binds a broker token's session to it. A
+            // registration an attempt of which got the bus-outage 503 fails with that answer
+            // where a later attempt gets no answer or another 5xx (`busUnansweredStands`).
+            { actingSession: input.sessionID, busUnansweredStands: true }
           ),
           "POST",
           "/v1/interests/subscribe"

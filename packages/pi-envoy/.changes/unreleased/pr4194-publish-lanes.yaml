@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The `envoy_publish` tool's description no longer lists the agent topics, Dispatch's lane or
+    GitHub's lane among the topics a publish stores. It says that the listener refuses a publish
+    to each by name: `envoy_send` sends to one session, only Dispatch publishes on Dispatch's lane,
+    and only the listener that receives GitHub's webhooks publishes on GitHub's.
+time: 2026-11-20T13:00:00Z
+custom:
+    Issue: pr4194

@@ -43,12 +43,32 @@ const PUBLISH_COUNTS =
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
-const STORED_DELIVERY =
-  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
-  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
-  "topic), and reaches each subscribed session once from the durable consumer its listener " +
-  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
-  "for each subscribed session's consumer, not that any recipient has read it.";
+/**
+ * The sentence `stored`, with the lanes it names (`lanes`), and what a stored message does: it
+ * reaches each subscribed session once from its durable consumer.
+ */
+const storedDelivery = (stored: string, lanes: string): string =>
+  `${stored} (${lanes}; a role message reaches its holder as a stored copy on the holder's ` +
+  "agent topic), and reaches each subscribed session once from the durable consumer its " +
+  "listener relays to it, also one that was away or restarted. A 200 means the stream stored " +
+  "the message for each subscribed session's consumer, not that any recipient has read it.";
+
+const STORED_DELIVERY = storedDelivery(
+  "Every notification topic is stored",
+  "agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team"
+);
+
+// The listener's publish route refuses the agent topics, and Dispatch's and GitHub's lanes, by
+// name (R7 of dispatch://INFRA-3589). No NATS grant can refuse an HTTP caller of a listener whose
+// own user holds one of those two lanes. So the publish tool lists none of them as stored.
+const PUBLISHED_DELIVERY =
+  "A publish to an agent topic is refused by name: envoy_send sends to one session. A publish " +
+  "to a topic under notifications.dispatch. or notifications.github. is refused by name too: " +
+  "only Dispatch publishes on Dispatch's lane, and only the listener that receives GitHub's " +
+  `webhooks publishes on GitHub's. ${storedDelivery(
+    "Every other topic a publish names is stored",
+    "slack, legion, ghostwispr, whatsapp, team"
+  )}`;
 
 const TOPIC_GUIDE =
   "Topic guide (all are under notifications.): agent.<session_id> (subscribe: own inbox); role.<role> " +
@@ -236,7 +256,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${PUBLISHED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },

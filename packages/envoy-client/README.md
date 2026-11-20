@@ -314,7 +314,10 @@ once, and the caller decides whether to wait `retryAfterSeconds` and send the me
 `isBusUnanswered` tells the listener's bus-outage answer apart: an `EnvoyApiError` with status
 503 whose `error` begins with `BUS_UNANSWERED_PREFIX` (`@legion/contracts`), `envoy: the message
 bus did not answer`. Part of the request can have landed before it: an unsubscribe gets it after
-the record was written, when only the update of the consumer's filter met a NATS reconnect. The
+the record was written, when only the update of the consumer's filter met a NATS reconnect. A
+`subscribe` an attempt of which got that answer fails with it, also where its retry got no answer
+or another 5xx, so a registration the listener did not record is told as one; a 4xx on the retry
+is still the refusal. Every other call throws what its last attempt got. The
 listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.
 

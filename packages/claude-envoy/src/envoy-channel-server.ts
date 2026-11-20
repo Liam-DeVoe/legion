@@ -1292,10 +1292,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * listener's own, with a reason `ErrorWireSchema.reason` lists. `inboundUnavailableNoticeText`
    * words it for every host. A refusal leaves the session no consumer. After a bus-outage 503
    * (`isUnrecordedRegistration`) the consumer may still deliver, so the stderr lines say only that
-   * the listener did not record the registration. An accepted registration after a told outage
-   * tells the session once, by the same path, worded for the `why` it was told. A session whose
-   * shutdown has begun is told neither (`stopping`): the shutdown closed the relay on purpose, and
-   * the record is deleted next.
+   * the listener did not record the registration, and a refusal or a lost relay subject after it
+   * is said once more. An accepted registration after a told outage tells the session once, by the
+   * same path, worded for the last `why` it was told. A session whose shutdown has begun is told
+   * neither (`stopping`): the shutdown closed the relay on purpose, and the record is deleted next.
    */
   const inboundOutage = inboundUnavailable(
     (why) => {

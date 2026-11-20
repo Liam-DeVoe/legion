@@ -1528,4 +1528,54 @@ describe("one registration", () => {
     expect(isUnrecordedRegistration(NO_RELAY)).toBe(false);
     expect(isUnrecordedRegistration(`listener: ${BUS_UNANSWERED_PREFIX}`)).toBe(false);
   });
+
+  // Finding 9 of the read-ahead at 73c124fe (dispatch://INFRA-3589): a told bus-outage 503 says
+  // that the session's consumer may still deliver. A refusal or a lost relay subject after it
+  // says that the session receives nothing, so it is told once more. The accepted registration
+  // after it is worded for that later `why`: the session receives again.
+  test("a refusal after a told bus-outage 503 is told once more, and the restore after it says the session receives again", () => {
+    const report = reportRestoring();
+
+    report.outage.accepted();
+    report.at(1_000);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND);
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED]);
+
+    report.at(1_000 + BOUND + 15_000);
+    report.outage.refused(new Error("no_grant"));
+    // Once more, and no more: a later refusal or bus-outage 503 tells nothing.
+    report.at(1_000 + BOUND + 30_000);
+    report.outage.refused(new Error("no_grant"));
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED, "no_grant"]);
+
+    report.at(1_000 + BOUND + 45_000);
+    report.outage.accepted();
+    expect(report.restored).toEqual(["no_grant"]);
+    expect(report.notices).toHaveLength(1);
+    expect(report.notices[0]).toContain(
+      "The listener accepted a registration of this session, so the session receives Envoy messages again."
+    );
+  });
+
+  test("a lost relay subject after a told bus-outage 503 is told once more, and the restore after it says the session receives again", () => {
+    const report = reportRestoring();
+
+    report.outage.accepted();
+    report.at(1_000);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND + 15_000);
+    report.outage.noRelay(new Error(NO_RELAY));
+    report.outage.noRelay(new Error(NO_RELAY));
+    expect(report.told).toEqual([UNRECORDED, NO_RELAY]);
+
+    report.at(1_000 + BOUND + 30_000);
+    report.outage.accepted();
+    expect(report.restored).toEqual([NO_RELAY]);
+    expect(report.notices[0]).toContain("so the session receives Envoy messages again");
+  });
 });

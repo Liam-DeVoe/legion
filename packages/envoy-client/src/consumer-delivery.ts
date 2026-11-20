@@ -915,7 +915,7 @@ export interface InboundUnavailable {
    * No registration was sent, because the session holds no relay subject. Before the session's
    * first accepted registration this is the start race, held until the bound passes; after it,
    * a relay that was open was lost, which tells the session at once. Either way it is told once
-   * per outage.
+   * per outage, and once more after a told registration the listener did not record.
    */
   noRelay(error: unknown): void;
   /**
@@ -923,13 +923,14 @@ export interface InboundUnavailable {
    * unless this outage already told it. A registration the listener answered with the bus-outage
    * 503 (`isBusUnanswered`) is held instead, as the start race is: the first such refusal since
    * the last accepted registration starts the bound, and only one at or after its end tells the
-   * session.
+   * session. Any other refusal after a told bus-outage 503 is told once more: that 503 said the
+   * consumer may still deliver, and the refusal says the session receives nothing.
    */
   refused(error: unknown): void;
   /**
    * A registration was accepted: an outage the session was told of ends with `restored`, which
-   * takes the `why` that was told, and the next outage tells the session again. An outage held and
-   * never told ends with nothing said.
+   * takes the last `why` that was told, and the next outage tells the session again. An outage
+   * held and never told ends with nothing said.
    */
   accepted(): void;
 }
@@ -945,7 +946,7 @@ export interface InboundUnavailableOptions {
   readonly firstOpenBoundMs?: number;
   /**
    * Tells the session once that an outage it was told of has ended, because a registration was
-   * accepted. `toldWhy` is the message `tell` took for that outage.
+   * accepted. `toldWhy` is the last message `tell` took for that outage.
    */
   readonly restored?: (toldWhy: string) => void;
   /**
@@ -975,8 +976,10 @@ export interface InboundUnavailableOptions {
  * the session's consumer may still deliver, and the next heartbeat's registration is usually
  * accepted, so the first such refusal since the last accepted registration starts the bound and
  * an accepted registration inside it ends the hold with nothing said. Any other refusal is told
- * at once, as is an outage with no relay subject after the first accepted registration. A session
- * that has begun to stop (`stopping`) is told nothing at all.
+ * at once, as is an outage with no relay subject after the first accepted registration. Each
+ * outage is told once, with one exception. A told bus-outage 503 says the consumer may still
+ * deliver, so a refusal or a lost relay subject after it is told once more, and `restored` takes
+ * that later message. A session that has begun to stop (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
   tell: (why: string) => void,
@@ -987,15 +990,22 @@ export function inboundUnavailable(
     stopping = () => false,
   }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
-  // The message this outage told the session, until a registration is accepted.
+  // The message this outage told the session last, until a registration is accepted.
   let toldWhy: string | undefined;
   let everAccepted = false;
   let heldSince: number | undefined;
   let unansweredSince: number | undefined;
+  // A told registration the listener did not record says that the consumer may still deliver,
+  // so a refusal or a lost relay subject after it is told once more.
   const say = (error: unknown) => {
-    if (toldWhy !== undefined || stopping()) return;
-    toldWhy = messageFor(error);
-    tell(toldWhy);
+    if (stopping()) return;
+    const why = messageFor(error);
+    const toldNow =
+      toldWhy === undefined ||
+      (isUnrecordedRegistration(toldWhy) && !isUnrecordedRegistration(why));
+    if (!toldNow) return;
+    toldWhy = why;
+    tell(why);
   };
   return {
     noRelay(error) {

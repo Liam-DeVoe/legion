@@ -3314,10 +3314,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   // (`isUnrecordedRegistration`) the consumer may still deliver, so the log line and the pane
   // note say only that the listener did not record the registration. A first relay open still
   // being tried at the start, or a run of bus-outage 503s, is told only once
-  // `INBOUND_FIRST_OPEN_BOUND_MS` has passed. An accepted registration after a told outage tells
-  // the session once, by the same path, worded for the `why` it was told. A session whose stop
-  // has begun is told neither (`stopping`): the stop closed the relay on purpose, and the record
-  // is deleted next.
+  // `INBOUND_FIRST_OPEN_BOUND_MS` has passed. A told bus-outage 503 says that the consumer may
+  // still deliver, so a refusal or a lost relay subject after it is said once more. An accepted
+  // registration after a told outage tells the session once, by the same path, worded for the
+  // last `why` it was told. A session whose stop has begun is told neither (`stopping`): the stop
+  // closed the relay on purpose, and the record is deleted next.
   const inboundOutage = inboundUnavailable(
     (why) => {
       if (isUnrecordedRegistration(why)) {
@@ -3428,8 +3429,12 @@ export default function envoyExtension(hostApi: PiApi): void {
           ...(place === undefined ? {} : { place }),
         }),
       // A registration the listener refused, for any of the reasons `ErrorWireSchema.reason`
-      // lists, leaves the session with no consumer at all: the outage tells the session once
-      // and the heartbeat asks again.
+      // lists, leaves the session with no consumer at all: the session is told once, at once, and
+      // the heartbeat asks again. A registration the bus-outage 503 answered (`isBusUnanswered`)
+      // was not recorded, but its consumer may still deliver. That failure is held for the bound
+      // first (`INBOUND_FIRST_OPEN_BOUND_MS`): the session is told once only when such a failure
+      // comes at or after the bound's end, and an accepted registration inside the bound ends the
+      // hold with nothing said.
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(registeringFor, asking, result);
       },
@@ -4302,7 +4307,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       // Whatever the pass failed at: the NATS connection it dials, the relay subject it opens
       // for the session's consumer, or the registration the listener refused or did not record.
       // The session runs either way. Until a pass gets through, a message reaches it only from a
-      // consumer the listener made before a bus-outage 503 (`isBusUnanswered`).
+      // consumer a registration already made whose relay subject is still open: the consumer of
+      // an accepted registration, or the one the listener made before it answered a bus-outage
+      // 503 (`isBusUnanswered`).
       context.ui.notify(
         `envoy: this session is not registered (${messageFor(error)}); retrying in the background`,
         "warning"

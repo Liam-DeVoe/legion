@@ -13,7 +13,14 @@ import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-ro
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
-import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
+import {
+  createConsumerDelivery,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+  RelayHeader,
+  type RelayReply,
+  registerWithRelay,
+} from "../consumer-delivery";
 import { DedupeIdentitySchema, renderInbound } from "../delivery";
 import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
@@ -1517,6 +1524,129 @@ describe("EnvoyClient", () => {
     expect(isBusUnanswered(answer(503, "service starting"))).toBe(false);
     expect(isBusUnanswered(answer(500, outage))).toBe(false);
     expect(isBusUnanswered(new Error(outage))).toBe(false);
+  });
+
+  // Finding 7 of the read-ahead at 73c124fe (dispatch://INFRA-3589, R26): the listener answers a
+  // registration whose known-session record did not land with its bus-outage 503, and its route
+  // may take 4.5 s, so the client's retry can then time out. The registration was not recorded,
+  // and a retry that got no answer says nothing more. So the registration fails with that 503:
+  // the outage report holds it, and words it as a registration the listener did not record. A
+  // refusal on the retry is still that refusal.
+  describe("a registration whose first attempt got the bus-outage 503", () => {
+    const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ses_sender: context deadline exceeded`;
+    const BOUND = 60_000;
+
+    /** A listener that answers each registration's first attempt with the bus-outage 503 and
+     *  its retry with `retry`, and one session's outage report on a clock the row moves. */
+    function registrations(retry: () => Promise<Response>) {
+      let calls = 0;
+      let clock = 0;
+      const told: string[] = [];
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls % 2 === 1) return Response.json({ error: UNRECORDED }, { status: 503 });
+          return retry();
+        },
+      });
+      const outage = inboundUnavailable((why) => told.push(why), {
+        now: () => clock,
+        firstOpenBoundMs: BOUND,
+      });
+      return {
+        told,
+        calls: () => calls,
+        at: (ms: number) => {
+          clock = ms;
+        },
+        register: () =>
+          registerWithRelay({
+            relay: { setFollowed: () => undefined, registration: () => DELIVERY_REQUEST },
+            ownAgentSubject: "notifications.agent.ses_sender",
+            followed: [],
+            outage,
+            send: (topics, delivery) =>
+              client.subscribe({
+                sessionID: "ses_sender",
+                directory: "/work",
+                topics,
+                port: 0,
+                title: "",
+                driving: false,
+                delivery,
+                plugin: PLUGIN,
+              }),
+            answered: () => undefined,
+          }),
+      };
+    }
+
+    test("a retry that gets no answer fails with that 503, which is held and told as not recorded", async () => {
+      const session = registrations(() => {
+        // What AbortSignal.timeout raises when the listener holds the request past the deadline.
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      });
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(true);
+      expect((failure as Error).message).toBe(UNRECORDED);
+      session.at(BOUND - 1);
+      await expect(session.register()).rejects.toThrow(UNRECORDED);
+      // Inside the bound the session is told nothing: its consumer may still deliver.
+      expect(session.told).toEqual([]);
+
+      session.at(BOUND);
+      await expect(session.register()).rejects.toThrow(UNRECORDED);
+      expect(session.calls()).toBe(6);
+      expect(session.told).toEqual([UNRECORDED]);
+      const notice = inboundUnavailableNoticeText(session.told[0] ?? "");
+      expect(notice).toContain("The listener did not record this session's registration");
+      expect(notice).not.toContain("no durable consumer");
+      expect(notice).not.toContain("receives none");
+    });
+
+    test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {
+      const session = registrations(async () =>
+        Response.json(
+          { error: "the listener can give this session no consumer", reason: "no_grant" },
+          { status: 409 }
+        )
+      );
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(false);
+      expect((failure as EnvoyApiError).details.status).toBe(409);
+      expect(session.told).toEqual([
+        "the listener can give this session no consumer (reason: no_grant)",
+      ]);
+    });
+
+    // Only a registration fails with an earlier attempt's 503. A send names what its last
+    // attempt got, since that is what its unconfirmed error says.
+    test("a send whose retry gets no answer still names the retry's failure", async () => {
+      let calls = 0;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls === 1) return Response.json({ error: UNRECORDED }, { status: 503 });
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        },
+      });
+
+      const error = await client
+        .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+      expect((error as Error).message).toContain(
+        "the listener did not answer (POST http://listener/v1/messages/send got no answer: TimeoutError"
+      );
+    });
   });
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {
