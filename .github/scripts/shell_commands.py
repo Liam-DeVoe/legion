@@ -109,16 +109,38 @@ class Shell:
     in (outermost first, one tuple per pipeline), and the variables it assigns, in order, as
     (name, value) with the value's quotes taken off and each substitution in it kept as written
     (`here=$(cd "$(dirname "$0")" && pwd)` gives ("here", '$(cd "$(dirname "$0")" && pwd)')); the
-    files it writes (each target of a `>`, `>>` or `>|`, as written); and, for each command a
-    `PATH=…` before it sets (`PATH="$bin:$PATH" cmd`, `env PATH=… cmd`), the command word and that
-    PATH, as (command, value)."""
+    files it writes (each target of a `>`, `>>` or `>|`, as written); for each command a `PATH=…`
+    before it sets (`PATH="$bin:$PATH" cmd`, `env PATH=… cmd`), the command word and that PATH, as
+    (command, value); and, one tuple per pipeline, the variables it runs only while unset: the NAME
+    of each `if [ -z "$NAME" ]` (or `[[ -z … ]]`, `test -z …`, `${NAME:-}` too) whose `then` branch
+    it stands in."""
 
-    def __init__(self, pipelines: list, loops: list, assignments: list, writes: list, paths: list) -> None:
+    def __init__(self, pipelines: list, loops: list, assignments: list, writes: list, paths: list,
+                 guards: list | None = None) -> None:
         self.pipelines = pipelines
         self.loops = loops
         self.assignments = assignments
         self.writes = writes
         self.paths = paths
+        self.guards = guards if guards is not None else [()] * len(pipelines)
+
+
+# The test of an `if` that runs its branch only while a variable is unset or empty.
+UNSET_TEST = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)(:-)?\}?$")
+
+
+def unset_guard(words: list[str]) -> str | None:
+    """The variable an `if` command's test holds unset (`if [ -z "${NAME:-}" ]`, `if [[ -z $NAME ]]`,
+    `if test -z "$NAME"`), or None for any other test."""
+    test = words[1:]
+    if test[:1] == ["["] and test[-1:] == ["]"] or test[:1] == ["[["] and test[-1:] == ["]]"]:
+        test = test[1:-1]
+    elif test[:1] == ["test"]:
+        test = test[1:]
+    else:
+        return None
+    match = UNSET_TEST.match(test[1]) if len(test) == 2 and test[0] == "-z" else None
+    return match.group(1) if match else None
 
 
 # A word that is an assignment and nothing yet: what precedes the `(` of an array (`tools=(…)`).
@@ -147,6 +169,10 @@ class Scanner:
         self.through = through or {}
         self.pipelines: list[list[list[str]]] = []
         self.loop_of: list[tuple] = []
+        self.guard_of: list[tuple] = []
+        # The `if` blocks open around the command being read, innermost last: the variable each
+        # holds unset in its `then` branch, or "" for any other test or branch.
+        self.guards: list[str] = []
         self.assignments: list[tuple[str, str]] = []
         self.writes: list[str] = []
         self.paths: list[tuple[str, str]] = []
@@ -222,8 +248,14 @@ class Scanner:
         self.end_pipeline()
 
     def note(self, words: list[str], redirects: list[tuple[str, str]]) -> None:
-        """The loops a command opens or closes, the variables it assigns, the files it writes and
-        the PATH an assignment before it sets for it."""
+        """The loops a command opens or closes, the `if` blocks it opens, turns or closes, the
+        variables it assigns, the files it writes and the PATH an assignment before it sets for it."""
+        if words[0] == "if":
+            self.guards.append(unset_guard(words) or "")
+        elif words[0] in ("elif", "else") and self.guards:
+            self.guards[-1] = ""  # a later branch runs where the first test failed
+        elif words[0] == "fi" and self.guards:
+            self.guards.pop()
         if words[0] == "for":
             variable = words[1] if len(words) > 1 else ""
             self.loops.append(Loop("for", words[3:] if words[2:3] == ["in"] else None, variable))
@@ -263,9 +295,11 @@ class Scanner:
             else:
                 self.pipelines += reduced
                 self.loop_of += [tuple(self.loops)] * len(reduced)
+                self.guard_of += [tuple(g for g in self.guards if g)] * len(reduced)
         if joined:
             self.pipelines.append(joined)
             self.loop_of.append(tuple(self.loops))
+            self.guard_of.append(tuple(g for g in self.guards if g))
         self.pipeline = []
 
     def skip_heredocs(self, text: str, i: int) -> int:
@@ -442,7 +476,8 @@ def read_shell(run: str, through: dict | None = None) -> Shell:
     the loops around each and the variables it assigns."""
     scanner = Scanner(through)
     pipelines = scanner.scan(EXPRESSION.sub("EXPR", run))
-    return Shell(pipelines, scanner.loop_of, scanner.assignments, scanner.writes, scanner.paths)
+    return Shell(pipelines, scanner.loop_of, scanner.assignments, scanner.writes, scanner.paths,
+                 scanner.guard_of)
 
 
 def pipelines_of(run: str, through: dict | None = None) -> list[list[list[str]]]:

@@ -3838,6 +3838,50 @@ replace "$root/.github/workflows/ci.yaml" "        timeout-minutes: 4" "        
 run_check "$root"
 check "passes with limits that hold them" "$(is "$status" 0)"
 
+# A step that sets no limit of its own still carries the bound of each go test it runs, its
+# -timeout; raised alone, that bound must still leave the job room for its installs to fail by name.
+# The go test is no Run of ci_job_reads.py here, so the check fails for that too: the cases read
+# the job-limit refusal alone.
+echo "case: rule 22 counts a step's go test -timeout toward the job's limit, where the step sets none"
+root=$(fixture network-test-bound)
+lint_steps "$root" \
+  "Test everything" "go test -timeout 20m ./..." \
+  "Install the workspace" ".github/scripts/network-install.sh bun -- bun install --frozen-lockfile"
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Test everything' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    steps:\n      - name: Test everything'
+run_check "$root"
+check "names the job whose limit the raised test bound leaves no room for the install in" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml has timeout-minutes 15, 900 s, and 1625 s is what, up to step \"Install the workspace\"")"
+check "and counts the test step's -timeout" \
+  "$(contains "$out" "step \"Test everything\"'s installs and test bounds (\`go test -timeout 20m ./...\` (go test) 1200 s) 1200 s before it")"
+replace "$root/.github/workflows/ci.yaml" "go test -timeout 20m ./..." "go test -timeout 5m ./..."
+run_check "$root"
+check "holds the job once the bound leaves room" "$(is "$(contains "$out" "has timeout-minutes 15")" false)"
+
+# An install that stands in an `if [ -z "$NAME" ]` branch never runs in a job whose env sets NAME,
+# as stage1-skeleton.sh's Postgres pull never runs in daemon-go; where nothing sets it, it counts.
+echo "case: rule 22 leaves out an install whose branch the job's env turns off, and counts it otherwise"
+root=$(fixture network-guarded)
+mkdir -p "$root/scripts"
+cat > "$root/scripts/proof.sh" <<'SH'
+#!/usr/bin/env bash
+root=$(cd "$(dirname "$0")/.." && pwd)
+if [ -z "${PROOF_PG_DSN:-}" ]; then
+  "$root/.github/scripts/network-install.sh" docker -- docker pull ghcr.io/example/postgres:1
+fi
+SH
+chmod +x "$root/scripts/proof.sh"
+lint_steps "$root" "Prove" "scripts/proof.sh"
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Prove' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n      - name: Prove'
+run_check "$root"
+check "counts the pull where nothing sets the variable" \
+  "$(contains "$out" "has timeout-minutes 5, 300 s, and 425 s is what, up to step \"Prove\"")"
+replace "$root/.github/workflows/ci.yaml" $'    timeout-minutes: 5\n    steps:' \
+  $'    timeout-minutes: 5\n    env:\n      PROOF_PG_DSN: postgres://localhost/proof\n    steps:'
+run_check "$root"
+check "leaves it out where the job's env sets the variable" "$(is "$status" 0)"
+
 echo "case: rule 22 places a call of network-install.sh only at the repository's script, and refuses a script it cannot place"
 root=$(fixture network-unresolved)
 lint_steps "$root" \

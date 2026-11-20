@@ -398,6 +398,32 @@ def go_fetch(rest: list) -> str:
     return ""
 
 
+GO_DURATION = re.compile(r"(\d+(?:\.\d*)?|\.\d+)(h|ms|m|s|us|µs|ns)")
+
+
+def go_test_timeout(words: list) -> int:
+    """The seconds a `go test` command's `-timeout` gives its test binary (a Go duration such as
+    `20m` or `1h30m`, rounded up), or 0 where the words are no `go test` or set none (go's own
+    default is 10 minutes, but a step that leans on it states no bound), or set `-timeout 0`, which
+    lifts the bound."""
+    if words[0].rsplit("/", 1)[-1] != "go":
+        return 0
+    rest = words[3:] if words[1:2] == ["-C"] else words[1:]
+    if rest[:1] != ["test"]:
+        return 0
+    value = ""
+    for index, word in enumerate(rest):
+        if word in ("-timeout", "--timeout") and index + 1 < len(rest):
+            value = rest[index + 1]
+        elif word.startswith(("-timeout=", "--timeout=")):
+            value = word.split("=", 1)[1]
+    parts = GO_DURATION.findall(value)
+    if not parts or "".join(number + unit for number, unit in parts) != value:
+        return 0
+    scale = {"h": 3600, "m": 60, "s": 1, "ms": 0.001, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
+    return -int(-sum(float(number) * scale[unit] for number, unit in parts) // 1)
+
+
 def elan_fetch(rest: list) -> str:
     """The download an elan command makes of a Lean toolchain, as words (`elan toolchain install`,
     `elan default`, `elan override set`, `elan run`), or ""."""
@@ -831,7 +857,7 @@ class NetworkInstalls:
     refused unless wrapped; and what the job can spend before the last of its installs fails by
     name, held to the limits of each step and of the job."""
 
-    def __init__(self, path: str, job_id: str, job: dict, problems: list) -> None:
+    def __init__(self, path: str, job_id: str, job: dict, problems: list, workflow_env: dict | None = None) -> None:
         self.path, self.job_id, self.job, self.problems = path, job_id, job, problems
         self.limit = _minutes(job)
         self.bounds = network_install_bounds()
@@ -839,6 +865,8 @@ class NetworkInstalls:
         self.parts: list = []  # what self.spent counts, as (what, seconds, why)
         self.pulled: set = set()  # the images an earlier wrapped `docker pull` of the job pulled
         self.elan = False  # whether an earlier wrapped install of a Lean toolchain ran
+        # The variables the workflow's env and the job's set for every step of the job.
+        self.env_names = {str(name) for name in {**(workflow_env or {}), **(job.get("env") or {})}}
         self.runner_pulls()
 
     def refuse(self, site: Site, message: str) -> None:
@@ -893,7 +921,25 @@ class NetworkInstalls:
             if str(options.get("load", "")).lower() == "true":  # the image it built is on the runner now
                 tags = str(options.get("tags") or "").split("\n")
                 self.pulled.update(tag.strip() for tag in tags if tag.strip())
-        self.hold_to_limits(step, label, wrapped)
+        self.hold_to_limits(step, label, wrapped, [] if "timeout-minutes" in step else self.own_bounds(step))
+
+    def own_bounds(self, step: dict) -> list:
+        """The bounds a step that sets no timeout-minutes carries in its own `run:`: each `go test`
+        given a `-timeout`, which ends the test binary that runs past it with the dump that names the
+        hung test, times the passes of the loops it stands in, as (command, "go test", seconds,
+        passes). A step's other commands carry no bound the rule reads, and count nothing."""
+        if not isinstance(step.get("run"), str):
+            return []
+        known = {str(k): v for k, v in ((k, _input_text(v, {})) for k, v in (step.get("env") or {}).items())
+                 if v is not None}
+        shell = read_shell(step["run"], WRAPPERS)
+        bounds = []
+        for pipeline, loops in zip(shell.pipelines, shell.loops):
+            for words in pipeline:
+                seconds = go_test_timeout(words)
+                if seconds:
+                    bounds.append((" ".join(words), "go test", seconds, _iterations(loops, known) or 1))
+        return bounds
 
     def read_run(self, site: Site, run: str, wrapped: list, seen: set, known: dict) -> None:
         """Each pipeline of a `run:`, a script or a RUN (shell_commands.read_shell, looked through
@@ -905,11 +951,11 @@ class NetworkInstalls:
         local = local_urls(shell.assignments, known)
         found: list = []
         unfound: list = []
-        for pipeline, loops in zip(shell.pipelines, shell.loops):
+        for pipeline, loops, guards in zip(shell.pipelines, shell.loops, shell.guards):
             for index, words in enumerate(pipeline):
                 name = words[0].rsplit("/", 1)[-1]
                 if name == NETWORK_INSTALL.rsplit("/", 1)[-1]:
-                    self.read_wrapped(site, words, wrapped, loops, known)
+                    self.read_wrapped(site, words, wrapped, loops, known, guards)
                     continue
                 install = self.install_of(words, site, wrapped, local)
                 if install:
@@ -969,7 +1015,8 @@ class NetworkInstalls:
         install = network_install(words, local)
         return install[0] if install else None
 
-    def read_wrapped(self, site: Site, words: list, wrapped: list, loops: tuple, known: dict) -> None:
+    def read_wrapped(self, site: Site, words: list, wrapped: list, loops: tuple, known: dict,
+                     guards: tuple = ()) -> None:
         """A call of a script named network-install.sh: the repository's own, as `<kind> --
         <command>`, with a kind its table bounds, wrapping an install of that kind, in a loop whose
         iterations the rule can count. An image a wrapped `docker pull` pulls is on the runner for
@@ -1020,6 +1067,13 @@ class NetworkInstalls:
                               f"cannot count, so it cannot hold the job's limit to every attempt of every iteration. "
                               f"Loop over words written out whole, or over the lines of a variable the step's env "
                               f"gives as text, such as an action input its calling step names")
+            return
+        set_by = [name for name in guards if name in self.env_names or name in known]
+        if set_by:
+            # The install stands in an `if [ -z "$NAME" ]` branch, and the job's env or its step's
+            # sets NAME, so in this job the branch never runs and its bound is no wait the job has.
+            self.parts.append((f"left out: `{' '.join(words[3:])}` of {site.where}, which runs only where "
+                               f"{set_by[0]} is unset, and this job sets it,", 0, "left out"))
             return
         wrapped.append((" ".join(words[3:]), kind, worst_case(*bounds[kind]), count))
 
@@ -1164,7 +1218,7 @@ class NetworkInstalls:
         if costs:
             wrapped += longest(len(costs) - 1)
 
-    def hold_to_limits(self, step: dict, label: str, wrapped: list) -> None:
+    def hold_to_limits(self, step: dict, label: str, wrapped: list, bounded: list = ()) -> None:
         """Every install of the step must be able to fail by name inside the step's own limit, and,
         counted with what the job can spend before the step (the runner's pulls of its images, the
         limit of each step before it that sets one, and the installs of each that sets none), inside
@@ -1190,20 +1244,24 @@ class NetworkInstalls:
                                                   f"timeout-minutes {step_limit}, {step_limit * 60} s, and {took} s is "
                                                   f"what the wrapped installs can take before the last of them fails "
                                                   f"by name, {why} ({each(wrapped)}). {remedy}"))
-        at = self.spent + took
+        tested = sum(seconds * count for _, _, seconds, count in bounded)
+        at = self.spent + took + tested
         if wrapped and self.limit is not None and at > self.limit * 60:
             before = "; ".join(f"{what} {seconds} s" for what, seconds, _ in self.parts)
+            own = f"; and the step's own test bounds ({each(bounded)})" if bounded else ""
             self.problems.append(error(self.path, f"job {self.job_id} of {self.path} has timeout-minutes {self.limit}, "
                                                   f"{self.limit * 60} s, and {at} s is what, up to step \"{label}\", the "
                                                   f"job can spend before the last of its installs fails by name: "
                                                   f"{before + ' before it; ' if before else ''}then {why} "
-                                                  f"({each(wrapped)}). {remedy}"))
+                                                  f"({each(wrapped)}){own}. {remedy}"))
             self.limit = None  # the job is named once
-        cost = int(step_limit * 60) if step_limit is not None else took
+        cost = int(step_limit * 60) if step_limit is not None else took + tested
         if cost:
             self.spent += cost
             self.parts.append((f"step \"{label}\"'s limit" if step_limit is not None else
-                               f"step \"{label}\"'s installs ({each(wrapped)})", cost, "step"))
+                               f"step \"{label}\"'s installs ({each(wrapped)})" if not bounded else
+                               f"step \"{label}\"'s installs and test bounds ({each(wrapped + list(bounded))})",
+                               cost, "step"))
 
 
 def check_network_installs(documents: dict, problems: list) -> None:
@@ -1280,6 +1338,6 @@ def check_network_installs(documents: dict, problems: list) -> None:
     NETWORK_INSTALL."""
     for path, document in documents.items():
         for job_id, job in ((document or {}).get("jobs") or {}).items():
-            reader = NetworkInstalls(path, job_id, job or {}, problems)
+            reader = NetworkInstalls(path, job_id, job or {}, problems, (document or {}).get("env"))
             for step in (job or {}).get("steps") or []:
                 reader.read_step(step)

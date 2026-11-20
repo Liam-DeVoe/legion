@@ -2293,10 +2293,8 @@ such pulls, each one image:
 | dispatch-browser.yaml | shard, alone | 69c3a316 (the job's container) |
 | docs-site.yaml | build | 2358fcba (Postgres) |
 
-Each limit was held to round 2's method with the pull counted: the job's slowest green run in the
-20 merge-group runs `.github/scripts/network-install.sh`'s bounds were measured on (44633135919 to
-44668680855), plus 180 s for the pull, plus the worst case of the installs the job runs through
-that script. Two limits were too short and were raised, each with its own note:
-`ci-job-daemon-go.md` and `ci-job-pi-envoy.md`. Every other limit holds already; the tightest are
-envoy-session-stall (563 s + 180 s + 425 s = 1,168 s, inside its 20 minutes) and the shard job of
-dispatch-browser (611 s + 180 s + 425 s = 1,216 s, inside its 22).
+Each limit is held to what rule 22 sums: up to each step that installs, the runner's pulls, the
+bounds of every step before it (its own limit, or its installs and its go tests' own `-timeout`
+where it sets none) and the step's own installs at their worst case. One limit ended before that
+sum: pi-envoy's ten minutes, now 23 for its 1,095 s. daemon-go's 70 minutes hold its 1,945 s. Each
+is derived in its own note (`ci-job-daemon-go.md`, `ci-job-pi-envoy.md`).
