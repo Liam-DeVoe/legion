@@ -610,7 +610,9 @@ var ErrPendingValue = errors.New("exists and awaits its first value; ask again a
 
 // ErrServedOnlyAsProfiles is a request for a source by its own name while profiles of other names
 // use it (Set.ProfilesOf) and none holds that name: the source is served only through them, so no
-// caller gets the whole credential by the source's name. Evaluate's error lists those profiles.
+// caller gets the whole credential by the source's name. Evaluate's error names the profiles of it
+// the set serves, to ask for instead, or, where the set refuses each of them, says so and names
+// them.
 var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
 
 // ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
@@ -796,8 +798,9 @@ type Set struct {
 	versions map[string]string
 	// ProfilesOf is, for each source a profile of another name uses, those profiles' names, in the
 	// profiles file's order, whether they pass or fail: such a source is served only through them,
-	// so Evaluate refuses its own name, naming them (ErrServedOnlyAsProfiles), unless a profile
-	// holds that name too. It is nil for a set no profiles were applied to (Profiles.apply).
+	// so Evaluate refuses its own name (ErrServedOnlyAsProfiles), naming those that pass, unless a
+	// profile holds that name too. It is nil for a set no profiles were applied to
+	// (Profiles.apply).
 	ProfilesOf map[string][]string
 	// profileRefused is, for each name a request may ask for that the set refuses because of the
 	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
@@ -1004,8 +1007,9 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 }
 
 // unservedError is Evaluate's error for name, which s does not serve: the refusal the profiles file
-// gives it, with its reason and detail; the profiles to ask for in its place; or
-// ErrUnknownSecret.
+// gives it, with its reason and detail; the profiles of name that s serves, to ask for in its
+// place, or, where s refuses each of them, that each is refused, naming them, so a caller is never
+// sent to a name it would be refused again for; or ErrUnknownSecret.
 func (s *Set) unservedError(name string) error {
 	if refusal, refused := s.profileRefused[name]; refused {
 		why := refusal.Reason
@@ -1014,8 +1018,19 @@ func (s *Set) unservedError(name string) error {
 		}
 		return &notServed{kind: ErrProfileRefused, text: name + " " + ErrProfileRefused.Error() + ": " + why}
 	}
-	if profiles := s.ProfilesOf[name]; len(profiles) > 0 {
-		return &notServed{kind: ErrServedOnlyAsProfiles, text: name + " " + ErrServedOnlyAsProfiles.Error() + ": ask for " + strings.Join(profiles, " or ")}
+	profiles := s.ProfilesOf[name]
+	if len(profiles) == 0 {
+		return ErrUnknownSecret
 	}
-	return ErrUnknownSecret
+	var served []string
+	for _, profile := range profiles {
+		if _, ok := s.Secrets[profile]; ok {
+			served = append(served, profile)
+		}
+	}
+	text := name + " " + ErrServedOnlyAsProfiles.Error() + ": ask for " + strings.Join(served, " or ")
+	if len(served) == 0 {
+		text = name + " " + ErrServedOnlyAsProfiles.Error() + ", and each of them is refused: " + strings.Join(profiles, ", ")
+	}
+	return &notServed{kind: ErrServedOnlyAsProfiles, text: text}
 }

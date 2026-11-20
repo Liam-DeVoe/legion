@@ -157,8 +157,9 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, policy.ErrServedOnlyAsProfiles):
 		// A source asked for by its own name, which profiles of other names use: the message
-		// names them, so the caller asks for one of those instead. It is final, as UNKNOWN_SECRET
-		// is, and asked before that code, since the policy's error is that one too.
+		// names those the policy serves, so the caller asks for one of those instead, or says
+		// that the policy refuses each of them. It is final, as UNKNOWN_SECRET is, and asked
+		// before that code, since the policy's error is that one too.
 		writeError(w, http.StatusForbidden, "SERVED_ONLY_AS_PROFILES", err.Error())
 		return
 	case errors.Is(err, policy.ErrProfileRefused):

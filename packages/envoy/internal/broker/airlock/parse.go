@@ -3,9 +3,11 @@ package airlock
 import (
 	"bytes"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 )
 
@@ -26,7 +28,7 @@ func Decode(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return parseError(data, err)
+		return parseError(data, v, err)
 	}
 	// The value decoded, so it is valid JSON, and v is a struct, into which every value but an
 	// object and null is a type error above: a value that starts with "n" here is the literal null.
@@ -46,10 +48,10 @@ func Decode(data []byte, v any) error {
 
 // parseError names the place the decoder stopped at, which is what a person needs to find
 // it in the file: the byte offset encoding/json counts, and the line and column that offset
-// falls on. An unknown field carries no offset in Go's error, so there that error's own
-// text is the whole report. A file that ends before its object does carries none either, and
-// says which of the two it is: empty, or cut off inside the object.
-func parseError(data []byte, err error) error {
+// falls on. An unknown field carries no offset in Go's error, so unknownField finds where its
+// name starts. A file that ends before its object does carries none either, and says which of
+// the two it is: empty, or cut off inside the object.
+func parseError(data []byte, v any, err error) error {
 	var syntax *json.SyntaxError
 	var wrongType *json.UnmarshalTypeError
 	switch {
@@ -62,7 +64,7 @@ func parseError(data []byte, err error) error {
 		}
 		return fmt.Errorf("%s is not a %s, at %s", field, wrongType.Type, position(data, wrongType.Offset))
 	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		return errors.New(strings.TrimPrefix(err.Error(), "json: "))
+		return unknownField(data, v, strings.TrimPrefix(err.Error(), "json: "))
 	case errors.Is(err, io.EOF):
 		return errors.New("the file is empty: it holds no JSON object")
 	case errors.Is(err, io.ErrUnexpectedEOF):
@@ -70,6 +72,26 @@ func parseError(data []byte, err error) error {
 	default:
 		return fmt.Errorf("not one JSON object: %s", err)
 	}
+}
+
+// unknownField is the refusal of the field v does not know that encoding/json named in text
+// (`unknown field "x"`), with where in data that field's name starts. encoding/json's error for
+// it holds neither its offset nor its path, and the decoder's InputOffset is then the end of the
+// whole object, which is no help. encoding/json/v2 holds both in its SemanticError where it
+// reports errors without v1's legacy semantics, so data is read again by it, into a new value of
+// v's type, under v1's options otherwise: that reading matches names as Decode's does and stops
+// at the same first unknown name. Its offset is where the name's opening quote is, counted from
+// zero, so one is added to read it as position reads encoding/json's. A second reading that does
+// not stop at that same name says nothing of where the first one did, and the refusal is text
+// alone, as encoding/json gave it.
+func unknownField(data []byte, v any, text string) error {
+	again := reflect.New(reflect.TypeOf(v).Elem()).Interface()
+	err := jsonv2.Unmarshal(data, again, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true), json.ReportErrorsWithLegacySemantics(false))
+	var semantic *jsonv2.SemanticError
+	if !errors.As(err, &semantic) || !errors.Is(semantic.Err, jsonv2.ErrUnknownName) || fmt.Sprintf("unknown field %q", semantic.JSONPointer.LastToken()) != text {
+		return errors.New(text)
+	}
+	return fmt.Errorf("%s, at %s", text, position(data, semantic.ByteOffset+1))
 }
 
 // position reads a decoder offset as "byte offset N, line L, column C". encoding/json

@@ -648,7 +648,8 @@ The broker evaluates every name
   yet filled, in the ten minutes it waits for its value, refuses the request with `PENDING_VALUE`
   instead, which is not final: ask again once its owner has stored the value. A source asked for
   by its own name while a profile of another name uses it refuses the request with `403`
-  `SERVED_ONLY_AS_PROFILES`, naming the profiles to ask for instead, and a profile the broker
+  `SERVED_ONLY_AS_PROFILES`, naming the profiles of it the broker serves, to ask for instead, or,
+  where the broker refuses each of them, saying so and naming them; and a profile the broker
   refuses, or a `github-app` secret no profile names, with `403` `PROFILE_REFUSED`, giving the
   reason and its detail.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's

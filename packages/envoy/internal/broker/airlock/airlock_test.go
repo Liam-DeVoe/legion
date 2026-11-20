@@ -97,14 +97,38 @@ func TestDecodeWrongType(t *testing.T) {
 }
 
 // TestDecodeUnknownField: a field this broker does not know is refused, so a file written
-// for a later broker is not served with that field's rule missing.
+// for a later broker is not served with that field's rule missing, and the refusal names where
+// the field's name starts, as the refusal of a field of the wrong type names where its value is.
+// The field is in the first of two entries, so a refusal that named where the decoder stopped
+// reading, the end of the file, would name another line.
 func TestDecodeUnknownField(t *testing.T) {
-	_, err := decodeRules([]byte(`{"secrets": [{"name": "a", "hosts": ["h"], "lifetime": 5}]}`))
+	// The name "lifetime" opens at byte 47: line 1 is 14 bytes with its newline, and the name's
+	// quote is column 33 of line 2.
+	data := []byte("{\"secrets\": [\n  {\"name\": \"a\", \"hosts\": [\"h\"], \"lifetime\": 5},\n  {\"name\": \"b\", \"hosts\": [\"h\"]}\n]}")
+	_, err := decodeRules(data)
 	if err == nil {
 		t.Fatal("Decode of a file with an unknown field: no error")
 	}
-	if !strings.Contains(err.Error(), `unknown field "lifetime"`) {
-		t.Errorf("error %q does not name the unknown field", err)
+	for _, want := range []string{`unknown field "lifetime"`, "byte offset 47, line 2, column 33"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestDecodeUnknownFieldItCannotPlace: where the second reading unknownField takes stops at
+// another fault than the first reading's unknown field, the refusal names the field alone, never
+// that other fault's position as the field's. "Ab" folds to two fields of ambiguous, which the
+// first reading, under v1's legacy semantics, takes as the first of them and reads on to "zz",
+// and the second reading refuses as ambiguous.
+func TestDecodeUnknownFieldItCannotPlace(t *testing.T) {
+	var ambiguous struct {
+		Lower int `json:"ab"`
+		Upper int `json:"AB"`
+	}
+	err := Decode([]byte(`{"Ab": 1, "zz": 2}`), &ambiguous)
+	if err == nil || err.Error() != `unknown field "zz"` {
+		t.Errorf("Decode = %v; want the refusal unknown field \"zz\", with no position", err)
 	}
 }
 

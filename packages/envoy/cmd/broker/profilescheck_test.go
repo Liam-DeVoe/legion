@@ -250,7 +250,7 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 		{
 			"a field the broker does not know",
 			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "allowed": ["GET"]}}]}`,
-			[]string{"unknown field", "allowed"},
+			[]string{"unknown field", "allowed", "byte offset 83, line 1, column 83"},
 		},
 		{
 			"today's rules file",

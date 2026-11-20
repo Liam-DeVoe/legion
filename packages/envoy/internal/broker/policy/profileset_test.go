@@ -342,36 +342,53 @@ func TestAnEditedProfileEndsItsGrants(t *testing.T) {
 
 // TestASourceIsServedOnlyThroughItsProfiles: a source that profiles of other names name is not
 // served by its own name, while its profiles pass or fail; a request for it by that name is
-// refused naming its profiles, and it is no refusal of its own.
+// refused, and it is no refusal of its own. The refusal names only the profiles the set serves,
+// to ask for in its place, and never a refused one, for which a caller would be refused again;
+// a source the set serves none of the profiles of is refused saying that each is refused, and
+// naming them.
 func TestASourceIsServedOnlyThroughItsProfiles(t *testing.T) {
 	cur, _ := profiled(t, everySource(), readProfile,
 		`{"name": "GITHUB_WIDE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["other-org"], "permissions": {"metadata": "read"}}}`,
 		`{"name": "LISTED_LONG", "source": "LISTED_APP", "maxGrant": "2h", `+acmeRead+`}`,
 		`{"name": "PLAIN_READ", "source": "PLAIN_KEY", `+apiProxy+`}`)
 	set := cur.Get()
-	for source, profiles := range map[string][]string{
-		appSourceName: {"GITHUB_READ", "GITHUB_WIDE"},
-		"LISTED_APP":  {"LISTED_LONG"},
-		"PLAIN_KEY":   {"PLAIN_READ"},
+	// GITHUB_WIDE names an account its source's github-owners does not, and LISTED_LONG a
+	// maxGrant above its source's max-grant: each row below is about a profile the set refuses.
+	refusedProfile(t, set, "GITHUB_WIDE", policy.ReasonProfileBlockMismatch)
+	refusedProfile(t, set, "LISTED_LONG", policy.ReasonProfileLooser)
+	for _, row := range []struct {
+		source   string
+		profiles []string // ProfilesOf: every profile of the source, in the file's order
+		says     []string // what the refusal says
+		never    []string // what it must not say
+	}{
+		{appSourceName, []string{"GITHUB_READ", "GITHUB_WIDE"}, []string{"ask for GITHUB_READ"}, []string{"GITHUB_WIDE"}},
+		{"LISTED_APP", []string{"LISTED_LONG"}, []string{"each of them is refused", "LISTED_LONG"}, []string{"ask for"}},
+		{"PLAIN_KEY", []string{"PLAIN_READ"}, []string{"ask for PLAIN_READ"}, []string{"refused"}},
 	} {
-		if secret, served := set.Secrets[source]; served {
-			t.Errorf("%s is served by its own name (%+v); want it served only through %v", source, secret, profiles)
+		if secret, served := set.Secrets[row.source]; served {
+			t.Errorf("%s is served by its own name (%+v); want it served only through %v", row.source, secret, row.profiles)
 		}
-		if !slices.Equal(set.ProfilesOf[source], profiles) {
-			t.Errorf("ProfilesOf[%s] = %v; want %v", source, set.ProfilesOf[source], profiles)
+		if !slices.Equal(set.ProfilesOf[row.source], row.profiles) {
+			t.Errorf("ProfilesOf[%s] = %v; want %v", row.source, set.ProfilesOf[row.source], row.profiles)
 		}
-		_, err := set.Evaluate(source, policy.Requester{Operator: appOwner})
+		_, err := set.Evaluate(row.source, policy.Requester{Operator: appOwner})
 		if !errors.Is(err, policy.ErrServedOnlyAsProfiles) || !errors.Is(err, policy.ErrUnknownSecret) {
-			t.Errorf("Evaluate(%s) = %v; want ErrServedOnlyAsProfiles, a name the policy does not serve", source, err)
+			t.Errorf("Evaluate(%s) = %v; want ErrServedOnlyAsProfiles, a name the policy does not serve", row.source, err)
 			continue
 		}
-		for _, profile := range profiles {
-			if !strings.Contains(err.Error(), profile) {
-				t.Errorf("Evaluate(%s)'s refusal %q does not name its profile %s", source, err, profile)
+		for _, said := range row.says {
+			if !strings.Contains(err.Error(), said) {
+				t.Errorf("Evaluate(%s)'s refusal %q does not say %q", row.source, err, said)
 			}
 		}
-		if refusal, refused := set.Refused[policytest.ID(source)]; refused {
-			t.Errorf("%s is refused %+v; want it served through its profiles, which is no refusal", source, refusal)
+		for _, unsaid := range row.never {
+			if strings.Contains(err.Error(), unsaid) {
+				t.Errorf("Evaluate(%s)'s refusal %q says %q", row.source, err, unsaid)
+			}
+		}
+		if refusal, refused := set.Refused[policytest.ID(row.source)]; refused {
+			t.Errorf("%s is refused %+v; want it served through its profiles, which is no refusal", row.source, refusal)
 		}
 	}
 	servedProfile(t, set, "PLAIN_READ")

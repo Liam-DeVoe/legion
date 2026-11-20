@@ -127,21 +127,23 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 // TestParseProfilesRefusesUnknownFieldsAndASecondValue: a field the broker does not know, at any
 // depth of the file, is refused rather than ignored, so a file written for a later broker is not
 // served with that field's rule missing; so is anything after the file's one object, which its
-// author would believe in force. A file that is not JSON, or holds a field of the wrong type, is
-// refused naming where. A file that is not the one object {"profiles": [...]} (a null, a list, a
-// string, an object with no profiles list or a null one) is refused naming what it is, never read
-// as a file of no profiles: a file of no profiles says so, {"profiles": []}.
+// author would believe in force. A file that is not JSON, holds a field of the wrong type or holds
+// a field the broker does not know is refused naming where: an unknown field by where its name
+// starts, the second "name" of the proxy block's row and not the profile's own. A file that is not
+// the one object {"profiles": [...]} (a null, a list, a string, an object with no profiles list or
+// a null one) is refused naming what it is, never read as a file of no profiles: a file of no
+// profiles says so, {"profiles": []}.
 func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 	for name, c := range map[string]struct {
 		file string
 		want []string
 	}{
-		"a field of the file":          {`{"profiles": [], "secrets": []}`, []string{`unknown field "secrets"`}},
-		"a field of a profile":         {profilesFile(githubRead, `{"name": "GITHUB_ADMIN_PAT", "lifetime": 5, "proxy": {"hosts": ["api.github.com"]}}`), []string{`unknown field "lifetime"`}},
-		"a field of a github block":    {profilesFile(githubWrite(`{"accounts": ["example-org"], "owner": "example-org", "permissions": {"contents": "read"}}`)), []string{`unknown field "owner"`}},
-		"a field of a google block":    {profilesFile(`{"name": "GOOGLE_READ", "google": {"scopes": ["cloud-platform"], "audience": "x"}}`), []string{`unknown field "audience"`}},
-		"a name in a proxy block":      {profilesFile(adminPAT(`{"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com"]}`)), []string{`unknown field "name"`}},
-		"a field of an allow entry":    {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "allow": [{"method": "GET", "path": "/"}]}`)), []string{`unknown field "path"`}},
+		"a field of the file":          {`{"profiles": [], "secrets": []}`, []string{`unknown field "secrets"`, "byte offset 18, line 1, column 18"}},
+		"a field of a profile":         {profilesFile(githubRead, `{"name": "GITHUB_ADMIN_PAT", "lifetime": 5, "proxy": {"hosts": ["api.github.com"]}}`), []string{`unknown field "lifetime"`, "byte offset", "line 4, column 30"}},
+		"a field of a github block":    {profilesFile(githubWrite(`{"accounts": ["example-org"], "owner": "example-org", "permissions": {"contents": "read"}}`)), []string{`unknown field "owner"`, "byte offset 114, line 1, column 114"}},
+		"a field of a google block":    {profilesFile(`{"name": "GOOGLE_READ", "google": {"scopes": ["cloud-platform"], "audience": "x"}}`), []string{`unknown field "audience"`, "byte offset 80, line 1, column 80"}},
+		"a name in a proxy block":      {profilesFile(adminPAT(`{"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com"]}`)), []string{`unknown field "name"`, "byte offset 54, line 1, column 54"}},
+		"a field of an allow entry":    {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "allow": [{"method": "GET", "path": "/"}]}`)), []string{`unknown field "path"`, "byte offset 111, line 1, column 111"}},
 		"a second value":               {profilesFile(githubRead) + "\n" + profilesFile(), []string{"goes on after its one JSON object", "line 4, column 1"}},
 		"a stray closing brace":        {profilesFile(githubRead) + "\n}\n", []string{"goes on after its one JSON object", "line 4, column 1"}},
 		"a file that is not JSON":      {"{\"profiles\": [\n  " + githubRead + ",\n]}", []string{"not JSON", "byte offset", "line 5, column 1"}},
