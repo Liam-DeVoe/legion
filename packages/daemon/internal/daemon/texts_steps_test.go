@@ -15,10 +15,10 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5, 3d2dddd0, 6d50ef31 or a4cd4949 for a sentence main wrote since (a format verb, %s,
-// %[1]s or %d, and … stand for any text), the readers, and the passage of the readers' prompt
-// (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
-// word for word from one line of the file.
+// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949 or 5f2bf9af for a sentence main wrote since (a format
+// verb, %s, %[1]s or %d, and … stand for any text), the readers, and the passage of the readers'
+// prompt (packages/daemon/internal/prompts) that gives each of them its own rule for the step,
+// quoted word for word from one line of the file.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -72,9 +72,9 @@ var goldenSteps = []goldenStep{
 		goPrompts + "tester.md", "`pass` once you drove the changed path in production and recorded the result against the issue's `after_merge` check with `dispatch result` at the merge commit, naming what woke this look, with the line it prints in the pull request body's `Checks` block"},
 	{texts.CheckLook, "pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; ", "implementer",
 		goPrompts + "implementer.md", "Put the line that command prints in the pull request body's `Checks` block."},
-	{texts.CheckLook, "pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit; ", "tester",
+	{texts.CheckLook, " Report pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit.", "tester",
 		goPrompts + "tester.md", "nothing recorded and that line left at `- Check <block id> (after_merge): not yet run`, which says that the check is still open on the merge commit"},
-	{texts.CheckLook, "pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit; ", "implementer",
+	{texts.CheckLook, " Report pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit.", "implementer",
 		goPrompts + "implementer.md", "Record nothing for it, and leave the check's line in the pull request body at `- Check <block id> (after_merge): not yet run`, which says that the check is still open on the merge commit."},
 	{texts.CheckLook, "fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), …; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.", "tester",
 		goPrompts + "tester.md", "never an issue you file (`skill://legion-worker/references/findings.md`)"},
@@ -84,10 +84,20 @@ var goldenSteps = []goldenStep{
 		goPrompts + "implementer.md", "Report `fail` for a defect, never an issue you file (`skill://legion-worker/references/findings.md`)."},
 	{texts.CheckLook, "record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.", "implementer",
 		goPrompts + "implementer.md", "Record the `after_merge` check as a fail with `dispatch result` at the merge commit, and name the message or the ask in its `observed`, in the line you put in the pull request body and in the summary."},
-	{texts.CheckLook, " This last look's pending carries no wake_at and closes the check as not run, so it is for production not carrying the merge alone: before reporting it, write on the pull request that the check did not run because production did not carry the merge within the bound.", "tester",
-		goPrompts + "tester.md", "so before reporting it write on the pull request that the check did not run because production did not carry the merge within the bound."},
-	{texts.CheckLook, " This last look's pending carries no wake_at and closes the check as not run, so it is for production not carrying the merge alone: before reporting it, write on the pull request that the check did not run because production did not carry the merge within the bound.", "implementer",
-		goPrompts + "implementer.md", "before you report it, write on the pull request that the check did not run because production did not carry the merge within the bound."},
+	{texts.CheckLook, "and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect", "tester",
+		rolePrompts + "core/tester.md", "One observed as not met, or still unobserved when the check reaches its last look, is a failed check whether or not production carries the merge, never a check closed as not run"},
+	{texts.CheckLook, "and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect", "implementer",
+		goPrompts + "implementer.md", "one observed as not met is a `fail`, and one still unobserved at the last look is a `fail` too, whether or not production carries the merge"},
+	{texts.CheckLook, " Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded.", "tester",
+		goPrompts + "tester.md", "and that look's `pending`, only for an issue with no requirement that only the deploy can show, carries no `wake_at`"},
+	{texts.CheckLook, " Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded.", "tester",
+		goPrompts + "tester.md", "The summary of that `pending` names what you could not drive, with no result recorded."},
+	{texts.CheckLook, " Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded.", "implementer",
+		goPrompts + "implementer.md", "On the check's own last look, report `pending` only for an issue with no requirement that only the deploy can show, its summary naming what you could not drive, with no result recorded."},
+	{texts.CheckLook, " This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound.", "tester",
+		goPrompts + "tester.md", "so before reporting it write on the pull request why the check did not run within the bound."},
+	{texts.CheckLook, " This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound.", "implementer",
+		goPrompts + "implementer.md", "That last look's `pending` carries no `wake_at` and closes the check as not run: before you report it, write on the pull request why the check did not run within the bound."},
 	{texts.CheckLook, "At that report the daemon stops this process and keeps this session, and your next look resumes it with a task naming the summary you gave as what woke it.", "tester",
 		goPrompts + "tester.md", "the next look brings the pod back and resumes this session with a new task that names the summary you sent as what woke it."},
 	{texts.CheckLook, " Wait for nothing in this session: end the turn with the report.", "tester",

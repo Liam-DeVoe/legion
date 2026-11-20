@@ -266,15 +266,17 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 	return e.endLookPending(ctx, tx, check, retryOfLook+cause)
 }
 
-// endLookPending is what follows a look that ended pending: reported so — production not carrying
-// the merge yet, or a merge it carries with a requirement only the deploy can show still unobserved
-// — or ended with no report (endLook). The last look closes the check as not run. Every other look
-// names when the check is next looked at (nameWake: the clamped wake the record already carries,
-// with reason as what wakes it), which is the one thing that starts the look after this one —
-// nothing else reads production any more. An issue back in the workflow — a root reopened inside
-// its linger, whose implementer now works the new run — writes that row and suspends nobody: the
-// check waits, its wake row defers itself while the run holds the issue (checkWakeDue), and the
-// check closes with the run's next merge (openCheck) or at its bound (checkBound).
+// endLookPending is what follows a look that ended pending, reported so or with no report
+// (endLook). A look before the last pends a merge production does not carry yet, or carries with a
+// requirement only the deploy can show still unobserved. The checking role's prompt gives the last
+// look's pending only for an issue with no such requirement. The last look, reported pending or not
+// reported, closes the check as not run. Every other look names when the check is next looked at
+// (nameWake: the clamped wake the record already carries, with reason as what wakes it), which is
+// the one thing that starts the look after this one — nothing else reads production any more. An
+// issue back in the workflow — a root reopened inside its linger, whose implementer now works the
+// new run — writes that row and suspends nobody: the check waits, its wake row defers itself while
+// the run holds the issue (checkWakeDue), and the check closes with the run's next merge
+// (openCheck) or at its bound (checkBound).
 // The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
 // deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
 // the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
