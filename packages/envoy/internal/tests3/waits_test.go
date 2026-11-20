@@ -191,6 +191,12 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			}
 		}
 		prepare := "one-collection.sh prepare dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\n"
+		// bashFirst answers text with its first line, whatever that line is, made bash's. Its plants
+		// take no anchor in the line, so they name the shape whatever the real file's first line is.
+		bashFirst := func(text string) string {
+			_, rest, _ := strings.Cut(text, "\n")
+			return "#!/usr/bin/env bash\n" + rest
+		}
 		const (
 			tail     = "a tail that is not `tail -n <lines> [--] <file>...`"
 			unknown  = "a word whose value this program cannot know"
@@ -386,10 +392,13 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			}, noSetEU},
 			{"one-collection.sh with no set -eu", script("set -eu\n", ""), noSetEU},
 			{"a wait script that bash runs, with a word bash splits", func() []string {
-				return stepFindings(waitStep, steps[waitStep].planted(t, "#!/bin/sh\n", "#!/usr/bin/env bash\n").
-					planted(t, "store=http://", "s3 10 \"the root\" -o /dev/null {--max-time,0,http://127.0.0.1:18333/}\nstore=http://"))
+				step := steps[waitStep].planted(t, "store=http://", "s3 10 \"the root\" -o /dev/null {--max-time,0,http://127.0.0.1:18333/}\nstore=http://")
+				step.text = bashFirst(step.text)
+				return stepFindings(waitStep, step)
 			}, notSh},
-			{"one-collection.sh that bash runs", script("#!/bin/sh\n", "#!/usr/bin/env bash\n"), notSh},
+			{"one-collection.sh that bash runs", func() []string {
+				return scriptFindings(bashFirst(oneCollection), storeCases, scriptBounds, cases)
+			}, notSh},
 			{"a store step with a shell of its own", workflowPlant("        id: file-store\n", "        id: file-store\n        shell: bash -e {0}\n", waitStep), ownShell},
 			{"a shard job whose steps a default shell runs", workflowPlant("  shard:\n    needs: binaries\n", "  shard:\n    needs: binaries\n    defaults:\n      run:\n        shell: bash -e {0}\n", storeSteps[0]), ownShell},
 			{"a workflow whose steps a default shell runs", workflowPlant("\njobs:\n", "\ndefaults:\n  run:\n    shell: bash -e {0}\n\njobs:\n", storeSteps[2]), ownShell},
