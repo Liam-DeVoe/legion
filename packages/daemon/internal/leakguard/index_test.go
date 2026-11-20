@@ -535,19 +535,25 @@ func TestInstallIndexRefusesAndLeavesNoNewFile(t *testing.T) {
 // such an index is never installed and never kept: one built 61 s ahead is refused before anything
 // is written, with the current index the folder holds left as it was, and a held index built a day
 // ahead is no index, which a current one replaces. The control: an index built 59 s ahead is
-// installed. A build time is a whole second, as the builder writes it, counted here from the first
-// whole second after the test reads the clock, which is less than a second after that reading. So
-// 61 s is more than 60 s after InstallIndex's own reading of the clock, which follows the test's by
-// far less than a second, and 59 s is never more than 60 s after it, whatever the sub-second part
-// of either reading.
+// installed.
+//
+// A build time is a whole second, as the builder writes it. Each subtest builds the held index
+// from one reading of the clock and writes it, then reads the clock again and counts the arriving
+// index's build time from the first whole second after that second reading, which is at most a
+// second after it. No I/O lies between the second reading and InstallIndex's own: only
+// builtIndex, which writes nothing, runs there. So 61 s is more than 60 s after InstallIndex's
+// reading, which follows the test's by far less than a second however long the held file's write
+// took, and 59 s is never more than 60 s after it, whatever the sub-second part of either reading.
+// The held index is built at or before the second reading, so the arriving one is later than a
+// current held one.
 func TestInstallIndexTakesNoIndexBuiltAheadOfTheClock(t *testing.T) {
 	underUmask(t, 0o022)
 	current := func(now time.Time) []byte { return builtIndex(now, 1, 2) }
 	for _, tc := range []struct {
 		name string
 		held func(now time.Time) []byte
-		// ahead is how far after the first whole second after the clock's reading the arriving
-		// index is built.
+		// ahead is how far after the first whole second after the second clock reading the
+		// arriving index is built.
 		ahead   time.Duration
 		refused bool
 	}{
@@ -558,12 +564,11 @@ func TestInstallIndexTakesNoIndexBuiltAheadOfTheClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "sandbox-lines.idx")
-			now := time.Now()
-			held := tc.held(now)
+			held := tc.held(time.Now())
 			if err := os.WriteFile(path, held, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			builtAt := now.Truncate(time.Second).Add(time.Second + tc.ahead)
+			builtAt := time.Now().Truncate(time.Second).Add(time.Second + tc.ahead)
 			arriving := builtIndex(builtAt, 5, 6)
 			replaced, err := InstallIndex(dir, arriving)
 			want := arriving

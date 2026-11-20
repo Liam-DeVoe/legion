@@ -61,23 +61,26 @@ var indexBuiltAt = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9
 const indexBuiltAtLayout = "2006-01-02T15:04:05Z"
 
 // indexMaxAhead is how far after this machine's clock an index's build time may be: the check's
-// own INDEX_MAX_AHEAD, which moves from 600 s to 60 s with this bound. A correct index's built_at
-// leads the reader's clock by at most the builder's clock error plus the reader's, so the bound is
-// the skew those clocks can carry:
+// own INDEX_MAX_AHEAD, 60 s. A correct index's built_at leads the reader's clock by at most the
+// builder's clock error plus the reader's, so the bound is the skew those clocks can carry:
 //
 //   - Measured with chronyc on 2026-11-20: a Compute Engine dev box ran 2.8 µs slow, root
-//     dispersion 0.53 ms, synchronised to metadata.google.internal, the server Compute Engine VMs,
-//     and so GKE nodes, use (Google's "Configure NTP for a VM"); a GKE node's own offset was not
-//     measured. An operator's laptop ran 0.28 ms slow, root dispersion 1.95 ms, RMS offset 32 ms.
-//     The GitHub runner that builds the index was not measured.
-//   - RFC 5905's frequency tolerance PHI, 15 ppm (its section on dispersion), lets a clock left
-//     unsynchronised drift about 1.3 s a day, so 60 s also covers one clock left so for about 45
-//     days.
+//     dispersion 0.53 ms, synchronised to metadata.google.internal, the server Google's page
+//     "Configure NTP on a compute instance" gives Compute Engine instances. GKE nodes are Compute
+//     Engine instances, so they use it too; that is an inference, since the page names no GKE
+//     node, and a GKE node's own offset was not measured. An operator's laptop ran 0.28 ms slow,
+//     root dispersion 1.95 ms, RMS offset 32 ms. The GitHub runner that builds the index was not
+//     measured.
+//   - RFC 5905 section 7.2, "Global Parameters", sets the frequency tolerance PHI at 15 ppm, an
+//     assumption about the worst-case drift of a clock once synchronised and then left to drift,
+//     and section 9.2, "Peer Process Operations", puts that at about 1.3 s a day. So 60 s also
+//     covers one clock left unsynchronised for about 45 days.
 //
-// An index dated wrongly by more than 60 s is refused, and a held one counts as no index: the
-// check reads it as a header it cannot read, so held, it would read UNKNOWN in every role of the
-// pod and keep out every index pushed after it. One dated wrongly by at most 60 s outlives R6's
-// 6 hours, after which the check reads an index UNKNOWN, by at most 60 s.
+// An index whose built_at leads this machine's clock by more than 60 s (a builder clock that fast,
+// or this clock that slow) is refused, and the pod keeps the index it holds until R6 reads that
+// index UNKNOWN at 6 hours. A held one counts as no index: the check reads it as a header it
+// cannot read, so held, it would read UNKNOWN in every role of the pod and keep out every index
+// pushed after it. One that leads by at most 60 s outlives R6's 6 hours by at most that lead.
 const indexMaxAhead = 60 * time.Second
 
 // Index is an index of sandbox lines ParseIndex read: Body the file whole, SHA256 the digest of its
