@@ -54,8 +54,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // Until then a tree with no node is one whose nodes have not arrived, and the outline's line
   // that the issue holds nothing would be false on every cold load, so the outline draws nothing
   // in its place; so would `q` and `w` saying there is no question or decision to go to, so they
-  // say nothing. A read that failed holds nothing either, and the outline says so over its rows
-  // (`failed`).
+  // say nothing. A read that stands failed holds nothing either, and the outline says so over
+  // its rows (`failed`).
   const { failed, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an

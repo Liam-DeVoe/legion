@@ -837,9 +837,11 @@ export function IssueTree({
     // a view's failed read's Retry the focus, in the frame after it is drawn (`landOnRow`), and
     // the opening is done once the Retry holds the focus. Whether one stood failed is read once,
     // at the settling, so a read that fails later moves no focus. A line that leaves the page
-    // before its frame comes, its read answered, leaves the opening to the question or the first
-    // row the reads now draw. The names place no row, so a failed names read changes nothing
-    // here; each line is drawn in the order the reads are given, one Retry each.
+    // before its frame comes, its read answered, hands the opening on: to the Retry of the next
+    // line whose read the rows come from, where another such read still stands failed, and to the
+    // question or the first row the reads now draw where none does. The names place no row, so a
+    // failed names read changes nothing here; each line is drawn in the order the reads are
+    // given, one Retry each.
     held.failed ??= firstFailed !== -1;
     const retry =
       held.failed && firstFailed !== -1

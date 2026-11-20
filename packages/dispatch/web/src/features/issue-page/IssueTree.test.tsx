@@ -69,13 +69,13 @@ import {
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
   type NodeType,
   PRESET_ORDER,
   type Preset,
+  STATE_LINES,
 } from "./page-words";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
@@ -1628,9 +1628,9 @@ test("a press elsewhere, then Enter on the row that was edited, puts the caret i
 });
 
 // A press the editing goes on through is the editor's own: one on a control the editor draws in
-// the box it scrolls in, and one on the action bar it draws for its selection, which it puts on
-// the page's body where its editable stands in no element as it makes the bar. Each leaves the
-// editing on once it is over, with the focus where it put it; a press outside both ends it.
+// the box it scrolls in, and one on the action bar it draws for its selection, which the row reads
+// by its class wherever it stands - here, apart from the box. Each leaves the editing on once it
+// is over, with the focus where it put it; a press outside both ends it.
 test("a press on a control in the row's editor box or on its action bar keeps the editing, and a press outside them ends it", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1690,6 +1690,48 @@ test("a press on a control in the row's editor box or on its action bar keeps th
       "a press outside the editor's box and its action bar did not end the editing"
     ).toEqual([undefined, false])
   );
+});
+
+// The fold control, Let it close and the row's other controls prevent their `mousedown`'s
+// default, so a press on one leaves the focus where it was. A press on one while a row is edited
+// left the focus in the row's editor, and ending the editing at that press's end took the editor's
+// box off the page with the focus in it, which the browser dropped to the page's body. A press
+// that leaves the focus in the editor keeps the editing.
+test("a press on a control that keeps the focus where it was, as the fold control does, keeps the editing and the focus in the row's editor", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await caretInStatement(user, [
+    node({
+      children: [node({ id: "reply-2", text: "A reply to the second words.", type: "comment" })],
+      id: "comment-2",
+      text: "The second words.",
+      type: "comment",
+    }),
+  ]);
+  const fold = () =>
+    rowsFor(view.container, "comment-2")[0]?.querySelector<HTMLElement>(
+      "button[data-node-bullet]"
+    ) ?? null;
+  const control = fold();
+  if (control === null) throw new Error("the second comment's row draws no fold control");
+  const expanded = control.getAttribute("aria-expanded");
+  const statement = editable.closest<HTMLElement>("[data-node-row]");
+
+  await user.click(control);
+  // The press is over a task after its click.
+  await waitInAct(0);
+  expect(
+    fold()?.getAttribute("aria-expanded"),
+    "the press on the fold control did nothing"
+  ).not.toBe(expanded);
+  expect(
+    [view.edited.at(-1), statement?.querySelector('[contenteditable="true"]') != null],
+    "a press that left the focus in the row's editor ended the editing"
+  ).toEqual(["artifact-spec", true]);
+  expect(
+    document.activeElement === editable,
+    "the press on the fold control took the focus out of the row's editor"
+  ).toBe(true);
 });
 
 // The focus can come back to the row being edited with the editing still on - a script's focus
@@ -7908,7 +7950,8 @@ function AddressedBody({
  *  holds `comments` and nothing else, and its comments' read is left unread where `comments` is
  *  undefined, as is each read `unread` names by its query key. `follow` follows a link to an
  *  address, as a row's link or the router's does; `redraw` draws the same location again, as a
- *  read answering does; `client` holds the reads. `Slot` draws the address, the body where none
+ *  read answering does; `reopen` takes the page off and draws it anew over the same reads, as a
+ *  later visit to it does; `client` holds the reads. `Slot` draws the address, the body where none
  *  is given, of `issue`, which holds no document where none is given. */
 function renderAddressedBody(
   path: string,
@@ -7947,6 +7990,10 @@ function renderAddressedBody(
         await held.navigate?.(to);
       }),
     redraw: () => view.rerender(draw()),
+    reopen: () => {
+      view.unmount();
+      return render(draw());
+    },
     view,
   };
 }
@@ -8600,7 +8647,7 @@ test("a failed names read draws its line over the tree with every row drawn, and
     const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
     const { container } = view;
     const { inTree, line, overTree } = await failedLines(container, 1, "names");
-    expect(line.querySelector('[role="alert"]')?.textContent).toBe(ANSWER_LINES.names_unreadable);
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.names_unreadable);
     expect({ inTree, overTree }, "the names' line is not drawn over the tree").toEqual({
       inTree: false,
       overTree: true,
@@ -8656,7 +8703,7 @@ test("a failed asks read draws its line over the tree and opens the page on its 
     ]);
     const { container } = view;
     const { inTree, line, overTree } = await failedLines(container, 1, "asks");
-    expect(line.querySelector('[role="alert"]')?.textContent).toBe(ANSWER_LINES.asks_unreadable);
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
     expect({ inTree, overTree }, "the asks' line is not drawn over the tree").toEqual({
       inTree: false,
       overTree: true,
@@ -8699,6 +8746,189 @@ test("a failed asks read draws its line over the tree and opens the page on its 
         ),
       OWN_WORDS
     );
+  } finally {
+    asks.mockRestore();
+    messages.mockRestore();
+    names.mockRestore();
+  }
+});
+
+/** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry, or
+ *  no row. */
+function focusPlace(container: HTMLElement): string {
+  if (document.activeElement?.closest("[data-failed-read]") != null) return "a failed read's Retry";
+  return focusedRow(container) ?? "no row";
+}
+
+// A failed read's line went the moment its Retry was pressed: TanStack sets a read that holds no
+// answer back to pending as it reads again, and the line was drawn only while its read was in
+// error. The focus the Retry held went to the tree's tab-stop row while the read was still out,
+// and the line a second failure drew took none. The line stays while its read is out, busy, its
+// Retry holding the focus; a second failure leaves it where it was and says itself again; and once
+// the read answers, the line goes and the focus goes to the tree's tab-stop row.
+test("a failed read's line stays drawn, busy, with the focus on its Retry while its read is out again, and goes once the read answers", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  asks.mockRejectedValueOnce(serverDown());
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    const { container } = view;
+    const { line } = await failedLines(container, 1, "asks");
+    const retry = line.querySelector<HTMLElement>("button");
+    if (retry === null) throw new Error("the asks' line drew no Retry");
+    await waitFor(
+      () =>
+        expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
+          "a failed read's Retry"
+        ),
+      OWN_WORDS
+    );
+    // The opening places its focus once.
+    await framesPass();
+    // The line, its Retry and the focus, as they stand while the `run` Retry's read, the asks'
+    // read `reads` times in all, is out.
+    const heldOut = async (run: string, reads: number) => {
+      await waitFor(
+        () => expect(asks.mock.calls.length, `the ${run} Retry did not read the asks`).toBe(reads),
+        OWN_WORDS
+      );
+      expect(
+        [container.querySelectorAll("[data-failed-read]").length, retry.isConnected],
+        `the asks' line left the page while the ${run} Retry's read was out`
+      ).toEqual([1, true]);
+      await waitFor(
+        () =>
+          expect(
+            retry.getAttribute("aria-busy"),
+            `the Retry is not busy while the ${run} Retry's read is out`
+          ).toBe("true"),
+        OWN_WORDS
+      );
+      expect(
+        focusPlace(container),
+        `the focus left the Retry while the ${run} Retry's read was out`
+      ).toBe("a failed read's Retry");
+    };
+
+    const failing = Promise.withResolvers<never>();
+    asks.mockReturnValueOnce(failing.promise as never);
+    const firstAlert = line.querySelector('[role="alert"]');
+    await user.click(retry);
+    await heldOut("first", 2);
+    await act(async () => failing.reject(serverDown()));
+    await waitFor(
+      () =>
+        expect(
+          retry.getAttribute("aria-busy"),
+          "the Retry is still busy once its read failed again"
+        ).toBeNull(),
+      OWN_WORDS
+    );
+    expect(
+      [container.querySelectorAll("[data-failed-read]").length, retry.isConnected],
+      "the asks' line left the page when their read failed again"
+    ).toEqual([1, true]);
+    expect(focusPlace(container), "the second failure took the focus off the Retry").toBe(
+      "a failed read's Retry"
+    );
+    expect(
+      line.querySelector('[role="alert"]'),
+      "the second failure left the first failure's alert standing, which says nothing again"
+    ).not.toBe(firstAlert);
+
+    const answering = Promise.withResolvers<never>();
+    asks.mockReturnValueOnce(answering.promise as never);
+    await user.click(retry);
+    await heldOut("second", 3);
+    await act(async () => answering.resolve([WAITING_QUESTION] as never));
+    await waitFor(
+      () =>
+        expect(
+          container.querySelectorAll("[data-failed-read]").length,
+          "the asks' line stayed once their read answered"
+        ).toBe(0),
+      OWN_WORDS
+    );
+    expect(rowsFor(container, WAITING_QUESTION.id).length, "the question drew no row").toBe(1);
+    await waitFor(
+      () =>
+        expect(
+          focusPlace(container),
+          "the focus the asks' Retry held did not go to the tree's tab-stop row as its line left"
+        ).toBe(
+          container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')?.dataset.nodeId ??
+            "the tab-stop row"
+        ),
+      OWN_WORDS
+    );
+  } finally {
+    asks.mockRestore();
+    messages.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// A read whose refresh failed while it holds its answer reads `error`, and the outline drew that
+// read's line over rows that were all drawn; a page opened over the same reads after that counted
+// them settled at once, the line drawn, and opened on its Retry rather than on the question that
+// waits on the reader. A read that holds its answer is not failed, whatever its refresh did: it
+// draws no line, and the page opens on the question.
+test("a read whose refresh failed while it holds its answer draws no line, and a page opened after that opens on the question", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    await waitFor(
+      () =>
+        expect(focusPlace(body.view.container), "the page did not open on the question").toBe(
+          WAITING_QUESTION.id
+        ),
+      OWN_WORDS
+    );
+
+    asks.mockRejectedValue(serverDown());
+    await act(async () => {
+      await body.client.invalidateQueries({ queryKey: ["asks", KEY] });
+    });
+    expect(body.client.getQueryState(["asks", KEY])?.status, "the asks' refresh did not fail").toBe(
+      "error"
+    );
+    expect(
+      body.view.container.querySelectorAll("[data-failed-read]").length,
+      "the asks' refresh that failed drew a line, though the read holds its answer"
+    ).toBe(0);
+    expect(
+      rowsFor(body.view.container, WAITING_QUESTION.id).length,
+      "the asks' refresh that failed took the question's row away"
+    ).toBe(1);
+
+    const { container } = body.reopen();
+    await waitFor(
+      () =>
+        expect(
+          focusPlace(container),
+          "the page opened after the asks' refresh failed did not open on the question"
+        ).toBe(WAITING_QUESTION.id),
+      OWN_WORDS
+    );
+    // The opening places its focus once.
+    await framesPass();
+    expect(focusPlace(container), "a frame after the opening moved its focus").toBe(
+      WAITING_QUESTION.id
+    );
+    expect(
+      container.querySelectorAll("[data-failed-read]").length,
+      "the page opened after the asks' refresh failed drew a line, though the read holds its answer"
+    ).toBe(0);
   } finally {
     asks.mockRestore();
     messages.mockRestore();
