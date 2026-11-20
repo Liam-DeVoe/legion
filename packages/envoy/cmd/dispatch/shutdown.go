@@ -117,37 +117,38 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // signal with some still running. The agent's calls in flight are waited for until
 // outboxStopBudget after shutdown began, the latest the document service's budget ends, 5 s inside
 // stopGrace, and the agent's socket closes; a call still running then has committed with its
-// landing or not, so the next agent makes it once. waitBackground then waits for the delivery
-// hub, every live socket and the subscriptions they ran to finish their Lifetime-driven shutdown,
-// and waitIntakes for the GitHub intakes to finish their stop (delivery.StartIntakes' stop), which
-// began at the signal, beside the HTTP drain and the document shutdown: a message in its handler
+// landing or not, so the next agent makes it once. waitBackground then waits for the delivery hub,
+// every live socket and the subscriptions they ran to finish their Lifetime-driven shutdown, and
+// waitIntakes for the GitHub intakes to finish their stop (delivery.StartIntakes' stop), which
+// began at the signal beside the HTTP drain and document shutdown. A message in its handler
 // finishes and is acknowledged, or is given up and handed back to NATS, delivery's
-// intakeStopBudget (15 s) after the signal at the latest, the one deadline of that stop, which
-// counts from the signal and which a take-over under way at the signal spends rather than
-// extends. Each intake then releases its hold through the pool, so another process takes its
-// durable over at once. That wait ends 10 s inside the latest the document service's budget ends
-// (stopGrace less its 5 s reserve, 25 s after the signal), which leaves the given-up handlers'
-// prompt return, their negative acknowledgements, the holds' release and the intakes' clients
-// closing room inside it, so it never makes the shutdown longer than the document budget already
-// can, nor pushes deregister and the pool's close past stopGrace. It comes before the pool closes
-// because nothing else keeps the pool open for a handler: one waiting on GitHub holds no
-// connection, so waitUntilIdle finds the pool idle, and its writes would fail on the closed pool
-// once GitHub answered, with its message acknowledged all the same, and because a hold released
-// through a closed pool is a hold left in place for its TTL. The database pool closes once every
-// request has answered and no connection of the shared, document-rooms or room-appends pool is in
-// use, and once the events outbox has stopped (outboxStopped closes when its Run returns; nil is a
-// process with no outbox), which it waits for until outboxStopBudget after shutdown began: the
-// outbox records its last batch and releases the publisher hold through that pool. While the
-// database answers, nothing but the runtime's kill bounds the wait for the requests, so a write in
-// flight commits and is answered if it finishes before the kill. Then deregister takes this
-// process out of the registry of live server processes: it runs only once HTTP has drained and
-// the wait for the outbox is over, so a draining process counts as live until its last request is
-// answered, and before the pool closes. Closing the pool waits by the same rule (closePool): a
-// connection taken after the pools were seen idle holds the close until it comes back, or until
-// the database has stopped answering. A database that has stopped answering (silentProbes) holds
-// its connections forever, so Dispatch exits without them, and the database rolls back whatever
-// they held open; it deregisters nothing then, since the delete would wait on that database too,
-// and its row's heartbeat stops with the process instead.
+// intakeStopBudget (15 s) after the signal at the latest. A hand-back still pending then is settled
+// when waitIntakes closes each intake's NATS client through its durable, sent in its close flush or
+// dropped with the connection; waitIntakes then waits for its finalizer to release the hold through
+// the pool. That wait normally ends 10 s inside the latest the document service's budget ends
+// (stopGrace less its 5 s reserve, 25 s after the signal). One exception can outlive that bound:
+// Client.Close waits for nats.go's connection lock, which a write can hold until its one-minute
+// write deadline, then a finalizer can spend up to intakeHoldRenew (5 s) releasing its hold. The
+// kubelet's kill is safe in that case: it closes the connection and the renewal, and the hold
+// lapses. It comes before the pool closes because nothing else keeps the pool open for a handler:
+// one waiting on GitHub holds no connection, so waitUntilIdle finds the pool idle and its writes
+// would fail on the closed pool once GitHub answered, with its message acknowledged all the same.
+// A hold's finalizer has already released its hold before waitIntakes returns.
+// The database pool closes once every request has answered and no connection of the shared,
+// document-rooms or room-appends pool is in use, and once the events outbox has stopped
+// (outboxStopped closes when its Run returns; nil is a process with no outbox), which it waits for
+// until outboxStopBudget after shutdown began: the outbox records its last batch and releases the
+// publisher hold through that pool. While the database answers, nothing but the runtime's kill
+// bounds the wait for the requests, so a write in flight commits and is answered if it finishes
+// before the kill. Then deregister takes this process out of the registry of live server
+// processes: it runs only once HTTP has drained and the wait for the outbox is over, so a draining
+// process counts as live until its last request is answered, and before the pool closes. Closing
+// the pool waits by the same rule (closePool): a connection taken after the pools were seen idle
+// holds the close until it comes back, or until the database has stopped answering. A database
+// that has stopped answering (silentProbes) holds its connections forever, so Dispatch exits
+// without them, and the database rolls back whatever they held open; it deregisters nothing then,
+// since the delete would wait on that database too, and its row's heartbeat stops with the process
+// instead.
 func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(),
 	outboxStopped <-chan struct{}, agent agentShutdown) {
 	started := time.Now()
