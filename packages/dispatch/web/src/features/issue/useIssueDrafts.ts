@@ -51,8 +51,8 @@ const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
  *  an unchanged end or a keystroke back to it with nothing queued puts in the draft. A refused
  *  end (an empty title, a closed issue) keeps whichever the draft was. Of the answers (a
  *  landing, a refusal, another reader's value), only the settle of the field's own write hands a
- *  typed or ended draft back to the issue, and only a draft that is the issue's value as typed,
- *  never another reader's value; with nothing out, the reader's own keystroke back to the
+ *  typed or ended draft back to the issue, never another reader's value, and only a draft that
+ *  is the issue's value as typed; with nothing out, the reader's own keystroke back to the
  *  issue's value, exactly as typed, with nothing queued, an unchanged end and a discard do too. */
 type Own = "issue" | "typed" | "ended";
 

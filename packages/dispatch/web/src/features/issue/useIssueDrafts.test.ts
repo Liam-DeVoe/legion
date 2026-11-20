@@ -377,12 +377,13 @@ class Reader {
       case "typeOut":
         return this.type(session.out?.title ?? "");
       case "typeMore":
-        // One character onto the end of what the field shows by the reader's record, as a reader
-        // goes on writing without ending the edit.
+        // One character onto the end of what the field holds by the reader's record, trimmed
+        // (`shown`), as a reader goes on writing without ending the edit.
         return this.type(`${this.shown()}x`);
       case "typeSpace":
-        // One space onto the end of what the field shows by the reader's record, as a reader types
-        // before the next word: the text as typed is theirs, though an end sends it trimmed.
+        // One space onto the end of what the field holds by the reader's record, trimmed
+        // (`shown`), as a reader types before the next word: the text as typed is theirs, though
+        // an end sends it trimmed.
         return this.type(`${this.shown()} `);
       case "end":
         this.checkField();
@@ -701,24 +702,27 @@ async function explore(): Promise<Map<Invariant, Broken>> {
           const findings = reader.play(event);
           if (depth < firstNew) continue;
           if (session.out === null) findings.push(...atRest(reader));
-          const line: TraceLine = {
-            sequence,
-            sent: session.titlesSent(),
-            title: session.drafts.title,
-            violates: findings.map((finding) => finding.invariant),
-          };
-          if (trace !== null) writeSync(trace, `${JSON.stringify(line)}\n`);
+          if (trace !== null) {
+            const line: TraceLine = {
+              sequence,
+              sent: session.titlesSent(),
+              title: session.drafts.title,
+              violates: findings.map((finding) => finding.invariant),
+            };
+            writeSync(trace, `${JSON.stringify(line)}\n`);
+          }
+          const brokenHere = new Set<Invariant>();
           for (const finding of findings) {
             let check = broken.get(finding.invariant);
             if (check === undefined) {
               check = { sequences: 0, shortest: [] };
               broken.set(finding.invariant, check);
             }
+            if (!brokenHere.has(finding.invariant)) {
+              brokenHere.add(finding.invariant);
+              check.sequences += 1;
+            }
             keepShortest(check.shortest, { ...finding, sequence, length: events.length });
-          }
-          for (const invariant of new Set(line.violates)) {
-            const check = broken.get(invariant);
-            if (check !== undefined) check.sequences += 1;
           }
         }
       } finally {
