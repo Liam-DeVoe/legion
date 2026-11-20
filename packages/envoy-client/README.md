@@ -809,8 +809,8 @@ delivered message or mention, and a delivery's resend or accept; and a result's 
 (`heldTargetSelf`, `packages/envoy/internal/dispatch/api/held_replay.go`). The client reads no
 such `202` as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept `id`
 and `held`), which is no refusal and no `DispatchServiceError`. Dispatch keeps an upload to a held
-issue before its keyed layer runs, so that `202` carries no `Idempotency-Key` back, and the client
-reads it as kept all the same, not as an answer of something in Dispatch's place. The `dispatch`
+issue inside its keyed layer, as it keeps every other such write, so that `202` carries the
+`Idempotency-Key` back and a retry under the same key is answered the same `202`. The `dispatch`
 command prints one line for it, `Kept until held text <waits_on> posts: Dispatch keeps this write
 as <id> and runs it right after that text posts.`, with `dispatch held <id>` to read it, and
 exits 0. `dispatch result`, `artifact` to an issue, `claim`, `claim --release` and

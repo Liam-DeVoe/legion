@@ -414,10 +414,11 @@ const GeneratedTextHeader = "Dispatch-Generated-Text"
 const PersonTypedHeader = "Dispatch-Person-Typed"
 
 // AcceptsKeptWriteHeader is the request header (1) the agents' DispatchClient puts on every write:
-// it reads the 202 {id, held} of a write the server keeps beside a held text. The server keeps
-// such a write only for a request that carries it, and answers any other 409 HELD_TEXT. Generated
-// from DISPATCH_ACCEPTS_KEPT_WRITE_HEADER in packages/contracts so the server and the client name
-// it once.
+// it reads the 202 {id, held} of a write the server keeps beside a held text. The server keeps a
+// session's write so only where its request carries the header, and answers a session's request
+// without it 409 HELD_TEXT; a person's write at a browser is the route's own, which finds no held
+// text. Generated from DISPATCH_ACCEPTS_KEPT_WRITE_HEADER in packages/contracts so the server and
+// the client name it once.
 const AcceptsKeptWriteHeader = "Dispatch-Accepts-Kept-Write"
 
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from

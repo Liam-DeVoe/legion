@@ -17,5 +17,7 @@ body: |-
   reviewer holds answers `201` in its usual shape. Any other such write answers `202 {id, held}`
   when its request carries `Dispatch-Accepts-Kept-Write: 1`, which the agents' `DispatchClient`
   sends on every write; a session's write without the header gets `409 HELD_TEXT` with the held
-  id, and nothing is kept. A person's write on a held text's path is answered as if no such text
-  existed, as a person's read is.
+  id, and nothing is kept. A repeat of a kept write under its `Idempotency-Key`, an upload to a
+  held issue included, is answered the same `202` and keeps nothing more. A person's write on a
+  held text's path, or a person's create on a held issue, is answered as if no such text existed,
+  as a person's read is.

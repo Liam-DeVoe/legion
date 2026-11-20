@@ -933,20 +933,15 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// A session's read by id of a held text answers 409 HELD_TEXT with the held id.
 	handler = s.answerHeldRead(route, handler)
-	upload := route.Method+" "+route.Pattern == issueUploadRoute
-	if !upload {
-		// Inside the keyed layer, so a write kept beside a held text it names answers a repeat
-		// under its key with the same 202 rather than keeping it twice (awaitHeldTarget).
-		handler = s.awaitHeldTarget(route, handler)
-	}
+	// Inside the keyed layer, so a write kept beside a held text it names answers a repeat under
+	// its key with the same 202 rather than keeping it twice (awaitHeldTarget): an upload to a
+	// held issue as much as any other write, which refuseUploadToAClosedIssue lets through to it.
+	handler = s.awaitHeldTarget(route, handler)
 	if keyedMethod(route.Method) {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
 	}
-	if upload {
+	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
-		// Outside the refusal, which answers 404 for an issue that does not exist yet: an
-		// upload to a held issue is kept beside it and runs once it posts.
-		handler = s.awaitHeldTarget(route, handler)
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's

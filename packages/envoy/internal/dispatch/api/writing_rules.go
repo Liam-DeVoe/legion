@@ -22,24 +22,16 @@ import (
 // here, on the server, so the deployment's choice holds in one place: the command reads it from
 // GET /api/v1/settings/writing-rules, and the rules it shows from POST /api/v1/writing-rules.
 
-// The rule sets the refusal may show beside the written rules (WritingRulesConfig.Extra,
-// cmd/dispatch: DISPATCH_WRITING_RULES_EXTRA): two of the reviewer's rule sets, written for the
-// writer (reviewer.WrittenReaderWords, reviewer.WrittenAskParts).
-const (
-	// WritingRulesReaderWords is the words the write's reader asked about before.
-	WritingRulesReaderWords = string(reviewer.RuleReaderWords)
-	// WritingRulesAskParts is the parts of an ask, for a write of an ask.
-	WritingRulesAskParts = string(reviewer.RuleAskParts)
-)
-
 // WritingRulesConfig is the refusal as the deployment set it (cmd/dispatch:
 // DISPATCH_WRITING_RULES_REFUSAL and DISPATCH_WRITING_RULES_EXTRA), which cmd/dispatch checked.
 type WritingRulesConfig struct {
 	// Refusal is whether the command refuses the write the rules come before.
 	Refusal bool
-	// Extra are the rule sets shown beside the written rules: WritingRulesReaderWords and
-	// WritingRulesAskParts, in the order the deployment named them.
-	Extra []string
+	// Extra are the rule sets shown beside the written rules, in the order the deployment named
+	// them: two of the reviewer's rule sets, written for the writer, reviewer.RuleReaderWords (the
+	// words the write's reader asked about before, reviewer.WrittenReaderWords) and
+	// reviewer.RuleAskParts (the parts of an ask, for a write of an ask, reviewer.WrittenAskParts).
+	Extra []reviewer.RuleSet
 }
 
 // writingRulesSettings is GET /api/v1/settings/writing-rules: the refusal's state, "on" or "off",
@@ -54,12 +46,12 @@ func (s *server) getWritingRulesSettings(w http.ResponseWriter, r *http.Request)
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	settings := writingRulesSettings{Refusal: "off", Extra: slices.Clone(s.deps.WritingRules.Extra)}
+	settings := writingRulesSettings{Refusal: "off", Extra: make([]string, len(s.deps.WritingRules.Extra))}
+	for i, set := range s.deps.WritingRules.Extra {
+		settings.Extra[i] = string(set)
+	}
 	if s.deps.WritingRules.Refusal {
 		settings.Refusal = "on"
-	}
-	if settings.Extra == nil {
-		settings.Extra = []string{}
 	}
 	WriteJSON(w, http.StatusOK, settings)
 }
@@ -96,7 +88,7 @@ type writingRulesResponse struct {
 }
 
 // writingRulesAskRoutes are the routes whose write is an ask's question, which the parts of an ask
-// (WritingRulesAskParts) are for.
+// (reviewer.RuleAskParts) are for.
 var writingRulesAskRoutes = []string{
 	"POST /api/v1/issues/{key}/asks",
 	"POST /api/v1/artifacts/{id}/asks",
@@ -106,10 +98,10 @@ var writingRulesAskRoutes = []string{
 // postWritingRules is POST /api/v1/writing-rules: the rules text for the reader of the write the
 // body names. It writes nothing. It decides the reader as the writing check decides the reader
 // of that write when it arrives (writingCheckReader), from the record and the body's fields that
-// name a person or a text it answers, and with the actor the write would carry. A person at a
-// browser reads their own recorded words alone, as GET /api/v1/readers/{login}/words serves them
-// (Decision 14 of INFRA-3231's plan), so the rules such a caller gets for another person's write
-// leave that person's words out; an agent's token gets them for any reader.
+// name a person or a text it answers, and with the actor the write would carry. The reader's
+// words are shown to a caller readsWordsOf lets read them, as GET /api/v1/readers/{login}/words
+// serves them, so the rules a person at a browser gets for another person's write leave that
+// person's words out; an agent's token gets them for any reader.
 func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
 	caller, human, err := s.optionalActor(r)
 	if err != nil {
@@ -152,8 +144,7 @@ func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("decide the reader of %s: %w", pending.Pattern, err))
 		return
 	}
-	ownWords := !human || model.CanonicalLogin(caller.ID) == model.CanonicalLogin(reader)
-	text, err := s.writingRulesText(r.Context(), pending.Pattern, reader, ownWords)
+	text, err := s.writingRulesText(r.Context(), pending.Pattern, reader, readsWordsOf(caller, human, reader))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -163,7 +154,8 @@ func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
 
 // writingRulesText is the written rules (plainwords.Rules), then each rule set of
 // WritingRulesConfig.Extra that applies to a write on route read by reader: the reader's words
-// where readerWords allows the caller to read them, and the parts of an ask for an ask's write.
+// where readerWords allows the caller to read them (readsWordsOf), and the parts of an ask for an
+// ask's write.
 func (s *server) writingRulesText(ctx context.Context, route, reader string, readerWords bool) (string, error) {
 	var text strings.Builder
 	text.WriteString(plainwords.Rules)
@@ -171,7 +163,7 @@ func (s *server) writingRulesText(ctx context.Context, route, reader string, rea
 		var section string
 		var err error
 		switch set {
-		case WritingRulesReaderWords:
+		case reviewer.RuleReaderWords:
 			if reader == "" || !readerWords {
 				continue
 			}
@@ -180,7 +172,7 @@ func (s *server) writingRulesText(ctx context.Context, route, reader string, rea
 				break
 			}
 			section, err = reviewer.WrittenReaderWords(reader, words)
-		case WritingRulesAskParts:
+		case reviewer.RuleAskParts:
 			if !slices.Contains(writingRulesAskRoutes, route) {
 				continue
 			}

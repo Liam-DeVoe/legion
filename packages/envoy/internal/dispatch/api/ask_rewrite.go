@@ -215,13 +215,9 @@ func (s *server) runningAskRewrite(ctx context.Context, q queryer, askID string)
 }
 
 // askWordingRead is an ask's wording as a rewrite's original holds it: its question, options and
-// choice.
+// choice, the options' words alone (reviewer.OptionWords).
 func askWordingRead(ask model.Ask) model.TextWording {
-	options := make([]model.AskOption, len(ask.Options))
-	for i, option := range ask.Options {
-		options[i] = model.AskOption{Label: option.Label, Description: option.Description}
-	}
-	return model.TextWording{Body: ask.Question, Options: options, Multiple: ask.Multiple}
+	return model.TextWording{Body: ask.Question, Options: reviewer.OptionWords(ask.Options), Multiple: ask.Multiple}
 }
 
 // runAskRewrite is one run of a person's Rewrite, in the background: the side question, the

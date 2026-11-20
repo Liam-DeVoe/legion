@@ -161,7 +161,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
 // keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
 // layer's 400, which spools no body either and refuses the request's form before anything is
-// looked up.
+// looked up. A session's upload to a held issue, which no issues row holds until it posts, goes on
+// to the keyed layer and to awaitHeldTarget inside it, which keeps it beside the held issue under
+// its key (or answers 409 HELD_TEXT); a person's is refused as an upload to an issue nobody holds
+// is, since a person learns nothing of a held text.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -187,6 +190,17 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		if refusal == nil {
 			handler(w, r)
 			return
+		}
+		if !human {
+			parent, err := s.heldTargetOf(r, "key")
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if parent != nil {
+				handler(w, r)
+				return
+			}
 		}
 		// Only the issue's own refusal (closed, missing) stands aside for the key: a check that
 		// failed is answered as it always was.

@@ -140,8 +140,9 @@ var heldReadRoutes = map[string]string{
 	"GET /api/v1/issues/{key}":  "key",
 }
 
-// heldTextError is the 409 HELD_TEXT answer: the text a session read by its id is held, under
-// HeldID, which GET /api/v1/held/{id} reads.
+// heldTextError is the 409 HELD_TEXT answer: the text a session's read by its id, or a session's
+// write whose path names it from a client that reads no kept write (awaitHeldTarget), finds held,
+// under HeldID, which GET /api/v1/held/{id} reads.
 type heldTextError struct {
 	Error  string `json:"error"`
 	Code   string `json:"code"`
@@ -167,7 +168,7 @@ func (s *server) answerHeldRead(route apiRoute, handler http.HandlerFunc) http.H
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 			select exists (
 				select 1 from held_texts
-				where id = $1 and state in ('reviewing', 'awaiting_writer', 'posting') and kind not in ('request', 'decision_block'))`,
+				where id = $1 and state in `+heldOpenStatesSQL+` and kind not in ('request', 'decision_block'))`,
 			id).Scan(&isHeld); err != nil || !isHeld {
 			handler(w, r)
 			return
@@ -541,17 +542,18 @@ func (s *server) repeatedHeldPost(ctx context.Context, tx queryer, id string, ac
 // answerHeldFrame takes a reply to the frame Dispatch sent a held text's writer
 // (sendFindingsFrame), which names the held text's id where a delivered message's id stands: the
 // reply is the writer's answer, kept with the held text, and writes no message row and no event.
-// It reports whether id is a held text's that has not posted, having answered the request; a held
-// text's writer alone replies to it. A held message or reply that has posted is a message under
-// the same id, delivered as any other, so a reply to it is its recipient's, which the route takes
-// as it takes any reply.
+// It reports whether id is a held text's, having answered the request; a held text's writer alone
+// replies to it. A held message or reply to a message that has posted is a message under the same
+// id, delivered as any other, so a reply to it is its recipient's, which the route takes as it
+// takes any reply; a held text of any other kind, or one that failed, is no message, and its
+// writer's answer to the frame is kept with it whatever its state.
 func (s *server) answerHeldFrame(w http.ResponseWriter, r *http.Request, actor model.Actor, input messageReplyInput) bool {
 	if s.deps.Reviewer == nil || s.deps.Store == nil {
 		return false
 	}
 	ctx := r.Context()
 	row, err := s.loadHeld(ctx, s.deps.Store.Pool, r.PathValue("id"), false)
-	if err != nil || row.state == heldPosted || row.state == heldFailed {
+	if err != nil || (row.state == heldPosted && row.kind == string(reviewer.KindMessage)) {
 		return false
 	}
 	if !row.isWriter(actor) {

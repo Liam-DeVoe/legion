@@ -40,6 +40,11 @@ const (
 	heldFailed         = "failed"
 )
 
+// heldOpenStatesSQL is the states of a held text that has neither posted nor failed, as the SQL
+// list `state in` reads: the predicate of the held_texts_open index (store migration
+// 20261119050004_held_texts), which a query naming these states reads through.
+const heldOpenStatesSQL = "('" + heldReviewing + "', '" + heldAwaitingWriter + "', '" + heldPosting + "')"
+
 // heldNotReviewed is the outcome of a held text the reviewer does not read before it posts: a
 // write that waits on a held text with its own kind's setting not hold.
 const heldNotReviewed = "not_reviewed"
@@ -257,7 +262,7 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select id, state, coalesce(reader, ''), coalesce(project, '')
 		from held_texts
-		where id = any($1) and state in ('reviewing', 'awaiting_writer', 'posting') and kind <> 'decision_block'
+		where id = any($1) and state in `+heldOpenStatesSQL+` and kind <> 'decision_block'
 		order by seq desc limit 1`, named).Scan(&parent.id, &parent.state, &parent.reader, &parent.project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -289,7 +294,8 @@ type heldWriteOf struct {
 // so a write its own path refuses is refused now, as with the reviewer off, and never fails at
 // its post; a reply its route answers with no new text is answered so now, and nothing is held.
 // The answer carries the advice the write's own answer carries (heldAdvice), worked out before
-// the id is reserved, and, for a new issue, the assignee its post writes (heldIssueAssignee).
+// the id is reserved, and, for a new issue, the assignee its post writes: the one its dry run filed
+// it under, else heldIssueAssignee's.
 func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, write reviewedWrite, of heldWriteOf) {
 	ctx := r.Context()
 	request, err := json.Marshal(write.request)
@@ -324,7 +330,9 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	advice := s.heldAdvice(r, write, actor, dry, of.parent)
 	answered := write
 	if create, isIssue := write.request.(issueCreate); isIssue {
-		if create.Assignee, err = s.heldIssueAssignee(ctx, create, actor); err != nil {
+		if dry != nil {
+			create.Assignee = dry.assignee
+		} else if create.Assignee, err = s.heldIssueAssignee(ctx, create, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -410,10 +418,11 @@ func reserveIssueNumber(ctx context.Context, tx pgx.Tx, project string) (int, er
 	return number, err
 }
 
-// heldIssueAssignee is the assignee the post of create, a new issue the reviewer holds, writes
-// (writeIssue): the person it names, else defaultAssignee's chain read as it stands now - the
-// person actor acts for, the parent's assignee, the project's default assignee. A parent that is
-// itself a held issue, which no issues row holds yet, gives the assignee its own post writes.
+// heldIssueAssignee is the assignee the post of create, a new issue the reviewer holds beside a
+// held text it names, which runs no dry run, writes (writeIssue): the person it names, else
+// defaultAssignee's chain read as it stands now - the person actor acts for, the parent's
+// assignee, the project's default assignee. A parent that is itself a held issue, which no issues
+// row holds yet, gives the assignee its own post writes.
 func (s *server) heldIssueAssignee(ctx context.Context, create issueCreate, actor model.Actor) (*string, error) {
 	if create.Assignee != nil {
 		return create.Assignee, nil
@@ -595,12 +604,13 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 // heldDryRun is what a held write's dry run found (dryRunHeld): answered, the answer the route of
 // a reply kept whole gave in place of a pass (a refusal, or the stored reply of an attempt already
 // answered), which the write gets as its own; otherwise advice, the write advice the write's own
-// answer would carry (nil where its path gives none), and markdown, a new issue's spec as its seed
-// would store it.
+// answer would carry (nil where its path gives none), and, for a new issue, markdown, its spec as
+// its seed would store it, and assignee, the person its create files it under.
 type heldDryRun struct {
 	answered *replayAnswer
 	advice   *writeAdvice
 	markdown string
+	assignee *string
 }
 
 // dryRunHeld runs write as actor's under id in a transaction it rolls back before the commit
@@ -633,7 +643,7 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 		defer tx.Rollback(ctx)
 		var written issueWritten
 		written, err = s.writeIssue(ctx, tx, create, actor, 0, held)
-		dry.advice, dry.markdown = written.advice, written.markdown
+		dry.advice, dry.markdown, dry.assignee = written.advice, written.markdown, written.assignee
 	case commentCreate:
 		var written commentWritten
 		written, err = s.writeComment(ctx, create, actor, id, held)
@@ -641,6 +651,8 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 	case messageCreate:
 		_, dry.advice, err = s.writeMessage(ctx, create, actor, id, held)
 	case heldReplay:
+		// The reply's route reads what its hold learned of the writer's role (roleHolderReplyOf).
+		held.roleHolder = create.RoleHolder
 		answer, err := s.runReplay(ctx, create, held)
 		switch {
 		case err != nil:
@@ -662,8 +674,9 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 }
 
 // errHeldNotPosting is a post that found its held text no longer to be posted: another process
-// posted it first, or it failed.
-var errHeldNotPosting = errors.New("the held text is not waiting to post")
+// posted it first, or it failed. A route that a held text's post runs again answers it 409
+// HELD_NOT_POSTING, which the post reads back as this (postReplay).
+var errHeldNotPosting = errorf(http.StatusConflict, "HELD_NOT_POSTING", "the held text is not waiting to post")
 
 // heldPost is a held text's post inside the kind's create path, which takes its held row in the
 // create's transaction and marks it posted in the same transaction. A nil *heldPost is the
@@ -679,6 +692,11 @@ var errHeldNotPosting = errors.New("the held text is not waiting to post")
 type heldPost struct {
 	id     string
 	dryRun bool
+	// roleHolder is what a held reply's hold learned of whether its writer holds the role the
+	// attempt it answers was sent for (heldReplay.RoleHolder), which the reply route reads in place
+	// of asking the listener again (roleHolderReplyOf); nil for any other text, and for a reply
+	// held before the hold kept it, whose route asks.
+	roleHolder *roleHolderReply
 }
 
 // postedHeldSQL marks the held text $1, waiting to post ($2, heldPosting), posted: its post time
@@ -864,7 +882,7 @@ func (s *server) postReady() {
 				and (h.depends_on is null or p.state = 'posted')
 				and not exists (
 					select 1 from held_texts e
-					where e.depends_on = h.depends_on and e.seq < h.seq and e.state in ('reviewing', 'awaiting_writer', 'posting'))
+					where e.depends_on = h.depends_on and e.seq < h.seq and e.state in `+heldOpenStatesSQL+`)
 			order by h.seq limit 50`, intervalOf(s.deps.Reviewer.staleClaim()))
 		if err != nil {
 			if ctx.Err() == nil {
@@ -898,10 +916,11 @@ func (s *server) postReady() {
 // postHeld posts the held text id, which is decided: it takes the row for the post, runs the
 // kind's create path with the stored request (the reviewer's rewrite in its wording where the
 // outcome is rewrite_posted), the recorded actor and the reserved id, and reports whether it
-// posted. A post refused - any error its route would answer below 500 (handlerRefusalOf): the
+// posted. A post refused - an error its route would answer below 500 (handlerRefusalOf): the
 // create path's own refusal, and a document's (a quote anchor gone, a document too large, a row
 // gone), which no later post changes - fails the held text with the refusal, and its writer is
-// told (failHeld); any other failure leaves it for the sweep to post again.
+// told (failHeld). A refusal a later post can clear (heldPostRetried), and any other failure,
+// leave it for the sweep to post again.
 //
 // Each of its writes commits in a transaction of the shared pool. ctx is the post context
 // (postContext), which carries no request's Idempotency-Key, so those transactions take no commit
@@ -928,7 +947,7 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 	case errors.Is(err, errHeldNotPosting):
 		return false
 	}
-	if refusal := handlerRefusalOf(err); refusal.status < http.StatusInternalServerError {
+	if refusal := handlerRefusalOf(err); refusal.status < http.StatusInternalServerError && !heldPostRetried(refusal) {
 		refused := refusal.apiError()
 		slog.Warn("dispatch: a held text's post was refused", "text", row.id, "code", refused.code, "error", refused.message)
 		s.failHeld(ctx, row, refused)
@@ -941,6 +960,17 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 		slog.Warn("dispatch: release a held text's post", "text", row.id, "error", releaseErr)
 	}
 	return false
+}
+
+// heldPostRetried reports whether refusal, a held text's post's, is one a later post can clear,
+// so the text is left for the sweep to post again rather than failed: a 429 (EDIT_QUEUE_FULL, a
+// document's queue of conditional edits full for now), DOC_NEWER_CONTENT (a newer build wrote the
+// document while two builds serve one database: the post goes through on that build, and on this
+// one once it is replaced) and DOCUMENT_UNLOADABLE (a history that does not load, the state a
+// rebuild repairs).
+func heldPostRetried(refusal handlerRefusal) bool {
+	return refusal.status == http.StatusTooManyRequests || refusal.code == codeDocNewerContent ||
+		refusal.code == codeDocumentUnloadable
 }
 
 // claimHeldPost takes the held text id for its post: it must be posting, with no post holding it
@@ -1149,6 +1179,7 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 			return err
 		}
 	case heldReplay:
+		held.roleHolder = create.RoleHolder
 		return s.postReplay(ctx, row, create, held)
 	case decisionBlockHold:
 		return s.releaseDecisionBlock(ctx, row, held)
@@ -1270,7 +1301,7 @@ func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, error) 
 		set state = 'failed', detail = 'the held text it waits on, ' || p.id || ', failed to post',
 			claimed_at = null, updated_at = now()
 		from held_texts p
-		where p.id = h.depends_on and p.state = 'failed' and h.state in ('reviewing', 'awaiting_writer', 'posting')
+		where p.id = h.depends_on and p.state = 'failed' and h.state in `+heldOpenStatesSQL+`
 		returning h.id, h.kind, coalesce(h.writer, ''), p.id`)
 	if err != nil {
 		return nil, err

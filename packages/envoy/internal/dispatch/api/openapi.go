@@ -914,8 +914,9 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	// A write that names a held text by its path is kept beside it, 202, for a client that reads
-	// that answer, and refused 409 HELD_TEXT for any other (awaitHeldTarget, held_replay.go).
+	// A session's write that names a held text by its path is kept beside it, 202, for a client
+	// that reads that answer, and refused 409 HELD_TEXT for any other (awaitHeldTarget,
+	// held_replay.go).
 	for _, kept := range keptAnswers(route.Method, route.Pattern) {
 		if err := add(kept.Status, kept.Body); err != nil {
 			return nil, err

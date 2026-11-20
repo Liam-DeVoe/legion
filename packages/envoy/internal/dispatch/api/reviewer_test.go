@@ -107,16 +107,18 @@ func reviewStandIn(t *testing.T) *modeltest.Model {
 }
 
 // fakeReviewListener is the Envoy listener the reviewer's tests run against: each session in live
-// is running, any other is gone, and every send is kept.
+// is running, any other is gone, roles names the session each role's claim names, which a role
+// lookup answers while that session runs, and every send is kept.
 type fakeReviewListener struct {
 	mu    sync.Mutex
 	live  map[string]bool
+	roles map[string]string
 	sends []map[string]any
 }
 
 func newFakeReviewListener(t *testing.T, live ...string) (string, *fakeReviewListener) {
 	t.Helper()
-	listener := &fakeReviewListener{live: map[string]bool{}}
+	listener := &fakeReviewListener{live: map[string]bool{}, roles: map[string]string{}}
 	for _, session := range live {
 		listener.live[session] = true
 	}
@@ -145,6 +147,20 @@ func newFakeReviewListener(t *testing.T, live ...string) (string, *fakeReviewLis
 		WriteJSON(w, http.StatusOK, map[string]any{"event_id": "env-" + string(rune('a'+count)), "recipient": body["target_session"]})
 	})
 	mux.HandleFunc("/v1/sessions", func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, http.StatusOK, []any{}) })
+	mux.HandleFunc("/v1/roles/", func(w http.ResponseWriter, r *http.Request) {
+		role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
+		listener.mu.Lock()
+		holder, claimed := listener.roles[role]
+		running := listener.live[holder]
+		listener.mu.Unlock()
+		if !claimed || !running {
+			WriteJSON(w, http.StatusNotFound, map[string]any{"error": "no holder for role " + role, "reason": "unclaimed"})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"role": role, "holder": holder, "title": holder, "capabilities": []string{"btw", "aside", "steer"}, "holder_state": "live",
+		})
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server.URL, listener
@@ -161,6 +177,13 @@ func (l *fakeReviewListener) start(session string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.live[session] = true
+}
+
+// claim makes session the holder of role.
+func (l *fakeReviewListener) claim(role, session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.roles[role] = session
 }
 
 // deliveredTo reports whether the listener was sent the message id for session: a send to it whose
@@ -1178,6 +1201,45 @@ func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {
 	off := newRegisteredTestHandlerWithoutReviewer(t)
 	if response := dispatchRequest(t, off, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{"kind": "comment", "text": "x"}, "alice"); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("the draft route with no reviewer's model: %d, want 503", response.Code)
+	}
+}
+
+// A person at a browser learns nothing of another person's recorded words from a draft's review,
+// as GET /api/v1/readers/{login}/words serves them none (Decision 14 of INFRA-3231's plan): bob's
+// draft on alice's issue, and bob's draft naming alice as its reader, are reviewed for alice
+// without the words she asked about, while alice's own draft and an agent token's are reviewed
+// with them.
+func TestTheDraftRouteShowsAPersonAtABrowserNoOtherPersonsWords(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{}, nil)
+	const draft = "Status\nThe rows wait in the store."
+	review := func(who string, response *httptest.ResponseRecorder) reviewerDraftAnswer {
+		t.Helper()
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", who, response.Code, response.Body.String())
+		}
+		answer := decodeBody[reviewerDraftAnswer](t, response)
+		if answer.Reader != "alice" {
+			t.Fatalf("%s: reader %q, want alice", who, answer.Reader)
+		}
+		return answer
+	}
+	onIssue := map[string]any{"kind": "comment", "text": draft, "issue": rig.issue}
+	for who, response := range map[string]*httptest.ResponseRecorder{
+		"alice at a browser": dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", onIssue, "alice"),
+		"an agent's token":   agentRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", onIssue, "agent-token"),
+	} {
+		if answer := review(who, response); len(answer.Findings) != 1 || answer.Findings[0].Quote != "the store" {
+			t.Errorf("%s: findings %+v, want the one on alice's word store", who, answer.Findings)
+		}
+	}
+	for what, body := range map[string]map[string]any{
+		"on alice's issue": onIssue,
+		"naming alice":     {"kind": "comment", "text": draft, "reader": "alice"},
+	} {
+		answer := review("bob's draft "+what, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", body, "bob"))
+		if len(answer.Findings) != 0 {
+			t.Errorf("bob's draft %s: findings %+v, want none: alice's words are not his to read", what, answer.Findings)
+		}
 	}
 }
 

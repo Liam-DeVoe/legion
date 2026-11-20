@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -44,9 +45,11 @@ type heldCaller struct {
 
 // heldReplay is a write kept whole: its method, path, query, body and caller. Replay marks the
 // stored request as one, apart from a kind's own decoded request. Text and Subject are the
-// reviewer's text and where it stands, for a reply the reviewer reads; zero for any other write.
+// reply's text and where it stands, for an agent's reply to a delivery; zero for any other write.
 // PersonTyped is a write a person typed in a session (Dispatch-Person-Typed: 1), which runs again
-// with that header.
+// with that header. RoleHolder is what a reply's route learned, as the reply was written, of
+// whether its writer holds the role the attempt was sent for (roleHolderReplyOf), which its post
+// reads back rather than ask the listener again; nil for any other write.
 type heldReplay struct {
 	Replay      bool             `json:"replay"`
 	Method      string           `json:"method"`
@@ -58,6 +61,7 @@ type heldReplay struct {
 	Text        reviewer.Text    `json:"text"`
 	Subject     reviewer.Subject `json:"subject"`
 	PersonTyped bool             `json:"person_typed,omitempty"`
+	RoleHolder  *roleHolderReply `json:"role_holder,omitempty"`
 }
 
 // isReplay reports whether a held text's request is a write kept whole.
@@ -91,6 +95,13 @@ func (replay heldReplay) withBody(body string) (heldReplay, error) {
 // write carries no text.
 func (replay heldReplay) reviewed(kind reviewer.Kind) reviewedWrite {
 	return reviewedWrite{kind: kind, request: replay, text: replay.Text, subject: replay.Subject, holdable: true}
+}
+
+// followUp reports whether the kept write is a reply its route was asked to post as a follow-up on
+// an attempt already answered (POST /api/v1/messages/{id}/reply?follow_up=true).
+func (replay heldReplay) followUp() bool {
+	query, err := url.ParseQuery(replay.Query)
+	return err == nil && query.Get("follow_up") == "true"
 }
 
 // heldPostKey carries a held text's post, or its dry run, to the route a replay runs through.
@@ -230,42 +241,85 @@ func (a *replayAnswer) isDryRunPass() bool {
 	return a.status == errHeldDryRun.status && a.refusal().code == errHeldDryRun.code
 }
 
+// reviewedReply is an agent's reply reviewReply reads, beside its decoded input: its kind, its
+// text and where it stands; whether its route was asked to post it as a follow-up on an attempt
+// already answered (POST /api/v1/messages/{id}/reply?follow_up=true; a mention's reply has none);
+// and what the route learned of whether its writer holds the role the attempt was sent for
+// (roleHolderReplyOf), which a held reply keeps for its post.
+type reviewedReply struct {
+	kind       reviewer.Kind
+	body       string
+	subject    reviewer.Subject
+	followUp   bool
+	roleHolder roleHolderReply
+}
+
 // reviewReply is reviewWrite for an agent's reply to a delivery it got: input is the reply's
-// decoded body, which holds body, the reply's text, and subject where it stands. A reply the
-// reviewer holds is kept whole and posts by running the reply route again under the id the hold
-// reserved; one it reviews after the post is reviewed once the handler committed it. A reply the
-// post of a held one runs again is reviewed already and recorded already, and goes on. A reply
-// held while the same writer's earlier reply to the same delivery is held waits on that one
-// (heldReplyBefore), so the two post in the order the writer wrote them, whichever review ends
-// first.
-func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, kind reviewer.Kind, body string, subject reviewer.Subject) (*postedReview, bool) {
+// decoded body. A reply the reviewer holds is kept whole and posts by running the reply route
+// again under the id the hold reserved; one it reviews after the post is reviewed once the
+// handler committed it. A reply the post of a held one runs again is reviewed already and
+// recorded already, and goes on.
+//
+// A reply sent while the same writer's earlier reply to the same delivery is held stands by that
+// one (heldReplyPlaceOf), so the delivery's reply is the one the writer wrote first, whichever
+// review ends first. A reply the route would answer, once the held one posts, with a held reply's
+// text (a retry of the answer, or a follow-up of the same text) is answered that held reply's
+// answer, and nothing more is held (answerHeldReplyAgain). Any other waits on the newest held
+// reply, reviewed where the reviewer reads it, and held unreviewed where it does not (a plugin's
+// generated text, a person's typed write, a write the check does not read, a reply no person
+// reads), so the replies post in the order the writer wrote them.
+func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, reply reviewedReply) (*postedReview, bool) {
 	if heldPostFrom(r.Context()) != nil {
 		return nil, true
 	}
 	rv := s.deps.Reviewer
 	method, route := routeOf(r)
-	setting := rv.setting(kind)
-	if !rv.reviewsAny() || s.deps.Store == nil || setting == ReviewOff || generatedText(r, method+" "+route) || personTypedWrite(r) {
-		s.writingCheck(r, actor, input)
-		return nil, true
-	}
-	if checked, _ := writingCheckReads(actor); !checked {
+	setting := rv.setting(reply.kind)
+	if !rv.reviewsAny() || s.deps.Store == nil || setting == ReviewOff {
 		s.writingCheck(r, actor, input)
 		return nil, true
 	}
 	ctx := r.Context()
-	reader, err := s.writingCheckReader(ctx, r, method+" "+route, actor, input)
-	if err != nil {
-		slog.Warn("dispatch: decide the reader of a reviewed reply", "route", method+" "+route, "error", err)
-		reader = ""
+	text := reviewer.Text{Kind: reply.kind, Body: reply.body}
+	subject := reply.subject
+	subject.Text, subject.Writer = text, writerOf(actor)
+	// Only a hold keeps a reply, so only under one can the writer have a reply held before this.
+	var encoded []byte
+	var place heldReplyPlace
+	if setting == ReviewHold {
+		var err error
+		if encoded, err = json.Marshal(input); err != nil {
+			s.writeHandlerError(w, err)
+			return nil, false
+		}
+		if place, err = s.heldReplyPlaceOf(ctx, method+" "+route, subject, reply, encoded); err != nil {
+			s.writeHandlerError(w, err)
+			return nil, false
+		}
+		if place.repeated != nil {
+			s.answerHeldReplyAgain(w, r, *place.repeated, place.repeatedReplay)
+			return nil, false
+		}
 	}
-	if reader == "" {
+	reader := ""
+	if checked, _ := writingCheckReads(actor); checked && !generatedText(r, method+" "+route) && !personTypedWrite(r) {
+		var err error
+		if reader, err = s.writingCheckReader(ctx, r, method+" "+route, actor, input); err != nil {
+			slog.Warn("dispatch: decide the reader of a reviewed reply", "route", method+" "+route, "error", err)
+			reader = ""
+		}
+	}
+	if reader == "" && place.parent == nil {
 		s.writingCheck(r, actor, input)
 		return nil, true
 	}
-	text := reviewer.Text{Kind: kind, Body: body}
-	subject.Text, subject.Writer, subject.Reader = text, writerOf(actor), reader
-	project := s.projectOfReply(ctx, kind, r.PathValue("id"))
+	subject.Reader = reader
+	project := ""
+	if place.parent != nil {
+		project = place.parent.project
+	} else {
+		project = s.projectOfReply(ctx, reply.kind, r.PathValue("id"))
+	}
 	event := store.WritingCheckEvent{
 		Route: route, Method: method, ActorKind: actor.Kind, ActorID: actor.ID,
 		TokenID: s.writingCheckTokenID(r, actor), Reader: reader, Project: project,
@@ -274,60 +328,120 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 		event.ActSession = actor.Act.Session
 	}
 	if setting != ReviewHold {
-		return &postedReview{kind: kind, text: text, subject: subject, event: event}, true
+		return &postedReview{kind: reply.kind, text: text, subject: subject, event: event}, true
+	}
+	reviews := reader != ""
+	if !reviews {
+		// A reply the reviewer does not read before it posts: the writing check reads it now, as
+		// it reads any write, and it posts right after the reply it waits on.
+		s.writingCheck(r, actor, input)
 	}
 	caller, err := s.captureCaller(unloggedResolution(r))
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return nil, false
 	}
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return nil, false
-	}
+	typed := personTypedWrite(r)
 	replay := heldReplay{
 		Replay: true, Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, ContentType: "application/json",
-		Body: encoded, Caller: caller, Text: text, Subject: subject,
+		Body: encoded, Caller: caller, Text: text, Subject: subject, PersonTyped: typed, RoleHolder: &reply.roleHolder,
 	}
-	write := replay.reviewed(kind)
-	write.subject.IssueKey = subject.IssueKey
-	parent, err := s.heldReplyBefore(ctx, method+" "+route, subject)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return nil, false
-	}
-	s.holdWrite(w, r, actor, write, heldWriteOf{
-		route: method + " " + route, reader: reader, project: project, parent: parent, reviewed: true, event: event,
+	s.holdWrite(w, r, actor, replay.reviewed(reply.kind), heldWriteOf{
+		route: method + " " + route, reader: reader, project: project, parent: place.parent, reviewed: reviews, event: event,
+		personTyped: typed,
 	})
 	return nil, false
 }
 
-// heldReplyBefore is the newest held reply on route, which has not posted, that subject's writer
-// wrote to the delivery subject answers (its InReplyTo message or its ReplyTo comment); nil where
-// there is none. A reply is held beside it, waiting on it (depends_on), so the first posts as the
-// delivery's reply and the next as what the reply route makes of a second text on an answered
-// delivery: a follow-up, or the stored reply. Each review runs once the reply before it posted
-// (claimHeldReview).
-func (s *server) heldReplyBefore(ctx context.Context, route string, subject reviewer.Subject) (*heldParent, error) {
+// heldReplyPlace is where a reply stands among the replies its writer holds to the same delivery:
+// the held reply it repeats, with the write that reply keeps (repeated, repeatedReplay), or the
+// held reply it waits on (parent); neither where it stands by none.
+type heldReplyPlace struct {
+	parent         *heldParent
+	repeated       *heldRow
+	repeatedReplay heldReplay
+}
+
+// heldReplyPlaceOf reads the held replies on route, not yet posted, that subject's writer wrote to
+// the delivery subject answers (its InReplyTo message or its ReplyTo comment), and places reply,
+// encoded as its route decoded it, among them. The first reply to an attempt posts as the
+// attempt's reply, and each later one as what the reply route makes of a second text on an
+// answered attempt: a follow-up, or nothing, which answers the stored reply (replyAfterAnswer,
+// and the mention route, which has no follow-up). So a reply to the same attempt that is no
+// follow-up repeats the earliest held reply to it that is none either, the attempt's reply to be;
+// one that finds only follow-ups held on its attempt, whose reply posted already, waits on none,
+// and its route answers it the stored reply. A follow-up repeats the newest held reply to its
+// attempt that holds its text. Any other reply waits on the newest held reply, whose review it
+// follows (claimHeldReview).
+func (s *server) heldReplyPlaceOf(ctx context.Context, route string, subject reviewer.Subject, reply reviewedReply, encoded []byte) (heldReplyPlace, error) {
 	if subject.Writer == "" {
-		return nil, nil
+		return heldReplyPlace{}, nil
 	}
-	rows, err := s.loadHeldRows(ctx, `route = $1 and writer = $2 and state in ('reviewing', 'awaiting_writer', 'posting')
+	rows, err := s.loadHeldRows(ctx, `route = $1 and writer = $2 and state in `+heldOpenStatesSQL+`
 		order by seq desc`, route, subject.Writer)
 	if err != nil {
-		return nil, fmt.Errorf("read the writer's held replies: %w", err)
+		return heldReplyPlace{}, fmt.Errorf("read the writer's held replies: %w", err)
 	}
-	for _, row := range rows {
+	attempt := replyAttemptOf(encoded)
+	var place heldReplyPlace
+	onAttempt := false
+	for i, row := range rows {
 		var replay heldReplay
-		if !isReplay(row.request) || json.Unmarshal(row.request, &replay) != nil {
+		if !isReplay(row.request) || json.Unmarshal(row.request, &replay) != nil ||
+			replay.Subject.InReplyTo != subject.InReplyTo || replay.Subject.ReplyTo != subject.ReplyTo {
 			continue
 		}
-		if replay.Subject.InReplyTo == subject.InReplyTo && replay.Subject.ReplyTo == subject.ReplyTo {
-			return &heldParent{id: row.id, state: row.state, reader: row.reader, project: row.project}, nil
+		if place.parent == nil {
+			place.parent = &heldParent{id: row.id, state: row.state, reader: row.reader, project: row.project}
+		}
+		if replyAttemptOf(replay.Body) != attempt {
+			continue
+		}
+		onAttempt = true
+		switch {
+		case !reply.followUp && !replay.followUp():
+			// The rows come newest first, so the last one kept is the earliest.
+			place.repeated, place.repeatedReplay = &rows[i], replay
+		case reply.followUp && place.repeated == nil && replay.Text.Body == reply.body:
+			place.repeated, place.repeatedReplay = &rows[i], replay
 		}
 	}
-	return nil, nil
+	if place.repeated != nil || (!reply.followUp && onAttempt) {
+		place.parent = nil
+	}
+	return place, nil
+}
+
+// replyAttempt is the delivery attempt a reply's body answers: its attempt, and for a mention's
+// reply the mention it names, "" where it names none.
+type replyAttempt struct {
+	attempt int
+	target  string
+}
+
+// replyAttemptOf reads the attempt a reply's body answers.
+func replyAttemptOf(body []byte) replyAttempt {
+	var decoded struct {
+		Attempt int     `json:"attempt"`
+		Target  *string `json:"target"`
+	}
+	_ = json.Unmarshal(body, &decoded)
+	return replyAttempt{attempt: decoded.Attempt, target: deref(decoded.Target)}
+}
+
+// answerHeldReplyAgain answers a reply that repeats row, its writer's held reply, whose write
+// replay keeps: the answer row's hold gave, under its id, with its `held` object as it now stands,
+// 200 as the reply route answers a repeat on an answered attempt, and a message marked duplicate
+// as that route marks one. Nothing is held, and the writing check records nothing: the reply
+// writes none of its words.
+func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
+	answer := heldAnswerOf(replay.reviewed(reviewer.Kind(row.kind)), row.id, row.actor, row.writtenAt,
+		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, wantsDisplayTrees(r), nil)
+	if read, isMessage := answer.payload.(replyRead); isMessage {
+		read.Duplicate = true
+		answer.payload = read
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // The project of the text a reply answers: messageProjectQuery a message's, the project of its
@@ -422,11 +536,7 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 		return handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.deps.Reviewer.reviewsAny() || s.deps.Store == nil || heldPostFrom(r.Context()) != nil {
-			handler(w, r)
-			return
-		}
-		parent, err := s.heldParentOf(r.Context(), []string{r.PathValue(param)})
+		parent, err := s.heldTargetOf(r, param)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -452,6 +562,16 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 		}
 		s.holdRequest(w, r, name, parent)
 	}
+}
+
+// heldTargetOf is the held text, not yet posted, that r's path value param names, which
+// awaitHeldTarget keeps r's write beside: nil where the reviewer reads no kind, where r is a held
+// text's post running the write it kept, and where the path names no such text.
+func (s *server) heldTargetOf(r *http.Request, param string) (*heldParent, error) {
+	if !s.deps.Reviewer.reviewsAny() || s.deps.Store == nil || heldPostFrom(r.Context()) != nil {
+		return nil, nil
+	}
+	return s.heldParentOf(r.Context(), []string{r.PathValue(param)})
 }
 
 // awaitsHeldTarget reports whether awaitHeldTarget holds a write of method and pattern, with the
@@ -577,7 +697,13 @@ func (s *server) postReplay(ctx context.Context, row heldRow, replay heldReplay,
 		}
 		return tx.Commit(ctx)
 	case answer.status >= 400 && answer.status < 500:
-		return answer.refusal()
+		refused := answer.refusal()
+		if refused.code == errHeldNotPosting.code {
+			// The route's commit found the row posted by another post, or failed, and wrote
+			// nothing (markKeptWritePosted, heldPost.lock).
+			return errHeldNotPosting
+		}
+		return refused
 	}
 	return fmt.Errorf("the kept write %s answered %d: %s", row.route, answer.status, strings.TrimSpace(answer.body.String()))
 }

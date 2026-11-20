@@ -100,7 +100,7 @@ func leastChargeText(spec modelGroupSpec) string {
 
 // writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
 // server's writing rules show (api.WritingRulesConfig).
-var writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
+var writingRulesExtraSets = []reviewer.RuleSet{reviewer.RuleReaderWords, reviewer.RuleAskParts}
 
 // ruleSetNames is the names of sets, as a setting spells them.
 func ruleSetNames(sets ...reviewer.RuleSet) []string {
@@ -149,7 +149,7 @@ type writingSettings struct {
 	// (DISPATCH_WRITING_RULES_REFUSAL), and WritingRulesExtra are the rule sets it shows beside
 	// the written rules (DISPATCH_WRITING_RULES_EXTRA).
 	WritingRulesRefusal bool
-	WritingRulesExtra   []string
+	WritingRulesExtra   []reviewer.RuleSet
 	// DeploymentQuotas is each deployment's tokens-per-minute quota by its name
 	// (DISPATCH_MODEL_DEPLOYMENT_QUOTAS), which the process's pacer (modelpace) takes.
 	DeploymentQuotas map[string]int

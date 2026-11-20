@@ -179,10 +179,11 @@ export const DISPATCH_PERSON_TYPED_HEADER = "Dispatch-Person-Typed";
 /**
  * The request header (`1`) the agents' `DispatchClient` puts on every write it sends: the client
  * reads the answer of a write Dispatch keeps beside a text its reviewer holds, `202 {id, held}`,
- * which carries none of the route's own shape. Dispatch keeps such a write, and runs it right after
- * that text posts, only for a write that carries the header; it answers any other
- * `409 HELD_TEXT` with the held id, as it answers a session's read of a held text, and keeps
- * nothing, since a client built before the header reads that `202` as its route's own answer. A
+ * which carries none of the route's own shape. Dispatch keeps a session's write so, and runs it
+ * right after that text posts, only where the write carries the header; it answers a session's
+ * write without it `409 HELD_TEXT` with the held id, as it answers a session's read of a held
+ * text, and keeps nothing, since a client built before the header reads that `202` as its route's
+ * own answer. A person's write at a browser is the route's own, which finds no held text. A
  * Dispatch that does not know the header ignores it.
  */
 export const DISPATCH_ACCEPTS_KEPT_WRITE_HEADER = "Dispatch-Accepts-Kept-Write";

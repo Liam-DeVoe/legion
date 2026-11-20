@@ -3607,7 +3607,7 @@ Every default keeps each change to a text off.
 
 ### The reviewer
 
-The reviewer (`internal/dispatch/api/reviewer.go`, INFRA-3231's R5) reads an ask, a new issue's title and spec, a comment and a message that an agent session writes to a person, and an agent's reply to a delivery a plugin posts for it (`POST /api/v1/messages/{id}/reply`, `POST /api/v1/comments/{id}/reply`); a reply the plugin marks as generated (`Dispatch-Generated-Text: 1`) posts at once.
+The reviewer (`internal/dispatch/api/reviewer.go`, INFRA-3231's R5) reads an ask, a new issue's title and spec, a comment and a message that an agent session writes to a person, and an agent's reply to a delivery a plugin posts for it (`POST /api/v1/messages/{id}/reply`, `POST /api/v1/comments/{id}/reply`); a reply the plugin marks as generated (`Dispatch-Generated-Text: 1`) posts at once, unless the same session's earlier reply to that delivery is held (below).
 It reads no text a person writes, none the Legion daemon writes, and none whose reader is another agent: the reader is the person the record names (`writing_check_reader.go`).
 It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is set, whatever the kinds say, so the draft route answers; with the group unset it reads nothing.
 
@@ -3622,10 +3622,12 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 - `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
 
 - A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came; a text the reviewer reads among them is reviewed once the text it waits on has posted.
-  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer. A person's write is the route's own, which finds no such text, as a person's read is.
-  The kept write marks itself posted in its own transaction, so it runs once.
-  A second reply of a session to the same delivery, held while its first is held, waits on the first, so the two post in the order the session wrote them.
-  A post refused for anything its route answers below 500 (a quote anchor gone from the document among them) fails the held text, and every text that waits on it, at once.
+  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer. A person's write, a create among them, is the route's own, which finds no such text, as a person's read is.
+  The kept write marks itself posted in its own transaction, so it runs once, and it is kept inside the keyed layer, an upload to a held issue's included, so a repeat under its `Idempotency-Key` is answered the same `202` and keeps no second write.
+  A second reply of a session to the same delivery, sent while its first is held, waits on the first, so the two post in the order the session wrote them; a reply the reviewer does not read (generated, typed by a person, or one no person reads) waits on it too, unreviewed.
+  A reply sent again on the same attempt while the first is held (no follow-up, or a follow-up of the same text) is answered `200` with the first's held answer, under its id and marked `duplicate` on the message route, and nothing more is held.
+  A held reply from the live holder of the role its attempt was sent for keeps what the listener said when it was written, and its post asks the listener nothing again.
+  A post refused for anything its route answers below 500 (a quote anchor gone from the document among them) fails the held text, and every text that waits on it, at once; a `429`, a `DOC_NEWER_CONTENT` and a `DOCUMENT_UNLOADABLE`, which a later post can clear, leave it for the sweep to post again.
 
 - A model call of the reviewer, of Rewrite or of Define whose reply is not the object its schema names, or one the component cannot use (a definition of no words), asks again, two more tries at most.
   Each try waits for the pacer and is paid for.
@@ -3641,7 +3643,7 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 
 The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `PUT /api/v1/held/{id}/state {state: "posted", reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
 The `dispatch` command's `held`, `held-edit` and `held-post` call them.
-`POST /api/v1/reviewer-drafts {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
+`POST /api/v1/reviewer-drafts {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing; a person at a browser whose draft another person would read gets the review without that person's words, as `GET /api/v1/readers/{login}/words` serves them.
 The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
 
 ### Rewrite and Define

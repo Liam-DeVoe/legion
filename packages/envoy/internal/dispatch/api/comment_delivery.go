@@ -1283,25 +1283,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
-	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
-	// no answer, and goes to the writing check alone.
-	var after *postedReview
-	if input.Body != nil {
-		var proceed bool
-		if after, proceed = s.reviewReply(w, r, actor, input, reviewer.KindComment, *input.Body,
-			reviewer.Subject{ReplyTo: r.PathValue("id")}); !proceed {
-			return
-		}
-	} else {
-		s.writingCheck(r, actor, input)
-	}
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
-	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500.
+	// (lookUpRoleHolderReply); a reply the reviewer holds keeps the answer for its post. The
+	// mention is the one the request names, else the comment's first, which is its only one
+	// wherever the transaction below takes a reply naming none. A read that finds nothing asks
+	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
+	// read that fails is the route's 500.
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
@@ -1313,6 +1302,21 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone. A mention's reply has no follow-up: a second
+	// text on an answered attempt answers its stored reply.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewedReply{
+			kind: reviewer.KindComment, body: *input.Body, subject: reviewer.Subject{ReplyTo: r.PathValue("id")},
+			roleHolder: roleReply,
+		}); !proceed {
+			return
+		}
+	} else {
+		s.writingCheck(r, actor, input)
 	}
 
 	tx, err := s.begin(r.Context())

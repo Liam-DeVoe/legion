@@ -17,10 +17,11 @@ import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 // TypeError reading a field the body lacks (`recorded.result.verdict`, `claim.at`), and
 // `dispatch claim --release` printed a status of `undefined`. `dispatch artifact` threw one
 // reading `result.artifact.slug`, or, once the client knew Dispatch runs its keyed layer, failed
-// as a write that may or may not have landed: an upload to a held issue is kept before that layer
-// runs (`routeHandler`, server.go), so its 202 carries no `Idempotency-Key` back, and the client
-// read it as an answer of something in Dispatch's place. Its Markdown round trip shows the client
-// the layer first. `dispatch issue-update` reads the issue before its write, and Dispatch answers
+// as a write that may or may not have landed: a Dispatch that kept an upload to a held issue
+// before that layer ran, as one built before INFRA-3231's last simplify pass did, carried no
+// `Idempotency-Key` back on its 202, and the client read it as an answer of something in
+// Dispatch's place. Its Markdown round trip shows the client the layer first. `dispatch
+// issue-update` reads the issue before its write, and Dispatch answers
 // a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
 // update is never sent. Each row drives the `dispatch` command against a stub Dispatch that
 // answers as Dispatch does, as `dispatch-review.test.ts` does; the last rows read the client
@@ -90,8 +91,8 @@ const server = Bun.serve({
     requests.push({ method: request.method, path: pathname });
     const route = `${request.method} ${pathname}`;
     // Dispatch's keyed layer carries a POST's or a PATCH's key back on every answer it gives
-    // (`keyedWrites`, request_keys.go). An upload to a held issue is kept before that layer runs
-    // (`routeHandler`, server.go), so its 202 carries none.
+    // (`keyedWrites`, request_keys.go). The upload's 202 carries none, as a Dispatch that kept an
+    // upload to a held issue before that layer ran answered it, which the client reads as kept.
     const key =
       request.method === "POST" || request.method === "PATCH"
         ? request.headers.get(IDEMPOTENCY_KEY_HEADER)

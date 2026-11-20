@@ -26,11 +26,18 @@ type readerWordsResponse struct {
 	Offset int                `json:"offset"`
 }
 
-// getReaderWords is GET /api/v1/readers/{login}/words. It serves any agent's token, because the
-// reviewer and the written rules read it for the person an agent writes to, and the reader in
-// person; it refuses every other person, 403 READER_WORDS_FORBIDDEN (Decision 14 of INFRA-3231's
-// plan). A person in person is a browser's caller; every bearer, a personal token included, is
-// the credential an agent writes with.
+// readsWordsOf reports whether a caller reads the recorded words of the person login (Decision 14
+// of INFRA-3231's plan): any agent's token reads any reader's, because the reviewer and the
+// written rules read them for the person an agent writes to, and a person signed in at a browser
+// (human) reads their own alone. A person in person is a browser's caller; every bearer, a
+// personal token included, is the credential an agent writes with. Every route that shows a
+// reader's words holds to it: this one, the written rules and the draft route's review.
+func readsWordsOf(caller model.Actor, human bool, login string) bool {
+	return !human || model.CanonicalLogin(caller.ID) == model.CanonicalLogin(login)
+}
+
+// getReaderWords is GET /api/v1/readers/{login}/words. It serves the caller readsWordsOf lets read
+// the reader's words, and refuses every other person, 403 READER_WORDS_FORBIDDEN.
 func (s *server) getReaderWords(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -38,7 +45,7 @@ func (s *server) getReaderWords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
-	if human && model.CanonicalLogin(actor.ID) != login {
+	if !readsWordsOf(actor, human, login) {
 		writeError(w, codeReaderWordsForbidden, http.StatusForbidden, "a person reads their own recorded words alone; an agent's token reads any reader's")
 		return
 	}

@@ -979,23 +979,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if s.answerDefinitionFrame(w, r, actor, input) || s.answerHeldFrame(w, r, actor, input) {
 		return
 	}
-	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
-	// no answer, and goes to the writing check alone.
-	var after *postedReview
-	if input.Body != nil {
-		var proceed bool
-		if after, proceed = s.reviewReply(w, r, actor, input, reviewer.KindMessage, *input.Body,
-			reviewer.Subject{InReplyTo: r.PathValue("id")}); !proceed {
-			return
-		}
-	} else {
-		s.writingCheck(r, actor, input)
-	}
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
-	// answers that message or attempt as it always has. A read that fails is the route's 500.
+	// (lookUpRoleHolderReply); a reply the reviewer holds keeps the answer for its post. A read
+	// that finds nothing asks nothing: the transaction below answers that message or attempt as
+	// it always has. A read that fails is the route's 500.
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
@@ -1004,6 +993,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewedReply{
+			kind: reviewer.KindMessage, body: *input.Body, subject: reviewer.Subject{InReplyTo: r.PathValue("id")},
+			followUp: followUp, roleHolder: roleReply,
+		}); !proceed {
+			return
+		}
+	} else {
+		s.writingCheck(r, actor, input)
 	}
 
 	tx, err := s.begin(r.Context())

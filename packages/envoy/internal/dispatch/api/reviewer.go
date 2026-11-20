@@ -207,10 +207,12 @@ type postedReview struct {
 // answers the write's own response shape built from the held row with an added `held` object,
 // starts the review in the background and answers false; after answers true with the review the
 // handler starts once its write committed (reviewPosted); off leaves the write to the writing
-// check (writingCheck). A person's typed write posts at once, recorded exempt_person_typed. A write
-// that names a held text as its parent or as the text it answers is held beside it whatever the
-// setting says, and posts right after it, through its own review where the setting is hold and no
-// person typed it. Call it as writingCheck is called: once the input is decoded and the actor
+// check (writingCheck). A person's typed write posts at once, recorded exempt_person_typed. A
+// session's write that names a held text as its parent or as the text it answers is held beside
+// it whatever the setting says, and posts right after it, through its own review where the
+// setting is hold and no person typed it. A person signed in at a browser learns nothing of a held
+// text: their write is the route's own, which finds no such text, as awaitHeldTarget answers
+// their other writes. Call it as writingCheck is called: once the input is decoded and the actor
 // resolved, before any transaction.
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
 	rv := s.deps.Reviewer
@@ -219,10 +221,13 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		return nil, true
 	}
 	ctx := r.Context()
-	parent, err := s.heldParentOf(ctx, write.names)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return nil, false
+	var parent *heldParent
+	_, human, err := s.optionalActor(unloggedResolution(r))
+	if err == nil && !human {
+		if parent, err = s.heldParentOf(ctx, write.names); err != nil {
+			s.writeHandlerError(w, err)
+			return nil, false
+		}
 	}
 	method, route := routeOf(r)
 	typed := personTypedWrite(r)
@@ -344,7 +349,7 @@ func (s *server) reviewPosted(ctx context.Context, review *postedReview, id stri
 // as a frame that holds nothing, which a writer that does not act leaves as it is.
 func (s *server) runPostedReview(ctx context.Context, review postedReview, id string) {
 	rv := s.deps.Reviewer
-	reviewed, err := s.review(ctx, rv.config.Model, review.subject)
+	reviewed, err := s.review(ctx, rv.config.Model, review.subject, true)
 	if ctx.Err() != nil {
 		return
 	}
@@ -373,14 +378,20 @@ func (s *server) runPostedReview(ctx context.Context, review postedReview, id st
 
 // review reads the record of subject's text and reviews it with chosen, the reviewer's model group
 // or the test model a draft's request names (requestModel), the whole bounded by
-// DISPATCH_REVIEWER_TIMEOUT. A record it could not read is an error as a model's failure is.
-func (s *server) review(ctx context.Context, chosen reviewer.Model, subject reviewer.Subject) (reviewer.Reviewed, error) {
+// DISPATCH_REVIEWER_TIMEOUT. readerWords is whether the record holds the words the reader asked
+// about before: false for a draft a person at a browser asks for another person, who reads none
+// of that person's words (readsWordsOf). A record it could not read is an error as a model's
+// failure is.
+func (s *server) review(ctx context.Context, chosen reviewer.Model, subject reviewer.Subject, readerWords bool) (reviewer.Reviewed, error) {
 	rv := s.deps.Reviewer
 	bounded, cancel := context.WithTimeout(ctx, rv.config.Timeout)
 	defer cancel()
 	record, err := reviewer.BuildRecord(bounded, s.deps.Store, subject)
 	if err != nil {
 		return reviewer.Reviewed{}, err
+	}
+	if !readerWords {
+		record.ReaderWords = nil
 	}
 	reviewed, err := reviewer.Review(bounded, chosen, rv.config.Rules, record)
 	if err == nil && bounded.Err() != nil {
@@ -438,7 +449,7 @@ func (s *server) reviewHeld(ctx context.Context, id string) {
 			return
 		}
 	}
-	reviewed, err := s.review(ctx, s.deps.Reviewer.config.Model, subject)
+	reviewed, err := s.review(ctx, s.deps.Reviewer.config.Model, subject, true)
 	if ctx.Err() != nil {
 		return
 	}

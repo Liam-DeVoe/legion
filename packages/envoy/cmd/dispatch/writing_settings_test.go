@@ -518,7 +518,7 @@ func writingSettingCases() map[string]func(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_WRITING_RULES_REFUSAL": "yes"}, `DISPATCH_WRITING_RULES_REFUSAL="yes" (expected on or off)`)
 		},
 		"DISPATCH_WRITING_RULES_EXTRA": func(t *testing.T) {
-			if got := resolveWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "ask_parts, reader_words"}).Writing.WritingRulesExtra; !slices.Equal(got, []string{"ask_parts", "reader_words"}) {
+			if got := resolveWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "ask_parts, reader_words"}).Writing.WritingRulesExtra; !slices.Equal(got, []reviewer.RuleSet{reviewer.RuleAskParts, reviewer.RuleReaderWords}) {
 				t.Errorf("WritingRulesExtra = %v", got)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "noslop"}, `DISPATCH_WRITING_RULES_EXTRA names "noslop", which is not one of reader_words, ask_parts`)

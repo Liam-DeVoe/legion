@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
 )
 
@@ -24,7 +25,7 @@ func TestTheWritingRulesSettingsAnswerWhatTheDeploymentSet(t *testing.T) {
 	}
 
 	handler, _, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
-		Refusal: true, Extra: []string{WritingRulesAskParts, WritingRulesReaderWords},
+		Refusal: true, Extra: []reviewer.RuleSet{reviewer.RuleAskParts, reviewer.RuleReaderWords},
 	}})
 	got := decodeBody[writingRulesSettings](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/writing-rules", nil, "alice"))
 	if got.Refusal != "on" || !slices.Equal(got.Extra, []string{"ask_parts", "reader_words"}) {
@@ -38,7 +39,7 @@ func TestTheWritingRulesSettingsAnswerWhatTheDeploymentSet(t *testing.T) {
 // reads the words of one who has).
 func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
-		Refusal: true, Extra: []string{WritingRulesReaderWords, WritingRulesAskParts},
+		Refusal: true, Extra: []reviewer.RuleSet{reviewer.RuleReaderWords, reviewer.RuleAskParts},
 	}})
 	key := createTestIssue(t, handler, "RUL", "The written rules")
 	issue := decodeBody[struct {
@@ -102,7 +103,7 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 // rules alice asks for, and those an agent's token asks for, show them.
 func TestTheWrittenRulesShowAPersonAtABrowserNoOtherPersonsWords(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
-		Refusal: true, Extra: []string{WritingRulesReaderWords},
+		Refusal: true, Extra: []reviewer.RuleSet{reviewer.RuleReaderWords},
 	}})
 	key := createTestIssue(t, handler, "RWD", "The reader's words")
 	if _, err := database.Pool.Exec(t.Context(), `

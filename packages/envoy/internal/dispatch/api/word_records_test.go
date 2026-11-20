@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
@@ -43,7 +44,7 @@ type recordsRig struct {
 func newRecordsRig(t *testing.T) *recordsRig {
 	t.Helper()
 	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
-		Refusal: true, Extra: []string{WritingRulesReaderWords},
+		Refusal: true, Extra: []reviewer.RuleSet{reviewer.RuleReaderWords},
 	}})
 	issue := createInteractionIssue(t, handler, "WRD", "Records issue", "Seed paragraph here.\n")
 	return &recordsRig{t: t, handler: handler, database: database, srv: srv, issue: issue.Key}

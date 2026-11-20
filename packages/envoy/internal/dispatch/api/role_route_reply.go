@@ -13,18 +13,19 @@ import (
 )
 
 // roleHolderReply is what a reply route learned, before its transaction opened, of whether the
-// session replying holds the role an attempt was sent for. route is the attempt's route as its
-// row names it (a message's target, a mention's target), and holder is true only when the
-// listener's role lookup named that session as the holder of route's role and called it live.
+// session replying holds the role an attempt was sent for. Route is the attempt's route as its
+// row names it (a message's target, a mention's target), and Holder is true only when the
+// listener's role lookup named that session as the holder of Route's role and called it live. A
+// reply the reviewer holds keeps it (heldReplay.RoleHolder), and its post reads it back.
 type roleHolderReply struct {
-	route  string
-	holder bool
+	Route  string `json:"route"`
+	Holder bool   `json:"holder"`
 }
 
 // allows reports whether a session the attempt on route does not name may still answer it: it is
 // the live holder of the role route names, by the lookup made for that same route.
 func (r roleHolderReply) allows(route string) bool {
-	return r.holder && r.route == route
+	return r.Holder && r.Route == route
 }
 
 // roleHolderReplyOf is lookUpRoleHolderReply for the route and the attempt's session that the one
@@ -33,8 +34,13 @@ func (r roleHolderReply) allows(route string) bool {
 // and names no holder, so the reply's transaction answers it as it always has. A read that failed
 // (a statement timeout, a reset connection) is the error, which the route answers 500: whether the
 // session replying holds the role was not read, and a refusal would end a reply that the role's
-// live holder may make again.
+// live holder may make again. A held reply's dry run and its post read what its hold learned
+// (heldPost.roleHolder) and ask nothing: the reply was the role holder's when it was written,
+// whatever the listener says of that session by the time its review ends.
 func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, query string, args ...any) (roleHolderReply, error) {
+	if held := heldPostFrom(ctx); held != nil && held.roleHolder != nil {
+		return *held.roleHolder, nil
+	}
 	if _, err := uuid.Parse(id); err != nil {
 		return roleHolderReply{}, nil
 	}
@@ -71,7 +77,7 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 // ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a refusal
 // would end a reply its host could make again.
 func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor) (roleHolderReply, error) {
-	verdict := roleHolderReply{route: route}
+	verdict := roleHolderReply{Route: route}
 	parsed, err := model.ParseRoute(route)
 	if err != nil || parsed.Kind != "role" || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
 		return verdict, nil
@@ -81,6 +87,6 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
 			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
 	}
-	verdict.holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
+	verdict.Holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
 	return verdict, nil
 }

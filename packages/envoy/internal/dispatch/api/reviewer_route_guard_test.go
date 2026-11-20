@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,8 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The held-target guard (Decision 4 of INFRA-3231's plan): every write whose path names an issue,
@@ -76,12 +73,7 @@ func TestEveryWriteNamingAHeldTextIsAcceptedAndKept(t *testing.T) {
 		"/api/v1/issues/{key}": "issue", "/api/v1/asks/{id}": "ask", "/api/v1/comments/{id}": "comment", "/api/v1/messages/{id}": "message",
 	}
 	for prefix, id := range targets {
-		if _, err := rig.database.Pool.Exec(context.Background(), `
-			insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, state, deadline)
-			values ($1, $2, 'POST /fixture', '{}', '{}', '{"kind":"session","id":"s-writer"}', 's-writer', 'alice', 'RVW',
-				'awaiting_writer', now() + interval '1 hour')`, id, kinds[prefix]); err != nil {
-			t.Fatalf("hold the fixture %s: %v", id, err)
-		}
+		holdFixture(t, rig.database, id, kinds[prefix], "RVW")
 	}
 	// fill is pattern with every path value filled in, and the held text it names.
 	fill := func(pattern string) (path, held string) {
@@ -100,15 +92,10 @@ func TestEveryWriteNamingAHeldTextIsAcceptedAndKept(t *testing.T) {
 		return path, held
 	}
 	send := func(method, target string, readsKept bool) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(method, target, strings.NewReader(`{"actor":{"kind":"session","id":"`+heldWriter+`"}}`))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Authorization", "Bearer agent-token")
 		if readsKept {
-			request.Header.Set(contracts.AcceptsKeptWriteHeader, "1")
+			return rig.asKeptWriter(method, target, nil)
 		}
-		response := httptest.NewRecorder()
-		rig.handler.ServeHTTP(response, request)
-		return response
+		return rig.asWriter(method, target, nil)
 	}
 	for _, route := range heldTargetWrites() {
 		name := route.Method + " " + route.Pattern

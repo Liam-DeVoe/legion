@@ -980,13 +980,16 @@ func WithBeforeCommit(ctx context.Context, step BeforeCommit) context.Context {
 }
 
 // WithoutBeforeCommit returns ctx with the step taken off, for a transaction of a request's that
-// writes none of the request's own work. Two callers use it. The document rooms' conditional-edit
+// writes none of the request's own work. Three callers use it. The document rooms' conditional-edit
 // queue opens its bookkeeping transaction with it (docs.Service.admitConditionalEdit): it commits
 // before the request's write, and a crash between the two must leave the key for the repeat to
 // run rather than answer it KEY_COMMITTED for a write nobody made. The writing check's events log
 // opens the transaction of each row with it (Store.InsertWritingCheckEvent): the row is the
 // check's record of the request's write and no part of that write, so its transaction must not
-// take the step that marks the request's key committed.
+// take the step that marks the request's key committed. A held text's post marks the row of a
+// kept write whose route wrote nothing in a transaction of its own with it (api's postReplay):
+// the step is the kept write's own mark (markKeptWritePosted), which only that write's
+// transactions take.
 func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }

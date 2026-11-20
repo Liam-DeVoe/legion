@@ -91,9 +91,15 @@ var reviewerDraftKinds = []reviewer.Kind{
 	reviewer.KindDecisionBlock,
 }
 
-// reviewDraft is POST /api/v1/reviewer-drafts.
+// reviewDraft is POST /api/v1/reviewer-drafts. The review reads the reader's recorded words for a
+// caller readsWordsOf lets read them, as GET /api/v1/readers/{login}/words serves them, so a
+// person at a browser who names another person as the reader, or drafts on an issue another
+// person reads, learns nothing of that person's words from the findings; an agent's token's
+// review reads any reader's.
 func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	caller, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	var input reviewerDraftInput
@@ -138,7 +144,8 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reviewed, err := s.review(r.Context(), chosen, reviewer.Subject{Text: text, IssueKey: issueKey, Reader: reader})
+	reviewed, err := s.review(r.Context(), chosen, reviewer.Subject{Text: text, IssueKey: issueKey, Reader: reader},
+		readsWordsOf(caller, human, reader))
 	var failed *reviewer.ModelError
 	switch {
 	case errors.As(err, &failed):
