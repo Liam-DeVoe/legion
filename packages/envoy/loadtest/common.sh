@@ -122,8 +122,9 @@ proc_start() {
 
 # proc_ended PID START: whether the process that PID named when it started at START (proc_start)
 # has ended. It returns 0 when PID has left the table, names a process that started at another
-# time, or names a zombie whose task directory lists no thread but its main one: that process has
-# ended, and only its parent can reap it. A zombie main thread with another thread still listed is
+# time, names a zombie whose task directory lists no thread but its main one -- that process has
+# ended, and only its parent can reap it -- or reads dead (X): its parent is reaping it, from the
+# moment the parent claims it until its entry goes, a window a loaded machine can hold open. A zombie main thread with another thread still listed is
 # a process still ending, not one that has ended: SIGKILL ends each thread when the kernel next runs
 # it, often the main one first, and the others still hold the process's files, its ports and its
 # locks until they too have gone. It returns 1 while the process has not ended, and 2 when its
@@ -139,7 +140,11 @@ proc_ended() {
   fi
   read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 2
   [ "${fields[19]}" = "$2" ] || return 0
-  [ "${fields[0]}" = Z ] || return 1
+  case ${fields[0]} in
+  X) return 0 ;;
+  Z) ;;
+  *) return 1 ;;
+  esac
   # Any thread listed but the main one is a process still ending. A task directory that could not
   # be read leaves its pattern unmatched, which is an answer only once the entry itself has gone.
   for task in "/proc/$1"/task/*; do

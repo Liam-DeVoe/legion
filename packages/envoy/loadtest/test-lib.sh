@@ -5,8 +5,9 @@
 # the scripts it tests run. It sources common.sh, the drivers' own library, for the one reading of
 # a stop they share (proc_threads_stopped); nothing of the drivers' sources this file.
 #
-# process_ended PID: the process PID names has ended: its /proc entry is gone, or its main thread
-# is a zombie and its task directory lists no thread but the main one. A zombie main thread with
+# process_ended PID: the process PID names has ended: its /proc entry is gone, its main thread is a
+# zombie and its task directory lists no thread but the main one, or it reads dead (X), its parent
+# reaping it, from the moment the parent claims it until its entry goes. A zombie main thread with
 # another thread listed is a process still ending, whose threads still hold its files, its ports
 # and its locks, so it has not ended. An entry there that cannot be read has not ended either, as
 # far as a case can tell. It reads /proc with builtins alone, so a case can ask it at the moment a
@@ -69,7 +70,11 @@ process_ended() {
     return 0
   }
   stat=${stat##*) }
-  [ "${stat%% *}" = Z ] || return 1
+  case ${stat%% *} in
+  X) return 0 ;;
+  Z) ;;
+  *) return 1 ;;
+  esac
   for task in "/proc/$1"/task/*; do
     if [ "$task" = "/proc/$1/task/*" ]; then
       [ -e "/proc/$1" ] && return 1
