@@ -38,15 +38,16 @@ func holdsWords(notes []*Footnote) {
 }
 
 // footnoteJudge judges the footnotes of the texts of one Check. It judges each footnote once
-// (judgment), and gives each of its findings once: the findings of the form rules to the first text
-// that holds the footnote and whose kind those rules judge (prose), and the findings of the
-// reference rules to the first text that holds it, so that the work and the findings of a judgment
-// grow with the texts and their footnotes, not with their product. A text holds a footnote that it
-// refers to, and each footnote that such a footnote refers to in turn. The words of each finding
-// name the footnote and how many other texts refer to it (place). The sentences of each footnote
-// that a statement holds count among the statement's (held). Two verbs for one action are the one
-// finding of the text or the footnote that holds them both with no one footnote that it refers to
-// holding them all (held, rotations).
+// (judgment, findings), and gives each of its findings once: the findings of the form rules to the
+// first text that holds the footnote and whose kind those rules judge (prose), and the findings of
+// the reference rules to the first text that holds it, so that the work and the findings of a
+// judgment grow with the texts and their footnotes, not with their product. A text holds a
+// footnote that it refers to, and each footnote that such a footnote refers to in turn. The words
+// of each finding name the footnote and how many other texts refer to it (place). The sentences of
+// each footnote that a statement holds count among the statement's (held), and so the ways out of
+// its findings are judged in the largest statement that holds it (statements). Two verbs for one
+// action are the one finding of the text or the footnote that holds them both with no one footnote
+// that it refers to holding them all (held, rotations).
 type footnoteJudge struct {
 	c      Context
 	people [][]string
@@ -64,14 +65,20 @@ type footnoteJudge struct {
 	counted map[*Footnote]*sentenceCount
 	verbs   map[*Footnote]ste.Verbs
 	gives   map[*Footnote]ste.Verbs
+	// inStatement is, for each footnote that a statement holds, the count of sentences of the
+	// largest such statement (statements).
+	inStatement map[*Footnote]int
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
-// reference rules, the count of its sentences and the verbs of the synonym groups that it uses.
+// reference rules, the count of its sentences and the verbs of the synonym groups that it uses;
+// the judge of the ways out of its findings, and whether it judged them (findings).
 type footnoteJudgment struct {
 	form, references []broken
 	sentences        int
 	verbs            ste.Verbs
+	judge            *wayJudge
+	judged           bool
 }
 
 // sentenceCount is the footnotes with sentences that one footnote holds, itself among them, and the
@@ -120,16 +127,68 @@ func newFootnoteJudge(c Context, people [][]string, texts []Text) *footnoteJudge
 	return judge
 }
 
-// judgment is note judged, the first time that a text asks for it.
+// judgment is note as the judge reads it, the first time that a text asks for it: the count of its
+// sentences and the verbs that it uses, and each place of each finding, which the judge of its ways
+// out takes first (survey), before it judges them (findings).
 func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 	if judged, ok := j.judged[note]; ok {
 		return judged
 	}
-	judge := newWayJudge(j.c, j.people, kindFootnote)
-	form, sentences, verbs := formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judge)
-	judged := &footnoteJudgment{form: form, references: heldBreaks(j.c, j.people, note.Body, note.Held, judge), sentences: sentences, verbs: verbs}
+	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote)}
+	judged.judge.survey(func() { j.find(note, judged) })
 	j.judged[note] = judged
 	return judged
+}
+
+// findings is note judged, with the ways out of its findings judged at each place of each, the
+// first time that a text asks for them: in the largest statement that holds note (statements), with
+// the statement's sentences in the count of the rule sentences, as the refusal counts them.
+func (j *footnoteJudge) findings(note *Footnote) *footnoteJudgment {
+	judged := j.judgment(note)
+	if !judged.judged {
+		if count, ok := j.statements()[note]; ok {
+			judged.judge.heldIn(count)
+		}
+		j.find(note, judged)
+		judged.judged = true
+	}
+	return judged
+}
+
+// find writes each finding of note into judged, of the form rules and of the reference rules, with
+// the count of its sentences and its verbs, the ways out judged by judged.judge.
+func (j *footnoteJudge) find(note *Footnote, judged *footnoteJudgment) {
+	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judged.judge)
+	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held, judged.judge)
+}
+
+// statements is, for each footnote that a statement holds, the count of sentences of the largest
+// such statement, with those of its footnotes (held), up to maxSentences+1, past which a way out
+// that adds a sentence makes a count that the statement does not give, as the one before it: one
+// number for each footnote, which each statement that holds it raises, along each reference, at
+// most maxSentences+2 times, so its work grows with the texts and the footnotes.
+func (j *footnoteJudge) statements() map[*Footnote]int {
+	if j.inStatement != nil {
+		return j.inStatement
+	}
+	j.inStatement = map[*Footnote]int{}
+	for _, text := range j.texts {
+		if text.Kind != KindStatement || len(text.Notes) == 0 {
+			continue
+		}
+		count := min(maxSentences+1, len(sentencesOf(oneLine(text.Body)))+j.held(text).count)
+		walk := slices.Clone(text.Notes)
+		for len(walk) > 0 {
+			note := walk[len(walk)-1]
+			walk = walk[:len(walk)-1]
+			if held, ok := j.inStatement[note]; ok && held >= count {
+				continue
+			}
+			j.inStatement[note] = count
+			walk = append(walk, note.Notes...)
+		}
+	}
+	return j.inStatement
 }
 
 // owned is the findings of each footnote that text is the first text to hold, for each of the two
@@ -142,18 +201,18 @@ func (j *footnoteJudge) owned(text Text) []broken {
 		})
 	}
 	j.walk(text, j.referencesGiven, func(via, note *Footnote) {
-		found = append(found, j.placed(via, note, j.judgment(note).references)...)
+		found = append(found, j.placed(via, note, j.findings(note).references)...)
 	})
 	return found
 }
 
-// form is the findings of the form rules of note: those of its words (judgment), then each synonym
+// form is the findings of the form rules of note: those of its words (findings), then each synonym
 // group that it rotates with the footnotes that it refers to (rotations).
 func (j *footnoteJudge) form(note *Footnote) []broken {
 	if j.counted == nil {
 		j.carry()
 	}
-	form := j.judgment(note).form
+	form := j.findings(note).form
 	if gives := j.gives[note]; gives != 0 {
 		return append(slices.Clip(form), rotationBreaks(gives, "the footnotes that it refers to")...)
 	}

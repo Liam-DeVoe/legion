@@ -3,8 +3,6 @@ package specform
 import (
 	"fmt"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
@@ -48,19 +46,29 @@ func (o offer) said(detail string) string {
 // that judges a text of its kind: the form rules, with the other sentences of the text and of its
 // footnotes in the count of a statement, and the reference rules. The rule synonym-rotation reads
 // the text whole, so a way out that adds a verb of a synonym group is refused where the text or a
-// footnote that it holds already uses another verb of that group. The way out of a finding is
-// judged where the finding first stands, so each place of one finding gives the same way out. A
-// nil judge offers each way out unjudged: the judge's own reading of a sentence is one.
+// footnote that it holds already uses another verb of that group. One finding stands for each
+// place of its words, and the writer changes the words at each place, so the judge offers a way
+// out only where it passes in the sentence of each place: it first takes each place (survey), then
+// judges. A nil judge offers each way out unjudged: the judge's own reading of a sentence is one.
 type wayJudge struct {
 	c      Context
 	people [][]string
 	kind   Kind
 	// count is how many sentences of the text and of its footnotes count for the rule sentences,
-	// and verbs the verbs of the synonym groups that the text and its footnotes use (told).
-	count int
-	verbs ste.Verbs
-	units map[unitKey]*judgedUnit
-	given map[wayKey]offer
+	// and verbs the verbs of the synonym groups that the text and its footnotes use (told). For a
+	// footnote that a statement holds, count is that statement's (heldIn), and stays.
+	count       int
+	verbs       ste.Verbs
+	inStatement bool
+	// surveying is whether the judge takes places (survey); places is each unit that holds a
+	// finding, once and in the order of the text, rank where a finding stands among the
+	// findings of each unit that holds it, and ranked how many findings each unit holds.
+	surveying bool
+	places    map[wayKey][]unitKey
+	rank      map[place]int
+	ranked    map[unitKey]int
+	units     map[unitKey]*judgedUnit
+	given     map[wayKey]offer
 }
 
 // unitKey is a sentence that the judge reads, or the address of a link or an image (address),
@@ -70,15 +78,19 @@ type unitKey struct {
 	address bool
 }
 
+// place is a finding, by the words that its ways out change, at one unit that holds it.
+type place struct {
+	way  wayKey
+	unit unitKey
+}
+
 // judgedUnit is a unit as the judge reads it alone: each finding by its rule and detail, with how
-// many times it stands; the verbs of the synonym groups that it uses; how many sentences of the
-// text stand outside it (others); and how many findings of it the judge has read the ways out of
-// (judged).
+// many times it stands; the verbs of the synonym groups that it uses; and how many sentences of the
+// text stand outside it (others).
 type judgedUnit struct {
 	findings map[findingKey]int
 	verbs    ste.Verbs
 	others   int
-	judged   int
 }
 
 // findingKey is a finding as the judge compares two readings of a unit: its rule and its detail,
@@ -101,42 +113,83 @@ func newWayJudge(c Context, people [][]string, kind Kind) *wayJudge {
 
 // told gives the judge what the form rules read of the whole text: how many sentences count for
 // the rule sentences, with those of its footnotes, and the verbs of the synonym groups that the
-// text uses (own) and that its footnotes use (held).
+// text uses (own) and that its footnotes use (held). The count of the judge of a footnote that a
+// statement holds stays the statement's (heldIn).
 func (j *wayJudge) told(count int, own ste.Verbs, held []ste.Verbs) {
 	if j == nil {
 		return
 	}
-	j.count, j.verbs = count, own
+	if !j.inStatement {
+		j.count = count
+	}
+	j.verbs = own
 	for _, each := range held {
 		j.verbs |= each
 	}
 }
 
+// heldIn tells the judge of a footnote that a statement holds it, a statement of count sentences
+// with those of its footnotes at most (footnoteJudge.statements). The footnote's sentences count in
+// the statement's, so the judge reads each sentence of the footnote as a sentence of that statement,
+// by the rule sentences too: a way out that adds a sentence to a footnote is judged as the refusal
+// counts the statement.
+func (j *wayJudge) heldIn(count int) {
+	j.kind, j.count, j.inStatement = KindStatement, count, true
+}
+
+// survey runs find with the judge taking each place of each finding that find asks an offer of,
+// and offering no way out (offered), so that the judge offers a run of find after it each way out
+// judged at every place of its finding. find asks the same offers each time it runs, and only the
+// findings of the run after survey stand. A nil judge takes nothing.
+func (j *wayJudge) survey(find func()) {
+	if j == nil {
+		return
+	}
+	j.surveying = true
+	find()
+	j.surveying = false
+}
+
 // offered is the offer of ways, the ways out of a finding of rule whose ways out change from in
 // unit, the sentence that holds it, or the address that holds it (address), with a zero wayOut in
-// place of each that passes no reading (passes). A finding past maxJudgedInSentence of its
-// sentence gives none, and its offer says so (past); so does one whose sentence is not known (unit
-// ""), with no word of it. A nil judge offers ways as they are, and so does each judge a finding
-// that gives none.
+// place of each that passes no reading (passes) at some place of the finding (survey). A finding
+// past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
+// so (past); so does one whose sentence is not known at some place (unit ""), with no word of it,
+// and one that survey did not see. A nil judge offers ways as they are, and so does each judge a
+// finding that gives none.
 func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, ways [maxWays]wayOut) offer {
 	if j == nil || ways == ([maxWays]wayOut{}) {
 		return offer{ways: ways}
 	}
 	key := wayKey{rule, from}
+	if j.surveying {
+		j.take(place{key, unitKey{unit, address}})
+		return offer{}
+	}
 	if given, ok := j.given[key]; ok {
 		return given
 	}
-	var given offer
-	if unit != "" {
-		read := unitKey{unit, address}
-		state := j.unit(read)
-		given.past = state.judged >= maxJudgedInSentence
-		if !given.past {
-			state.judged++
-			for index, way := range ways {
-				if way != (wayOut{}) && j.passes(state, read, rule, way) {
-					given.ways[index] = way
-				}
+	given := offer{ways: ways}
+	places := j.places[key]
+	for _, at := range places {
+		if j.rank[place{key, at}] >= maxJudgedInSentence {
+			given.past = true
+		}
+		if at.text == "" || given.past {
+			given.ways = [maxWays]wayOut{}
+		}
+	}
+	if len(places) == 0 {
+		given.ways = [maxWays]wayOut{}
+	}
+	for _, at := range places {
+		if given.ways == ([maxWays]wayOut{}) {
+			break
+		}
+		state := j.unit(at)
+		for index, way := range given.ways {
+			if way != (wayOut{}) && !j.passes(state, at, rule, way) {
+				given.ways[index] = wayOut{}
 			}
 		}
 	}
@@ -145,6 +198,20 @@ func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, wa
 	}
 	j.given[key] = given
 	return given
+}
+
+// take keeps at, a place of a finding, once: the unit among the places of its finding, and the
+// finding's rank among the findings of the unit.
+func (j *wayJudge) take(at place) {
+	if _, ok := j.rank[at]; ok {
+		return
+	}
+	if j.rank == nil {
+		j.places, j.rank, j.ranked = map[wayKey][]unitKey{}, map[place]int{}, map[unitKey]int{}
+	}
+	j.rank[at] = j.ranked[at.unit]
+	j.ranked[at.unit]++
+	j.places[at.way] = append(j.places[at.way], at.unit)
 }
 
 // unit is the judge's reading of unit, read once.
@@ -212,61 +279,24 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 	return ownAfter < own && added.Groups()&^added&j.verbs == 0
 }
 
-// sentenceSpans finds the sentence of a line that holds a place of it, as the judge of the ways
-// out reads one (wayJudge.offered): the words from one that starts the line or follows one that
-// ends a sentence (endsSentence) to the next that ends one, in the order of the line, read once.
-type sentenceSpans struct {
-	line   string
-	spans  [][2]int
-	at     int
-	cursor int
-}
-
-func spansOf(line string) *sentenceSpans {
-	found := &sentenceSpans{line: line}
-	start, word, end := -1, 0, 0
-	for index, letter := range line {
-		if unicode.IsSpace(letter) {
-			if start >= 0 && end > word && endsSentence(line[word:end]) {
-				found.spans = append(found.spans, [2]int{start, end})
-				start = -1
-			}
-			continue
-		}
-		if start < 0 {
-			start = index
-		}
-		if end < index {
-			word = index
-		}
-		end = index + utf8.RuneLen(letter)
-	}
-	if start >= 0 {
-		found.spans = append(found.spans, [2]int{start, len(line)})
-	}
-	return found
+// sentencePlaces finds the sentence of a line that holds a place of it, for the judge of the ways
+// out (wayJudge.offered): the sentences of the line as the rules read them (sentencesOf), which
+// take each byte of the line once, and a cursor that walks them once for places asked in the order
+// of the line.
+type sentencePlaces struct {
+	line      string
+	sentences []sentence
+	at        int
 }
 
 // of is the sentence that holds offset, a place of the line at or after the last place asked for,
-// or "" for none.
-func (s *sentenceSpans) of(offset int) string {
-	for s.at < len(s.spans) && s.spans[s.at][1] <= offset {
-		s.at++
+// or "" where the line has no sentence.
+func (p *sentencePlaces) of(offset int) string {
+	for p.at < len(p.sentences) && p.sentences[p.at].end <= offset {
+		p.at++
 	}
-	if s.at == len(s.spans) || offset < s.spans[s.at][0] {
+	if p.at == len(p.sentences) {
 		return ""
 	}
-	return s.line[s.spans[s.at][0]:s.spans[s.at][1]]
-}
-
-// next is the sentence that holds word at its first place in the line after the word asked for
-// before, or "" where the line does not hold it there.
-func (s *sentenceSpans) next(word string) string {
-	index := strings.Index(s.line[s.cursor:], word)
-	if index < 0 {
-		return ""
-	}
-	offset := s.cursor + index
-	s.cursor = offset + len(word)
-	return s.of(offset)
+	return p.sentences[p.at].in(p.line)
 }

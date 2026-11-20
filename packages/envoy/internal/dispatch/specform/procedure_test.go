@@ -24,8 +24,9 @@ import (
 // a listed verb before a word that starts no object, as in "Run tests against the server", starts
 // no instruction, so its sentence keeps 25 words. A finding writes the instructions as sentences of
 // their own only where that keeps what the sentence means: no "or" joins two of them, and no
-// condition opens a clause of it; elsewhere it names what the sentences must keep. Each finding's
-// ways out are the sentences that TestEachWayOutOfARefusalPasses applies.
+// condition stands outside the first instruction, before it or after it, with or without a comma;
+// elsewhere it names what the sentences must keep. Each finding's ways out are the sentences that
+// TestEachWayOutOfARefusalPasses applies.
 func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testing.T) {
 	procedure := func(body string) Text { return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where} }
 	twoInstructions := func(second, split, verb string) string {
@@ -88,6 +89,17 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 		{"a condition before the second instruction alone", procedure("Read the log and, if it fails, send the report."),
 			[]Finding{finding(procedure("Read the log and, if it fails, send the report."), ruleInstructions,
 				kept("send the report", condition, "send"))}},
+		// A condition after the first instruction can govern each instruction before it, and a
+		// split cannot keep its scope, with or without a comma before the condition.
+		{"a condition after the second instruction", procedure("Read the log and send the report if the run fails."),
+			[]Finding{finding(procedure("Read the log and send the report if the run fails."), ruleInstructions,
+				kept("send the report if the run fails", condition, "send"))}},
+		{"the same condition after a comma", procedure("Read the log and send the report, if the run fails."),
+			[]Finding{finding(procedure("Read the log and send the report, if the run fails."), ruleInstructions,
+				kept("send the report, if the run fails", condition, "send"))}},
+		{"a condition of another word after the second instruction", procedure("Run the tests and send the report when the merge ends."),
+			[]Finding{finding(procedure("Run the tests and send the report when the merge ends."), ruleInstructions,
+				kept("send the report when the merge ends", condition, "send"))}},
 		{"a choice of two instructions", procedure("Read the diff or run the tests."),
 			[]Finding{finding(procedure("Read the diff or run the tests."), ruleInstructions,
 				kept("run the tests", choice, "run"))}},

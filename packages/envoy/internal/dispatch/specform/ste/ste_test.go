@@ -171,24 +171,44 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 
 // TestWordsAreWhatSteLintLints holds Words to the text that ste-lint's line loop lints, as words:
 // inline code is left out, a code fence line holds none, a table's cells are pieces of their own,
-// and Python's white space splits the words. A stop ends no piece.
+// and Python's white space splits the words. A stop ends no piece. Each word takes the bytes of the
+// text from its first character to its last, so those bytes without their inline code are the
+// word, and a word with inline code inside it takes that code too.
 func TestWordsAreWhatSteLintLints(t *testing.T) {
 	for _, test := range []struct {
-		text string
-		want [][]string
+		text  string
+		want  [][]string
+		bytes [][2]int
 	}{
-		{"Dispatch stores it. Dispatch shows it! Does it?", [][]string{{"Dispatch", "stores", "it.", "Dispatch", "shows", "it!", "Does", "it?"}}},
-		{"Run `a. b` now. Then stop.", [][]string{{"Run", "now.", "Then", "stop."}}},
-		{"One.\u00a0Two.\x1fThree", [][]string{{"One.", "Two.", "Three"}}},
-		{"First line\nsecond. Third", [][]string{{"First", "line"}, {"second.", "Third"}}},
-		{"| A. b | C |\n| --- | --- |\n| d e | f |", [][]string{{"A.", "b"}, {"C"}, {"d", "e"}, {"f"}}},
-		{"```\nOne. Two.\n```", nil},
-		{"`only code`", nil},
-		{"", nil},
-		{"Done. ", [][]string{{"Done."}}},
+		{"Dispatch stores it. Dispatch shows it! Does it?", [][]string{{"Dispatch", "stores", "it.", "Dispatch", "shows", "it!", "Does", "it?"}}, nil},
+		{"Run `a. b` now. Then stop.", [][]string{{"Run", "now.", "Then", "stop."}}, [][2]int{{0, 3}, {11, 15}, {16, 20}, {21, 26}}},
+		{"Read web`x`.Config now", [][]string{{"Read", "web.Config", "now"}}, [][2]int{{0, 4}, {5, 18}, {19, 22}}},
+		{"One.\u00a0Two.\x1fThree", [][]string{{"One.", "Two.", "Three"}}, nil},
+		{"First line\nsecond. Third", [][]string{{"First", "line"}, {"second.", "Third"}}, [][2]int{{0, 5}, {6, 10}, {11, 18}, {19, 24}}},
+		{"| A. b | C |\n| --- | --- |\n| d e | f |", [][]string{{"A.", "b"}, {"C"}, {"d", "e"}, {"f"}}, [][2]int{{2, 4}, {5, 6}, {9, 10}, {29, 30}, {31, 32}, {35, 36}}},
+		{"```\nOne. Two.\n```", nil, nil},
+		{"`only code`", nil, nil},
+		{"", nil, nil},
+		{"Done. ", [][]string{{"Done."}}, nil},
 	} {
-		if got := Words(test.text); !reflect.DeepEqual(got, test.want) {
+		var got [][]string
+		var bytes [][2]int
+		for _, piece := range Words(test.text) {
+			var words []string
+			for _, word := range piece {
+				words = append(words, word.Text)
+				bytes = append(bytes, [2]int{word.Start, word.End})
+				if taken := inlineCode.ReplaceAllString(test.text[word.Start:word.End], ""); taken != word.Text {
+					t.Errorf("Words(%q): the word %q takes %q, which is %q without its inline code", test.text, word.Text, test.text[word.Start:word.End], taken)
+				}
+			}
+			got = append(got, words)
+		}
+		if !reflect.DeepEqual(got, test.want) {
 			t.Errorf("Words(%q) = %q, want %q", test.text, got, test.want)
+		}
+		if test.bytes != nil && !reflect.DeepEqual(bytes, test.bytes) {
+			t.Errorf("Words(%q) take the bytes %v, want %v", test.text, bytes, test.bytes)
 		}
 	}
 }

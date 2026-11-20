@@ -166,7 +166,7 @@ func markdownSentences(markdown string) []sourceSentence {
 	flush := func() {
 		coded, spans := codeAsWords(strings.TrimSpace(unit.String()))
 		for _, sentence := range sentencesOf(coded) {
-			found = append(found, sourceSentence{Line: start, Sentence: spans.Replace(strings.Join(sentence, " "))})
+			found = append(found, sourceSentence{Line: start, Sentence: spans.Replace(strings.Join(sentence.words, " "))})
 		}
 		unit.Reset()
 	}

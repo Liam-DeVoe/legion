@@ -282,6 +282,10 @@ func workTable() []workRow {
 			})},
 		{"one sentence of many instructions after a condition", ruleInstructions, 200,
 			extracted(func(n int) string {
+				return procedureCheck("Read the log before the run ends, " + strings.Repeat("read the log, ", n) + "send the report.")
+			})},
+		{"one sentence of many instructions after the condition that opens it", ruleInstructions, 200,
+			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
 	}

@@ -51,8 +51,9 @@ var (
 		}
 		return verbs
 	}()
-	// conditions open a condition at the start of a sentence, which a comma ends: the instruction
-	// starts after that comma.
+	// conditions open a condition. At the start of a sentence a comma ends it, and the instruction
+	// starts after that comma; outside the first instruction a split cannot keep its scope
+	// (splitKeepsMeaning).
 	conditions = wordSet("if", "when", "after", "before", "once", "unless", "until", "while")
 	// objectStarts start the object of an instruction: an article, a word of quantity, a
 	// possessive, a demonstrative, a pronoun, or a span in code font.
@@ -83,7 +84,8 @@ var (
 func instructionBreaks(line string, judge *wayJudge) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
-	for _, sentence := range sentencesOf(coded) {
+	for _, each := range sentencesOf(coded) {
+		sentence := each.words
 		words, commas := sentenceWords(sentence)
 		starts := instructionStarts(words, commas)
 		if len(starts) < 2 {
@@ -136,11 +138,14 @@ func instructionsDetail(quoted, verb string, keep []string, ways [maxWays]wayOut
 // splitKeepsMeaning is what the sentences that splitInstructions writes would lose of what the
 // sentence means, none where they keep it: the choice between two instructions that "or" joins, as
 // two sentences are two steps where "Read the diff or run the tests" is one of them; and a
-// condition that opens a clause of the sentence, as each instruction that it governs leaves it: the
-// condition at the start of "If the run fails, read the log and send the report" governs both, and
-// in "Read the log and, if it fails, send the report" it governs the second, which the split cuts
-// off from it. A condition word inside a clause, as in "Read the log before the run ends", opens
-// none.
+// condition that stands outside the first instruction, as the split cannot keep the scope of such a
+// condition. A condition before the first instruction governs each instruction, as in "If the run
+// fails, read the log and send the report", and one after it can govern each instruction before it,
+// as in "Read the log and send the report if the run fails", with or without a comma before it, or
+// only the instruction after it, as in "Read the log and, if it fails, send the report": a split
+// cuts an instruction off from it in each reading. The first instruction runs from its verb to the
+// first comma or word that joins an instruction (joiners), so a condition word inside it, as in
+// "Read the log before the run ends and send the report", governs it alone and keeps the split.
 func splitKeepsMeaning(words []string, commas []bool, starts []int) []string {
 	var keep []string
 	for _, start := range starts[1:] {
@@ -149,8 +154,12 @@ func splitKeepsMeaning(words []string, commas []bool, starts []int) []string {
 			break
 		}
 	}
+	end := starts[0] + 1
+	for end < len(words) && !commas[end-1] && !joiners[words[end]] {
+		end++
+	}
 	for at, word := range words {
-		if conditions[word] && (at == 0 || commas[at-1] || joiners[words[at-1]]) {
+		if conditions[word] && (at < starts[0] || at >= end) {
 			keep = append(keep, "the condition with each instruction that it governs")
 			break
 		}
@@ -211,7 +220,7 @@ func conditionSentence(sentence, words []string, commas []bool) ([]string, bool)
 	condition[len(condition)-1] = strings.TrimRight(condition[len(condition)-1], ",") + "."
 	changed := append(append(condition, strings.Fields(then)...), sentence[last:]...)
 	for _, each := range sentencesOf(strings.Join(changed, " ")) {
-		if words, commas := sentenceWords(each); words != nil {
+		if words, commas := sentenceWords(each.words); words != nil {
 			if _, two := secondInstruction(words, commas); two {
 				return nil, false
 			}

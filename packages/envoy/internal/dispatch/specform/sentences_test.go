@@ -173,14 +173,18 @@ func TestTheSentenceRuleCountsTwentySentencesAsAReaderDoes(t *testing.T) {
 		{"Dispatch keeps each comment.Dispatch shows it.", 2, 0, true},
 	} {
 		line := oneLine(test.body)
+		var stops []string
+		for _, each := range sentencesOf(line) {
+			stops = append(stops, each.stopsWithNoSpace()...)
+		}
 		if test.stopNoSpace {
-			if got := stopsWithNoSpace(line); len(got) != 1 {
-				t.Errorf("%q: the words with a stop and no space are %q, want one", test.body, got)
+			if len(stops) != 1 {
+				t.Errorf("%q: the words with a stop and no space are %q, want one", test.body, stops)
 			}
 			continue
 		}
-		if got := stopsWithNoSpace(line); len(got) != 0 {
-			t.Errorf("%q: the words with a stop and no space are %q, want none", test.body, got)
+		if len(stops) != 0 {
+			t.Errorf("%q: the words with a stop and no space are %q, want none", test.body, stops)
 		}
 		if got := len(sentencesOf(line)); got != test.rule {
 			t.Errorf("%q: the rule counts %d sentences, want %d, and a reader counts %d", test.body, got, test.rule, test.reader)

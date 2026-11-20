@@ -250,18 +250,25 @@ func prose(kind Kind) bool {
 // footnote that it is the first text to hold (footnoteJudge.owned). A line under Terms that is no
 // term line (Kind line) breaks the one rule term-line, and no other. people is the name of each
 // signed-in person (peopleNames). Each finding gives only the ways out that its judge passes
-// (wayJudge): one judge for the text, for the form rules and the reference rules.
+// (wayJudge): one judge for the text, for the form rules and the reference rules, which first takes
+// each place of each finding of the text (survey).
 func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []broken {
 	if text.Kind == KindLine {
 		return []broken{{rule: ruleTermLine, detail: termLineDetail}}
 	}
 	var found []broken
 	judge := newWayJudge(c, people, text.Kind)
-	if prose(text.Kind) {
-		form, _, _ := formBreaks(text.Kind, oneLine(text.Body), notes.held(text), judge)
-		found = append(found, form...)
+	held := notes.held(text)
+	find := func() {
+		found = found[:0]
+		if prose(text.Kind) {
+			form, _, _ := formBreaks(text.Kind, oneLine(text.Body), held, judge)
+			found = append(found, form...)
+		}
+		found = append(found, heldBreaks(c, people, text.Body, text.Held, judge)...)
 	}
-	found = append(found, heldBreaks(c, people, text.Body, text.Held, judge)...)
+	judge.survey(find)
+	find()
 	found = append(found, notes.owned(text)...)
 	seen := map[broken]bool{}
 	unique := found[:0]
@@ -422,8 +429,8 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 	return text.Ref{}, false
 }
 
-// formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
-// sentence count of a statement, with the sentences of its footnotes (noted), and each sentence
+// formBreaks is each word that holds a stop with no space after it (sentence.stopsWithNoSpace),
+// the sentence count of a statement, with the sentences of its footnotes (noted), and each sentence
 // over maxWords, or, for an instruction of a procedure (isInstruction), over maxProcedureWords, as
 // sentencesOf reads the line, each sentence of a procedure that gives two instructions
 // (instructionBreaks), and each hard finding of ste-lint, by its own rule name. The verbs of the
@@ -434,34 +441,29 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 // however many texts refer to it. It also answers how many sentences the line has, and the verbs
 // of the synonym groups that it uses. judge judges the ways out of each finding (wayJudge): it is
 // told the line's count of sentences and its verbs before any way out is judged, and each way out of
-// a stop with no space after it is judged in the sentence of the line that holds the word.
+// a stop with no space after it is judged in the sentence that holds the word, as sentencesOf
+// reads it.
 func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([]broken, int, ste.Verbs) {
 	sentences := sentencesOf(line)
 	lint, verbs := ste.LintVerbs(line)
 	judge.told(len(sentences)+noted.count, verbs, noted.verbs)
 	var found []broken
-	var places *sentenceSpans
-	for _, word := range stopsWithNoSpace(line) {
-		unit := ""
-		if judge != nil {
-			if places == nil {
-				places = spansOf(line)
-			}
-			unit = places.next(word)
+	for _, sentence := range sentences {
+		for _, word := range sentence.stopsWithNoSpace() {
+			found = append(found, stopNoSpaceBreak(word, judge.offered(sentence.in(line), false, ruleStopNoSpace, word, stopNoSpaceWays(word))))
 		}
-		found = append(found, stopNoSpaceBreak(word, judge.offered(unit, false, ruleStopNoSpace, word, stopNoSpaceWays(word))))
 	}
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
 		found = append(found, broken{rule: ruleSentences, detail: sentencesDetail(count, noted)})
 	}
 	for _, sentence := range sentences {
 		bound, of := maxWords, "a sentence"
-		if kind == KindProcedure && isInstruction(sentence) {
+		if kind == KindProcedure && isInstruction(sentence.words) {
 			bound, of = maxProcedureWords, "an instruction"
 		}
-		if len(sentence) > bound {
+		if words := sentence.words; len(words) > bound {
 			found = append(found, broken{rule: ruleSentenceWords, detail: fmt.Sprintf("a sentence has %d words, and %s has at most %d: %q",
-				len(sentence), of, bound, strings.Join(sentence[:8], " "))})
+				len(words), of, bound, strings.Join(words[:8], " "))})
 		}
 	}
 	if kind == KindProcedure {
@@ -629,12 +631,12 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 	} else {
 		names = personNames(people, line, references)
 	}
-	var places *sentenceSpans
+	var places *sentencePlaces
 	for _, each := range names {
 		name, unit := line[each.start:each.end], line
 		if judge != nil && !address {
 			if places == nil {
-				places = spansOf(line)
+				places = &sentencePlaces{line: line, sentences: sentencesOf(line)}
 			}
 			unit = places.of(each.start)
 		}

@@ -197,9 +197,8 @@ func lineBreak(r rune) bool {
 }
 
 // splitLines is Python's str.splitlines: no line ending is kept, "\r\n" is one ending, and a
-// last ending makes no empty last line.
-func splitLines(text string) []string {
-	var lines []string
+// last ending makes no empty last line. starts is the byte of text where each line starts.
+func splitLines(text string) (lines []string, starts []int) {
 	start := 0
 	for index := 0; index < len(text); {
 		r, size := utf8.DecodeRuneInString(text[index:])
@@ -207,7 +206,7 @@ func splitLines(text string) []string {
 			index += size
 			continue
 		}
-		lines = append(lines, text[start:index])
+		lines, starts = append(lines, text[start:index]), append(starts, start)
 		index += size
 		if r == '\r' && index < len(text) && text[index] == '\n' {
 			index++
@@ -215,9 +214,9 @@ func splitLines(text string) []string {
 		start = index
 	}
 	if start < len(text) {
-		lines = append(lines, text[start:])
+		lines, starts = append(lines, text[start:]), append(starts, start)
 	}
-	return lines
+	return lines, starts
 }
 
 // wordBoundary is Python's \b at byte offset at of s.
@@ -289,10 +288,14 @@ func sentencePieces(line string) []string {
 }
 
 // segment is a piece of a line that ste-lint lints on its own: the whole line, or one cell of a
-// markdown table row. column is where it starts in the line, in characters.
+// markdown table row. column is where it starts in the line, in characters, and start where it
+// starts in bytes: in its line, and in the text once eachSegment visits it. cuts is each span of
+// text, in bytes, that inline code takes, which the text that the rules lint leaves out.
 type segment struct {
 	text   string
 	column int
+	start  int
+	cuts   [][]int
 }
 
 // splitTableRow is ste-lint's _split_table_row: the trimmed cells of a row and their columns, or
@@ -303,13 +306,14 @@ func splitTableRow(line string) ([]segment, bool) {
 	if leftByte >= right {
 		return nil, false
 	}
-	content, left := line[leftByte:right], runes(line[:leftByte])
+	content, left, at := line[leftByte:right], runes(line[:leftByte]), leftByte
 	if !strings.Contains(content, "|") {
 		return nil, false
 	}
 	if strings.HasPrefix(content, "|") {
 		content = content[1:]
 		left++
+		at++
 	}
 	content = strings.TrimSuffix(content, "|")
 	var raw []string
@@ -327,9 +331,11 @@ func splitTableRow(line string) ([]segment, bool) {
 	cells := make([]segment, len(raw))
 	column := left
 	for index, cell := range raw {
-		leading := runes(cell) - runes(strings.TrimLeftFunc(cell, isSpace))
-		cells[index] = segment{text: strip(cell), column: column + leading}
+		trimmed := strings.TrimLeftFunc(cell, isSpace)
+		leading := runes(cell) - runes(trimmed)
+		cells[index] = segment{text: strip(cell), column: column + leading, start: at + len(cell) - len(trimmed)}
 		column += runes(cell) + 1
+		at += len(cell) + 1
 	}
 	return cells, true
 }
@@ -372,8 +378,10 @@ func isFence(stripped string) bool {
 }
 
 // eachSegment visits the text that ste-lint's line loop lints, in its order: each segment of
-// each line outside a code fence, with its inline code removed. line is the 1-based line number.
-func eachSegment(lines []string, visit func(line int, from segment, text string)) {
+// each line outside a code fence, with its inline code removed (from.cuts). line is the 1-based
+// line number, and starts the byte where each line starts in the text (splitLines), so from.start
+// is where the segment starts in the text.
+func eachSegment(lines []string, starts []int, visit func(line int, from segment, text string)) {
 	tables := tableCells(lines)
 	inFence := false
 	for index, raw := range lines {
@@ -389,18 +397,71 @@ func eachSegment(lines []string, visit func(line int, from segment, text string)
 			segments = []segment{{text: raw}}
 		}
 		for _, from := range segments {
-			visit(index+1, from, inlineCode.ReplaceAllString(from.text, ""))
+			from.start += starts[index]
+			from.cuts = inlineCode.FindAllStringIndex(from.text, -1)
+			visit(index+1, from, withoutCuts(from.text, from.cuts))
 		}
 	}
 }
 
+// withoutCuts is text without the spans that cuts names, in order: the text that a rule lints,
+// as Python's re.sub of inline code with "" writes it.
+func withoutCuts(text string, cuts [][]int) string {
+	if len(cuts) == 0 {
+		return text
+	}
+	var kept strings.Builder
+	from := 0
+	for _, cut := range cuts {
+		kept.WriteString(text[from:cut[0]])
+		from = cut[1]
+	}
+	kept.WriteString(text[from:])
+	return kept.String()
+}
+
+// Word is one word of Words: its characters, with inline code removed, and the bytes of the text
+// that Words reads that it takes, from its first character to the end of its last (Start, End),
+// so inline code inside the word stands between them.
+type Word struct {
+	Text       string
+	Start, End int
+}
+
 // Words is each piece of text that ste-lint lints, as its words: outside code fences, a table's
-// cells one by one, with inline code removed, split at Python's white space. A piece with no word
-// is left out. Where a sentence ends is the caller's to decide.
-func Words(text string) [][]string {
-	var pieces [][]string
-	eachSegment(splitLines(text), func(_ int, _ segment, line string) {
-		if words := fields(line); len(words) > 0 {
+// cells one by one, with inline code removed, split at Python's white space, each word with the
+// bytes of text that it takes. A piece with no word is left out. Where a sentence ends is the
+// caller's to decide.
+func Words(text string) [][]Word {
+	var pieces [][]Word
+	lines, starts := splitLines(text)
+	eachSegment(lines, starts, func(_ int, from segment, kept string) {
+		var words []Word
+		// cut is the next cut of from.cuts, and removed the bytes of the cuts before it: a byte
+		// of kept stands at from.start, its offset and removed, and the words go in the order of
+		// the text, so the cuts are read once.
+		cut, removed := 0, 0
+		at := func(offset int) int {
+			for cut < len(from.cuts) && from.cuts[cut][0] <= offset+removed {
+				removed += from.cuts[cut][1] - from.cuts[cut][0]
+				cut++
+			}
+			return from.start + offset + removed
+		}
+		start := -1
+		for index, char := range kept {
+			switch space := isSpace(char); {
+			case !space && start < 0:
+				start = index
+			case space && start >= 0:
+				words = append(words, Word{Text: kept[start:index], Start: at(start), End: at(index-1) + 1})
+				start = -1
+			}
+		}
+		if start >= 0 {
+			words = append(words, Word{Text: kept[start:], Start: at(start), End: at(len(kept)-1) + 1})
+		}
+		if len(words) > 0 {
 			pieces = append(pieces, words)
 		}
 	})
@@ -449,13 +510,13 @@ func Lint(text string) []Finding {
 // reads it for the rule synonym-rotation: so the verbs of one text can stand beside the words of
 // another (Rotations).
 func LintVerbs(text string) ([]Finding, Verbs) {
-	lines := splitLines(text)
+	lines, starts := splitLines(text)
 	var found []located
 	add := func(line, column int, rule, match string) {
 		found = append(found, located{line: line, column: column, Finding: Finding{Rule: rule, Match: match}})
 	}
 	seen := map[[2]int]synonymHit{}
-	eachSegment(lines, func(line int, from segment, text string) {
+	eachSegment(lines, starts, func(line int, from segment, text string) {
 		column := columns{text: text, start: from.column}
 		for index, char := range text {
 			if char == ';' {

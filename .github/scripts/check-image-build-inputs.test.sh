@@ -132,6 +132,28 @@ sed -i "s|^RUN bun build|RUN --mount=from=build,src=data,target=/repo/data bun b
 run_check "$root"
 check "a mount from another stage counts for nothing" "$(is "$status" 1)"
 
+echo "case: an instruction word ends at any white space, and a continued line is one instruction, as BuildKit reads them"
+# BuildKit's splitCommand splits an instruction at the first run of [\t\v\f\r ] after its word, so a
+# tab after COPY or RUN makes the same instruction as a space; the shared grammar reads both.
+root=$(fixture tab-copy)
+write_dockerfile "$root"
+sed -i 's|^COPY data/pages.json data/pages.json$|COPY\tdata/pages.json data/pages.json|' "$root/docker/app.Dockerfile"
+run_check "$root"
+check "a COPY with a tab after its word passes" "$(is "$status" 0)"
+root=$(fixture tab-mount)
+write_dockerfile "$root"
+sed -i '/data\/pages.json/d' "$root/docker/app.Dockerfile"
+sed -i 's|^RUN bun build|RUN\t--mount=type=bind,source=data,target=/repo/data bun build|' "$root/docker/app.Dockerfile"
+run_check "$root"
+check "a RUN with a tab before its mount passes" "$(is "$status" 0)"
+root=$(fixture continued)
+write_dockerfile "$root"
+sed -i 's|^COPY data/pages.json data/pages.json$|COPY\t\\\n    data/pages.json data/pages.json|' "$root/docker/app.Dockerfile"
+sed -i 's|^RUN bun build src/main.ts --outdir dist$|RUN \\\n    bun build src/main.ts --outdir dist|' "$root/docker/app.Dockerfile"
+run_check "$root"
+check "a COPY and a RUN continued on the next line pass" "$(is "$status" 0)"
+check "  and the step is named by the line it starts on" "$(contains "$out" 'docker/app.Dockerfile:7: stage build')"
+
 echo "case: a file the .dockerignore drops is in no COPY's reach"
 root=$(fixture ignored)
 write_dockerfile "$root"

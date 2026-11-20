@@ -107,11 +107,25 @@ class DockerfileUnreadable(ValueError):
     write it so a check can."""
 
 
+# The white space that ends the word of a Dockerfile instruction: BuildKit's reWhitespace
+# (frontend/dockerfile/parser/parser.go), at which its splitCommand splits the trimmed instruction
+# once, into the command and its arguments. So `COPY<tab>src dst` is a COPY, as Docker reads it.
+INSTRUCTION_WORD_END = re.compile(r"[\t\v\f\r ]+")
+
+
+def _command(instruction: str) -> tuple[str, str]:
+    """(command in upper case, arguments) of one instruction, split as BuildKit's splitCommand
+    splits it (INSTRUCTION_WORD_END)."""
+    command, *arguments = INSTRUCTION_WORD_END.split(instruction.strip(), maxsplit=1)
+    return command.upper(), "".join(arguments).strip()
+
+
 def dockerfile_instructions(text: str) -> Iterator[tuple[int, str, str]]:
     """(line, command, arguments) of each instruction of a Dockerfile, as Docker reads one: comment
     lines dropped, also inside a continuation, continuation lines joined, blank lines skipped, the
-    command in upper case, the line the one the instruction starts on. check-image-trigger-paths.sh
-    reads the context sources of each, and check-image-build-inputs.sh where each puts them."""
+    command in upper case and ended by any white space (_command), the line the one the instruction
+    starts on. check-image-trigger-paths.sh reads the context sources of each, and
+    check-image-build-inputs.sh where each puts them."""
     pending, start = "", 0
     for number, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
@@ -122,12 +136,11 @@ def dockerfile_instructions(text: str) -> Iterator[tuple[int, str, str]]:
         if stripped.endswith("\\"):
             pending += stripped[:-1] + " "
             continue
-        command, _, arguments = (pending + stripped).strip().partition(" ")
+        command, arguments = _command(pending + stripped)
         pending = ""
-        yield start, command.upper(), arguments.strip()
+        yield start, command, arguments
     if pending:
-        command, _, arguments = pending.strip().partition(" ")
-        yield start, command.upper(), arguments.strip()
+        yield start, *_command(pending)
 
 
 def copy_operands(arguments: str) -> tuple[list[str], str] | None:

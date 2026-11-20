@@ -29,6 +29,19 @@ var initialism = wordRegexp(`^(?:\pL\.){2,}$`)
 // in "https://example.com/Web.Config" or "www.example.com/Web.Config".
 var addressStart = wordRegexp(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)`)
 
+// sentence is one sentence of a line as the rules of the form read it (sentencesOf): its words,
+// and the bytes of the line that it takes (start, end).
+type sentence struct {
+	words      []string
+	start, end int
+}
+
+// in is the sentence's text in line, the line that sentencesOf read it from, as the bytes that it
+// takes without the white space around them: its words with what code font holds among them.
+func (s sentence) in(line string) string {
+	return strings.TrimSpace(line[s.start:s.end])
+}
+
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts. It is the
 // one place that says where a sentence ends: after a word that ends in ".", "!" or "?" and then
 // any closing marks (endsSentence), since white space or the end of the line follows each word.
@@ -38,40 +51,56 @@ var addressStart = wordRegexp(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)`)
 // (stopsWithNoSpace). The words are ste-lint's (ste.Words), so nothing in code font counts. A
 // piece with no word that holds a letter, such as "42", "...", "—" or "12:30.", is no sentence,
 // so a text of such pieces alone has no sentence. The rule reads English text, and a text in
-// another language is the reviewer's to name.
-func sentencesOf(line string) [][]string {
-	var sentences [][]string
-	keep := func(sentence []string) {
-		if slices.ContainsFunc(sentence, hasLetter) {
-			sentences = append(sentences, sentence)
+// another language is the reviewer's to name. Each sentence takes the bytes of the line from the
+// end of the sentence before it, or the start of the line, to the end of its last word, and the
+// last one to the end of the line: so the sentences take each byte of the line once, code font
+// and white space among them, and the judge of the ways out reads a place of the line in the
+// sentence that the rules read (wayJudge).
+func sentencesOf(line string) []sentence {
+	var sentences []sentence
+	from := 0
+	keep := func(words []ste.Word) {
+		if !slices.ContainsFunc(words, func(word ste.Word) bool { return hasLetter(word.Text) }) {
+			return
 		}
+		texts := make([]string, len(words))
+		for index, word := range words {
+			texts[index] = word.Text
+		}
+		end := words[len(words)-1].End
+		sentences = append(sentences, sentence{words: texts, start: from, end: end})
+		from = end
 	}
 	for _, words := range ste.Words(line) {
 		start := 0
 		for index, word := range words {
-			if endsSentence(word) {
+			if endsSentence(word.Text) {
 				keep(words[start : index+1])
 				start = index + 1
 			}
 		}
-		keep(words[start:])
+		if start < len(words) {
+			keep(words[start:])
+		}
+	}
+	if len(sentences) > 0 {
+		sentences[len(sentences)-1].end = len(line)
 	}
 	return sentences
 }
 
-// stopsWithNoSpace is each word of line, outside code font, that holds a ".", "!" or "?" after a
-// letter or a digit, which an upper-case letter follows with no space, after any closing marks,
-// such as "Web.Config" or "comment.Dispatch". Such a stop ends no sentence: the writer puts a
-// space after it, or puts the name in code font. An initialism holds none, and nor does ".NET".
-// An address that the words show holds none either: it is one word, as the address of a link is
-// no text of a sentence, and only its last stop can end the sentence (endsSentence).
-func stopsWithNoSpace(line string) []string {
+// stopsWithNoSpace is each word of the sentence that holds a ".", "!" or "?" after a letter or a
+// digit, which an upper-case letter follows with no space, after any closing marks, such as
+// "Web.Config" or "comment.Dispatch". Such a stop ends no sentence: the writer puts a space after
+// it, or puts the name in code font. An initialism holds none, and nor does ".NET". An address that
+// the words show holds none either: it is one word, as the address of a link is no text of a
+// sentence, and only its last stop can end the sentence (endsSentence). Such a word holds an
+// upper-case letter, so it stands in a sentence that the rules count, and each stands in one.
+func (s sentence) stopsWithNoSpace() []string {
 	var found []string
-	for _, words := range ste.Words(line) {
-		for _, word := range words {
-			if !isAddress(word) && joinedStop(word) {
-				found = append(found, word)
-			}
+	for _, word := range s.words {
+		if !isAddress(word) && joinedStop(word) {
+			found = append(found, word)
 		}
 	}
 	return found

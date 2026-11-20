@@ -5114,12 +5114,15 @@ Each item below names a path with its method and identity, then its purpose.
       A listed verb before a word that starts no object, such as `tests`, `go` or a name, as in `Run tests against the server` and `Start Dispatch with a fixture issue`, starts no instruction, so its sentence has at most 25 words and no second instruction is read in it.
 
     - How a refusal gives its ways out: a refusal of the form gives a way out only where the text that the way out makes gives no finding that the text does not give, word for word.
-      Dispatch reads each way out in the sentence that it changes, by every rule, with the other sentences of the text in the count of a statement.
-      So `that` before the clause of an instruction of 20 words is no way out, as it makes 21.
+      Dispatch reads each way out in the sentence that it changes, as the rules read that sentence with what its code font holds, by every rule, with the other sentences of the text in the count of a statement.
+      One finding stands for each place of its words, so Dispatch reads its way out in the sentence of each place, and gives it only where it passes at each.
+      It reads a way out of a finding of a footnote with the sentences of the largest statement that refers to the footnote, as the count of that statement holds them.
+      So `that` before the clause of an instruction of 20 words is no way out, as it makes 21, and nor is a space after the stop of a footnote of one sentence under a statement of one, as it makes three.
       It reads the ways out of at most eight findings of one sentence, so its work stays in proportion to the text: a ninth stop with no space after it, or a ninth email address, of one sentence is still refused and named, and its finding says that Dispatch offers ways out for the first eight findings of a sentence only, so it offers none for this one, though one can exist.
       The refusal of two instructions gives its ways out, and a test applies each and holds the result to every rule: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there.
       It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
-      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition opens a clause, as in `If the run fails, read the log and send the report`, the split cuts an instruction off from the condition that governs it: there the refusal says to keep the choice or the condition, and shows no split.
+      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition stands outside the first instruction, before it as in `If the run fails, read the log and send the report` or after it as in `Read the log and send the report if the run fails`, with or without a comma, the split cannot keep the scope of the condition: there the refusal says to keep the choice or the condition, and shows no split.
+      A condition word inside the first instruction, as in `Read the log before the run ends and send the report`, governs that instruction alone, so the split stays.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
