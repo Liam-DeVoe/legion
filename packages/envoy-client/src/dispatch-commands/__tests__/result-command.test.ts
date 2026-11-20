@@ -32,7 +32,9 @@ test("dispatch result prints the id of the result it recorded, as Result <id>", 
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,
   });
+  // The command reads `input.dryRun` (main's `--dry-run`); this call records, so it names none.
   const context = {
+    input: {},
     args: { issue: "DSP-1", check: "k1", role: "tester", verdict: "pass", commit },
     client,
     actor,

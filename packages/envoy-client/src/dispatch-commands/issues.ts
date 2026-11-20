@@ -1,5 +1,6 @@
 import type {
   Advised,
+  CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,

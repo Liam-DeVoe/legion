@@ -1869,9 +1869,12 @@ export class DispatchClient {
   async dryRunResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultDryRun> {
     const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "results", "dry-run"];
     try {
-      const { payload } = await this.#jsonAnswer<CheckResultDryRun>("POST", path, input, {
-        writes: false,
-      });
+      const { payload } = await this.#writeRowAnswer<CheckResultDryRun>(
+        "POST",
+        path,
+        WRITE_ROWS.dryRunResult,
+        input
+      );
       return payload;
     } catch (error) {
       if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
