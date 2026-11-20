@@ -93,6 +93,15 @@ func HandlerLimitFor(ackWait time.Duration) (limit time.Duration, derived bool) 
 type ConsumerSpec struct {
 	Project      string
 	Repositories []ghrepo.Repository
+	// OwnSession is the Envoy session the daemon publishes its provider-errors notice as
+	// (notify.DaemonSession), whose agent subject carries the listener's dead letter of each kept
+	// copy of that notice it drops unread (ProviderErrorsDeadLetter). Set, intake runs a fourth
+	// durable of its own on that one subject (ownConsumerName); empty, which is every test that
+	// publishes no such notice, it runs none. The stream keeps its messages under limits, so this
+	// durable reads every message of the subject whatever another consumer of it acknowledges, the
+	// listener's own durable among them, and the daemon's NATS grant creates, reads and
+	// acknowledges any consumer of the stream (natsgrant.Daemon), so it needs no grant of its own.
+	OwnSession string
 	// Renames is the deployment's repository equivalence (`repository_renames`,
 	// config.Config.RepositoryRenames): a pull request recorded under the name its repository
 	// moved from is the one a fact naming the repository it moved to names (recordedPullRequest,
@@ -241,8 +250,11 @@ type Consumers struct {
 	// not know which daemon owns a session, so each reads every report and acts only on a
 	// released claim of its own.
 	wake jetstream.Consumer
+	// own is the durable on the agent subject of the daemon's provider-errors sender
+	// (ConsumerSpec.OwnSession), nil when the spec names none.
+	own jetstream.Consumer
 
-	progress struct{ dispatch, github, wake *consumerProgress }
+	progress struct{ dispatch, github, wake, own *consumerProgress }
 
 	mu    sync.Mutex
 	repos []ghrepo.Repository
@@ -310,6 +322,20 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
 	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
+	if spec.OwnSession != "" {
+		// Created for the first time, it starts at the next message, as every durable here
+		// does: no notice was published as the session before the daemon that reads it.
+		consumers.own, err = openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+			Durable:       ownConsumerName(spec.Project),
+			FilterSubject: agentSubjectPrefix + spec.OwnSession,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			AckWait:       spec.AckWait,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open the durable consumer of the provider-errors sender's own agent subject: %w", err)
+		}
+		consumers.progress.own = &consumerProgress{name: ownConsumerName(spec.Project), opened: opened}
+	}
 	return consumers, nil
 }
 
@@ -510,7 +536,8 @@ func (p *consumerProgress) lastHandled() time.Time {
 }
 
 // Lag is the lag of the Dispatch, GitHub and listener-wake durable consumers, in
-// that order (ConsumerLag), read fresh from JetStream: per consumer one CONSUMER.INFO and, while
+// that order (ConsumerLag), and of the provider-errors sender's own durable after them when intake
+// runs one (ConsumerSpec.OwnSession), read fresh from JetStream: per consumer one CONSUMER.INFO and, while
 // messages wait, one STREAM.MSG.GET per filter subject for the first message at or after the
 // sequence above its ack floor on that subject, the smallest sequence's time being the oldest; a
 // message at that sequence ends the reads, since no filter can give an older one. The consumers
@@ -522,6 +549,9 @@ func (p *consumerProgress) lastHandled() time.Time {
 // itself never fails, so the state that shows it is still served.
 func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
 	progress := []*consumerProgress{c.progress.dispatch, c.progress.github, c.progress.wake}
+	if c.progress.own != nil {
+		progress = append(progress, c.progress.own)
+	}
 	lags := make([]ConsumerLag, len(progress))
 	var reads sync.WaitGroup
 	for i, consumer := range progress {
@@ -598,7 +628,8 @@ func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerI
 	return oldest.Time, nil
 }
 
-// Run consumes the three durable consumers until ctx ends, and returns the error of the one that
+// Run consumes the three durable consumers, and the provider-errors sender's own when intake runs
+// one, until ctx ends, and returns the error of the one that
 // stops first. Every decoded fact enters ApplyFact on the consumers' pool; a committed transaction
 // is acknowledged, a rolled-back transaction is nacked with a delay, poison is terminated, and a
 // committed refusal is logged then acknowledged. Each message acknowledged or terminated is
@@ -619,6 +650,11 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 	group.Go(func() error {
 		return c.consumeConsumer(consumeContext, c.wake, c.progress.wake, handlers)
 	})
+	if c.own != nil {
+		group.Go(func() error {
+			return c.consumeConsumer(consumeContext, c.own, c.progress.own, handlers)
+		})
+	}
 	return group.Wait()
 }
 
@@ -1292,4 +1328,8 @@ func githubConsumerName(project string) string {
 
 func wakeConsumerName(project string) string {
 	return "legion-go-" + project + "-wake"
+}
+
+func ownConsumerName(project string) string {
+	return "legion-go-" + project + "-agent"
 }

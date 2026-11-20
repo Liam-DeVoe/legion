@@ -480,6 +480,30 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// Told is what a provider-errors notice tells, kept for the copy of it the listener stores: the
+	// claim and each run the notice names (admit's tellProviderErrors). Only that kind carries it
+	// (validateOutboxPayload), and it is the daemon's own bookkeeping, which the publish drops
+	// (Published, the daemon's providerErrorsNotice): once the listener answers the publish with
+	// the event id of the envelope it stored, the outbox records that copy with these runs
+	// (Store.RecordProviderErrorsCopy), so a dead letter the listener later sends of the copy owes
+	// its runs again (Store.ProviderErrorsDeadLetter). A row an earlier release queued carries
+	// none, and its copy is recorded nowhere.
+	Told *ToldRuns `json:"told,omitempty"`
+}
+
+// ToldRuns is the claim a provider-errors notice is of and each run of that claim's provider-error
+// turns the notice tells, oldest first, with the run's own words (provider_errors_owed's reason),
+// as admission read them when it wrote the notice (OwedProviderErrors). Runs holds one run or more.
+type ToldRuns struct {
+	Claim claim.Token `json:"claim"`
+	Runs  []ToldRun   `json:"runs"`
+}
+
+// ToldRun is one run a provider-errors notice tells: its number (supervise.Claim.ProviderErrorRunID)
+// and what its notice says of it (supervise.OwedNotice).
+type ToldRun struct {
+	Run    uint64 `json:"run"`
+	Reason string `json:"reason"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -853,9 +877,10 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
 // a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
-// moment and the moment it was reserved from go out with neither: all three are the daemon's own
-// bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
-// notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
+// moment and the moment it was reserved from go out with neither, and a provider-errors notice
+// without the runs it tells (Told): all four are the daemon's own bookkeeping of the row, and what
+// the pacing did says nothing to the architect that reads the notice (the daemon's wakeRan writes
+// it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
 // and puts nothing back, and only the receipt-timeout path restores the two paced moments by
 // hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
@@ -865,6 +890,7 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
+	n.Told = nil
 	if n.ResendOf == 0 {
 		return n, OutboxKey(id)
 	}
@@ -2227,6 +2253,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
 		}
+		if value.Told != nil {
+			return fmt.Errorf("a %s notice carries the runs a provider-errors notice tells; only the controller's provider-errors notice does", value.Kind)
+		}
 		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
 			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
 		}
@@ -2273,6 +2302,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Volume != nil {
 			return fmt.Errorf("a %s controller notice carries a volume sweep; a filling issue pod's volume is its own architect's to read", value.Kind)
+		}
+		if told := value.Told; told != nil {
+			if value.Kind != ProviderErrorsNotice {
+				return fmt.Errorf("a %s controller notice carries the runs a provider-errors notice tells; only a provider-errors notice does", value.Kind)
+			}
+			if told.Claim == "" || len(told.Runs) == 0 {
+				return fmt.Errorf("a provider-errors notice's told runs name their claim and one run or more")
+			}
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err

@@ -309,10 +309,25 @@ func mustOfferProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admiss
 	}
 }
 
-// providerErrorsNotice is the outbox row of one provider-errors notice for the role of issue.
-func providerErrorsNotice(issue string, role claim.Role) effect {
+// providerErrorsNotice is the outbox row of one provider-errors notice for the role of issue that
+// tells runs, each in providerErrorsReason's words: the notice's reason, and the claim and the runs
+// it carries as its told runs (record.Notice.Told), which the outbox records with the copy the
+// listener stores.
+func providerErrorsNotice(issue string, role claim.Role, runs ...uint64) effect {
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		panic(err)
+	}
+	token, err := claim.NewToken(project, issue, role)
+	if err != nil {
+		panic(err)
+	}
+	told := &record.ToldRuns{Claim: token}
+	for _, run := range runs {
+		told.Runs = append(told.Runs, record.ToldRun{Run: run, Reason: providerErrorsReason})
+	}
 	return effect{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{
-		Kind: record.ProviderErrorsNotice, Role: role, Reason: providerErrorsReason}}
+		Kind: record.ProviderErrorsNotice, Role: role, Reason: providerErrorsReason, Told: told}}
 }
 
 // assertProviderErrorsNotices compares the provider-errors notices in the outbox, oldest first,
@@ -347,9 +362,9 @@ func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	}
 
 	assertProviderErrorsNotices(t, pool, []effect{
-		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
-		providerErrorsNotice("LEGION-210", claim.RoleImplementer),
-		providerErrorsNotice("LEGION-209", claim.RoleArchitect),
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1),
+		providerErrorsNotice("LEGION-210", claim.RoleImplementer, 1),
+		providerErrorsNotice("LEGION-209", claim.RoleArchitect, 1),
 	})
 }
 
@@ -363,15 +378,15 @@ func TestASecondRunIsToldWhileTheFirstRunsNoticeWaitsUnsent(t *testing.T) {
 	registerController(t, pool)
 	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
 	mustOfferProviderErrors(t, pool, admission, token)
-	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1)})
 
 	oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 2)
 	mustOfferProviderErrors(t, pool, admission, token)
 	mustOfferProviderErrors(t, pool, admission, token)
 
 	assertProviderErrorsNotices(t, pool, []effect{
-		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
-		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1),
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer, 2),
 	})
 }
 
@@ -422,8 +437,8 @@ func TestAnOwedNoticeIsWrittenAtThePassAfterAControllerRegisters(t *testing.T) {
 	registerController(t, pool)
 	tick(t, pool, admission, "tick-after")
 	want := []effect{
-		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
-		providerErrorsNotice("LEGION-210", claim.RoleTester),
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1),
+		providerErrorsNotice("LEGION-210", claim.RoleTester, 3),
 	}
 	assertProviderErrorsNotices(t, pool, want)
 
@@ -485,7 +500,7 @@ func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
 
 	besideAnOpenOffer(t, pool, admission, token, func() error { return offerProviderErrors(pool, admission, token) })
 
-	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1)})
 }
 
 // An admission pass — a tick here, as any fact, tick or boot runs it — beside a claim's open offer
@@ -503,7 +518,7 @@ func TestAPassBesideAnOpenOfferWritesOneNotice(t *testing.T) {
 		return err
 	})
 
-	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1)})
 }
 
 // A controller's registration beside a claim's open offer of the same run writes no second
@@ -525,7 +540,7 @@ func TestARegistrationBesideAnOpenOfferWritesOneNotice(t *testing.T) {
 		return nil
 	})
 
-	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer, 1)})
 }
 
 // Each run of a claim that reached six while no controller was registered is told, once: the
@@ -553,7 +568,8 @@ func TestEachUntoldRunOfAClaimIsToldInOneNoticeAtTheRegistration(t *testing.T) {
 	committed()
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-209", payload: record.ControllerNotice{
 		Kind: record.ProviderErrorsNotice, Role: claim.RoleImplementer,
-		Reason: "This notice tells 2 runs, oldest first. Run 1: " + first + ". Run 2: " + second + "."}}}
+		Reason: "This notice tells 2 runs, oldest first. Run 1: " + first + ". Run 2: " + second + ".",
+		Told:   &record.ToldRuns{Claim: token, Runs: []record.ToldRun{{Run: 1, Reason: first}, {Run: 2, Reason: second}}}}}}
 	assertProviderErrorsNotices(t, pool, want)
 
 	tick(t, pool, admission, "tick-after")

@@ -1433,6 +1433,21 @@ const (
 	ListenerWakeReady = "listener_ready"
 )
 
+// ProviderErrorsDeadLetter is the Envoy listener's dead letter of a kept copy of this daemon's
+// provider-errors notice, which it dropped unread, read from the agent subject of the session the
+// daemon publishes that notice as (notify.DaemonSession) by the daemon's own durable on it
+// (ConsumerSpec.OwnSession). Copy is the copy's event id, the dead letter's source_event_id, which
+// is the event id the listener's 200 named for the notice's publish; Reason is the dead letter's
+// dead_letter field (listenerwire's DeadLetter reasons), read from the field and never from the
+// dead letter's text. Admission owes the copy's runs again, or counts them told
+// (record.Store.ProviderErrorsDeadLetter), and its pass after it writes the notice of what is owed.
+type ProviderErrorsDeadLetter struct {
+	Copy   string
+	Reason string
+}
+
+func (ProviderErrorsDeadLetter) namedIssue() (string, bool) { return "", false }
+
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
 // at its due_at): the phase worker it names is woken whatever else did or did not happen since
 // the release. It is never decoded from an event — the daemon's own pass reads the due rows and

@@ -54,7 +54,24 @@ func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListene
 // already handed out reaches it, and nothing else can take the port while neither runs.
 func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.File, port int) *idleRigListener {
 	t.Helper()
-	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
+	return startListenerBinaryOn(t, testbuild.EnvoyBinary(t, "./cmd/listener"), natsURL, machine, socket, port)
+}
+
+// startKeptClockListener is startIdleRigListener of a listener built with the envoytestclock tag,
+// whose clock for a kept copy's hour is moved by the duration the file offsetFile holds
+// (packages/envoy/cmd/listener's kept_clock_envoytestclock.go), and by nothing while the file
+// holds none: a case that writes an hour or more into it has every kept copy's hour end at once,
+// as an hour's wait would, while every other clock of the listener stays the wall clock.
+func startKeptClockListener(t *testing.T, natsURL, machine, offsetFile string) *idleRigListener {
+	t.Helper()
+	t.Setenv("ENVOY_TEST_KEPT_CLOCK_OFFSET_FILE", offsetFile)
+	socket, port := heldSocket(t)
+	return startListenerBinaryOn(t, testbuild.EnvoyBinaryTagged(t, "./cmd/listener", "envoytestclock"), natsURL, machine, socket, port)
+}
+
+// startListenerBinaryOn runs the listener binary of startIdleRigListenerOn.
+func startListenerBinaryOn(t *testing.T, binary, natsURL, machine string, socket *os.File, port int) *idleRigListener {
+	t.Helper()
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
 	// the log below.
 	home := testtmp.Dir(t, "listener.log")

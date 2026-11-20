@@ -107,6 +107,10 @@ type envoyEnvelope struct {
 	PayloadSummary string `json:"payload_summary"`
 	Payload        string `json:"payload"`
 	TraceID        string `json:"trace_id"`
+	// DeadLetter is the field a dead letter of the Envoy listener names why it dropped a kept copy
+	// by (listenerwire.Envelope.DeadLetter), read on the daemon's own agent subject alone
+	// (decodeDeadLetter).
+	DeadLetter string `json:"dead_letter"`
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
@@ -117,6 +121,14 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var envelope envoyEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return decodedMessage{}, fmt.Errorf("decode Envoy envelope: %w", err)
+	}
+	if strings.HasPrefix(subject, agentSubjectPrefix) {
+		// The daemon's own agent subject carries what Envoy and sessions send its provider-errors
+		// sender, whose text a dead letter's payload is, so its payload is never read as JSON.
+		if err := envelope.validIdentity(); err != nil {
+			return decodedMessage{}, err
+		}
+		return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: decodeDeadLetter(envelope)}, nil
 	}
 	if err := envelope.valid(); err != nil {
 		return decodedMessage{}, err
@@ -157,7 +169,38 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
 }
 
+// agentSubjectPrefix begins every agent subject (contracts.LegacyAgentSubject): the daemon's own
+// durable on its provider-errors sender's subject is the one intake consumer that hears one
+// (ConsumerSpec.OwnSession).
+const agentSubjectPrefix = "notifications.agent."
+
+// decodeDeadLetter is the fact of a message on the daemon's own agent subject: the Envoy
+// listener's dead letter of a kept copy of its provider-errors notice, which is from source envoy,
+// names the copy as its source_event_id and why it dropped it in its dead_letter field
+// (ProviderErrorsDeadLetter). Anything else there is no fact, acknowledged and dropped: a session's
+// message to the daemon's sender, which nothing in the daemon answers, and a dead letter of a
+// listener before the dead_letter field, which says why only in its text and so cannot say whether
+// the copy may have reached the session that held the role.
+func decodeDeadLetter(envelope envoyEnvelope) Fact {
+	if envelope.Source != "envoy" || envelope.DeadLetter == "" {
+		return nil
+	}
+	return ProviderErrorsDeadLetter{Copy: envelope.SourceEventID, Reason: envelope.DeadLetter}
+}
+
+// valid is validIdentity, and a payload that is JSON, as every payload intake decodes is.
 func (e envoyEnvelope) valid() error {
+	if err := e.validIdentity(); err != nil {
+		return err
+	}
+	if !json.Valid([]byte(e.Payload)) {
+		return fmt.Errorf("Envoy envelope payload is not JSON")
+	}
+	return nil
+}
+
+// validIdentity checks the fields every Envoy envelope carries, its payload aside.
+func (e envoyEnvelope) validIdentity() error {
 	switch {
 	case strings.TrimSpace(e.EventID) == "":
 		return fmt.Errorf("Envoy envelope has no event_id")
@@ -175,8 +218,6 @@ func (e envoyEnvelope) valid() error {
 		return fmt.Errorf("Envoy envelope has no payload_summary")
 	case strings.TrimSpace(e.TraceID) == "":
 		return fmt.Errorf("Envoy envelope has no trace_id")
-	case !json.Valid([]byte(e.Payload)):
-		return fmt.Errorf("Envoy envelope payload is not JSON")
 	}
 	return nil
 }

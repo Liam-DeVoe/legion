@@ -2224,6 +2224,21 @@ type Store interface {
 	// notice (admit's tellProviderErrors). A token with no claim row is ErrNoClaim, since the mark
 	// would update nothing.
 	MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, through uint64) error
+	// RecordProviderErrorsCopy records, in the caller's transaction, the copy of a provider-errors
+	// notice the Envoy listener stored under eventID, the event id its publish's 200 named, with the
+	// claim and the runs the notice tells (Notice.Told), so a dead letter of that copy can owe them
+	// again (ProviderErrorsDeadLetter). A copy already recorded under eventID is left as it
+	// stands, and a claim no row holds any more records nothing: its runs went with it.
+	RecordProviderErrorsCopy(ctx context.Context, tx pgx.Tx, eventID string, told ToldRuns) error
+	// ProviderErrorsDeadLetter applies, in the caller's transaction, the listener's dead letter of
+	// the copy recorded under eventID, whose dead_letter field is reason (listenerwire's
+	// DeadLetter reasons), once for each copy, and says what it did (DeadLetterApplied). A reason
+	// whose copy may have reached the session that held the role then (the two unconfirmed ones)
+	// counts as told; any other owes each run of the copy again, as a row of provider_errors_owed
+	// that admission's next pass writes a notice of, unless a copy recorded after it tells that
+	// run. It locks the claim's row first, as every reader and writer of the claim's owed rows
+	// does (ProviderErrorsOwed).
+	ProviderErrorsDeadLetter(ctx context.Context, tx pgx.Tx, eventID, reason string) (DeadLetterApplied, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

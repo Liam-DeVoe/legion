@@ -199,8 +199,28 @@ func New(baseURL, token string) *HTTPPublisher {
 // 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
 // listener to keep the message for the role's next live holder.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	_, _, err := p.publish(ctx, topic, message, payload, dedupeKey, false, "")
 	return err
+}
+
+// PublishAs posts the envelope as Publish does, keep: false, but as the session source: the
+// envelope's source_session, which the listener admits from a request that presents no secrets
+// broker token (its sessionNotBound, packages/envoy/cmd/listener/brokerauth.go), as the daemon's
+// requests present none. It answers the event id of the envelope the listener stored, read from
+// its 200 (listenerwire.PublishResponse), "" where that answer names none, and every other answer
+// as the error Publish makes of it.
+//
+// The source session is where the listener sends the dead letter of a kept copy of the message it
+// drops unread (keptRoleDeadLetter, packages/envoy/cmd/listener/role_keep.go), naming that copy's
+// event id, which is this event id, as the dead letter's source_event_id: the daemon publishes its
+// provider-errors notice so, as DaemonSession, and reads that session's agent subject itself (the
+// daemon's providerErrorsNotice and its intake's own durable). An envelope with a source session
+// is an agent session's message to the listener's sender limit (its senderLimit.take), so a
+// listener with that limit set counts each such publish against the source session, and answers
+// 429 past it, which is the plain refusal Publish makes of any status it does not name.
+func (p *HTTPPublisher) PublishAs(ctx context.Context, topic, message string, payload any, dedupeKey, source string) (string, error) {
+	_, eventID, err := p.publish(ctx, topic, message, payload, dedupeKey, false, source)
+	return eventID, err
 }
 
 // PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
@@ -224,32 +244,35 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 // holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
 // publish reaches its holder at least once, and can reach it twice.
 func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
-	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+	kept, _, err := p.publish(ctx, topic, message, payload, dedupeKey, true, "")
+	return kept, err
 }
 
-// publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
-// request's keep field, and answers whether the listener kept the message rather than
-// delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
-// is not a 200 is the refusal it maps to (publishRefusal).
-func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
+// publish is the one body of Publish, PublishAs and PublishKept: it posts the envelope with keep
+// as the request's keep field and source as its source_session ("" sends none), and answers
+// whether the listener kept the message rather than delivering it and, for a source session's
+// publish the listener answered 200, the event id of the envelope it stored. Only a publish that
+// asked to keep reads a 202 as kept; every other answer that is not a 200 is the refusal it maps to
+// (publishRefusal).
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool, source string) (bool, string, error) {
 	// The listener carries a payload as a JSON document in a string
 	// (listenerwire.MessageBody.Payload); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
+		return false, "", fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	payloadText := string(encoded)
 	body, err := json.Marshal(listenerwire.PublishRequest{
-		MessageBody: listenerwire.MessageBody{Message: message, Payload: &payloadText, DedupeKey: dedupeKey},
+		MessageBody: listenerwire.MessageBody{SourceSession: source, Message: message, Payload: &payloadText, DedupeKey: dedupeKey},
 		Topic:       topic,
 		Keep:        &keep,
 	})
 	if err != nil {
-		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
+		return false, "", fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, "", fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -257,24 +280,103 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, "", fmt.Errorf("publish notice to %s: %w", topic, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
-		return false, nil
+		if source == "" {
+			return false, "", nil
+		}
+		// The stored envelope's event id is read only where a caller acts on it: the publish of
+		// a source session, whose dead letters name it. Part of an answer is no event id, so the
+		// publish stands and names none, as an answer that names none does.
+		answered, _, readErr := redact.ReadBounded(response.Body, answerBodyLimit)
+		var stored listenerwire.PublishResponse
+		if readErr != nil || json.Unmarshal(answered, &stored) != nil {
+			return false, "", nil
+		}
+		return false, stored.EventID, nil
 	}
 	if keep && response.StatusCode == http.StatusAccepted {
-		return true, nil
+		return true, "", nil
 	}
 	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
-		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
+		return false, "", unreadAnswer("publish notice to "+topic, response.Status, readErr)
 	}
 	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, excerpt(answered, cut))
-	return false, publishRefusal(response.StatusCode, answered, refusal)
+	return false, "", publishRefusal(response.StatusCode, answered, refusal)
 }
+
+// DaemonSession is the Envoy session the Legion daemon of project, the project token panes are
+// told as LEGION_PROJECT, publishes its provider-errors notice as (PublishAs) and registers as an
+// own reader (RegisterOwnReader): legion-daemon-<project>, one subject token, since a project
+// token holds no dot, star, angle bracket or space, and a name no client mints for an agent
+// session, which are `ses_` ids and UUIDs. One per project, so each daemon reads the dead letters
+// of its own notices alone.
+func DaemonSession(project string) string {
+	return "legion-daemon-" + project
+}
+
+// RegisterOwnReader registers session at the listener as a session that reads its own agent
+// subject from a consumer of its own (POST /v1/interests/subscribe with delivery.own_reader,
+// listenerwire.SubscribeDelivery.OwnReader), titled title and following no topic. The listener then
+// holds no consumer and starts no relay for it, and a message stored on its agent subject, a dead
+// letter of the daemon's provider-errors notice among them, is acknowledged as its own reader's to
+// take instead of held for the listener's retry window and given up with an agent wake report
+// naming session, which every daemon would read and none would own. The registration is a
+// heartbeat: the session reads live for the listener's live window after it, and gone past its gone
+// horizon, so the daemon sends it again well inside the live window
+// (the daemon's providerErrorsSender). A 200 whose answer names another mode than own_reader is a
+// listener that took the registration without knowing the field, and is answered as an error, as
+// every other status is.
+func (p *HTTPPublisher) RegisterOwnReader(ctx context.Context, session, title string) error {
+	body, err := json.Marshal(listenerwire.SubscribeRequest{
+		SessionID:    session,
+		Topics:       []string{},
+		Title:        title,
+		Capabilities: []string{},
+		Delivery:     &listenerwire.SubscribeDelivery{OwnReader: true},
+	})
+	if err != nil {
+		return fmt.Errorf("encode the registration of %s: %w", session, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/interests/subscribe", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build the registration of %s: %w", session, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("register %s at the listener: %w", session, err)
+	}
+	defer response.Body.Close()
+	limit := refusalBodyLimit
+	if response.StatusCode == http.StatusOK {
+		limit = answerBodyLimit
+	}
+	answered, cut, readErr := redact.ReadBounded(response.Body, limit)
+	if readErr != nil {
+		return unreadAnswer("register "+session+" at the listener", response.Status, readErr)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("register %s at the listener: listener returned %s: %s", session, response.Status, excerpt(answered, cut))
+	}
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answered, &registered); err != nil || registered.Delivery == nil || registered.Delivery.Mode != OwnReaderMode {
+		return fmt.Errorf("register %s at the listener: the listener's answer names no own_reader delivery, so it reads the session as no own reader: %s", session, excerpt(answered, cut))
+	}
+	return nil
+}
+
+// OwnReaderMode is the mode the listener answers a registration that reads its own agent subject
+// (listenerwire.DeliveryAnswer.Mode, packages/envoy/cmd/listener's deliveryModeOwnReader).
+const OwnReaderMode = "own_reader"
 
 // publishRefusal is the error a refused publish reads as: refusal, wrapping the error its body
 // names where the body is the listener's own refusal for its status (listenerwire). A 404 is

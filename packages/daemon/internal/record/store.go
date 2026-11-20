@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -2449,6 +2450,119 @@ func (s *Postgres) MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token 
 		return fmt.Errorf("mark claim %s told of its runs of provider errors through run %d: %w", token, through, err)
 	}
 	return nil
+}
+
+// DeadLetterOutcome is what applying a dead letter of a provider-errors notice's copy did
+// (Store.ProviderErrorsDeadLetter), in the word the daemon's line names it by.
+type DeadLetterOutcome string
+
+const (
+	// DeadLetterUnknown: no copy is recorded under the dead letter's event id. A row an earlier
+	// release queued records none (Notice.Told), and so does a publish whose 200 named no event id.
+	DeadLetterUnknown DeadLetterOutcome = "unknown"
+	// DeadLetterRepeated: a dead letter of this copy was applied already, the stream's redelivery
+	// or a second kept copy of the same forward, so this one changes nothing.
+	DeadLetterRepeated DeadLetterOutcome = "repeated"
+	// DeadLetterUnconfirmed: the listener had started to forward the copy to the session that held
+	// the role then, and no walk confirmed that forward, so the notice may have reached that session.
+	// It counts as told: owing it again could tell it twice.
+	DeadLetterUnconfirmed DeadLetterOutcome = "unconfirmed"
+	// DeadLetterToldLater: every run of the copy is told by a copy recorded after it.
+	DeadLetterToldLater DeadLetterOutcome = "told_later"
+	// DeadLetterOwedAgain: the copy was dropped unread, and its runs that no later copy tells are
+	// owed again (provider_errors_owed).
+	DeadLetterOwedAgain DeadLetterOutcome = "owed_again"
+)
+
+// DeadLetterApplied is what Store.ProviderErrorsDeadLetter did with one dead letter: its outcome,
+// the claim of the copy it named (empty for DeadLetterUnknown), and, for DeadLetterOwedAgain, the
+// runs owed again.
+type DeadLetterApplied struct {
+	Outcome DeadLetterOutcome
+	Claim   claim.Token
+	Runs    []uint64
+}
+
+func (s *Postgres) RecordProviderErrorsCopy(ctx context.Context, tx pgx.Tx, eventID string, told ToldRuns) error {
+	runs, err := json.Marshal(told.Runs)
+	if err != nil {
+		return fmt.Errorf("encode the runs of the provider-errors notice copy %s: %w", eventID, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into provider_errors_copies (event_id, claim_token, runs)
+		select $1, $2, $3 where exists (select 1 from claims where token = $2)
+		on conflict (event_id) do nothing`, eventID, string(told.Claim), runs); err != nil {
+		return fmt.Errorf("record the provider-errors notice copy %s of claim %s: %w", eventID, told.Claim, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ProviderErrorsDeadLetter(ctx context.Context, tx pgx.Tx, eventID, reason string) (DeadLetterApplied, error) {
+	fail := func(err error) (DeadLetterApplied, error) {
+		return DeadLetterApplied{}, fmt.Errorf("apply the dead letter of the provider-errors notice copy %s: %w", eventID, err)
+	}
+	var token string
+	err := tx.QueryRow(ctx, "select claim_token from provider_errors_copies where event_id = $1", eventID).Scan(&token)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeadLetterApplied{Outcome: DeadLetterUnknown}, nil
+	}
+	if err != nil {
+		return fail(err)
+	}
+	applied := DeadLetterApplied{Claim: claim.Token(token)}
+	// The claim's row is locked before its owed rows and its copies are read, as admission's read
+	// of the owed rows and the claim's write lock it before they touch them (owedRuns), so a pass
+	// telling the claim's owed runs and this owing one of them again never interleave.
+	if _, err := tx.Exec(ctx, "select 1 from claims where token = $1 for update", token); err != nil {
+		return fail(err)
+	}
+	var encoded []byte
+	var recorded int64
+	var settled *string
+	err = tx.QueryRow(ctx, "select runs, recorded, dead_letter from provider_errors_copies where event_id = $1 for update", eventID).
+		Scan(&encoded, &recorded, &settled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The claim's row went between the two reads, and the copy with it.
+		return DeadLetterApplied{Outcome: DeadLetterUnknown}, nil
+	}
+	if err != nil {
+		return fail(err)
+	}
+	if settled != nil {
+		applied.Outcome = DeadLetterRepeated
+		return applied, nil
+	}
+	if _, err := tx.Exec(ctx, "update provider_errors_copies set dead_letter = $2 where event_id = $1", eventID, reason); err != nil {
+		return fail(err)
+	}
+	if reason == listenerwire.DeadLetterExpiredUnconfirmed || reason == listenerwire.DeadLetterDeliveryModeUnconfirmed {
+		applied.Outcome = DeadLetterUnconfirmed
+		return applied, nil
+	}
+	var runs []ToldRun
+	if err := json.Unmarshal(encoded, &runs); err != nil {
+		return fail(err)
+	}
+	for _, run := range runs {
+		var later bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from provider_errors_copies
+			where claim_token = $1 and recorded > $2 and runs @> jsonb_build_array(jsonb_build_object('run', $3::bigint)))`,
+			token, recorded, int64(run.Run)).Scan(&later); err != nil {
+			return fail(err)
+		}
+		if later {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `insert into provider_errors_owed (claim_token, run, reason) values ($1, $2, $3)
+			on conflict (claim_token, run) do nothing`, token, int64(run.Run), run.Reason); err != nil {
+			return fail(err)
+		}
+		applied.Runs = append(applied.Runs, run.Run)
+	}
+	applied.Outcome = DeadLetterToldLater
+	if len(applied.Runs) > 0 {
+		applied.Outcome = DeadLetterOwedAgain
+	}
+	return applied, nil
 }
 
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {

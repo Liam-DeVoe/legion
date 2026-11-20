@@ -538,17 +538,26 @@ place or for the same session once it is live again. Until then the notice's out
 its backoff, read again at most 64 s apart, and holds no other row of the issue back; `outbox row
 waits` with `the provider-errors notice for <KEY> waits for controller session <session> to hold
 <role> live`, logged at INFO at the first try, DEBUG at the next six and WARN from the eighth on,
-once seven tries have waited, means a registered controller does not hold its role. One case is
-still lost: a controller whose process died less than the listener's live window ago (five
-minutes after its last registration) still reads live, at the daemon's read and at the
-listener's publish, and is handed the notice into its own session consumer; a controller
-started in its place is not handed it. The cause is that nothing tells the daemon that a
-controller session read a notice: the listener answers a role send once its stream stored the
-forward, and the session's acknowledgement of the frame goes to the stream alone. The backstop
-is the run itself, which `legion state` shows as each agent's `providerErrorRun`: once the
-controller skill says so, the controller's start reads it, and a run at six or more is one it
-may not have been told of. Nothing is held and nothing is stopped by a run of six: the task is
-still kept and still sent again. The run goes back
+once seven tries have waited, means a registered controller does not hold its role. A controller
+whose process died less than the listener's live window ago (five minutes after its last
+registration) still reads live, at the daemon's read and at the listener's publish, and is
+forwarded the notice into its own session consumer, so the row finishes. The listener hands what
+such a controller did not read to the role's next holder: when a controller claims the role while
+the dead one's claim stands, or once the listener's role claim reaper has freed that claim, it
+copies the unread notice to the role's kept lane and the next live holder is handed the copy. A
+copy no live holder takes within its hour is dropped, and the listener sends a dead letter to the
+notice's sender. The daemon publishes the notice as a session of its own,
+`legion-daemon-<project>`, which it registers at the listener as a session that reads its own
+subject (`own_reader`) and reads through a durable of its own, `legion-go-<project>-agent`; a
+dead letter whose `dead_letter` field is `expired` or `delivery_mode` owes the run again, and the
+notice is written and published again for the next controller that holds the role
+(`admission: owes the controller again the runs of provider errors whose notice it dropped
+unread`). A dead letter whose field ends in `_unconfirmed` says the copy may have reached the
+session that held the role, and owes nothing, so no run is told twice. `outbox: the Envoy
+listener did not register the provider-errors sender as an own reader`, once at WARN, means a
+listener that predates own readers: the dead letters still reach the daemon, after the listener's
+retry window, each with an agent wake report naming the sender. Nothing is held and nothing is
+stopped by a run of six: the task is still kept and still sent again. The run goes back
 to zero three ways: at a turn of that claim that ends with no provider error, at a compaction of
 its session that ran (`legion claims compact`, or the controller's `compact`; one Oh My Pi refused
 or skipped resets nothing, since the session is as it was), and when the claim's recorded session

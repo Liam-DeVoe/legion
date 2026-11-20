@@ -857,7 +857,10 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	}
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
-		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
+		// The session the outbox publishes the provider-errors notice as, whose agent subject
+		// carries the listener's dead letters of that notice (outbox.providerErrorsNotice).
+		OwnSession: notify.DaemonSession(w.projectID),
+		AckWait:    cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
@@ -1710,6 +1713,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.outbox.Run(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.outbox.providerErrorsSender(running)
 		return nil
 	})
 	group.Go(func() error {

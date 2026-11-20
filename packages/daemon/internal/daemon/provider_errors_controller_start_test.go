@@ -492,7 +492,8 @@ func TestAProviderErrorsNoticeWhoseRoleHasNoHolderAtThePublishKeepsItsRow(t *tes
 
 // noHolderAtThePublish is the listener as the outbox meets it when the controller's role loses
 // its live holder between the outbox's read and its publish: the read names session live, and
-// the publish to topic, the controller's role, is answered 404 with no holder.
+// the publish to topic, the controller's role, as the daemon's provider-errors sender
+// (outboxNotices.PublishAs) is answered 404 with no holder.
 type noHolderAtThePublish struct {
 	outboxNotices
 	session   string
@@ -504,12 +505,12 @@ func (p *noHolderAtThePublish) RoleHolder(context.Context, string) (string, stri
 	return p.session, notify.StateLive, nil
 }
 
-func (p *noHolderAtThePublish) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (p *noHolderAtThePublish) PublishAs(ctx context.Context, topic, message string, payload any, key, source string) (string, error) {
 	if topic == p.topic {
 		p.published++
-		return fmt.Errorf("listener answered 404: %w", notify.ErrNoHolder)
+		return "", fmt.Errorf("listener answered 404: %w", notify.ErrNoHolder)
 	}
-	return p.outboxNotices.Publish(ctx, topic, message, payload, key)
+	return p.outboxNotices.PublishAs(ctx, topic, message, payload, key, source)
 }
 
 // controllerKeptMessage is the message the listener keeps for the controller role while no

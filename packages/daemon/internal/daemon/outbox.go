@@ -182,14 +182,18 @@ type outbox struct {
 	wg      sync.WaitGroup
 }
 
-// outboxNotices is the Envoy listener as the outbox uses it: its publishes (notify.Publisher), and
-// the read of a role's holder (notify.HTTPPublisher.RoleHolder) that a provider-errors notice
-// waits on (controllerHolds). The read is part of the type every outbox is built with, rather than
-// a method a publisher may or may not carry, so no publisher can be built into an outbox that
-// would publish a provider-errors notice without it: a test's publisher answers the read itself.
+// outboxNotices is the Envoy listener as the outbox uses it: its publishes (notify.Publisher), the
+// read of a role's holder (notify.HTTPPublisher.RoleHolder) that a provider-errors notice waits on
+// (controllerHolds), that notice's publish as the daemon's own session (PublishAs), and the
+// registration of that session as an own reader (RegisterOwnReader, providerErrorsSender). The read
+// and the two others are part of the type every outbox is built with, rather than methods a
+// publisher may or may not carry, so no publisher can be built into an outbox that would publish a
+// provider-errors notice without them: a test's publisher answers them itself.
 type outboxNotices interface {
 	notify.Publisher
 	RoleHolder(ctx context.Context, role string) (holder, state string, err error)
+	PublishAs(ctx context.Context, topic, message string, payload any, dedupeKey, source string) (string, error)
+	RegisterOwnReader(ctx context.Context, session, title string) error
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
@@ -295,6 +299,15 @@ func (r *outbox) publishKept(ctx context.Context, topic, message string, payload
 		return false, err
 	}
 	return r.notices.PublishKept(ctx, topic, message, payload, dedupeKey)
+}
+
+// publishAs is publish as the session source (notify.HTTPPublisher.PublishAs), held as publish is,
+// and answers the event id of the envelope the listener stored.
+func (r *outbox) publishAs(ctx context.Context, topic, message string, payload any, dedupeKey, source string) (string, error) {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return "", err
+	}
+	return r.notices.PublishAs(ctx, topic, message, payload, dedupeKey, source)
 }
 
 // heldBack is the gate publish and publishKept share: nil when topic may be published to, and
@@ -2368,24 +2381,62 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 // packages/envoy/cmd/listener/role_keep.go), and the row has no such bound, so the row is the
 // keeper that waits as long as no controller holds its role.
 //
-// What no read here closes: a controller whose process died less than the listener's live window
-// ago (contracts.SessionLiveWindow, five minutes after its last registration) is read live, by
+// A controller whose process died less than the listener's live window ago
+// (contracts.SessionLiveWindow, five minutes after its last registration) is read live, by
 // controllerHolds and by the listener at the publish, and is forwarded the notice into its own
-// consumer. The 200 is the stream's word that it stored the forward, not the holder's that it
-// read it (roleSend, confirmed.go), and nothing a controller session sends tells the daemon it
-// read a notice, so a controller started in that session's place is not handed it.
+// consumer: the 200 is the stream's word that it stored the forward, not the holder's that it read
+// it (roleSend, confirmed.go). The listener hands such a forward to the role's next holder: when
+// another session claims the role while the dead session's claim stands, or once its role claim
+// reaper frees that claim, it copies the role messages the dead session did not read to the
+// role's kept lane (packages/envoy/cmd/listener/role_takeover.go), whose walk hands each copy to
+// the next live holder within the copy's hour. A copy no live holder takes in that hour is dropped,
+// and the listener sends a dead letter to the copy's source_session naming the copy's event id
+// (keptRoleDeadLetter, role_keep.go). So the notice is published as the daemon's own session
+// (notify.DaemonSession, PublishAs), which reads its agent subject through intake's own durable
+// (intake.ConsumerSpec.OwnSession) and is registered at the listener as an own reader
+// (providerErrorsSender), and the copy the 200 names is recorded with the runs the notice tells
+// (recordProviderErrorsCopy). A dead letter of that copy owes the runs again unless its
+// dead_letter field says the copy may have reached the session that held the role then (admit's
+// oweProviderErrorsAgain), and the notice admission then writes again waits here, as this one did,
+// for a controller holding the role live: a run is told the next controller however late it comes.
 func (r *outbox) providerErrorsNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	role := claim.ControllerToken(r.project)
 	if err := r.controllerHolds(ctx, row, role); err != nil {
 		return err
 	}
 	topic := notify.RoleTopicPrefix + string(role)
-	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	told := payload.Told
+	published := payload
+	published.Told = nil
+	copied, err := r.publishAs(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(published), record.OutboxKey(row.ID), notify.DaemonSession(r.project))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
 		return wait.Errorf("the provider-errors notice for %s waits for a live holder of %s: %w", row.Issue, role, err)
 	case err != nil:
 		return fmt.Errorf("publish the provider-errors notice for %s to %s: %w", row.Issue, topic, err)
+	}
+	return r.recordProviderErrorsCopy(ctx, row, told, copied)
+}
+
+// recordProviderErrorsCopy records the copy the listener stored of row's provider-errors notice,
+// under the event id its 200 named, with the runs the notice tells (record.Store.RecordProviderErrorsCopy),
+// once the publish has landed and before the row finishes, so a dead letter of that copy finds its
+// runs. A record that fails fails the attempt, and the row publishes again on its backoff: the
+// listener answers that repeat of the dedupe key without a second forward and under a new event id
+// (its forwardRepeat), so that copy's dead letter would name the first event id, which no record
+// holds, and owe nothing (record.DeadLetterUnknown, logged by admission at WARN). A row an earlier
+// release queued tells no runs, and a listener's 200 that names no event id names no copy; either
+// records nothing, with one line.
+func (r *outbox) recordProviderErrorsCopy(ctx context.Context, row record.OutboxRow, told *record.ToldRuns, copied string) error {
+	if told == nil || copied == "" {
+		r.log.Warn("outbox: recorded no copy of a provider-errors notice the listener stored, so a dead letter of it owes nothing again",
+			"row", row.ID, "issue", row.Issue, "event_id", copied, "told_runs", told != nil)
+		return nil
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.RecordProviderErrorsCopy(ctx, tx, copied, *told)
+	}); err != nil {
+		return fmt.Errorf("record the copy %s of the provider-errors notice for %s: %w", copied, row.Issue, err)
 	}
 	return nil
 }

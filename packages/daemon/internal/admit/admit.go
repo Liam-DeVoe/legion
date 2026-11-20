@@ -242,6 +242,15 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		_, returned, err := a.promote(ctx, tx)
 		return returned, nil, err
 	}
+	if letter, ok := fact.(intake.ProviderErrorsDeadLetter); ok {
+		// The runs a dead letter owes again are written as a notice by the pass below, which
+		// tells every owed run while a controller is registered (TellOwedProviderErrors).
+		if err := a.oweProviderErrorsAgain(ctx, tx, letter); err != nil {
+			return nil, nil, err
+		}
+		_, returned, err := a.promote(ctx, tx)
+		return returned, nil, err
+	}
 
 	observation, ok := fact.(intake.DispatchIssue)
 	if !ok {
@@ -562,11 +571,18 @@ func (a *Admission) TellOwedProviderErrors(ctx context.Context, tx pgx.Tx) error
 // says the same thing of them. No pending notice holds one back: the mark already tells each run
 // once, so an earlier notice still unsent, of the same claim or of another, waits beside it
 // rather than in front of it, and a run that ends while that notice waits is not lost behind it.
+// The notice carries the claim and its runs as its told runs (record.Notice.Told), which the
+// outbox records with the copy the listener stores, so a dead letter of that copy owes them again
+// (oweProviderErrorsAgain).
 func (a *Admission) tellProviderErrors(ctx context.Context, tx pgx.Tx, owed []record.OwedProviderErrors) error {
 	for _, notice := range owed {
 		reason := toldRunsReason(notice.Runs)
+		told := &record.ToldRuns{Claim: notice.Token}
+		for _, run := range notice.Runs {
+			told.Runs = append(told.Runs, record.ToldRun{Run: run.Run, Reason: run.Reason})
+		}
 		if err := a.enqueue(ctx, tx, notice.Issue, record.ControllerNotice{Kind: record.ProviderErrorsNotice,
-			Role: notice.Role, Reason: reason}, a.now()); err != nil {
+			Role: notice.Role, Reason: reason, Told: told}, a.now()); err != nil {
 			return err
 		}
 		if err := a.store.MarkProviderErrorsTold(ctx, tx, notice.Token, notice.Newest()); err != nil {
@@ -581,6 +597,37 @@ func (a *Admission) tellProviderErrors(ctx context.Context, tx pgx.Tx, owed []re
 				"issue", notice.Issue, "role", notice.Role, "runs", runs, "reason", reason)
 		})
 	}
+	return nil
+}
+
+// oweProviderErrorsAgain applies the Envoy listener's dead letter of a kept copy of a
+// provider-errors notice, in the fact's transaction (record.Store.ProviderErrorsDeadLetter): a
+// copy whose dead_letter field says it may have reached the session that held the role then
+// counts as told, and one the listener dropped unread owes again each of its runs that no later
+// copy tells, which the admission pass after it writes as a new notice while a controller is
+// registered, published again once a controller holds its role live (the daemon's
+// providerErrorsNotice). So a run whose notice went to a controller that died inside the
+// listener's live window, and whose copy no controller took within the copy's hour, is told the
+// next controller, however much later it comes; each new copy that dies the same way owes it
+// once more, and the loop ends with the copy a controller takes, which sends no dead letter.
+// Each copy's dead letter is applied once, and every outcome is logged once it commits.
+func (a *Admission) oweProviderErrorsAgain(ctx context.Context, tx pgx.Tx, letter intake.ProviderErrorsDeadLetter) error {
+	applied, err := a.store.ProviderErrorsDeadLetter(ctx, tx, letter.Copy, letter.Reason)
+	if err != nil {
+		return err
+	}
+	intake.OnCommit(ctx, func() {
+		attributes := []any{"copy", letter.Copy, "dead_letter", letter.Reason, "outcome", applied.Outcome, "claim", applied.Claim}
+		switch applied.Outcome {
+		case record.DeadLetterOwedAgain:
+			a.log.Warn("admission: owes the controller again the runs of provider errors whose notice it dropped unread",
+				append(attributes, "runs", applied.Runs)...)
+		case record.DeadLetterUnknown:
+			a.log.Warn("admission: read a dead letter of a provider-errors notice copy it holds no record of", attributes...)
+		default:
+			a.log.Info("admission: read a dead letter of a provider-errors notice copy that owes nothing again", attributes...)
+		}
+	})
 	return nil
 }
 

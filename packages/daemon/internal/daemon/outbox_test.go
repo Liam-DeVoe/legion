@@ -2681,11 +2681,19 @@ type outboxPublisher struct {
 // noRoleHolders is the role read of a test publisher that holds no role record
 // (outboxNotices.RoleHolder): every role reads as one no session claims, so a provider-errors
 // notice the outbox runs through it waits for a controller to hold its role, as it does against
-// a listener where no controller has claimed the role yet. The publishers that embed it say so in
-// their type.
+// a listener where no controller has claimed the role yet, and never reaches its publish as the
+// daemon's session (outboxNotices.PublishAs), which it refuses; the registration of that session
+// (outboxNotices.RegisterOwnReader) is taken and does nothing. The publishers that embed it say so
+// in their type.
 type noRoleHolders struct{}
 
 func (noRoleHolders) RoleHolder(context.Context, string) (string, string, error) { return "", "", nil }
+
+func (noRoleHolders) PublishAs(context.Context, string, string, any, string, string) (string, error) {
+	return "", errors.New("this test publisher holds no role record, so no provider-errors notice is published through it")
+}
+
+func (noRoleHolders) RegisterOwnReader(context.Context, string, string) error { return nil }
 
 // outboxPublish is one publish a fake publisher recorded. keep is that the publish asked the
 // listener to keep the message for the role's next holder (notify.Publisher.PublishKept).
