@@ -112,7 +112,10 @@ func checkExitCodes(root string, codes []docConst) error {
 	for handler := range handlers {
 		exitFuncs[handler] = true
 	}
-	for _, f := range src.files {
+	// The argument of every os.Exit call, by file: each is a root of the closure below, and each
+	// is checked as an exit code once the closure is known.
+	exitArgs := make([][]ast.Expr, len(src.files))
+	for i, f := range src.files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok || len(call.Args) != 1 {
@@ -120,6 +123,7 @@ func checkExitCodes(root string, codes []docConst) error {
 			}
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
 				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+					exitArgs[i] = append(exitArgs[i], call.Args[0])
 					addExitFunc(call.Args[0])
 				}
 			}
@@ -188,7 +192,7 @@ func checkExitCodes(root string, codes []docConst) error {
 			return true
 		})
 	}
-	for _, f := range src.files {
+	for i, f := range src.files {
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Body == nil || fn.Recv != nil || !returnsInt(fn.Type) || !exitFuncs[fn.Name.Name] {
@@ -196,18 +200,9 @@ func checkExitCodes(root string, codes []docConst) error {
 			}
 			checkBody(fn.Body)
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
-				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-					allowed(call.Args[0])
-				}
-			}
-			return true
-		})
+		for _, arg := range exitArgs[i] {
+			allowed(arg)
+		}
 	}
 	return refusedAt(problems)
 }

@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// TestSecretFormCallbacksKeepExitCodesChecked: checkExitCodes follows an exit code from each root
+// (the argument main passes to os.Exit, and each registered secret-form handler) down through the
+// functions it returns, and refuses an undocumented code wherever on that path it is planted: in
+// a handler, in a command the root returns, and in a helper that command returns. An int helper no
+// exit path reaches is no exit code.
 func TestSecretFormCallbacksKeepExitCodesChecked(t *testing.T) {
 	const source = `package main
 const exitUsageError = 2
@@ -19,12 +24,16 @@ func good() int { return exitUsageError }
 func waitBound(wait int) int { return wait }
 func dispatch() int {
 	for _, form := range secretForms { return form.run() }
-	return 0
+	return cmdList()
 }
+func cmdList() int { if false { return 1 }; return listMachines() }
+func listMachines() int { return exitUsageError }
 `
 	for _, tc := range []struct{ name, before, after, want string }{
 		{"unreached int helper", "", "", ""},
 		{"real undocumented handler exit", "return exitUsageError", "return 17", "exit code 17"},
+		{"undocumented exit in a command the root returns", "{ return 1 }", "{ return 17 }", "exit code 17"},
+		{"undocumented exit in a helper that command returns", "listMachines() int { return exitUsageError }", "listMachines() int { return 17 }", "exit code 17"},
 		{"foreign handler", "command{}, good", "command{}, foreign.Run", "checked local exit-code function"},
 		{"literal callback", "command{}, good", "command{}, func() int { return 17 }", "checked local exit-code function"},
 		{"changed row", "return form.run()", "form.run = foreign.Run; return form.run()", "cannot be reassigned"},
