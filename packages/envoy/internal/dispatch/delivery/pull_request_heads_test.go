@@ -790,7 +790,9 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 
 // A row whose repository the App cannot read is stamped, not warned about forever: the reconcile
 // orders the never-read first, so an unstamped row holds the front of every batch. So is a row
-// stored under a name GitHub does not allow, `acme/..`, which no read can reach.
+// stored under a name GitHub does not allow, `acme/..`, which no read can reach. This build's
+// writer refuses that name (checkPullRequestKey), so the row is stored by SQL, as a release
+// before the routes held names to GitHub's rule stored it.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -805,13 +807,19 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
-	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
+	for _, repo := range []string{"acme/hidden", "acme/walled"} {
 		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: repo, Number: 51, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 			HeadRef: "topic", BaseRef: "main", State: "open",
 		}); err != nil {
 			t.Fatalf("store %s's never-read head: %v", repo, err)
 		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state)
+		values ('acme/..', 51, 'cccccccccccccccccccccccccccccccccccccccc', 'topic', 'main', 'open')
+	`); err != nil {
+		t.Fatalf("store acme/..'s never-read head as a release before did: %v", err)
 	}
 
 	now := time.Now()

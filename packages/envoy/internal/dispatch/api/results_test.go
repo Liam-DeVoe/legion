@@ -1105,9 +1105,12 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 // The read-through after the write reads the repository that holds the commit, so the linked
 // repository's pull request is learned from that repository.
 //
-// Each row links the issue to its own set of pull requests and records one result. The rows
-// run in order on one issue, each in a subtest of its own, so a row that fails does not stop
-// the rows after it.
+// Each row is an issue of its own that links its own pull requests and records one result, each
+// in a subtest of its own, so a row that fails does not stop the rows after it. A pull request an
+// issue links by its URL is that issue's in any repository (R19 of the spec of several open pull
+// requests), and the attribution keeps it the issue's until a read of the pull request judges its
+// row again, so rows sharing one issue would each hold the pull requests the rows before them
+// linked. A pull request is linked from one issue alone, so no two rows link the same one.
 func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "7777777777777777777777777777777777777777"
@@ -1115,32 +1118,36 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		openPull   = "https://github.com/acme/tools/pull/7"
 		mergedPull = "https://github.com/acme/tools/pull/9"
 		closedPull = "https://github.com/acme/tools/pull/8"
+		// ownRowPull and neitherRowPull are open pull requests of acme/tools whose heads no
+		// commit of the test is.
+		ownRowPull     = "https://github.com/acme/tools/pull/17"
+		neitherRowPull = "https://github.com/acme/tools/pull/27"
 	)
 	linked := &linkedGitHub{
 		held: map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {linkedCommit}},
 		pulls: map[string]string{
 			"acme/tools#7": "open", "acme/tools#8": "closed", "acme/tools#9": "merged", "acme/sealed#5": "open",
+			"acme/tools#17": "open", "acme/tools#27": "open",
 		},
 		heads:       map[string]int{"acme/tools@" + linkedCommit: 7},
 		uninstalled: []string{"acme/elsewhere"},
 		sealed:      []string{"acme/sealed"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
-	issue := issueInRepository(t, handler, "RELK", "acme/widgets", "Work in two repositories")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	// The project's mapping to acme/widgets, which every row's issue resolves to.
+	issueInRepository(t, handler, "RELK", "acme/widgets", "Work in two repositories")
 
-	for _, row := range []struct {
+	// titles are the rows' issues' titles, words no two of them share, so no create is refused as
+	// a possible duplicate of another row's issue.
+	titles := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India"}
+	for index, row := range []struct {
 		name   string
 		links  []string
 		commit string
 		// refused is whether the result is refused 400 RESULT_COMMIT_UNKNOWN, named and unnamed
-		// the repositories the refusal's first clause names as asked and does not, unreadable
-		// the linked pull requests its clause on what Dispatch could not read names, and
-		// unreadCommit the linked pull requests in whose repository that clause names the commit.
+		// the repositories the refusal's first clause names as asked and does not.
 		refused        bool
 		named, unnamed []string
-		unreadable     []string
-		unreadCommit   []string
 		// readThrough is the repository the read-through after the write asks, and every other
 		// repository is asked nothing; a refusal reads nothing through.
 		readThrough string
@@ -1169,12 +1176,12 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		},
 		{
 			name:  "a commit of the issue's own repository is taken as before, with no link read",
-			links: []string{openPull}, commit: headCommit,
+			links: []string{ownRowPull}, commit: headCommit,
 			readThrough: "acme/widgets",
 		},
 		{
 			name:  "a commit neither repository holds is refused, naming both",
-			links: []string{openPull}, commit: nearHeadCommit, refused: true,
+			links: []string{neitherRowPull}, commit: nearHeadCommit, refused: true,
 			named: []string{"acme/widgets", "acme/tools"}, stateReads: 1,
 		},
 		{
@@ -1186,37 +1193,38 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			named: []string{"acme/widgets"}, unnamed: []string{"acme/tools"}, stateReads: 1,
 		},
 		{
+			// R17 of the spec of several open pull requests: a repository Dispatch cannot read stores the result.
 			// A link to a pull request of a repository the App is not installed on: GitHub
 			// answers the installation lookup 404, which is its answer about every pull request
-			// of that repository, so the repository does not count, no pull request of it is
-			// read, and the commit no repository holds is refused, the refusal naming that pull
-			// request as one Dispatch could not read. Read as a failure, it would store the result
-			// with that repository, where no read can ever place it.
-			name:  "a link to a pull request of a repository the App is not installed on lets no unheld commit through",
-			links: []string{"https://github.com/acme/elsewhere/pull/3"}, commit: nearHeadCommit, refused: true,
-			named: []string{"acme/widgets"}, unnamed: []string{"acme/elsewhere"}, unreadable: []string{"acme/elsewhere#3"},
+			// of that repository, so no pull request of it is read, and Dispatch cannot say
+			// whether it holds the commit. The result is stored, taken to be the issue's own
+			// repository's, and the read-through asks that repository.
+			name:  "a link to a pull request of a repository the App is not installed on stores the result",
+			links: []string{"https://github.com/acme/elsewhere/pull/3"}, commit: nearHeadCommit,
+			readThrough: "acme/widgets",
 		},
 		{
+			// R17 of the spec of several open pull requests: a repository Dispatch cannot read stores the result.
 			// A link to an open pull request of a repository whose pull requests the App reads
-			// and whose commits it cannot: the repository does not count, and the refusal names
-			// the commit in that repository as what Dispatch could not read, not the pull
-			// request, which it read.
-			name:  "a link to a pull request of a repository whose commits the App cannot read lets no unheld commit through",
-			links: []string{"https://github.com/acme/sealed/pull/5"}, commit: nearHeadCommit, refused: true,
-			named: []string{"acme/widgets"}, unnamed: []string{"acme/sealed"}, unreadCommit: []string{"acme/sealed#5"},
+			// and whose commits it cannot: Dispatch cannot say whether that repository holds the
+			// commit, so the result is stored, taken to be the issue's own repository's.
+			name:  "a link to a pull request of a repository whose commits the App cannot read stores the result",
+			links: []string{"https://github.com/acme/sealed/pull/5"}, commit: nearHeadCommit,
+			readThrough: "acme/widgets",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			linkPullRequests(t, handler, issue.Key, row.links...)
-			eventsBefore := resultEventsOn(t, database, issue.Key)
+			issue := issueOfProject(t, handler, "RELK", titles[index], twoChecks)
+			linkPullRequests(t, handler, issue, row.links...)
+			eventsBefore := resultEventsOn(t, database, issue)
 			toolsReadsBefore, toolsAsksBefore := linked.counts("acme/tools")
 			_, widgetsAsksBefore := linked.counts("acme/widgets")
 
-			recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", row.commit, nil))
+			recorded := recordResult(t, handler, issue, resultBody("k1", "pass", row.commit, nil))
 
 			toolsReads, toolsAsks := linked.counts("acme/tools")
 			_, widgetsAsks := linked.counts("acme/widgets")
-			stored := resultEventsOn(t, database, issue.Key) - eventsBefore
+			stored := resultEventsOn(t, database, issue) - eventsBefore
 			if row.refused {
 				code, text := refusalOf(t, recorded)
 				if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
@@ -1226,7 +1234,7 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 					t.Errorf("the refusal reads %q, want the commit %s named", text, row.commit)
 				}
 				// The first clause names the repositories asked about the commit; what follows
-				// its first "; " names what Dispatch could not read and what the bound left unread.
+				// its first "; " names what Dispatch set aside and what the bound left unread.
 				asked, _, _ := strings.Cut(text, "; ")
 				for _, repo := range row.named {
 					if !strings.Contains(asked, repo) {
@@ -1236,19 +1244,6 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 				for _, repo := range row.unnamed {
 					if strings.Contains(asked, repo) {
 						t.Errorf("the refusal reads %q, want %s, which it never asked about the commit, not named as asked", text, repo)
-					}
-				}
-				for _, pull := range row.unreadable {
-					if !strings.Contains(text, "Dispatch could not read the linked pull request "+pull) {
-						t.Errorf("the refusal reads %q, want %s named as a linked pull request Dispatch could not read", text, pull)
-					}
-				}
-				for _, pull := range row.unreadCommit {
-					if !strings.Contains(text, "Dispatch could not read the commit in the repository of the linked pull request "+pull) {
-						t.Errorf("the refusal reads %q, want the commit in the repository of %s named as what Dispatch could not read", text, pull)
-					}
-					if strings.Contains(text, "could not read the linked pull request "+pull) {
-						t.Errorf("the refusal reads %q, want %s, which Dispatch read, not named as a pull request it could not read", text, pull)
 					}
 				}
 				if stored != 0 {
@@ -1419,10 +1414,12 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	} {
 		linkPullRequests(t, handler, issue, url)
 	}
-	// The two merges as Dispatch holds them: rows of acme/tools attributed to no issue, which
-	// only the links name as the issues'.
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
-	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", "", "integration/x")
+	// The two merges as Dispatch holds them: rows of acme/tools, stored as a read of GitHub
+	// stores them, with texts that name no issue, which only the links name as the issues'. R10
+	// and R19 of the spec of several open pull requests: a row with no texts would keep the issue
+	// it stores, here none, until the facts line reads it.
+	storeLinkedHeadOn(t, database, "acme/tools", 9, headCommit, "merged", "main")
+	storeLinkedHeadOn(t, database, "acme/tools", 10, newHeadCommit, "merged", "integration/x")
 
 	linkedAfter := recordStored(t, handler, trunk, "k4", toolsMerge)
 	linkedDefault := recordStored(t, handler, trunk, "k5", toolsMerge)
@@ -4907,7 +4904,7 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		issue := issueInRepository(t, handler, "RELS", "acme/widgets", "Answers that name the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+		storeLinkedHead(t, database, "acme/tools", 7, headCommit) // R10 and R19: a linked row is the issue's once its texts are stored
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 		own := recordStored(t, handler, issue, "k1", ownCommit)
@@ -4937,7 +4934,7 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		issue := issueInRepository(t, handler, "RELH", "acme/widgets", "An unknown answer that names the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+		storeLinkedHead(t, database, "acme/tools", 7, headCommit) // R10 and R19: a linked row is the issue's once its texts are stored
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 
