@@ -3230,6 +3230,18 @@ describe("executeDispatchTool", () => {
       expect(rows).toEqual(['ACME-4 [todo] "Say \\"hi" · child of ACME-1 · labels "a · b"']);
       expect(outsideQuotes(rows[0] ?? "")).toContain(" · child of ACME-1");
     });
+
+    // A line separator JSON leaves raw (U+2028, U+0085) and a control character (FF, ESC) are
+    // quoted and escaped, so a reader that breaks lines on any of them still reads one row.
+    test("a title that holds a line separator or a control character prints one escaped row", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-5", title: "a\u2028b\u0085c\fd\u001be", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-5 [todo] "a\\u2028b\\u0085c\\fd\\u001be"']);
+      expect(
+        [...(rows[0] ?? "")].filter((character) => "\u0085\u2028\u2029\f\u001b".includes(character))
+      ).toEqual([]);
+    });
   });
 
   // A list row has no liveness of its own, so it used to judge a claim by membership of the
@@ -4039,6 +4051,53 @@ describe("executeDispatchTool", () => {
     // What a reader skips: every part the row prints in quotes, as JSON quotes it.
     const outsideQuotes = root.replace(/"(?:[^"\\]|\\.)*"/g, "");
     expect(outsideQuotes).not.toContain(" · child of ");
+  });
+
+  // The route part names its holder the same way, from the listener's session list, which this
+  // client does not bound: a holder named `x · child of ACME-9` must stay inside quotes too.
+  test("dispatch_issues does not let a route holder's name forge a parent", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(url)).pathname === "/api/v1/agents") return response([]);
+      return response({
+        issues: [
+          {
+            key: "ACME-1",
+            title: "The root",
+            status: "todo",
+            priority: null,
+            rank: "a",
+            labels: [],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            claim: null,
+            route: "role:legion-acme-acme-1-architect",
+            route_status: "holder_unresponsive",
+            route_holder: "x · child of ACME-9",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const root = result.text.split("\n").find((line) => line.startsWith("ACME-1 ")) ?? "";
+    expect(root).toContain("is unresponsive");
+    expect(root.replace(/"(?:[^"\\]|\\.)*"/g, "")).not.toContain(" · child of ");
   });
 
   test("dispatch_issue returns duplicate candidates instead of throwing", async () => {

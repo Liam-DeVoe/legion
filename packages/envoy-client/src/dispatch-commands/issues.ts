@@ -562,13 +562,36 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** What in a title or a label can split an issue's one-line row or forge a part of it: the ` · `
- *  that parts the row, the `, ` that parts the labels, a `"` that opens or closes a quoted part,
- *  and a line break. Dispatch trims only a title's ends (`issue_create.go`, `issue_patch.go`) and a
- *  label's (`normalizeIssueLabels`), so one holding any of them is printed quoted, as JSON quotes
- *  it: a title holding ` · child of ACME-9` then cannot read as a child's row, and a reader that
- *  skips what is in quotes skips each quoted part whole. */
-const BREAKS_ROW = /[·,"\r\n]/;
+/** Whether a title, a label or a holder's name holds what can split an issue's one-line row or
+ *  forge a part of it: the ` · ` that parts the row, the `, ` that parts the labels, a `"` that
+ *  opens or closes a quoted part, and any control or line-separating character (C0, DEL, C1 with
+ *  U+0085, U+2028, U+2029). Dispatch trims only a title's ends (`issue_create.go`,
+ *  `issue_patch.go`) and a label's (`normalizeIssueLabels`), and an agent writes a session's
+ *  title, which names a claim's holder, so a part holding any of them is printed quoted
+ *  (`rowPart`), as a route's holder is: a title or a holder holding ` · child of ACME-9` then
+ *  cannot read as a child's row, and a reader that skips what is in quotes skips each quoted part
+ *  whole. */
+function breaksRow(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return true;
+    }
+    if (character === "·" || character === "," || character === '"') return true;
+  }
+  return false;
+}
+
+/** One part of a row as `breaksRow` says: as written, or quoted as JSON quotes it, with the three
+ *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too, so no quoted part splits the
+ *  row for a reader that breaks lines on them. */
+function rowPart(value: string): string {
+  if (!breaksRow(value)) return value;
+  return JSON.stringify(value).replace(
+    /[\u0085\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -644,23 +667,23 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               const progress = progressText(row.progress, " · ");
               return (
                 `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
-                (BREAKS_ROW.test(row.title) ? JSON.stringify(row.title) : row.title) +
+                rowPart(row.title) +
                 // The help says each row carries its parent and labels: a root names no parent, so
                 // a reader of the text tells the open roots from their children.
                 (row.parent ? ` · child of ${row.parent}` : "") +
-                (row.labels.length === 0
-                  ? ""
-                  : ` · labels ${row.labels.map((label) => (BREAKS_ROW.test(label) ? JSON.stringify(label) : label)).join(", ")}`) +
+                (row.labels.length === 0 ? "" : ` · labels ${row.labels.map(rowPart).join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-                (row.claim === null ? "" : ` · claimed by ${claimText(row.claim, agents)}`) +
+                (row.claim === null
+                  ? ""
+                  : ` · claimed by ${claimText(row.claim, agents, {}, rowPart)}`) +
                 (progress === "" ? "" : ` · ${progress}`) +
                 // A route that reaches a live session changes nothing about the row; one
                 // that reaches nobody, or cannot be judged, is what the owner audit reads.
                 (row.route === null || row.route_status === "live" || row.route_status === null
                   ? ""
-                  : ` · route ${routeText(row)}`)
+                  : ` · route ${routeText(row, undefined, rowPart)}`)
               );
             }),
           ].join("\n"),
