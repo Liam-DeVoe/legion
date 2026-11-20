@@ -81,7 +81,7 @@ var settingsEmitted = map[string]string{
 	"Config.DispatchURL":                             "dispatch_url",
 	"Config.Projects":                                "projects",
 	"Config.Gates":                                   "gates",
-	"Config.GitHubApps":                              "github_apps",
+	"Config.GitHubApp":                               "github_apps.implement",
 	"Config.Linger":                                  "linger_hours",
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateGrace":                          "pod_update_grace_minutes",
@@ -184,10 +184,8 @@ var settingsEmitted = map[string]string{
 	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
 	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
 	"Gates.Design":                                   "gates.design",
-	"GitHubApps.Implement":                           "github_apps.implement",
-	"GitHubApps.Review":                              "github_apps.review",
-	"GitHubApp.AppID":                                "github_apps.<app>.app_id",
-	"GitHubApp.Installations":                        "github_apps.<app>.installations",
+	"GitHubApp.AppID":                                "github_apps.implement.app_id",
+	"GitHubApp.Installations":                        "github_apps.implement.installations",
 	"Capabilities.Decided":                           "capabilities.decided",
 	"Config.Hooks":                                   "hooks",
 	"Hook.Name":                                      "hooks[].name",
@@ -225,6 +223,10 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.VerdictRepositories":      "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"VerdictRepository.Repository":    "an entry of verdict_repositories, which the settings leave out (Config.VerdictRepositories)",
+	"VerdictRepository.CIReviewer":    "an entry of verdict_repositories, which the settings leave out (Config.VerdictRepositories)",
+	"VerdictRepository.SideReviews":   "an entry of verdict_repositories, which the settings leave out (Config.VerdictRepositories)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
@@ -377,7 +379,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"volume", "refresh_minutes", "retain_hours", "resources",
 	})
 	apps := keysOf(t, top["github_apps"])
-	assertKeys(t, "settings.github_apps", apps, []string{"implement", "review"})
+	assertKeys(t, "settings.github_apps", apps, []string{"implement"})
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
@@ -664,6 +666,35 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// verdict_repositories reaches no `settings`, at any depth: the value names a deployment's own
+// repositories and the bot whose review decides one, and the route that carries the block
+// authenticates nobody (settingsExcluded).
+func TestSettingsOfLeavesOutTheVerdictRepositories(t *testing.T) {
+	const repository, reviewer = "acme/verdicts", "example-ci-review[bot]"
+	cfg := loadSettingsFile(t, settingsFixtureFile+"verdict_repositories:\n  - repository: "+repository+"\n    ci_reviewer: "+reviewer+"\n    side_reviews: true\n")
+	if got := cfg.VerdictRepositories; len(got) != 1 || got[0].Repository.String() != repository || got[0].CIReviewer != reviewer {
+		t.Fatalf("the fixture carries %+v, want %s reviewed by %s: the assertions below would prove nothing", got, repository, reviewer)
+	}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if strings.Contains(key, "verdict") || strings.HasSuffix(key, ".ci_reviewer") || strings.HasSuffix(key, ".side_reviews") {
+			t.Errorf("settings carry the key %s: %s", key, encoded)
+		}
+	}
+	for _, value := range []string{repository, reviewer} {
+		if bytes.Contains(encoded, []byte(value)) {
+			t.Errorf("settings carry %s: %s", value, encoded)
+		}
 	}
 }
 

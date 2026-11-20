@@ -343,33 +343,27 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 	}
 }
 
-// appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
-// installation, so a daemon serving no repository yet still knows the review App's login, as one
-// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine tells the review
-// App's reviews from every other account's by the login that authored them, and the reviewer's own
-// among those by the session their Legion footer names, which must be the one the reviewer's claim
-// records (workflow's byReviewer), so one App configured for both roles would submit every role's
-// review under the one login, and is refused, as is a review App that names no login.
-func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
-	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
-		for _, role := range appauth.Roles {
-			login, err := apps.AppLogin(ctx, role)
-			if err != nil {
-				return err
-			}
-			logins[role] = login
-		}
-		return nil
+// appLoginAtBoot reads the one App's bot login under its own JWT (appauth.Logins), which needs no
+// installation, so a daemon serving no repository yet still knows it, as one attempt run again
+// after a failure GitHub reports as its own trouble (appauth.TransientError); any other failure is
+// refused at once. The engine tells the App's reviews from every other account's by the login that
+// authored them, and the reviewer's own among those by the session their Legion footer names, which
+// must be the one the reviewer's claim records (workflow's byReviewer), so an App that names no
+// login is refused. One App serves every role, so the login is read once, under the review role.
+func appLoginAtBoot(ctx context.Context, app appauth.Logins, log *slog.Logger) (string, error) {
+	var login string
+	err := bootprobe.Run(ctx, "GitHub App login read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+		var err error
+		login, err = app.AppLogin(ctx, appauth.Review)
+		return err
 	}))
 	if err != nil {
 		return "", err
 	}
-	if logins[appauth.Review] == "" || logins[appauth.Review] == logins[appauth.Implement] {
-		return "", fmt.Errorf("the review App names bot login %q and the implement App %q; the workflow needs two different Apps", logins[appauth.Review], logins[appauth.Implement])
+	if login == "" {
+		return "", errors.New("the GitHub App names no bot login, which the workflow judges pushes and reviews by")
 	}
-	return logins[appauth.Review], nil
+	return login, nil
 }
 
 // mintAtBoot mints the implement and then the review App token on owner's installation, as one
@@ -395,7 +389,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
 // checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
 // directories from, which each App's own installations give (appauth.InstalledOwners) and no
-// repository list decides, the Apps' logins, the App tokens minted on each served owner account, the
+// repository list decides, the App's login, the App tokens minted on each served owner account, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
 // recorded gate of every issue Dispatch has not closed queued for its own
@@ -427,7 +421,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if tokens == nil {
 		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
 		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
+		owned := appauth.New(cfg.GitHubApp, appauth.Options{Log: log})
 		tokens = owned
 		defer func() {
 			if opened == nil {
@@ -464,7 +458,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
 	}
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, log)
+	reviewAppLogin, err := appLoginAtBoot(ctx, logins, log)
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,10 +73,9 @@ func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 	return lease, err
 }
 
-// The engine judges a push by its pusher against the review App's login, so a configuration whose
-// two roles resolve to one App would read every red the implementer leaves as a planned one: boot
-// refuses it, and a review App with no login, before anything else opens.
-func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testing.T) {
+// The engine judges a push by its pusher against the App's bot login, so boot refuses an App that
+// names no login before anything else opens.
+func TestOpenWorkflowRefusesAnAppThatNamesNoLogin(t *testing.T) {
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedBootCall(t, w, r, "demo") {
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
@@ -86,30 +86,58 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		Project: "demo", DispatchURL: dispatchServer.URL,
 		Projects: map[string]config.Project{"demo": {}},
 	}
-	github := repositoriesGitHub(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for name, tokens := range map[string]loginTokens{
-		"one App for both roles": {appauth.Implement: "legion-bot[bot]", appauth.Review: "legion-bot[bot]"},
-		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil, time.Now)
-			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
-				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
-			}
-		})
+	_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, loginTokens{}, repositoriesGitHub(t), nil, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "the GitHub App names no bot login") {
+		t.Fatalf("openWorkflow = %v, want the refusal of an App with no login", err)
 	}
 }
 
-// The boot reads the review App's bot login, the login the engine judges a push's pusher against,
-// under the App's own JWT, with no owner to mint for.
-func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
-	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatalf("appLoginsAtBoot: %v", err)
+// countedLogins is the one App's bot login, recording the role each read asked under and failing a
+// read for each error it still holds, in order.
+type countedLogins struct {
+	login string
+	errs  []error
+	roles []appauth.AppRole
+}
+
+func (c *countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
+	c.roles = append(c.roles, role)
+	if len(c.errs) > 0 {
+		err := c.errs[0]
+		c.errs = c.errs[1:]
+		return "", err
 	}
-	if login != "legion-reviewer[bot]" {
-		t.Fatalf("appLoginsAtBoot = %q, want the review App's login %q", login, "legion-reviewer[bot]")
+	return c.login, nil
+}
+
+// The boot reads the one App's bot login once, under the App's own JWT with no owner to mint for,
+// and answers it: the engine judges a push's pusher against that login. One App serves every role,
+// so no second login is read and none is compared. GitHub's trouble is read again; any other
+// failure, and an App that names no login, is refused at once.
+func TestOneAppLoginAtBoot(t *testing.T) {
+	quickAppMints(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	const want = "legion-implementer[bot]"
+	reviewOnce := []appauth.AppRole{appauth.Review}
+
+	app := &countedLogins{login: want}
+	login, err := appLoginAtBoot(context.Background(), app, log)
+	if err != nil || login != want || !slices.Equal(app.roles, reviewOnce) {
+		t.Fatalf("appLoginAtBoot = %q, %v after reads under %v; want the App's login %s, read once", login, err, app.roles, want)
+	}
+
+	trouble := &countedLogins{login: want, errs: []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}}}
+	if login, err := appLoginAtBoot(context.Background(), trouble, log); err != nil || login != want || len(trouble.roles) != 2 {
+		t.Fatalf("appLoginAtBoot after GitHub's trouble = %q, %v after %d reads; want the login read again", login, err, len(trouble.roles))
+	}
+
+	refused := &countedLogins{login: want, errs: []error{errors.New("GitHub answered 401")}}
+	if _, err := appLoginAtBoot(context.Background(), refused, log); err == nil || !strings.Contains(err.Error(), "401") || len(refused.roles) != 1 {
+		t.Fatalf("appLoginAtBoot of a refused read = %v after %d reads; want the refusal at once", err, len(refused.roles))
+	}
+
+	if _, err := appLoginAtBoot(context.Background(), &countedLogins{}, log); err == nil || !strings.Contains(err.Error(), "the GitHub App names no bot login") {
+		t.Fatalf("appLoginAtBoot of an App with no login = %v, want the refusal", err)
 	}
 }

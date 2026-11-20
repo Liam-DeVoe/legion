@@ -1,7 +1,7 @@
 package appauth
 
-// Token mode: an App configured with github_apps.<role>.token_command, for a deployment whose App
-// keys only a secrets broker holds. The Manager holds no key and signs no JWT for such an App: it
+// Token mode: an App configured with github_apps.implement.token_command, for a deployment whose
+// App keys only a secrets broker holds. The Manager holds no key and signs no JWT for such an App: it
 // runs the command, with `sh -c`, whenever it needs a lease (Token's refreshWindow governs when, as
 // in key mode), and reads from its stdout the release the secrets broker's `agent-secrets
 // <PROFILE> -- <cmd>` puts in <cmd>'s environment for a profile whose value is installations:
@@ -104,9 +104,10 @@ type commandRun struct {
 	err           error
 }
 
-// tokenCommandField is the configuration key of role's token_command, the name its failures carry.
-func tokenCommandField(role AppRole) string {
-	return "github_apps." + string(role) + ".token_command"
+// tokenCommandField is the configuration key of role's token_command, the name its failures carry:
+// the one App's, `github_apps.implement`, whichever role asks, since one App serves every role.
+func tokenCommandField(AppRole) string {
+	return "github_apps.implement.token_command"
 }
 
 // runTokenCommand returns the release of app's token_command for the request's owner ("" for

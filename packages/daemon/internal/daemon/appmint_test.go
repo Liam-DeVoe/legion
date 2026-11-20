@@ -32,7 +32,7 @@ import (
 // gitHubStandIn serves the GitHub App endpoints a boot's token mint calls, for whichever owner
 // accounts discover names: installation discovery answers through discover, every installation
 // is granted every permission a role's set names, the exchange and identity lookups succeed,
-// and each App's slug is legion-test-<its id>, so the two bot logins differ as two real Apps' do.
+// and an App's slug is legion-test-<its id>, the bot login it answers.
 // It counts each App's installation discoveries by the App id its JWT names.
 type gitHubStandIn struct {
 	mu          sync.Mutex
@@ -66,10 +66,10 @@ func jwtIssuer(t *testing.T, r *http.Request) string {
 	return claims.Issuer
 }
 
-// appTokens is a real App token manager whose GitHub is a stand-in, the implement App id 1 and the
-// review App id 2; discover answers each installation discovery, with its App and its number, from 1,
-// among that App's. The manager is returned as itself, not as the interface, so a test that counts
-// what the boot asks of it can embed it (bootMints) and keep every other method it answers.
+// appTokens is a real App token manager whose GitHub is a stand-in, the one App id 1; discover
+// answers each installation discovery, with its App and its number, from 1, among that App's. The
+// manager is returned as itself, not as the interface, so a test that counts what the boot asks of
+// it can embed it (bootMints) and keep every other method it answers.
 func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Request, app string, n int)) (*appauth.Manager, *gitHubStandIn) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -108,10 +108,8 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 			githubtest.Unexpected(t, w, r)
 		}
 	}})
-	return appauth.New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
-	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client()}), standIn
+	return appauth.New(config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
+		appauth.Options{BaseURL: server.URL, HTTPClient: server.Client()}), standIn
 }
 
 // quickAppMints shortens a boot mint's attempt and its retry for the test, restoring them after.
@@ -211,8 +209,10 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	if err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second); err != nil {
 		t.Fatalf("boot = %v, want it to mint again after one GitHub request that never answered", err)
 	}
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 2, "2": 1}) {
-		t.Errorf("installation discoveries by App = %v, want the implement App's that never answered and one more, and the review App's one", got)
+	// One App serves both roles, and the token manager reads installations per role, so the review
+	// role's discovery is a third one under the App's JWT.
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 3}) {
+		t.Errorf("installation discoveries by App = %v, want the implement role's that never answered and one more, and the review role's one, all the one App's", got)
 	}
 }
 
@@ -232,15 +232,17 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	}
 }
 
-// Both Apps' tokens share one retry budget, so a boot waits at most appMintRetry before it refuses,
-// however the failures fall between the two mints. Here the implement App's discovery fails twice
-// and then answers, and the review App's never does: the budget's three attempts are spent before
-// the review token is asked for more than once. With a budget per App the boot would wait both out,
-// twice as long, which is what outlasted Stage 3's wait for /healthz.
+// Both roles' tokens share one retry budget, so a boot waits at most appMintRetry before it
+// refuses, however the failures fall between the two mints. Here the implement role's discovery
+// fails twice and then answers, and the review role's never does: the budget's three attempts are
+// spent before the review token is asked for more than once. With a budget per role the boot would
+// wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz. One App serves
+// both roles, so the discoveries are told apart by their order: the third is the implement role's
+// that answers, and the fourth is the review role's.
 func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
-		if app == "1" && n > 2 {
+		if app == "1" && n == 3 {
 			installed(w)
 			return
 		}
@@ -250,8 +252,8 @@ func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "retry budget (3 attempts)") || !strings.Contains(err.Error(), "mint review GitHub App token at boot") {
 		t.Fatalf("boot = %v, want the refusal after the one budget's three attempts, naming the review mint", err)
 	}
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 3, "2": 1}) {
-		t.Errorf("installation discoveries by App = %v, want the implement App's three and the review App's one", got)
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 4}) {
+		t.Errorf("installation discoveries by App = %v, want the implement role's three and the review role's one, all the one App's", got)
 	}
 }
 
@@ -343,20 +345,20 @@ func mappedWorkflowConfig(t *testing.T, natsURL string, mapped ...string) config
 	return cfg
 }
 
-// The boot proves each App's key once for each owner account of the repositories the mapping
-// serves, not once for each repository: a token reaches every repository the account's
+// The boot proves the App's key once for each role on each owner account of the repositories the
+// mapping serves, not once for each repository: a token reaches every repository the account's
 // installation holds, so a second repository of an account already minted for proves nothing
 // further, while it costs the boot another mint and another retry budget to wait out. Here three
 // repositories belong to two accounts, one of them spelled in the mapping as the account is not,
-// and each App is minted twice, on the two accounts lowercased and in their sorted order, so one
+// and each role is minted twice, on the two accounts lowercased and in their sorted order, so one
 // boot's log reads like the next's.
 //
-// Both Apps are installed on a third account, initech, that no mapped repository belongs to, and
-// neither is minted on it: R1 asks only that an installed owner the mapping does not reach is not
+// The App is installed on a third account, initech, that no mapped repository belongs to, and no
+// role is minted on it: R1 asks only that an installed owner the mapping does not reach is not
 // PROVED at boot, and a bundle reads its App's installation when it is built, so nothing of that
 // owner is wanted before then. It is not that this project needs no work there: under R3 and R4
 // an issue of this project may name an initech repository, and the daemon records and runs it.
-// Without initech the row would pass as well on a boot that minted every owner the Apps'
+// Without initech the row would pass as well on a boot that minted every owner the App's
 // installations name, because those would be the mapped owners exactly.
 func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 	quickAppMints(t)
@@ -371,14 +373,16 @@ func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 	minted := mints.Minted()
 	for _, mint := range minted {
 		if strings.HasSuffix(mint, " initech") {
-			t.Errorf("the boot's App gate asked for %q, want no mint on initech: both Apps are installed there, and no repository the mapping serves belongs to it", mint)
+			t.Errorf("the boot's App gate asked for %q, want no mint on initech: the App is installed there, and no repository the mapping serves belongs to it", mint)
 		}
 	}
 	want := []string{"implement acme", "review acme", "implement globex", "review globex"}
 	if !slices.Equal(minted, want) {
-		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one of each App on each owner account of the mapping, and none for a second repository of an account", minted, want)
+		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one for each role on each owner account of the mapping, and none for a second repository of an account", minted, want)
 	}
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
-		t.Errorf("installation discoveries by App = %v, want one each: one discovery names every installation an App has", got)
+	// One App serves both roles, and the token manager reads installations per role, so each role
+	// discovers once under the App's JWT.
+	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 2}) {
+		t.Errorf("installation discoveries by App = %v, want one for each role: one discovery names every installation the App has", got)
 	}
 }

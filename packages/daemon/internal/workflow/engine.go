@@ -80,8 +80,8 @@ type Config struct {
 	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
 	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
 	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
-	// no one. A workflow boot never leaves it empty: it refuses a review App that names no login
-	// (daemon.appLoginsAtBoot).
+	// no one. A workflow boot never leaves it empty: it refuses an App that names no login
+	// (daemon.appLoginAtBoot).
 	ReviewAppLogin string
 	// Repositories is the daemon's in-memory view of the project's repositories, which the workflow
 	// records an issue's repository and default branch from when it first records the issue.

@@ -97,7 +97,7 @@ func (t implementTokens) repositories() []ghrepo.Repository { return t.repos }
 // run's two repositories' owners, and with those tokens reads each repository's default branch as
 // GitHub names it, the base every launch on it provisions at. No key reaches the harness.
 func (r *liveRig) resolveApp() (err error) {
-	apps := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: r.env.appID, TokenCommand: r.env.appTokenCommand}}, appauth.Options{})
+	apps := appauth.New(config.GitHubApp{AppID: r.env.appID, TokenCommand: r.env.appTokenCommand}, appauth.Options{})
 	// The rig owns the manager once it is stored in r.tokens, and closes it in close; until then a
 	// failure closes it here, so a token command still running never outlives the harness.
 	defer func() {

@@ -495,17 +495,14 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 }
 
 // The state carries the daemon's resolved settings (api.State.Settings, contract 35): the values
-// its configuration runs on, and nothing of its credentials. The configuration carries both Apps
+// its configuration runs on, and nothing of its credentials. The configuration carries the App
 // with a PEM and no Dispatch, so no workflow opens and no token is minted (openWorkflow); the body
-// shows the Apps' ids and neither the key nor the store's DSN.
+// shows the App's id and neither the key nor the store's DSN.
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
 	cfg.ReviewRoundCap = 5
-	cfg.GitHubApps = config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "1001", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2001"}},
-		Review:    config.GitHubApp{AppID: "1002", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2002"}},
-	}
+	cfg.GitHubApp = config.GitHubApp{AppID: "1001", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2001"}}
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
 	status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
@@ -521,8 +518,8 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 		t.Errorf("settings review_round_cap %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
 			settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
 	}
-	if settings.GitHubApps == nil || settings.GitHubApps.Implement.AppID != "1001" || settings.GitHubApps.Review.AppID != "1002" {
-		t.Errorf("settings.github_apps = %+v, want both configured Apps by id", settings.GitHubApps)
+	if settings.GitHubApps == nil || settings.GitHubApps.Implement.AppID != "1001" {
+		t.Errorf("settings.github_apps = %+v, want the configured App by id", settings.GitHubApps)
 	}
 	for _, secret := range []string{"BEGIN", "postgres://", cfg.PostgresDSN} {
 		if bytes.Contains(body, []byte(secret)) {

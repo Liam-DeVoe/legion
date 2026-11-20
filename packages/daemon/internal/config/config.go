@@ -159,7 +159,10 @@ type Config struct {
 	DispatchTokenFile string
 	Projects          map[string]Project
 	Gates             Gates
-	GitHubApps        GitHubApps
+	GitHubApp         GitHubApp
+	// VerdictRepositories is `verdict_repositories`: the repositories this daemon writes the
+	// required check `legion-verdict` on, in file order; nil while the file names none.
+	VerdictRepositories []VerdictRepository
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -341,11 +344,37 @@ var tossedKeys = map[string]string{
 // vulnerability, and a count nothing reads closes none, so refusing a boot over it would stop a
 // deployment for a word in a file. The refusal this key would otherwise carry is the warning's
 // own text (Config.Warnings, readKeys), which boot logs and `legion config check`
-// prints, so the operator reads what the refusal would have said and the daemon runs.
+// prints, so the operator reads what the refusal would have said and the daemon runs. A nested key
+// is held under its dotted path, and only the reader of its mapping that asks for it
+// (warnedMembers) accepts it.
 var warnedKeys = map[string]string{
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
+	"github_apps.review":      "one GitHub App serves every role; remove github_apps.review from legion.yaml",
+}
+
+// warning is the line a warned key raises (Config.Warnings).
+func warning(key string) string {
+	return fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key])
+}
+
+// warnedMembers is mapping value, reached by key, less each member warnedKeys holds under
+// `<key>.<name>`, with the warning each of those raises, in file order. A warned member's value
+// is read for nothing, as a warned top-level key's is (readKeys), so no shape of it is refused;
+// every other member is left for describedMembers to read.
+func warnedMembers(value *yaml.Node, key string) (*yaml.Node, []string) {
+	read := *value
+	read.Content = nil
+	var warnings []string
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if name := key + "." + value.Content[i].Value; warnedKeys[name] != "" {
+			warnings = append(warnings, warning(name))
+		} else {
+			read.Content = append(read.Content, value.Content[i], value.Content[i+1])
+		}
+	}
+	return &read, warnings
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.
@@ -396,7 +425,8 @@ type fileConfig struct {
 	DispatchTokenFile      *string
 	Projects               map[string]Project
 	Gates                  *Gates
-	GitHubApps             *GitHubApps
+	GitHubApp              *GitHubApp
+	VerdictRepositories    []VerdictRepository
 	Linger                 *time.Duration
 	ProductionCheckBound   *time.Duration
 	PodUpdateGrace         *time.Duration
@@ -464,14 +494,14 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 		return Config{}, err
 	}
 	cfg, err := resolve(file, env, filepath.Dir(path))
-	if err != nil || !resolveAppKeys || file.GitHubApps == nil {
+	if err != nil || !resolveAppKeys || file.GitHubApp == nil {
 		return cfg, err
 	}
-	apps, err := ResolveGitHubApps(cfg.GitHubApps)
+	app, err := ResolveGitHubApps(cfg.GitHubApp)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.GitHubApps = apps
+	cfg.GitHubApp = app
 	return cfg, nil
 }
 
@@ -501,11 +531,11 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 		switch {
 		case modelled:
 			err = descriptor.Read(value, key, &file)
-		case warnedKeys[key] != "":
+		case warnedKeys[key] != "" && !strings.Contains(key, "."):
 			// The value is read for nothing, so no shape of it is refused: the key changes
-			// nothing whatever it says.
-			file.Warnings = append(file.Warnings,
-				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
+			// nothing whatever it says. A dotted name is a nested key's (warnedMembers), which no
+			// top-level key stands in for.
+			file.Warnings = append(file.Warnings, warning(key))
 		default:
 			err = classify(key)
 		}

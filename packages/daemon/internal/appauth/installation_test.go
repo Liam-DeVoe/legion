@@ -41,10 +41,8 @@ func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 				_, _ = w.Write([]byte(`{"id": 41}`))
 			}))
 			defer server.Close()
-			tokens := New(config.GitHubApps{
-				Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-				Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-			}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+			tokens := New(config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 			got, err := tokens.InstalledOn(context.Background(), Review, ghrepo.MustParse("acme/widgets"))
 			if want := []string{"GET /repos/acme/widgets/installation"}; len(asked) != 1 || asked[0] != want[0] {
@@ -65,8 +63,8 @@ func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 }
 
 // An App's bot login is its slug's, read under the App's own JWT (GET /app): it needs no
-// installation on any repository, so a daemon serving no repository yet still knows the review
-// App's login the engine judges pushes and reviews by. GitHub's trouble is transient.
+// installation on any repository, so a daemon serving no repository yet still knows the App's
+// login the engine judges pushes and reviews by, whichever role asks. GitHub's trouble is transient.
 func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
@@ -80,10 +78,8 @@ func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 		_, _ = w.Write([]byte(`{"slug":"legion-reviewer"}`))
 	}))
 	defer server.Close()
-	tokens := New(config.GitHubApps{
-		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
-		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
-	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	tokens := New(config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-reviewer[bot]", login, err)

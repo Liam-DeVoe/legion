@@ -448,14 +448,13 @@ type GatesSettings struct {
 	Design []record.DesignStep `json:"design"`
 }
 
-// GitHubAppsSettings is `github_apps`, each App its id and installations alone: never a private
-// key, nor the command or secret key it came from.
+// GitHubAppsSettings is `github_apps`: the one App, under `implement`, by its id and installations
+// alone: never a private key, nor the command or secret key it came from.
 type GitHubAppsSettings struct {
 	Implement GitHubAppSettings `json:"implement"`
-	Review    GitHubAppSettings `json:"review"`
 }
 
-// GitHubAppSettings is one App of `github_apps`.
+// GitHubAppSettings is the App of `github_apps`.
 type GitHubAppSettings struct {
 	AppID         string            `json:"app_id"`
 	Installations map[string]string `json:"installations"`
@@ -561,8 +560,8 @@ func SettingsOf(cfg config.Config) Settings {
 		}
 		settings.Projects[key] = entry
 	}
-	if apps := cfg.GitHubApps; apps.Implement.AppID != "" || apps.Review.AppID != "" {
-		settings.GitHubApps = &GitHubAppsSettings{Implement: gitHubAppSettingsOf(apps.Implement), Review: gitHubAppSettingsOf(apps.Review)}
+	if app := cfg.GitHubApp; app.AppID != "" {
+		settings.GitHubApps = &GitHubAppsSettings{Implement: gitHubAppSettingsOf(app)}
 	}
 	for name, reason := range cfg.Capabilities.Decided {
 		settings.Capabilities.Decided[string(name)] = reason

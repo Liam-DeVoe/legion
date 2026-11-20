@@ -106,6 +106,21 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 	}
 }
 
+// readsWarning is reads for a reader that also answers the warnings its value raises: they join
+// whatever a key above it raised, in file order, since one list carries every producer's lines and
+// none may write over another's.
+func readsWarning[T any](read func(*yaml.Node, string) (T, []string, error), keep func(*fileConfig, T)) func(*yaml.Node, string, *fileConfig) error {
+	return func(value *yaml.Node, key string, file *fileConfig) error {
+		got, raised, err := read(value, key)
+		if err != nil {
+			return err
+		}
+		keep(file, got)
+		file.Warnings = append(file.Warnings, raised...)
+		return nil
+	}
+}
+
 // roundCap reads one of the two pod-update round caps and the review round cap: a positive integer
 // with no upper bound, whose absent key is no limit rather than a number nobody chose.
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
@@ -114,10 +129,11 @@ func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveI
 // order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
-// projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
-// block, the per-role overrides and the capability decisions, the wake pacing and the quiet-worker
-// timers, the workflow limits, and the supervision budgets and timers. It is not the order of
-// `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer keys in an order of its own.
+// projects, the repository renames, the hooks, the design gate, the GitHub App and the verdict
+// repositories, the runtime block, the per-role overrides and the capability decisions, the wake
+// pacing and the quiet-worker timers, the workflow limits, and the supervision budgets and timers.
+// It is not the order of `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer keys in
+// an order of its own.
 //
 // A row that names a Positive is finished here rather than written out: its Default is that row's
 // number as an operator reads it, and its Read is that row's own reader, so a positive-integer
@@ -237,17 +253,8 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
-			Read: func(value *yaml.Node, key string, file *fileConfig) error {
-				// The projects' own warnings join whatever a warned key above them raised, in file
-				// order: one list carries both, so neither producer may write over the other.
-				projects, raised, err := readProjects(value, key)
-				if err != nil {
-					return err
-				}
-				file.Projects, file.Warnings = projects, append(file.Warnings, raised...)
-				return nil
-			},
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository the GitHub App is installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Read:        readsWarning(readProjects, func(f *fileConfig, v map[string]Project) { f.Projects = v }),
 		},
 		{
 			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
@@ -266,8 +273,13 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
-			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
+			Description: "The one GitHub App every role works as, under `implement`, with its id and its credential, from which the daemon mints every agent's GitHub token over every repository its installation holds; `review` is read for nothing and warned about, since one App serves every role.",
+			Read:        readsWarning(readGitHubApps, func(f *fileConfig, v *GitHubApp) { f.GitHubApp = v }),
+		},
+		{
+			Name: verdictRepositoriesKey, Default: "the daemon writes `legion-verdict` on no repository", RequiredBy: "no",
+			Description: "The repositories on which this daemon writes the required check `legion-verdict` with its own verdict token: on a head a Legion issue owns from the tester's and the reviewer's verdicts, and on any other head from the last review of the entry's `ci_reviewer`, or from a side review the controller relays where the entry sets `side_reviews`; it writes the check on no other repository.",
+			Read:        reads(readVerdictRepositories, func(f *fileConfig, v []VerdictRepository) { f.VerdictRepositories = v }),
 		},
 		{
 			Name: "runtime", Default: "`tmux`, with no block", RequiredBy: "no",
@@ -489,12 +501,10 @@ var nestedKeys = []memberGroup{
 			Description: "Each worker capability this deployment decides, mapped to the reason the capability report shows in the gap's place."},
 	}},
 	{Path: "github_apps", Members: []member{
-		{Name: "implement", Default: "none: a file that names no implement App is refused", RequiredBy: "yes",
-			Description: "The App the implementer and the merger work as, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
-		{Name: "review", Default: "none: a file that names no review App is refused", RequiredBy: "yes",
-			Description: "The App every other role works as — architect, planner, tester and reviewer — whose token writes the reviews and the check runs the implement App may not."},
+		{Name: "implement", Default: "none: a file that names no App under `implement` is refused", RequiredBy: "yes",
+			Description: "The App every role works as, whose tokens clone every pod's workspace, push and land the change, and write each review."},
 	}},
-	{Path: "github_apps.<APP>", Members: []member{
+	{Path: "github_apps.implement", Members: []member{
 		{Name: "app_id", Default: "none: an App that names no id is refused", RequiredBy: "yes",
 			Description: "The App's numeric id, which every token the daemon mints from it is asked for under."},
 		{Name: "private_key", Default: "the App's credential comes from one of the other three keys", RequiredBy: "when the App names none of `private_key_command`, `private_key_secret` and `token_command`: an App carries exactly one credential",
@@ -507,6 +517,14 @@ var nestedKeys = []memberGroup{
 			Description: "A command that prints an installation token the daemon uses in the App's place; its own answer names each installation, which is why `installations` may not be set beside it."},
 		{Name: "installations", Default: "the daemon finds each owner's installation itself", RequiredBy: "no",
 			Description: "The App's installation id for each owner, where the deployment pins them rather than letting the daemon look each one up."},
+	}},
+	{Path: verdictRepositoriesKey + "[]", Members: []member{
+		{Name: "repository", Default: "none: an entry that names no repository is refused", RequiredBy: "yes",
+			Description: "The repository, `<owner>/<name>`, named once in the list and compared without case."},
+		{Name: "ci_reviewer", Default: "no bot's review is a verdict on the repository", RequiredBy: "no",
+			Description: "A GitHub App's bot login, `<slug>[bot]`, whose last review at a head that no Legion issue owns is the verdict on that head."},
+		{Name: "side_reviews", Default: "`false`", RequiredBy: "no",
+			Description: "Whether the verdict the controller relays from the reviewer it named for a pull request and its head is the verdict on a head that no Legion issue owns."},
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",

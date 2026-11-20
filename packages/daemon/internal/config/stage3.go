@@ -117,11 +117,11 @@ func (p Project) ProductionCheckWord() string {
 	return string(p.ProductionCheck)
 }
 
-// GitHubApp is one App's configuration. Load resolves a configured private-key source into
-// PrivateKey; LoadForValidation preserves command and secret sources without executing them.
-// TokenCommand is the fourth source, for a deployment whose App keys only a secrets broker holds:
-// the daemon holds no key and runs the command for every lease it needs (appauth's token mode), so
-// neither loader runs it.
+// GitHubApp is the one GitHub App every role works as (`github_apps.implement`). Load resolves a
+// configured private-key source into PrivateKey; LoadForValidation preserves command and secret
+// sources without executing them. TokenCommand is the fourth source, for a deployment whose App
+// key only a secrets broker holds: the daemon holds no key and runs the command for every lease it
+// needs (appauth's token mode), so neither loader runs it.
 type GitHubApp struct {
 	AppID             string
 	PrivateKey        string
@@ -131,12 +131,14 @@ type GitHubApp struct {
 	Installations     map[string]string
 }
 
-// GitHubApps holds the two App identities Legion needs: the implement App acts for the implementer
-// and the merger, the review App for every other role, so a review never comes from the account
-// that wrote the change.
-type GitHubApps struct {
-	Implement GitHubApp
-	Review    GitHubApp
+// VerdictRepository is one entry of `verdict_repositories`: a repository the daemon writes the
+// required check `legion-verdict` on. CIReviewer is the bot login whose last review at a head no
+// Legion issue owns is the verdict on that head, "" for none; SideReviews is whether a side
+// review the controller relays is the verdict on such a head.
+type VerdictRepository struct {
+	Repository  ghrepo.Repository
+	CIReviewer  string
+	SideReviews bool
 }
 
 // missingDispatchTokenFile is the one refusal of a Dispatch URL without its bearer, in the daemon's
@@ -150,6 +152,9 @@ var (
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
 	slackChannelPattern = regexp.MustCompile(`^[CG][A-Z0-9]+$`)
+	// botLoginPattern is a GitHub App's bot login: the App's slug, letters, digits and hyphens
+	// beginning with a letter or digit, then `[bot]`.
+	botLoginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$`)
 )
 
 // readProjects is `projects`, and the warnings its projects raise (Config.Warnings), in file
@@ -377,35 +382,32 @@ func readDesignSteps(value *yaml.Node, key string) ([]record.DesignStep, error) 
 	return steps, nil
 }
 
-func readGitHubApps(value *yaml.Node, key string) (*GitHubApps, error) {
+// readGitHubApps is `github_apps`: the App under `implement`, which every role works as, and the
+// warning `review` raises (warnedKeys), since one GitHub App serves every role.
+func readGitHubApps(value *yaml.Node, key string) (*GitHubApp, []string, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s must be a mapping", key)
+		return nil, nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	roles, err := describedMembers(value, key, "github_apps")
+	read, warnings := warnedMembers(value, key)
+	roles, err := describedMembers(read, key, "github_apps")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for _, role := range []string{"implement", "review"} {
-		if roles[role] == nil {
-			return nil, fmt.Errorf("%s.%s is required", key, role)
-		}
+	if roles["implement"] == nil {
+		return nil, nil, fmt.Errorf("%s.implement is required", key)
 	}
-	implement, err := readGitHubApp(roles["implement"], key+".implement")
+	app, err := readGitHubApp(roles["implement"], key+".implement")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	review, err := readGitHubApp(roles["review"], key+".review")
-	if err != nil {
-		return nil, err
-	}
-	return &GitHubApps{Implement: implement, Review: review}, nil
+	return &app, warnings, nil
 }
 
 func readGitHubApp(value *yaml.Node, key string) (GitHubApp, error) {
 	if value.Kind != yaml.MappingNode {
 		return GitHubApp{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := describedMembers(value, key, "github_apps.<APP>")
+	fields, err := describedMembers(value, key, "github_apps.implement")
 	if err != nil {
 		return GitHubApp{}, err
 	}
@@ -473,6 +475,60 @@ func readInstallations(value *yaml.Node, key string) (map[string]string, error) 
 	return installations, nil
 }
 
+// verdictRepositoriesKey is `verdict_repositories`, the key every refusal of it names.
+const verdictRepositoriesKey = "verdict_repositories"
+
+// readVerdictRepositories is `verdict_repositories`: a list of mappings, each a `repository`
+// Parse takes and no earlier entry names (compared without case, as GitHub compares names), an
+// optional `ci_reviewer` that is a GitHub App's bot login, and an optional `side_reviews`, false
+// where it is left out. Each refusal names its entry. An absent key, a null one and an empty list
+// are each no repository.
+func readVerdictRepositories(value *yaml.Node, key string) ([]VerdictRepository, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be an array", key)
+	}
+	var repositories []VerdictRepository
+	for index, entry := range value.Content {
+		field := fmt.Sprintf("%s[%d]", key, index)
+		if entry.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("%s must be a mapping", field)
+		}
+		fields, err := describedMembers(entry, field, verdictRepositoriesKey+"[]")
+		if err != nil {
+			return nil, err
+		}
+		name, err := requiredString(fields["repository"], field+".repository", ": the repository the daemon writes legion-verdict on")
+		if err != nil {
+			return nil, err
+		}
+		var read VerdictRepository
+		if read.Repository, err = ghrepo.Parse(field+".repository", name); err != nil {
+			return nil, err
+		}
+		if earlier := slices.IndexFunc(repositories, func(named VerdictRepository) bool {
+			return strings.EqualFold(named.Repository.String(), read.Repository.String())
+		}); earlier >= 0 {
+			return nil, fmt.Errorf("%s.repository names %s, as %s[%d] does: name each repository once", field, read.Repository, key, earlier)
+		}
+		if read.CIReviewer, err = optionalString(fields["ci_reviewer"], field+".ci_reviewer"); err != nil {
+			return nil, err
+		}
+		if read.CIReviewer != "" && !botLoginPattern.MatchString(read.CIReviewer) {
+			return nil, fmt.Errorf("%s.ci_reviewer %q must be a GitHub App's bot login: its slug, then [bot]", field, read.CIReviewer)
+		}
+		if sideReviews := fields["side_reviews"]; sideReviews != nil {
+			if sideReviews.Tag != "!!bool" || sideReviews.Decode(&read.SideReviews) != nil {
+				return nil, fmt.Errorf("%s.side_reviews must be true or false", field)
+			}
+		}
+		repositories = append(repositories, read)
+	}
+	return repositories, nil
+}
+
 func readPositiveInteger(value *yaml.Node, key string, max int) (*int, error) {
 	read, err := readInt(value, key)
 	if err != nil || read == nil {
@@ -491,19 +547,8 @@ func readPositiveInteger(value *yaml.Node, key string, max int) (*int, error) {
 // private_key_command runs with the daemon environment; private_key_secret deliberately drops only
 // SECRETSD_SESSION_TOKEN_FILE so a key grant remains attached to the daemon's launcher terminal.
 // An App on token_command has no key to resolve: the token manager runs its command per lease.
-func ResolveGitHubApps(apps GitHubApps) (GitHubApps, error) {
-	implement, err := resolveGitHubApp(apps.Implement, "github_apps.implement")
-	if err != nil {
-		return GitHubApps{}, err
-	}
-	review, err := resolveGitHubApp(apps.Review, "github_apps.review")
-	if err != nil {
-		return GitHubApps{}, err
-	}
-	return GitHubApps{Implement: implement, Review: review}, nil
-}
-
-func resolveGitHubApp(app GitHubApp, field string) (GitHubApp, error) {
+func ResolveGitHubApps(app GitHubApp) (GitHubApp, error) {
+	const field = "github_apps.implement"
 	switch {
 	case app.PrivateKey != "", app.TokenCommand != "":
 		return app, nil
@@ -667,7 +712,7 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.DispatchTokenFile != nil {
 		cfg.DispatchTokenFile = underConfig(*file.DispatchTokenFile, configDir)
 	}
-	workflowConfigured := file.DispatchURL != nil || file.DispatchTokenFile != nil || file.Projects != nil || file.GitHubApps != nil
+	workflowConfigured := file.DispatchURL != nil || file.DispatchTokenFile != nil || file.Projects != nil || file.GitHubApp != nil
 	if workflowConfigured && file.Projects == nil {
 		return errors.New("projects must declare at least one project")
 	}
@@ -678,12 +723,13 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.Gates != nil {
 		cfg.Gates = *file.Gates
 	}
-	if workflowConfigured && file.GitHubApps == nil {
+	if workflowConfigured && file.GitHubApp == nil {
 		return errors.New("github_apps is required")
 	}
-	if file.GitHubApps != nil {
-		cfg.GitHubApps = *file.GitHubApps
+	if file.GitHubApp != nil {
+		cfg.GitHubApp = *file.GitHubApp
 	}
+	cfg.VerdictRepositories = file.VerdictRepositories
 	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
 	// here, so `legion config check` never passes a file `legion start` refuses.
 	if file.DispatchURL != nil {
