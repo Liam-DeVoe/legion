@@ -82,19 +82,22 @@ serving() {
 }
 
 # until_true SECONDS DESCRIPTION COMMAND... — the bounded wait of a proof that sets no guard (see
-# proof_guard). It polls COMMAND every half second until SECONDS of wall time have passed, each
-# poll's own run included, and says what it waits for on entry and every 60 s while it does (polls
-# and seconds), so a healthy wait and a stall read differently to anyone watching a run's output.
-# A poll that never returns would hold the wait past its bound, so a caller's remote calls carry
-# their own timeouts.
+# proof_guard). It polls COMMAND at once and then every half second, each poll's own run included,
+# and gives up at the first poll that fails once SECONDS of wall time have passed: it polls before
+# it judges the bound, so a wait that starts late, on a box that lost the CPU before its first
+# poll, still reads a fact that is already true. It says what it waits for on entry and every 60 s
+# while it does (polls and seconds), so a healthy wait and a stall read differently to anyone
+# watching a run's output. A poll that never returns would hold the wait past its bound, so a
+# caller's remote calls carry their own timeouts.
 until_true() {
   local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
   shift 2
   note "waiting up to ${limit}s for $what"
-  while ((SECONDS - started < limit)); do
+  while :; do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
     polls=$((polls + 1))
     if "$@" >/dev/null 2>&1; then return 0; fi
+    ((SECONDS - started < limit)) || break
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
       note "still waiting for $what: poll $polls, $((SECONDS - started))s of ${limit}s"
