@@ -37,6 +37,10 @@ func (p *deadlinePassingOnTopic) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
+// Lost never closes: the deadline passing stands for a renewal that lands late, while the row
+// stays live on the database's clock, so the pass's record is the database's to fence.
+func (p *deadlinePassingOnTopic) Lost() <-chan struct{} { return nil }
+
 func (p *deadlinePassingOnTopic) WindowUntil(deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
@@ -208,6 +212,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 type resumedPastTheDeadline struct{}
 
 func (resumedPastTheDeadline) Deadline() time.Time { return time.Now().Add(-time.Second) }
+
+// Lost never closes: the pass reads the deadline before it claims, and claims nothing past it.
+func (resumedPastTheDeadline) Lost() <-chan struct{} { return nil }
 
 // TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing: a pass claims nothing once its
 // hold's deadline has passed, as a scan starts no batch past it (Outbox.scan). The process may

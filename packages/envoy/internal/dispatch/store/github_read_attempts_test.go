@@ -3,12 +3,17 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/testdeadline"
 )
 
@@ -150,5 +155,214 @@ func TestRecordingAGitHubReadAttemptNotifiesItsChannel(t *testing.T) {
 		if err != nil || notification.Channel != githubreads.Channel || notification.Payload != string(write.read) {
 			t.Fatalf("%s: notification = %+v, %v; want %s with payload %s", write.name, notification, err, githubreads.Channel, write.read)
 		}
+	}
+}
+
+// gitHubReadAttemptsStall is how long a stall holds back a statement of GitHubReadAttempts once it
+// waits: longer than the five seconds each statement, and each of its callers, once gave itself,
+// so a bound of that size ends the statement while the stall stands.
+const gitHubReadAttemptsStall = 7 * time.Second
+
+// gitHubReadAttemptsLoopPeriod is the period of three of the four loops that record an attempt
+// (architecture.SyncInterval, delivery.ReconcileInterval, cireconcile.Interval), which
+// githubreads.Finish gives its write.
+const gitHubReadAttemptsLoopPeriod = 5 * time.Minute
+
+// waitingOnGitHubReadAttempts counts this database's lock requests on github_read_attempts that
+// wait, not granted: the statements a stall holds back.
+const waitingOnGitHubReadAttempts = `select count(*) from pg_locks
+	where database = (select oid from pg_database where datname = current_database())
+	  and relation = 'github_read_attempts'::regclass and not granted`
+
+// stalledCall is what one call behind a stall returned, and how long after the scene began.
+type stalledCall struct {
+	err  error
+	took time.Duration
+}
+
+// stallGitHubReadAttempts holds github_read_attempts in ACCESS EXCLUSIVE mode from a session of
+// its own, which every statement of GitHubReadAttempts waits behind, until release or the test's
+// end: a database that answers, but late.
+func stallGitHubReadAttempts(t *testing.T, ctx context.Context, database *Store) (release func()) {
+	t.Helper()
+	holder := connectForTest(t, ctx, database)
+	tx, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the stall's transaction: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "lock table github_read_attempts in access exclusive mode"); err != nil {
+		t.Fatalf("lock github_read_attempts for the stall: %v", err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			end, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
+			if err := tx.Rollback(end); err != nil {
+				t.Errorf("end the stall: %v", err)
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// outlastStall waits until every call of calls waits behind the stall, holds them there for
+// gitHubReadAttemptsStall more, and releases the stall. A call that returns first fails the test
+// at once, by name: no statement can answer while the stall stands, so a call that returned was
+// ended by a bound of its own. The stall is counted from the moment every call is seen waiting,
+// so each call has waited at least that long since it began, however late it began.
+func outlastStall(t *testing.T, ctx context.Context, database *Store, start time.Time, release func(), calls map[string]chan stalledCall) {
+	t.Helper()
+	var blocked time.Time
+	for {
+		for name, done := range calls {
+			if len(done) > 0 {
+				returned := <-done
+				t.Fatalf("%s returned %v %s after it began, while another session's lock its statement needs still stood: a bound of its own ended it", name, returned.err, returned.took.Round(time.Millisecond))
+			}
+		}
+		if blocked.IsZero() {
+			var waiting int
+			if err := database.Pool.QueryRow(ctx, waitingOnGitHubReadAttempts).Scan(&waiting); err != nil {
+				t.Fatalf("count the statements waiting behind the stall: %v", err)
+			}
+			if waiting >= len(calls) {
+				blocked = time.Now()
+				t.Logf("%d statements wait behind the stall %s after the scene began", waiting, blocked.Sub(start).Round(time.Millisecond))
+			}
+		} else if time.Since(blocked) >= gitHubReadAttemptsStall {
+			release()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// loggedError is the first ERROR line logs holds, as an error with its message and its error
+// attribute, or nil.
+func loggedError(logs *logtest.Recorder) error {
+	for _, record := range logs.Records() {
+		if record.Level != slog.LevelError {
+			continue
+		}
+		var cause string
+		record.Attrs(func(attribute slog.Attr) bool {
+			if attribute.Key == "error" {
+				cause = attribute.Value.String()
+			}
+			return true
+		})
+		return fmt.Errorf("%s: %s", record.Message, cause)
+	}
+	return nil
+}
+
+// Record and All take their caller's context and add no bound of their own. Behind another
+// session's lock that the statement needs, each waits past the five seconds it once gave itself
+// and answers once the lock goes; a caller whose deadline passes first ends each at that
+// deadline, and not before.
+func TestGitHubReadAttemptsWaitAsLongAsTheirCallerAllows(t *testing.T) {
+	setup, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	database := migratedEmptyStore(t)
+	attempts := NewGitHubReadAttempts(database.Pool)
+	scene := func(ctx context.Context, start time.Time) map[string]chan stalledCall {
+		recorded, read := make(chan stalledCall, 1), make(chan stalledCall, 1)
+		go func() {
+			err := attempts.Record(ctx, githubreads.CIReconcile, true, "")
+			recorded <- stalledCall{err, time.Since(start)}
+		}()
+		go func() {
+			_, err := attempts.All(ctx)
+			read <- stalledCall{err, time.Since(start)}
+		}()
+		return map[string]chan stalledCall{"Record": recorded, "All": read}
+	}
+
+	t.Run("a stall shorter than the caller's deadline", func(t *testing.T) {
+		release := stallGitHubReadAttempts(t, setup, database)
+		start := time.Now()
+		calls := scene(setup, start)
+		outlastStall(t, setup, database, start, release, calls)
+		for name, done := range calls {
+			if returned := <-done; returned.err != nil {
+				t.Errorf("%s, which waited behind the stall, failed %s after it began, once the stall was over: %v", name, returned.took.Round(time.Millisecond), returned.err)
+			}
+		}
+	})
+
+	t.Run("a caller's deadline shorter than the stall", func(t *testing.T) {
+		stallGitHubReadAttempts(t, setup, database)
+		// The caller's own deadline is this scene's subject, so it is a literal: longer than the
+		// five seconds the calls once gave themselves, and shorter than a stall that lasts until
+		// they return.
+		const callerDeadline = 9 * time.Second
+		start := time.Now()
+		ctx, cancelCall := context.WithTimeout(setup, callerDeadline)
+		defer cancelCall()
+		for name, done := range scene(ctx, start) {
+			returned := <-done
+			if !errors.Is(returned.err, context.DeadlineExceeded) && !pgconn.Timeout(returned.err) {
+				t.Errorf("%s behind a stall that outlasts its caller's deadline returned %v, want the caller's deadline exceeded", name, returned.err)
+			}
+			if returned.took < callerDeadline {
+				t.Errorf("%s ended %s after it began, before its caller's deadline of %s: a bound of its own ended it", name, returned.took.Round(time.Millisecond), callerDeadline)
+			}
+		}
+	})
+}
+
+// The record's two callers give a database that answers late what they guard leaves them, not a
+// bound of their own: githubreads.Finish's write of a pass's outcome waits behind another
+// session's lock within one period of its loop and records the attempt once the lock goes, and
+// the copy's load (githubreads.Copy.Run) waits as long as Run's context lives and then holds the
+// record.
+func TestTheRecordsCallersWaitForADatabaseThatAnswersLate(t *testing.T) {
+	setup, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	database := migratedEmptyStore(t)
+	attempts := NewGitHubReadAttempts(database.Pool)
+	release := stallGitHubReadAttempts(t, setup, database)
+	start := time.Now()
+
+	finishLogs := &logtest.Recorder{}
+	finished := make(chan stalledCall, 1)
+	go func() {
+		pass, attempt := githubreads.Begin(context.Background())
+		githubreads.NoteSent(pass)
+		githubreads.Finish(context.Background(), githubreads.WebhookRedelivery, attempt, attempts.Record, gitHubReadAttemptsLoopPeriod, slog.New(finishLogs))
+		finished <- stalledCall{loggedError(finishLogs), time.Since(start)}
+	}()
+
+	var copied githubreads.Copy
+	running, stop := context.WithCancel(context.Background())
+	loaded := make(chan stalledCall, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		copied.Run(running, func(ctx context.Context) ([]githubreads.Recorded, error) {
+			rows, err := attempts.All(ctx)
+			loaded <- stalledCall{err, time.Since(start)}
+			return rows, err
+		}, nil, slog.New(&logtest.Recorder{}))
+	}()
+	defer func() {
+		stop()
+		<-ran
+	}()
+
+	calls := map[string]chan stalledCall{"githubreads.Finish's write": finished, "the copy's load": loaded}
+	outlastStall(t, setup, database, start, release, calls)
+	for name, done := range calls {
+		if returned := <-done; returned.err != nil {
+			t.Fatalf("%s, which waited behind the stall, failed %s after it began, once the stall was over: %v", name, returned.took.Round(time.Millisecond), returned.err)
+		}
+	}
+	if _, ok := copied.Rows(); !ok {
+		t.Fatal("the copy holds nothing after its load answered")
+	}
+	if got := readAttempts(t, attempts)[githubreads.WebhookRedelivery]; !got.Succeeded || got.At.IsZero() {
+		t.Fatalf("the record of the pass Finish wrote behind the stall reads %+v, want it succeeded", got)
 	}
 }

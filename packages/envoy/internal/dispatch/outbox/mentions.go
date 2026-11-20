@@ -1430,7 +1430,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		// a scan starts no batch past the deadline (Outbox.scan).
 		return false, false
 	}
-	copies, err := claimFallbackCopies(ctx, deps)
+	copies, err := claimFallbackCopies(ctx, deps, hold)
 	if err != nil {
 		slog.Error("dispatch outbox: claim fallback copies", "error", err)
 		return false, true
@@ -1442,9 +1442,10 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 	var records []fallbackRecord
 	// Written even when ctx has ended: a process stopping mid-pass records what NATS accepted and
 	// releases what it did not decide, rather than leave those rows claimed for fallbackClaim.
-	// Whether it may still be written is the statement's own check, on the database's clock.
+	// Whether it may still be written is the statement's own check, on the database's clock, and it
+	// waits as long as the hold's row may still name this process (untilTheHoldLapses).
 	defer func() {
-		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+		record, cancel := untilTheHoldLapses(ctx, hold)
 		defer cancel()
 		switch recorded, err := recordFallbackCopies(record, deps, instance, records); {
 		case err != nil:
@@ -1809,12 +1810,15 @@ func copyWaitsForRole(ctx context.Context, deps Deps, role, session string) bool
 // claim. It reads the partial index of unsettled rows, so a pass with nothing to decide reads no
 // row.
 //
-// The statement runs outside the pass's context, under claimTimeout of its own, as the record
-// step does: a context that ends once it has committed would answer context canceled and lose the
-// rows it claimed, which would then sit claimed for fallbackClaim with no pass deciding them. The
-// pass reads its own ctx instead and releases every row it claimed at once (publishFallbackCopies).
-func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error) {
-	claim, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
+// The statement runs outside the pass's context, as the record step does: a context that ends
+// once it has committed would answer context canceled and lose the rows it claimed, which would
+// then sit claimed for fallbackClaim with no pass deciding them. The pass reads its own ctx instead
+// and releases every row it claimed at once (publishFallbackCopies). It waits as long as the
+// publisher hold's row may still name this process (untilTheHoldLapses), the record step's own
+// bound: a claim that answers after that keeps its rows from the next holder's pass for
+// fallbackClaim, and this pass's record of them is refused (recordFallbackCopies).
+func claimFallbackCopies(ctx context.Context, deps Deps, hold fence) ([]fallbackCopy, error) {
+	claim, cancel := untilTheHoldLapses(ctx, hold)
 	defer cancel()
 	rows, err := deps.Store.Pool.Query(claim, `
 		with claimed as (

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -880,6 +881,149 @@ func TestALimitGitHubAnsweredIsRecordedWhenTheCallersTimeEnds(t *testing.T) {
 	requireHeld(t, err, "B's token mint after A's time ended as A recorded the limit")
 	if got := fake.count(); got != requests {
 		t.Fatalf("GitHub got %d more requests inside the limit A met, want none", got-requests)
+	}
+}
+
+// ledgerStall is how long a test holds a write to the shared ledger back behind another session's
+// lock once it waits: longer than the five seconds the write once gave itself, and shorter than
+// any wait GitHub names here.
+const ledgerStall = 7 * time.Second
+
+// stallLedger holds github_rate_limits in EXCLUSIVE mode from a transaction of its own until
+// release or the test's end: every write to the ledger waits behind it, and every read of it, as
+// each request makes before it is sent, goes on.
+func stallLedger(t *testing.T, ctx context.Context, database *store.Store) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction holding the ledger: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `lock table github_rate_limits in exclusive mode`); err != nil {
+		t.Fatalf("lock the ledger: %v", err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			if err := tx.Rollback(context.WithoutCancel(ctx)); err != nil {
+				t.Errorf("release the ledger: %v", err)
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// outlastLedgerStall waits until a write to the ledger waits behind the stall, holds it there for
+// ledgerStall more, and releases the stall. A call that returns first fails the test at once, by
+// name: its write could not land while the lock stood, so a bound of its own ended it.
+func outlastLedgerStall(t *testing.T, ctx context.Context, database *store.Store, what string, done <-chan error, release func()) {
+	t.Helper()
+	began := time.Now()
+	var blocked time.Time
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("%s returned %v %s after it began, while another session's lock held its write to the ledger back: a bound of its own ended the write",
+				what, err, time.Since(began).Round(time.Millisecond))
+		default:
+		}
+		if blocked.IsZero() {
+			var waiting int
+			if err := database.Pool.QueryRow(ctx, `
+				select count(*) from pg_locks
+				where database = (select oid from pg_database where datname = current_database())
+				  and relation = 'github_rate_limits'::regclass and not granted
+			`).Scan(&waiting); err != nil {
+				t.Fatalf("read whether a write waits behind the ledger's lock: %v", err)
+			}
+			if waiting > 0 {
+				blocked = time.Now()
+				t.Logf("%s's write waits behind the lock %s after it began", what, blocked.Sub(began).Round(time.Millisecond))
+			}
+		} else if time.Since(blocked) >= ledgerStall {
+			release()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A limit GitHub answered is recorded however long the shared ledger takes to answer, within the
+// wait GitHub named (limitRecordContext): held behind another session's lock on github_rate_limits
+// past five seconds, the bound the write once had, the write lands once the lock goes, and the
+// other process's request is held by it. Each path that writes one is here: a REST call's limit,
+// a token mint's (Record under the App's scope), a query's primary limit (Record under
+// GraphQLScope) and a query's secondary limit (Strike under the installation). A REST call answers
+// its caller GitHub's own status and no error; the token mint is the REST call that reads that
+// status as the *RateLimitError it is.
+func TestALimitIsRecordedBehindALedgerThatAnswersLate(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	wording := `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`
+	query := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.GraphQL(ctx, token, "query { viewer { login } }", nil)
+		return err
+	}
+	read := func(path string) func(ctx context.Context, client *Client, token string) error {
+		return func(ctx context.Context, client *Client, token string) error {
+			_, _, _, err := client.Read(ctx, token, path)
+			return err
+		}
+	}
+	mint := func(ctx context.Context, client *Client, _ string) error {
+		_, err := client.Token(ctx, 9)
+		return err
+	}
+	for _, path := range []struct {
+		name    string
+		arrange func(fake *limitGitHub)
+		meet    func(ctx context.Context, client *Client, token string) error
+		held    func(ctx context.Context, client *Client, token string) error
+	}{{
+		name:    "a REST call's limit",
+		arrange: func(fake *limitGitHub) { fake.limit("/app/installations/9/access_tokens") },
+		meet:    mint,
+		held:    mint,
+	}, {
+		name: "a query's primary limit",
+		arrange: func(fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: primary})
+		},
+		meet: query,
+		held: query,
+	}, {
+		name: "a query's secondary limit",
+		arrange: func(fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"Retry-After": "60"}, body: wording})
+		},
+		meet: query,
+		held: read("/repos/acme/web/issues/2"),
+	}} {
+		t.Run(path.name, func(t *testing.T) {
+			ctx, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
+			fake := startLimitGitHub(t)
+			database, a, b := twoProcesses(t, fake)
+			tokenA, err := a.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("A's token: %v", err)
+			}
+			tokenB, err := b.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("B's token: %v", err)
+			}
+			path.arrange(fake)
+			release := stallLedger(t, ctx, database)
+
+			done := make(chan error, 1)
+			go func() { done <- path.meet(context.Background(), a, tokenA) }()
+			outlastLedgerStall(t, ctx, database, "A's limited request", done, release)
+			err = <-done
+			if limited, ok := AsRateLimit(err); !ok || limited.Held {
+				t.Fatalf("A's limited request: err = %v, want GitHub's own answer as a *RateLimitError", err)
+			}
+			requireHeld(t, path.held(ctx, b, tokenB), "B's request once A's limit was recorded behind the stall")
+		})
 	}
 }
 

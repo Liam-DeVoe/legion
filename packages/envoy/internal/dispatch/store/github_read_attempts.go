@@ -3,21 +3,19 @@ package store
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
-// gitHubReadAttemptTimeout bounds each statement of GitHubReadAttempts: one row written, or the
-// four rows read, which a healthy database answers in milliseconds.
-const gitHubReadAttemptTimeout = 5 * time.Second
-
 // GitHubReadAttempts is the record of each GitHub read's newest attempt (migration
 // 20261118020802, github_read_attempts), which GET /healthz answers from each process's copy
 // (githubreads.Copy). The loop that holds a read's lease writes that read's row when its pass
-// ends; every process reads every row.
+// ends; every process reads every row. Record and All each send one statement on their caller's
+// context and add no bound of their own: a database that answers late, behind another session's
+// lock or under load, still answers them, and each caller gives the wait the deadline of what it
+// guards (githubreads.Finish, Copy.Run).
 type GitHubReadAttempts struct {
 	pool *Pool
 }
@@ -30,8 +28,6 @@ func NewGitHubReadAttempts(pool *Pool) *GitHubReadAttempts { return &GitHubReadA
 // holding read's lease writes it, one period at a time, and the probe answers the newest attempt
 // alone. Its method value is a githubreads.Recorder.
 func (g *GitHubReadAttempts) Record(ctx context.Context, read githubreads.Read, succeeded bool, cause string) error {
-	ctx, cancel := context.WithTimeout(ctx, gitHubReadAttemptTimeout)
-	defer cancel()
 	var stored *string
 	if !succeeded {
 		stored = &cause
@@ -47,8 +43,6 @@ func (g *GitHubReadAttempts) Record(ctx context.Context, read githubreads.Read, 
 // All reads every row of the record, a cause of a succeeded attempt reading "". It selects
 // githubreads.Recorded's fields in their order, which is how each row fills one (RowToStructByPos).
 func (g *GitHubReadAttempts) All(ctx context.Context) ([]githubreads.Recorded, error) {
-	ctx, cancel := context.WithTimeout(ctx, gitHubReadAttemptTimeout)
-	defer cancel()
 	rows, err := g.pool.Query(ctx, `select read, at, succeeded, coalesce(cause, '') from github_read_attempts`)
 	if err != nil {
 		return nil, fmt.Errorf("read the GitHub read attempts: %w", err)

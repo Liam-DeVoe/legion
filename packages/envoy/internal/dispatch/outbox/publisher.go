@@ -48,15 +48,6 @@ const (
 	// copy as a comment_fallback_copies row and publishes the event (destinations.leftTo), and
 	// keeps or forwards the role's copy with whatever settled by then.
 	mentionPendingDelay = 2 * time.Second
-	// recordTimeout bounds the write of a batch's or a fallback pass's outcome (recordBatch,
-	// recordFallbackCopies), which a stopping process still makes after its context has ended: one
-	// statement, which a healthy database answers in milliseconds, so a write that takes longer is
-	// left undone, and the batch, or the row, is read again.
-	recordTimeout = 5 * time.Second
-	// claimTimeout bounds the fallback pass's claim (claimFallbackCopies), which runs outside the
-	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
-	// claim it took. It is one statement too, so it is given the bound its pass's write is given.
-	claimTimeout = recordTimeout
 )
 
 // Publisher is the NATS client the outbox publishes through (bus.Client).
@@ -175,9 +166,11 @@ func (d Deps) countRoleForwardHeld(holderState string) {
 }
 
 // fence is what a batch checks before each act it may make only while this process holds the
-// publisher hold: the hold's loss deadline (duty.Hold.Deadline).
+// publisher hold: the hold's loss deadline (duty.Hold.Deadline), and its loss itself
+// (duty.Hold.Lost), which bounds a write the hold's holder makes (untilTheHoldLapses).
 type fence interface {
 	Deadline() time.Time
+	Lost() <-chan struct{}
 }
 
 // failedAnswer is a send's answer already decided: err.
@@ -364,8 +357,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			return done, nil
 		}
 		// Written even when ctx has ended: a process stopping mid-batch records what NATS already
-		// accepted and releases the rest.
-		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+		// accepted and releases the rest. It waits as long as the hold's row may still name this
+		// process (untilTheHoldLapses).
+		record, cancel := untilTheHoldLapses(ctx, hold)
 		defer cancel()
 		holds, err := recordBatch(record, deps, outcomes, holder)
 		done.holds = holds

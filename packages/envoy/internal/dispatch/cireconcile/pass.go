@@ -153,7 +153,9 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// recorded and one cut by the shutdown is not.
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.CIReconcile, attempt, r.GitHubReads, r.Logger)
+	// The record's write is given PassTimeout, the interval the loop runs this pass on, by when the
+	// next pass is due (githubreads.Finish); a test's zero gives it no bound of its own.
+	defer githubreads.Finish(caller, githubreads.CIReconcile, attempt, r.GitHubReads, r.PassTimeout, r.Logger)
 	if r.PassTimeout > 0 {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what

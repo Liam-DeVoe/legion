@@ -482,6 +482,10 @@ func (h *holdPassingDuringAcknowledgement) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
+// Lost never closes: the deadline passing stands for a renewal that lands late, while the row
+// stays live on the database's clock, so the batch's record is the database's to fence.
+func (h *holdPassingDuringAcknowledgement) Lost() <-chan struct{} { return nil }
+
 func (h *holdPassingDuringAcknowledgement) WindowUntil(deadline func() time.Time) bus.Sender {
 	return passingWindow{Sender: h.Client.WindowUntil(deadline), hold: h}
 }

@@ -93,24 +93,26 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // A var rather than a const so a test can shrink it; nothing outside a test writes it.
 var RequestTimeout = 20 * time.Second
 
-// limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
-// is one statement, which a healthy database answers in milliseconds, as the outbox's own
-// records are bounded (outbox's recordTimeout).
-const limitRecordTimeout = 5 * time.Second
-
 // limitRecordContext is the context a limit GitHub answered is written to the shared ledger
-// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout.
-// GitHub's answer is a fact about the App's budget whatever time its caller has left. A caller
-// out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off, and
-// every process would go on asking GitHub inside the limit GitHub had just named.
+// under: the caller's values without its deadline or its cancel, until the limit ends, wait from
+// now. GitHub's answer is a fact about the App's budget whatever time its caller has left. A
+// caller out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off,
+// and every process would go on asking GitHub inside the limit GitHub had just named. The write is
+// worth waiting for until the limit ends and no longer: it keeps every process from asking GitHub
+// inside the limit, which no longer exists then, and the ledger counts wait from the database's
+// now() when the write lands (ratelimit.Store.Record), so a write that landed later would hold
+// every process past GitHub's own end. A slow database that answers within the wait records the
+// limit. A wait of zero, GitHub naming no wait, would give the write no time, and a limit that
+// holds nothing needs none: Record writes none (request, recordGraphQLLimit). A strike holds at
+// least ratelimit.LeastStrike whatever wait GitHub named, so its write is given that much.
 //
 // It keeps the caller's values, so a keyed request's commit step (store.WithBeforeCommit, which
 // api's request keys install) still runs in the ledger write: while the request's attempt holds
 // its key, the write marks that key committed, as ratelimit's Record says. An attempt that has
 // lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
 // with it.
-func limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
+func limitRecordContext(ctx context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), wait)
 }
 
 // ResponseTooLargeError reports a response that did not fit inside a caller's configured limit.
@@ -779,10 +781,10 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // secondary limit falls back to GraphQLScope: holding the App's queries is less than GitHub asks
 // for, and it is all this client knows to hold.
 func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
-	record, cancel := limitRecordContext(ctx)
-	defer cancel()
 	if secondary && installation != "" {
 		limited.Scope = installation
+		record, cancel := limitRecordContext(ctx, max(limited.Wait, ratelimit.LeastStrike))
+		defer cancel()
 		struck, err := c.limits.Strike(record, installation, limited.Wait)
 		if err != nil {
 			slog.Error("dispatch githubapp: GitHub's secondary rate limit was not recorded; other processes may ask GitHub inside it", "scope", installation, "wait", limited.Wait, "error", err)
@@ -794,6 +796,12 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 		return
 	}
 	limited.Scope = GraphQLScope
+	if limited.Wait <= 0 {
+		// GitHub named no wait, so there is no limit for any process to keep out of.
+		return
+	}
+	record, cancel := limitRecordContext(ctx, limited.Wait)
+	defer cancel()
 	if err := c.limits.Record(record, GraphQLScope, limited.Wait); err != nil {
 		slog.Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
 	}
@@ -927,9 +935,10 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 		return responseBody, status, header, nil
 	}
 	noteFailure(ctx, limitNoted(method, target, limited))
-	if c.limits != nil && scope != "" {
-		// Recorded past the caller's own end: see limitRecordContext.
-		record, cancel := limitRecordContext(ctx)
+	if c.limits != nil && scope != "" && limited.Wait > 0 {
+		// Recorded past the caller's own end, until the limit's own: see limitRecordContext. A
+		// limit GitHub named no wait for holds nothing, and is not recorded.
+		record, cancel := limitRecordContext(ctx, limited.Wait)
 		err := c.limits.Record(record, scope, limited.Wait)
 		cancel()
 		if err != nil {

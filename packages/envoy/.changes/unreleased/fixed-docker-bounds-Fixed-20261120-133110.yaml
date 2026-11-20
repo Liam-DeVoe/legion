@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Dispatch's writes and reads of its own records no longer give a statement a fixed 5 s, which cut
+  off a database that answered late, behind another session's lock or under load. The record of
+  each GitHub read's newest attempt is written within one period of the read's loop, by when the
+  next pass writes it again, and each process's copy of that record is read for as long as the
+  process runs. The outbox's record of a batch, a fallback pass's claim and record, and the release
+  of the publisher hold wait until the hold's row may lapse, when a standby may take it. A rate limit
+  GitHub answered is written to the shared ledger until the limit itself ends; a limit GitHub names
+  no wait for holds nothing and is not written.
+time: 2026-11-20T13:31:10Z
+custom:
+  Issue: fixed-docker-bounds
