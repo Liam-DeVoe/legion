@@ -127,13 +127,14 @@ type grantRelease struct {
 // BROKER_SERVICES' accounts prove), any granted name carries a requesters tag (anyListed: an
 // entry naming a service matches by those same accounts), or the grant is a person's pod's
 // (personPodGrant: the policy's version does not cover which person BROKER_POD_OPERATORS maps the
-// pod's account to), whether the current policy still allows the session every granted name under
-// the login that decided it, or, for a grant the model judge decided, under the judge the rules
-// still give that name (stillAllowed), and whether a granted name's max-grant is now shorter than
-// the lifetime the grant's request signed (overMaxGrant). recheckGranted reads every granted name
-// before it answers, so one name's pause never hides another's end. An end revokes the grant,
-// with a failed chain still logged beside it (endLiveGrant). Only then does the release re-verify
-// the approval chain (verifyChainForRelease) and answer a pause.
+// pod's account to), whether the current policy still allows the session, with the names its
+// operator withheld from it, every granted name under the login that decided it, or, for a grant
+// the model judge decided, under the judge the rules still give that name (stillAllowed), and
+// whether a granted name's max-grant is now shorter than the lifetime the grant's request signed
+// (overMaxGrant). recheckGranted reads every granted name before it answers, so one name's pause
+// never hides another's end. An end revokes the grant, with a failed chain still logged beside it
+// (endLiveGrant). Only then does the release re-verify the approval chain (verifyChainForRelease)
+// and answer a pause.
 //
 // For a person's pod, the session is the pod as requester reads it now. When the setting no
 // longer maps the pod's account to its person, an automatic grant the pod got as that person is
