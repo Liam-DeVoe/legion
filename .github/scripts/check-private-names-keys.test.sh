@@ -320,7 +320,7 @@ write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep t
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
 commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file new-sha modified docs/big.md -
+commit_file new-sha modified docs/big.md - 
 jq -c '.files[0].additions = 5 | .files[0].changes = 5 | .stats.total = 5' "$work/commit.new-sha" > "$work/commit.next"
 mv "$work/commit.next" "$work/commit.new-sha"
 key_run
