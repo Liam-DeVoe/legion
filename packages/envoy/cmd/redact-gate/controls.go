@@ -146,8 +146,15 @@ var controls = []control{
 	}},
 	{id: "20", what: "the rule's step 8 marker rule removed, in Go and in TypeScript: a '?', '#', '@' or key-led '=' after a URL start that no clean run accounts for no longer makes the field not readable, so a credential whitespace splits reads as the token reading reads it", fixture: true, catches: func(id, category string) bool {
 		// Step 6 still closes these with step 8 removed: a later token's '@', and the split user
-		// information control (20b) removes.
-		return category == "whitespace-split" && id != "marker-apostrophe-then-key-user-info" && id != "split-user-info-no-at"
+		// information control (20b) removes. Step 1 closes the split before a scheme's ':' (https
+		// ://host, https :\\host): the token that begins with "://" or ":\\" has no scheme before
+		// its slashes, so it starts a URL that step 3 refuses, with step 8 or without it.
+		switch id {
+		case "marker-apostrophe-then-key-user-info", "split-user-info-no-at", "split-user-info-after-scheme",
+			"split-before-colon", "split-colon-gap", "split-before-colon-fragment", "split-before-colon-backslashes":
+			return false
+		}
+		return category == "whitespace-split"
 	}, plant: func(c *controlRun) error {
 		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif read != nil && !markersAccounted(field, read) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
 			return err
