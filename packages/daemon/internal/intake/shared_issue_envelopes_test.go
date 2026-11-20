@@ -42,7 +42,7 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 		{
 			file: "testdata/dispatch/issue-updated-every-field.json", reads: issue, setter: "session",
 			want: DispatchIssue{Key: "CAPTURE-7", Seq: 9, Type: "issue.updated", Status: "in_progress", Title: "Read every field Dispatch writes",
-				Parent: "CAPTURE-1", Rank: "UUUk", HandedOver: true, ActorSession: "ses_implementer7", ResolvedRepo: "acme/widgets",
+				Parent: "CAPTURE-1", Rank: "UUUk", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer7", ResolvedRepo: "acme/widgets",
 				Blockers: blockers, ClaimedBy: "session:ses_implementer7", ClaimKnown: true},
 		},
 		{
@@ -58,7 +58,7 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 			// A closed issue's claim is nobody's: the close released it.
 			file: "testdata/dispatch/issue-updated-no-field-moved.json", reads: issue, setter: "session",
 			want: DispatchIssue{Key: "CAPTURE-3", Seq: 12, Type: "issue.updated", Status: "done", Title: "Name the outbox's components",
-				Parent: "CAPTURE-1", Rank: "UUUj", HandedOver: true, ActorSession: "ses_implementer8", ResolvedRepo: "acme/widgets",
+				Parent: "CAPTURE-1", Rank: "UUUj", HandedOver: true, Labels: []string{"legion"}, ActorSession: "ses_implementer8", ResolvedRepo: "acme/widgets",
 				Blockers: []string{}, ClaimKnown: true},
 		},
 		{
@@ -71,7 +71,7 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 			// left out, and a null claim is nobody's, not unknown.
 			file: "testdata/dispatch/issue-updated-null-fields.json", reads: issue,
 			want: DispatchIssue{Key: "CAPTURE-9", Seq: 4, Type: "issue.updated", Status: "todo", Title: "Reopen a root nobody holds",
-				Rank: "UUUm", Blockers: []string{}, ClaimKnown: true},
+				Rank: "UUUm", Labels: []string{}, Blockers: []string{}, ClaimKnown: true},
 		},
 		{
 			file: "testdata/dispatch/issue-claimed-first.json", reads: claimed,

@@ -58,6 +58,7 @@ const NEVER: Record<string, Record<string, string>> = {
     kept_at: "set on a role's kept copy (outbox/role.go), not the issue topic's copy these are",
     mention_dedupe_keys:
       "set on a role's kept copy (outbox/role.go), not the issue topic's copy these are",
+    role: "the listener sets it on a direct send Dispatch's API makes to a role's holder (api/comment_delivery.go), never on the issue topic's copy the outbox builds, which these are",
     payload_ref: "the outbox's envelope() sets none",
     sender: "the outbox's envelope() sets none",
     in_reply_to: "set on an ask.answered, an ask.resolved, a comment and a message alone",

@@ -387,17 +387,19 @@ var neverWritten = map[string]string{
 	"listenerwire.Envelope.kept_at": "the outbox sets it on the copy of a role's route it kept for a holder (role.go), " +
 		"never on the envelope envelope builds, the issue topic's copy these examples are",
 	"listenerwire.Envelope.mention_dedupe_keys": "as listenerwire.Envelope.kept_at",
-	"listenerwire.Envelope.payload_ref":         "envelope sets none",
-	"listenerwire.Envelope.sender":              "envelope sets none",
-	"listenerwire.Envelope.in_reply_to":         "envelope sets it on an ask.answered, an ask.resolved, a comment and a message alone",
-	"listenerwire.Envelope.supersedes":          "envelope sets none",
-	"listenerwire.Envelope.urgency":             "envelope sets it on an ask.* event alone",
-	"listenerwire.Envelope.expects_reply":       "envelope leaves it out of every event's envelope, for the reason its comment gives",
-	"listenerwire.EnvelopeSender.session_id":    "it is the sender envelope never sets",
-	"listenerwire.EnvelopeSender.machine":       "it is the sender envelope never sets",
-	"listenerwire.EnvelopeSender.cwd":           "it is the sender envelope never sets",
-	"listenerwire.EnvelopeSender.title":         "it is the sender envelope never sets",
-	"listenerwire.EnvelopeSender.roles":         "it is the sender envelope never sets",
+	"listenerwire.Envelope.role": "the listener sets it on a direct send Dispatch's API makes to a role's holder " +
+		"(api/comment_delivery.go's routeRole), never on the envelope envelope builds, the issue topic's copy these examples are",
+	"listenerwire.Envelope.payload_ref":      "envelope sets none",
+	"listenerwire.Envelope.sender":           "envelope sets none",
+	"listenerwire.Envelope.in_reply_to":      "envelope sets it on an ask.answered, an ask.resolved, a comment and a message alone",
+	"listenerwire.Envelope.supersedes":       "envelope sets none",
+	"listenerwire.Envelope.urgency":          "envelope sets it on an ask.* event alone",
+	"listenerwire.Envelope.expects_reply":    "envelope leaves it out of every event's envelope, for the reason its comment gives",
+	"listenerwire.EnvelopeSender.session_id": "it is the sender envelope never sets",
+	"listenerwire.EnvelopeSender.machine":    "it is the sender envelope never sets",
+	"listenerwire.EnvelopeSender.cwd":        "it is the sender envelope never sets",
+	"listenerwire.EnvelopeSender.title":      "it is the sender envelope never sets",
+	"listenerwire.EnvelopeSender.roles":      "it is the sender envelope never sets",
 }
 
 // neverEmpty is each field Go writes as null, [] or {} when it holds nothing that never holds
