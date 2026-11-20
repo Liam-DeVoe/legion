@@ -44,7 +44,9 @@ interface Draft {
 }
 
 /**
- * The item after the P0-P3 tag in the issue header's state row (INFRA-2947, R16 and R3): each
+ * The item after the P0-P3 tag in the issue header's state row from 768 px up, and below it the
+ * first item of the header's details row, where the state row has no room left (INFRA-2947, R16
+ * and R3): each
  * priority this issue advances, as the chip of its place in the one order (`PriorityChip`, `#1`)
  * that links to that priority's own page, its title in its name and its tooltip, and the shared
  * `MultiSelect` that adds and removes the issue's own, as the labels and components are edited.
@@ -85,8 +87,8 @@ export function IssuePriorityLine({
   inRow = false,
   issue,
 }: {
-  /** How the row the line stands in places it, outside `NoTooltips`: the issue header's state
-   *  row gives it a line of its own below `sm`. */
+  /** How the row the line stands in places it, outside `NoTooltips`: the issue header's details
+   *  row, which scrolls sideways on a phone, keeps it whole (`shrink-0`). */
   className?: string;
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside

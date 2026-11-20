@@ -2095,7 +2095,9 @@ test("IssuePage keeps state actions available while approval awaits", async () =
 });
 
 // The priorities an issue advances are chips with the picker's "+" after them, in the state row
-// directly after the P0-P3 tag: that row wraps, where the details row under it scrolls sideways.
+// directly after the P0-P3 tag at the test DOM's desktop width: that row wraps, where the details
+// row under it scrolls sideways. On a phone they open the details row instead
+// (`e2e/priorities.e2e.ts` reads both).
 test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag, not in the details row", async () => {
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");

@@ -64,6 +64,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
@@ -246,6 +247,20 @@ export function IssueHeader({
       : waitingForHuman.length > 0
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
+  // The priorities the issue advances, each the chip of its place in the order, and the picker's
+  // "+". From 768 px up they stand in the state row right after the P0-P3 tag: that row wraps,
+  // where the details row scrolls sideways and is long enough without them. Below it the state
+  // row has no room left on its first line, so there they stand first in the details row, in view
+  // before it is scrolled: a line of their own in the state row would push the page down under
+  // every sheet and pill a phone pins to the screen's foot. One line is drawn, in one place.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const priorityLine = (
+    <IssuePriorityLine
+      className={phone ? "shrink-0" : undefined}
+      disabled={isClosed}
+      issue={issue}
+    />
+  );
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
@@ -489,16 +504,7 @@ export function IssueHeader({
             issueKey={issue.key}
             write={priorityWrite}
           />
-          {/* The priorities the issue advances, each the chip of its place in the order, and the
-              picker's "+", right after the P0-P3 tag: this row wraps, where the details row below
-              scrolls sideways and is long enough without them. Below `sm` they take a line of
-              their own at the row's end, so the status, the tag, the assignee and Close keep one
-              line at a phone's width; they stay after the tag in the keyboard's order. */}
-          <IssuePriorityLine
-            className="order-last basis-full sm:order-none sm:basis-auto"
-            disabled={isClosed}
-            issue={issue}
-          />
+          {phone ? null : priorityLine}
           <AssigneeControl
             assignee={issue.assignee}
             disabled={isClosed || updateIssue.isPending}
@@ -593,6 +599,7 @@ export function IssueHeader({
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
         >
+          {phone ? priorityLine : null}
           {whoseTurn === null ? null : (
             <span
               className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}

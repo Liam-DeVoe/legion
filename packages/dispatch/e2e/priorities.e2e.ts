@@ -384,8 +384,9 @@ async function chooseTabAndReload(page: Page, tab: "none" | "parked"): Promise<v
  *  draws two spans and no third. */
 const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Priorities/ });
 
-/** The priorities an issue advances in its header: the chips and the picker's "+", which stand
- *  in the header's state row, the row of the status, the P0-P3 tag and the assignee. */
+/** The priorities an issue advances in its header from a tablet's width up: the chips and the
+ *  picker's "+", which stand in the header's state row, the row of the status, the P0-P3 tag and
+ *  the assignee. On a phone they open the details row instead. */
 const chipsLine = (page: Page): Locator =>
   page.getByTestId("issue-header").getByTestId("issue-state-actions").getByTestId("issue-advances");
 
@@ -1561,10 +1562,11 @@ test("an issue's header names the priorities it advances and links to each", asy
     const lineBox = await line.boundingBox();
     expect(lineBox?.x ?? Number.NaN).toBeGreaterThan(tagBox?.x ?? Number.NaN);
     expect(lineBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(120);
-    // That row wraps rather than scrolls, at 1440 by 900 and on a phone: nothing of it lies past
-    // its edge, and the chips stay inside it. From `sm` they stand on the tag's line; on a phone
-    // they take a line of their own under it, at the row's end, so the controls before them keep
-    // theirs.
+    // That row wraps rather than scrolls at 1440 by 900: nothing of it lies past its edge, and the
+    // chips stand inside it on the tag's line. Below 768 px the state row has no room left on its
+    // first line, so the chips stand first in the details row instead, which scrolls: the first
+    // item of that row, inside the viewport with the row unscrolled, and the state row holds none.
+    const rail = header.getByTestId("issue-metadata-rail");
     for (const size of [{ height: 900, width: 1440 }, PHONE]) {
       await page.setViewportSize(size);
       await expect
@@ -1579,15 +1581,32 @@ test("an issue's header names the priorities it advances and links to each", asy
           })
         )
         .toEqual({ overflow: "visible", past: 0, wrap: "wrap" });
-      const rowBox = await stateRow.boundingBox();
-      const chipsBox = await line.boundingBox();
-      expect((chipsBox?.x ?? Number.NaN) + (chipsBox?.width ?? 0)).toBeLessThanOrEqual(
-        (rowBox?.x ?? Number.NaN) + (rowBox?.width ?? 0)
-      );
-      const statusBox = await stateRow.getByLabel("Status", { exact: true }).boundingBox();
-      const statusBottom = (statusBox?.y ?? Number.NaN) + (statusBox?.height ?? 0);
-      if (size === PHONE) expect(chipsBox?.y ?? Number.NaN).toBeGreaterThanOrEqual(statusBottom);
-      else expect(chipsBox?.y ?? Number.NaN).toBeLessThan(statusBottom);
+      if (size === PHONE) {
+        await expect(chipsLine(page)).toHaveCount(0);
+        const inRail = rail.getByTestId("issue-advances");
+        await expect(inRail.getByRole("link", { name: `#1 ${seed.titles[0]}` })).toBeVisible();
+        expect(
+          await rail.evaluate(
+            (element) => element.firstElementChild?.getAttribute("data-testid") ?? null
+          )
+        ).toBe("issue-advances");
+        expect(await rail.evaluate((element) => element.scrollLeft)).toBe(0);
+        const railBox = await rail.boundingBox();
+        const inRailBox = await inRail.boundingBox();
+        const right = (inRailBox?.x ?? Number.NaN) + (inRailBox?.width ?? 0);
+        expect(inRailBox?.x ?? Number.NaN).toBeGreaterThanOrEqual(0);
+        expect(right).toBeLessThanOrEqual((railBox?.x ?? Number.NaN) + (railBox?.width ?? 0));
+        expect(right).toBeLessThanOrEqual(PHONE.width);
+      } else {
+        const rowBox = await stateRow.boundingBox();
+        const chipsBox = await line.boundingBox();
+        expect((chipsBox?.x ?? Number.NaN) + (chipsBox?.width ?? 0)).toBeLessThanOrEqual(
+          (rowBox?.x ?? Number.NaN) + (rowBox?.width ?? 0)
+        );
+        const statusBox = await stateRow.getByLabel("Status", { exact: true }).boundingBox();
+        const statusBottom = (statusBox?.y ?? Number.NaN) + (statusBox?.height ?? 0);
+        expect(chipsBox?.y ?? Number.NaN).toBeLessThan(statusBottom);
+      }
       await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     }
     await priorityPage(page);
