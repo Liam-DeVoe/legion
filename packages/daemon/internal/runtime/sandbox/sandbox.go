@@ -127,6 +127,9 @@ type Runtime struct {
 	// that serves the test database keeps the cluster on, nil while the cluster stays in the
 	// testpg emptyDir.
 	testPostgresDisk *resource.Quantity
+	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
+	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
+	keptVolumeBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -300,6 +303,14 @@ func configureProber(opts Options) (*Runtime, error) {
 	// which its stream from the repository cache runs outside of, the shared clone's own, and the
 	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
+	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
+	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
+	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
+	// timeout otherwise.
+	longestStart := opts.BootTimeout
+	if keptVolume(issuePod{}, opts.Sandbox.MicroVM) {
+		longestStart = max(longestStart, keptVolumeAttachWait)
+	}
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
@@ -421,9 +432,9 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, testPostgresDisk: opts.TestPostgresDisk, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
@@ -445,11 +456,12 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check and the newer of one pod's two saved
-	// workspace copies to it before any of its roles start, take its memory guard's kill reports
-	// and its cache trimmer's sweep reports, and log what they could not carry or record, so they
-	// are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	// workspace copies to it before any of its roles start, drop each copy that the pod's own kept
+	// volume holds already, take its memory guard's kill reports and its cache trimmer's sweep
+	// reports, and log what they could not carry or record, so they are built once the runtime's
+	// log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceCopies,
+		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -922,7 +934,8 @@ func (r *Runtime) checkLocator(loc runtime.Locator) error {
 }
 
 // ProvisionsWorkspaces is true: every pod's init containers provision its claim's workspace on the
-// issue's disk, the pod's own ephemeral volume, which goes with the pod.
+// issue's disk: the pod's own ephemeral volume, which goes with the pod, or a kept volume
+// (keptVolume), which the issue's Sandbox owns and which outlives the pod.
 func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 
 // Suspend ends only the recorded role process. It never changes the issue Sandbox operating mode:
@@ -969,13 +982,18 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 	}
 }
 
+// daemonSuspendedAct is the act a suspension with no act of its own is recorded under as the
+// daemon's end of the pod (meanToEndPodOf): setMode's, and suspendOver's where the reset mark
+// turns setMode's suspension into a merge patch.
+const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
+
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
 // operation tests the uid): a Sandbox replaced in between is never written. A mode that is not
 // Suspended ends nothing and records nothing; a suspension is written through suspending.
 func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 	op := jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode}
 	if mode == modeSuspended {
-		op = r.suspending(s, "the daemon suspended the pod's sandbox")
+		op = r.suspending(s, daemonSuspendedAct)
 	}
 	_, err := r.patch(ctx, s, op)
 	return err
@@ -988,13 +1006,16 @@ func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 // relaunch-for-ever the initFailed reading exists to stop.
 //
 // Every JSON patch the daemon writes to suspend a Sandbox takes its operation from here, so no such
-// patch can end a pod with no record. Those patches are setMode's, for an issue's close or idle
-// release (SuspendIssue), a launch that found a pod it cannot use and is not live enough to displace
+// patch can end a pod with no record. Those patches are setMode's, for an issue's close or release
+// (endIssuePod), a launch that found a pod it cannot use and is not live enough to displace
 // (relaunch), the suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
 // (reconcileCachePod), and ensureSandbox's relabel of a Sandbox its issue's old tree left Running,
-// which suspends it in the same patch. A suspension that replaces a live pod is a merge patch
-// that writes its own record beside the annotation naming the pod (suspendDisplacing), and the two
-// deletes write theirs (deleteSandbox, deleteFenced).
+// which suspends it in the same patch. Each merge patch that suspends a Sandbox writes its record
+// too: the one of a suspension that replaces a live pod beside the annotation naming the pod
+// (suspendDisplacing), and the one whose reset mark stands in for setMode's patch as setMode would
+// (suspendOver). The merge patch that records a pod's own end beside its suspension writes none,
+// since that pod ended of its own (suspendRecordingEnd). The two deletes write theirs
+// (deleteSandbox, deleteFenced).
 func (r *Runtime) suspending(s *sandbox, act string) jsonPatchOp {
 	r.meanToEndPodOf(s, act)
 	return jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}

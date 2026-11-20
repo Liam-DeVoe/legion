@@ -125,6 +125,18 @@ const alreadyHeldLine = "launcher bundle: this role's launcher process already h
 // register spends the copy (store.Store.RecordPodRegistration), so no pod is sent it again.
 const restoreFailedLine = "launcher bundle: the pod's launcher could not restore the issue's saved workspace work, which no pod is sent again once a role of this pod registers; it stays in the daemon's database, a running copy only until the next copy of the issue's workspace replaces it"
 
+// keptVolumeHoldsLine is the line each copy a pod's kept volume holds is dropped with
+// (runtime.WorkspaceBundleHeldByVolume), at Info, since no work is lost: the copy came off the
+// volume the pod mounts, so the pod's workspace holds its work. It names which copy, its restore
+// id, when its take began, by the store's clock, and when the pod's Sandbox, and so its volume,
+// was created, by the API server's.
+const keptVolumeHoldsLine = "launcher bundle: this pod's kept volume holds the workspace the saved workspace copy came off, so the copy is dropped and the pod is sent nothing of it"
+
+// keptVolumeDropFailedLine is the warning a drop of the copies a pod's kept volume holds that
+// failed is logged with (restoreWorkspace). The pod is sent nothing, and every copy stays as it
+// was for the issue's next start, which asks again.
+const keptVolumeDropFailedLine = "launcher bundle: the saved workspace copies that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and every copy stays for the next start"
+
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
 // launcher: the bundle the issue's last idle release saved, and the copy the daemon took while
 // the pod that held the work was running. The launcher applies what it is sent to the workspace
@@ -171,19 +183,38 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // running copy older than a recorded push is this hop's warning an operator must read — the work
 // is in the database and no pod will put it back on its own.
 //
+// A pod whose own kept volume holds a copy takes none of it, and the store drops that copy first
+// (store.DropHeldWorkspaceCopies, runtime.DecideKeptVolumeDrop). That pod's Sandbox owns the
+// issue's kept volume (launcherSession.keptSince), so every copy taken since that Sandbox was
+// created came off the volume the pod mounts: the bundle a release saved before it kept the
+// Sandbox, and the running copy the cadence took off an earlier pod of the Sandbox, alike. Its
+// launcher would refuse such a copy, because the workspace is older than the copy, and log a
+// notice that the work was lost, while a release bundle held the issue's pod. The drop sends no
+// slice and keeps the take's rules, and records this pod's first ask as the take does, so this
+// start, which takes nothing more, leaves a copy written after it for the next pod. Each copy it
+// drops is logged by name, and an older copy it closes beside a newer one dropped is logged as a
+// closed copy is. A drop that deletes no copy leaves the take to run as for any pod: a copy taken
+// before the Sandbox was created came off an earlier volume, which a reset or a change of the
+// disk's shape replaced, and the take restores it. A drop that fails is logged and the pod is
+// sent nothing, as a take that fails: the rows are as they were, and the next start asks again.
+// The drop runs at a role's start, after the pod's launcher connected, and that launcher runs
+// after both init containers of the pod. So a kept volume whose init failed never drops the copy
+// its reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the
+// work.
+//
 // A start whose launcher process already holds the copy, because a role of the same process was
 // sent it and that process answered Held, takes and sends nothing (heldCopy, holdsCopy): its pod
 // starts up to six roles, and the copy is the process's, not the role's. Every other start takes
 // as above, a restarted container's and every start after a daemon restart among them, and a Held
 // answer records the sessions of the pod connected then (heldBy).
 //
-// The held check, the take, the send and the record of a Held answer all run inside the pod's
-// launch turn, which the caller holds: relaunch takes lockPod for the whole start, and the six
-// roles of an issue share one Sandbox name (SandboxName). So the starts of one issue's pod run one
-// at a time, and a start reads the record of who holds the copy that the start before it left,
+// The held check, the drop, the take, the send and the record of a Held answer all run inside the
+// pod's launch turn, which the caller holds: relaunch takes lockPod for the whole start, and the
+// six roles of an issue share one Sandbox name (SandboxName). So the starts of one issue's pod run
+// one at a time, and a start reads the record of who holds the copy that the start before it left,
 // skipping where its launcher process holds the copy now. Nothing a hop waits on waits on another
-// start: the take is the store's, the slices are answered by the launcher's frame loop, and the
-// report of a restore is read there too (restoreReported), outside any turn.
+// start: the drop and the take are the store's, the slices are answered by the launcher's frame
+// loop, and the report of a restore is read there too (restoreReported), outside any turn.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -201,34 +232,30 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	}
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
+	if !session.keptSince.IsZero() && d.dropHeld != nil {
+		dropped, err := d.dropHeld(restoring, issue, podUID, session.keptSince)
+		if err != nil {
+			d.log.Warn(keptVolumeDropFailedLine,
+				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
+			return
+		}
+		// A drop that deleted a copy leaves nothing the take could send this pod: a copy taken
+		// since the Sandbox was made is deleted, and an older one beside it is closed.
+		if dropped.ReleaseBundle.Take == runtime.WorkspaceBundleHeldByVolume || dropped.Running.Take == runtime.WorkspaceBundleHeldByVolume {
+			d.logCopyTakes(session, token, dropped)
+			return
+		}
+	}
 	restore, err := d.saved(restoring, issue, podUID)
 	if err != nil {
 		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so the pod starts on what was pushed and every copy is left as it was",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}
-	// Each copy the take answered anything of is logged, and the offered one, when its take is a
-	// send, is the only one this hop goes on with: the decision sends no other. A copy the ask had
-	// nothing to answer of — the issue holds none, its attempt is spent, or its work came off this
-	// very pod — is a take of WorkspaceBundleNone and logs nothing, the offered one included.
+	d.logCopyTakes(session, token, restore)
+	// The offered copy, when its take is a send, is the only one this hop goes on with: the
+	// decision sends no other.
 	offered := restore.Of(restore.Offered)
-	for _, kind := range [...]runtime.WorkspaceCopyKind{runtime.WorkspaceCopyReleaseBundle, runtime.WorkspaceCopyRunning} {
-		taken := restore.Of(kind)
-		b := taken.Bundle
-		switch taken.Take {
-		case runtime.WorkspaceBundleLeftForNextPod:
-			d.log.Info(leftForNextPodLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "firstAsked", restore.FirstAsked, "taken", b.At, "written", taken.Written)
-		case runtime.WorkspaceBundleRefusedPushed:
-			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,
-				"pushed", restore.Push.At, "pushedHead", restore.Push.Head)
-		case runtime.WorkspaceBundleSuperseded:
-			d.log.Info(supersededLine,
-				"issue", issue, "launcher", token, "pod", podUID, "copy", kind, "taken", b.At,
-				"bytes", taken.Size, "newer", restore.Offered, "newerTake", offered.Take)
-		}
-	}
 	if offered.Take != runtime.WorkspaceBundleSend || len(offered.Bundle.Bundle) == 0 {
 		return
 	}
@@ -281,6 +308,37 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	}
 	d.log.Warn("launcher bundle: the launcher took every slice of the saved workspace copy without holding the whole",
 		"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At, "slices", len(frames))
+}
+
+// logCopyTakes logs what one ask of session's pod did to each copy of its issue's workspace, the
+// drop's (runtime.HeldWorkspaceCopiesDrop) or the take's (runtime.SavedWorkspaceBundle), both of
+// which answer in one shape (runtime.WorkspaceRestore). A copy the ask had nothing to answer of —
+// the issue holds none, its attempt is spent, or its work came off this very pod — is a take of
+// WorkspaceBundleNone and logs nothing, the offered one included, and a send is logged by the hop
+// that carries it.
+func (d *launchers) logCopyTakes(session *launcherSession, token claim.Token, restore runtime.WorkspaceRestore) {
+	issue, podUID := session.issue, session.podUID
+	offered := restore.Of(restore.Offered)
+	for _, kind := range [...]runtime.WorkspaceCopyKind{runtime.WorkspaceCopyReleaseBundle, runtime.WorkspaceCopyRunning} {
+		taken := restore.Of(kind)
+		b := taken.Bundle
+		switch taken.Take {
+		case runtime.WorkspaceBundleHeldByVolume:
+			d.log.Info(keptVolumeHoldsLine, "issue", issue, "launcher", token, "pod", podUID,
+				"copy", kind, "restore", b.Release, "taken", b.At, "bytes", taken.Size, "volume_created", session.keptSince)
+		case runtime.WorkspaceBundleLeftForNextPod:
+			d.log.Info(leftForNextPodLine, "issue", issue, "launcher", token, "pod", podUID,
+				"copy", kind, "firstAsked", restore.FirstAsked, "taken", b.At, "written", taken.Written)
+		case runtime.WorkspaceBundleRefusedPushed:
+			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
+				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,
+				"pushed", restore.Push.At, "pushedHead", restore.Push.Head)
+		case runtime.WorkspaceBundleSuperseded:
+			d.log.Info(supersededLine,
+				"issue", issue, "launcher", token, "pod", podUID, "copy", kind, "taken", b.At,
+				"bytes", taken.Size, "newer", restore.Offered, "newerTake", offered.Take)
+		}
+	}
 }
 
 // restoreReported keeps the saved copy of this pod's issue workspace that a launcher's report

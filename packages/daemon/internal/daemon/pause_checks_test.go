@@ -188,8 +188,8 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	}
 
 	// The pods of X and W stay, held by the pause, and no rule deletes them or saves their work.
-	deleted, _ := r.rt.podReads()
-	bundled := r.rt.bundledSince(len(bundledBefore))
+	deleted, bundled := r.rt.podReads()
+	bundled = bundled[len(bundledBefore):]
 	if len(deleted) != 0 || len(bundled) != 0 {
 		t.Fatalf("the runtime deleted the pods of %v and bundled %v while the project is paused, want none", deleted, bundled)
 	}
@@ -761,8 +761,8 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Past the idle period and past the rounds' bound, with the project paused.
 	r.advance(pauseRigPodUpdateGrace + time.Minute)
 	r.advance(pauseRigIdleMinutes * time.Minute)
-	deleted, _ := r.rt.podReads()
-	bundled := r.rt.bundledSince(len(bundledBefore))
+	deleted, bundled := r.rt.podReads()
+	bundled = bundled[len(bundledBefore):]
 	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
 		t.Fatalf("while the project is paused the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone",
 			deleted, bundled)
@@ -814,8 +814,8 @@ func TestPauseKeepsThePods(t *testing.T) {
 	onlyPod6Copies := func(bundled []string) bool {
 		return !slices.ContainsFunc(bundled, func(issue string) bool { return issue != pods[5] })
 	}
-	deleted, _ = r.rt.podReads()
-	bundled = r.rt.bundledSince(len(bundledBefore))
+	deleted, bundled = r.rt.podReads()
+	bundled = bundled[len(bundledBefore):]
 	if !slices.Equal(deleted, []string{pods[4]}) || !onlyPod6Copies(bundled) {
 		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone and no bundle but pod 6's running copy: pod 4, which holds only an architect, stands too",
 			deleted, bundled)
@@ -846,8 +846,8 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if _, present := r.rt.IssueSandbox(pods[0]); !present {
 		t.Fatal("pod 1's Sandbox is gone at the wake, want the worker launched in the pod that holds its work")
 	}
-	deleted, _ = r.rt.podReads()
-	bundled = r.rt.bundledSince(len(bundledBefore))
+	deleted, bundled = r.rt.podReads()
+	bundled = bundled[len(bundledBefore):]
 	if slices.Contains(deleted, pods[0]) || !onlyPod6Copies(bundled) || r.count(`select count(*) from workspace_bundles`) != 0 {
 		t.Fatalf("pod 1 deleted (%v) or a workspace bundled (%v) at the wake, want the disk kept", deleted, bundled)
 	}

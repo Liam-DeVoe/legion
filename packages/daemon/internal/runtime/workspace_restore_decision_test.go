@@ -131,3 +131,80 @@ func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing
 		})
 	}
 }
+
+// The drop of the copies a pod's kept volume holds, read as a table over every rule it keeps: a
+// copy whose take began in a second after the pod's Sandbox was made came off that volume and is
+// dropped, the release bundle and the running copy alike; a copy taken before, or in the
+// Sandbox's own second, came off an earlier volume or cannot be ordered against it, and is left to
+// the take; a copy the take would answer nothing of — spent, or off the pod asking — is dropped by
+// no volume; a pod with no kept volume drops nothing; and where the newer copy is dropped, an
+// older one the drop leaves and the take would offer is closed beside it, as the take closes the
+// older of two.
+func TestDecideKeptVolumeDropAnswersEachCopyByEveryRuleOfTheDrop(t *testing.T) {
+	made := time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)
+	const released, cameBack, asking = "pod-the-work-came-off", "pod-that-came-back", "pod-asking"
+	held := func(at time.Time, source string) WorkspaceCopyHeld {
+		return WorkspaceCopyHeld{At: at, Written: at, Source: source}
+	}
+	spent := func(at time.Time) WorkspaceCopyHeld {
+		return WorkspaceCopyHeld{At: at, Written: at, Spent: true, Source: released}
+	}
+	after, longAfter := made.Add(10*time.Minute), made.Add(20*time.Minute)
+	before, longBefore := made.Add(-10*time.Minute), made.Add(-20*time.Minute)
+	for _, c := range []struct {
+		name                    string
+		bundle, running         WorkspaceCopyHeld
+		noKeptVolume            bool
+		wantBundle, wantRunning WorkspaceBundleTake
+		wantNewer               WorkspaceCopyKind
+	}{
+		{name: "nothing held",
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone},
+		{name: "a release bundle taken off this volume", bundle: held(after, released),
+			wantBundle: WorkspaceBundleHeldByVolume, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyReleaseBundle},
+		{name: "a running copy taken off this volume", running: held(after, cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "a release bundle of an earlier volume", bundle: held(before, released),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyReleaseBundle},
+		{name: "a running copy of an earlier volume", running: held(before, cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "a copy taken in the Sandbox's own second", running: held(made.Add(999*time.Millisecond), cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "a copy taken in the second after the Sandbox's", running: held(made.Add(time.Second), cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "a pod with no kept volume", bundle: held(after, released), running: held(longAfter, cameBack), noKeptVolume: true,
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "a spent copy off this volume", running: spent(after),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "a copy off the pod asking", bundle: held(after, asking),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyReleaseBundle},
+		{name: "both off this volume", bundle: held(after, released), running: held(longAfter, cameBack),
+			wantBundle: WorkspaceBundleHeldByVolume, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "both of earlier volumes", bundle: held(longBefore, released), running: held(before, cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "the newer running copy off this volume closes the older bundle", bundle: held(before, released), running: held(after, cameBack),
+			wantBundle: WorkspaceBundleSuperseded, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "the newer bundle off this volume closes the older running copy", bundle: held(after, released), running: held(before, cameBack),
+			wantBundle: WorkspaceBundleHeldByVolume, wantRunning: WorkspaceBundleSuperseded, wantNewer: WorkspaceCopyReleaseBundle},
+		{name: "the older copy spent is not closed again", bundle: spent(before), running: held(after, cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "the older copy off the pod asking is not closed", bundle: held(before, asking), running: held(after, cameBack),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleHeldByVolume, wantNewer: WorkspaceCopyRunning},
+		{name: "the newer copy spent leaves the older to the take", bundle: held(before, released), running: WorkspaceCopyHeld{At: after, Written: after, Spent: true, Source: cameBack},
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+		{name: "the newer copy off the pod asking leaves an older one off this volume dropped", bundle: held(after, released), running: held(longAfter, asking),
+			wantBundle: WorkspaceBundleHeldByVolume, wantRunning: WorkspaceBundleNone, wantNewer: WorkspaceCopyRunning},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			keptSince := made
+			if c.noKeptVolume {
+				keptSince = time.Time{}
+			}
+			bundle, running, newer := DecideKeptVolumeDrop(c.bundle, c.running, asking, keptSince)
+			if bundle != c.wantBundle || running != c.wantRunning || newer != c.wantNewer {
+				t.Fatalf("DecideKeptVolumeDrop = (%v, %v, %q), want (%v, %v, %q)",
+					bundle, running, newer, c.wantBundle, c.wantRunning, c.wantNewer)
+			}
+		})
+	}
+}

@@ -116,11 +116,16 @@ const (
 	// descendants of the work it restores, so a copy left open for them would be applied over
 	// everything pushed in between. Its bytes stay for an operator too.
 	WorkspaceBundleSuperseded
+	// WorkspaceBundleHeldByVolume: the copy came off the kept volume this pod mounts, so the
+	// pod's workspace holds its work already, and the store deletes the copy and sends it to no
+	// pod (DecideKeptVolumeDrop, HeldWorkspaceCopiesDrop). Sent there, the copy would be refused
+	// by the pod's launcher, whose workspace is older than the copy, as work that was lost.
+	WorkspaceBundleHeldByVolume
 )
 
 // String is the take by its constant's name, so a test that finds the wrong take, and a log line
 // that writes one, prints a word a reader can find in this file rather than a number. A value
-// outside the five is printed with its number, since it is no take this file declares.
+// outside the six is printed with its number, since it is no take this file declares.
 func (t WorkspaceBundleTake) String() string {
 	switch t {
 	case WorkspaceBundleNone:
@@ -133,6 +138,8 @@ func (t WorkspaceBundleTake) String() string {
 		return "WorkspaceBundleRefusedPushed"
 	case WorkspaceBundleSuperseded:
 		return "WorkspaceBundleSuperseded"
+	case WorkspaceBundleHeldByVolume:
+		return "WorkspaceBundleHeldByVolume"
 	}
 	return "WorkspaceBundleTake(" + strconv.Itoa(int(t)) + ")"
 }
@@ -347,6 +354,59 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 	return take(WorkspaceCopyReleaseBundle, bundle), take(WorkspaceCopyRunning, running), offered
 }
 
+// DecideKeptVolumeDrop is the whole of the choice the drop of the copies a pod's kept volume
+// holds makes (HeldWorkspaceCopiesDrop). The pod of podUID belongs to a Sandbox that owns the
+// issue's kept volume and that the API server created at keptSince. The volume is as old as that
+// Sandbox: Agent Sandbox makes the claim from the Sandbox's template, and the claim goes only with
+// the Sandbox, so a reset or a change of the disk's shape makes a new Sandbox with a new volume. It
+// answers what the drop does to each copy, read off its row as the restore reads it
+// (WorkspaceCopyHeld), and the kind of the newer of the two (NewerWorkspaceCopy), which a line
+// about the other copy names. The store records every take it answers but WorkspaceBundleNone.
+//
+// A copy whose take began after keptSince came off that volume, the release bundle and the running
+// copy alike: it was taken off a pod of this Sandbox, or kept as the copy of a pod of it that
+// restored it (store.Store.KeepRestoredWorkspaceCopy). So the pod's workspace holds its work, and
+// the copy is answered WorkspaceBundleHeldByVolume: the store deletes it and sends it to no pod. A
+// copy whose take began before keptSince came off another volume, one that a reset or a change of
+// the disk's shape replaced, and the drop answers it WorkspaceBundleNone, so the take restores it
+// as for any pod (DecideWorkspaceRestore).
+//
+// The take's own rules stand, so the drop answers WorkspaceBundleNone for every copy the take
+// answers nothing of: a copy the issue does not hold, a spent one, and one whose work came off the
+// pod asking, whose workspace is the work and whose copy stays for the pod that replaces it.
+//
+// The drop leaves the choice between the two copies as the take makes it. Where it deletes the
+// newer copy and the older stays, the older is answered WorkspaceBundleSuperseded, as the take
+// answers it beside the newer: the volume holds the newer work, and the older copy applied over it
+// would put the workspace back.
+//
+// The comparison reads the copy's time to its own second, because keptSince is a
+// creationTimestamp, which has one-second resolution, and a copy taken in that second cannot be
+// ordered against the Sandbox. Such a copy is not dropped: a drop deletes the work, and a copy the
+// launcher refuses as older than its workspace costs a notice. keptSince is the API server's clock
+// and a copy's time the store's (store.Store.BeginWorkspaceCopy). A copy of an earlier volume was
+// taken before the last pod of that volume ended and its Sandbox was deleted, and a copy of this
+// volume after a pod of this Sandbox started, so a skew of seconds between the two clocks does not
+// change the answer. A zero keptSince is no kept volume, and nothing is dropped.
+func DecideKeptVolumeDrop(bundle, running WorkspaceCopyHeld, podUID string, keptSince time.Time) (bundleTake, runningTake WorkspaceBundleTake, newer WorkspaceCopyKind) {
+	newer = NewerWorkspaceCopy(bundle, running)
+	offerable := func(c WorkspaceCopyHeld) bool { return c.Held() && !c.Spent && c.Source != podUID }
+	held := func(c WorkspaceCopyHeld) WorkspaceBundleTake {
+		if keptSince.IsZero() || !offerable(c) || !c.At.Truncate(time.Second).After(keptSince) {
+			return WorkspaceBundleNone
+		}
+		return WorkspaceBundleHeldByVolume
+	}
+	bundleTake, runningTake = held(bundle), held(running)
+	switch {
+	case newer == WorkspaceCopyRunning && runningTake == WorkspaceBundleHeldByVolume && bundleTake == WorkspaceBundleNone && offerable(bundle):
+		bundleTake = WorkspaceBundleSuperseded
+	case newer == WorkspaceCopyReleaseBundle && bundleTake == WorkspaceBundleHeldByVolume && runningTake == WorkspaceBundleNone && offerable(running):
+		runningTake = WorkspaceBundleSuperseded
+	}
+	return bundleTake, runningTake, newer
+}
+
 // RestorableBookmarks is the bookmarks a restore of a saved copy of issue's workspace sets: every
 // one of bookmarks, the copy's own, but the issue's branch `legion/<KEY>` (claim.IssueBranch) and
 // its rescue branch `legion/<KEY>-rescue` (claim.RescueBranch). The launcher sets each bookmark it
@@ -403,6 +463,12 @@ func RestorableBookmarks(issue string, bookmarks map[string]string) (restorable,
 // the time the decision weighed the offered copy against. The decision sends no copy but the
 // offered one, so the send is Of(Offered) when its take is WorkspaceBundleSend, and it alone
 // carries its body.
+//
+// The drop of the copies a pod's kept volume holds answers in the same shape
+// (HeldWorkspaceCopiesDrop): each copy's take is WorkspaceBundleHeldByVolume for a copy it deleted,
+// WorkspaceBundleSuperseded for an older copy it closed beside one it deleted, and
+// WorkspaceBundleNone otherwise (DecideKeptVolumeDrop); Offered is the newer of the copies the
+// issue held, and Push is the zero push, the drop reading none. Neither take carries a body.
 type WorkspaceRestore struct {
 	ReleaseBundle WorkspaceCopyTaken
 	Running       WorkspaceCopyTaken

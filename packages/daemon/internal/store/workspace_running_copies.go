@@ -372,11 +372,13 @@ var (
 // issue holds, and before anything of the copies is read: a pod that asks while the issue holds no
 // copy has begun its work all the same, and a copy written after that ask must find it. Every
 // pod's launcher asks at its first role start (internal/runtime/sandbox's launchers.start), so a
-// pod that existed before a copy was written asked before it. The ask's time is the store's clock
-// read under that lock, as a copy's write time is (PutRunningWorkspaceCopy, PutWorkspaceBundle); a
-// copy's `at` is the store's clock when its take began (BeginWorkspaceCopy), and a push's time is
-// the store's clock when its record was written (RecordIssuePush), so the decision compares one
-// clock alone.
+// pod that existed before a copy was written asked before it. A pod of a Sandbox that owns the
+// issue's kept volume asks the drop of the copies that volume holds first, at the same start, and
+// the drop records that first ask as the take does (DropHeldWorkspaceCopies). The ask's time is
+// the store's clock read under that lock, as a copy's write time is (PutRunningWorkspaceCopy,
+// PutWorkspaceBundle); a copy's `at` is the store's clock when its take began
+// (BeginWorkspaceCopy), and a push's time is the store's clock when its record was written
+// (RecordIssuePush), so the decision compares one clock alone.
 //
 // One comparison of a copy's time with another clock is left, and it is on the pod's side: the
 // launcher applies no copy to a workspace whose creation record, stamped by its own node's clock,
@@ -419,15 +421,10 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}
-		var recorded bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and lower(project) = $2)`,
-			issue, project).Scan(&recorded); err != nil {
-			return fmt.Errorf("read whether project %s records %s: %w", project, issue, err)
-		}
 		// The issue's copies are no copies of this project's: nothing is answered and nothing
 		// recorded, the pod's first ask included.
-		if !recorded {
-			return nil
+		if recorded, err := projectRecordsIssue(ctx, tx, project, issue); err != nil || !recorded {
+			return err
 		}
 		var err error
 		if restore.FirstAsked, err = firstRestoreAsk(ctx, tx, issue, podUID); err != nil {
@@ -479,6 +476,18 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 	return restore, nil
 }
 
+// projectRecordsIssue is whether project, a claim.ProjectToken, records issue (issues.project,
+// the Dispatch key the token lowercases), which is what makes an issue's saved copies project's to
+// take (TakeWorkspaceCopyForRestore) and to drop (DropHeldWorkspaceCopies).
+func projectRecordsIssue(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
+	var recorded bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and lower(project) = $2)`,
+		issue, project).Scan(&recorded); err != nil {
+		return false, fmt.Errorf("read whether project %s records %s: %w", project, issue, err)
+	}
+	return recorded, nil
+}
+
 // workspaceCopyLock is the statement that takes issue $1's copy lock until its transaction ends
 // (lockWorkspaceCopies).
 const workspaceCopyLock = `select pg_advisory_xact_lock(hashtextextended('workspace-copy:' || $1, 0))`
@@ -487,11 +496,12 @@ const workspaceCopyLock = `select pg_advisory_xact_lock(hashtextextended('worksp
 // statements of a running copy's save (PutRunningWorkspaceCopy), a release's save
 // (PutWorkspaceBundle), the keep of a confirmed restore (KeepRestoredRunningWorkspaceCopy,
 // KeepRestoredWorkspaceBundle) and the cancel's move of a release bundle (CancelIssueRelease) —
-// and every take (TakeWorkspaceCopyForRestore) takes it as its first act, and stamps its write
-// time with clock_timestamp() read once it holds the lock, never with the transaction's now(),
-// which can be from before the wait. A copy's `at` is read before this lock, when its take began
-// and before its bundler read the workspace (BeginWorkspaceCopy): it says what the work is as of,
-// and orders no write against an ask, which is what the write time is for.
+// and every take (TakeWorkspaceCopyForRestore) and drop (DropHeldWorkspaceCopies) takes it as its
+// first act, and stamps its write time with clock_timestamp() read once it holds the lock, never
+// with the transaction's now(), which can be from before the wait. A copy's `at` is read before
+// this lock, when its take began and before its bundler read the workspace (BeginWorkspaceCopy):
+// it says what the work is as of, and orders no write against an ask, which is what the write
+// time is for.
 //
 // The lock is held until the transaction commits, so of a write and a take of one issue, the one
 // that holds it first has stamped its time and committed before the other stamps its own: a copy

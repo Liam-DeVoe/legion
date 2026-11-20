@@ -62,10 +62,15 @@ type SandboxConfig struct {
 
 // MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
 // pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
-// none, which the loader fills in; and the metadata endpoint their launchers serve, nil for none.
+// none, which the loader fills in; whether an issue pod keeps its volume; and the metadata endpoint
+// their launchers serve, nil for none.
 type MicroVM struct {
 	ComputeClass, StorageClass string
-	Metadata                   *MetadataEndpoint
+	// KeepVolume is microvm.keep_volume. It applies to an issue pod that runs in a microVM alone:
+	// that pod's volume is then a claim that the issue's Sandbox owns, and the claim outlives the
+	// pod. A gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
+	Metadata   *MetadataEndpoint
 }
 
 // MetadataEndpoint is runtime.kubernetes.sandbox.microvm.metadata, which a microVM pod's launcher
@@ -396,6 +401,13 @@ type Options struct {
 	// anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// HeldWorkspaceCopies drops each copy of an issue's workspace, the release bundle and the
+	// running copy, that the pod's own kept volume holds already (runtime.HeldWorkspaceCopiesDrop):
+	// the pod's Sandbox owns the issue's kept volume and was created before the copy was taken. At
+	// each role start the runtime asks it before the take, and only for a pod of such a Sandbox
+	// (launchers.restoreWorkspace). When it drops a copy, the runtime sends that pod nothing. A
+	// runtime given none takes the copies for every pod as SavedWorkspaceBundle answers them.
+	HeldWorkspaceCopies runtime.HeldWorkspaceCopiesDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -239,10 +240,111 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 	return err
 }
 
+// DropHeldWorkspaceCopies deletes each copy of issue's workspace that the pod of podUID holds on
+// its volume already, and answers what it did to each copy (runtime.WorkspaceRestore). The pod's
+// Sandbox owns the issue's kept volume and was created at keptSince, so a copy whose take began
+// after that, the release bundle and the running copy alike, came off the volume the pod mounts.
+// Every rule of which copy that is, and of the older copy closed beside a newer one deleted, is
+// runtime.DecideKeptVolumeDrop's. project is the token of the daemon whose pod asks
+// (claim.ProjectToken).
+//
+// It keeps the take's rules, read off the same rows (heldCopy, TakeWorkspaceCopyForRestore). A
+// copy whose work came off the asking pod stays, for the pod that replaces it. A spent copy stays,
+// as the record of its attempt. A copy is project's only where project records its issue
+// (issues.project), and where project does not, the drop answers an empty runtime.WorkspaceRestore
+// and records nothing at all, the pod's first ask included: another project's daemon saved those
+// copies for its own pod, and they stay for that pod.
+//
+// It is one transaction under the issue's copy lock (lockWorkspaceCopies), shaped as the take's.
+// It records the pod's first ask for a restore if this is it (firstRestoreAsk), because the
+// runtime takes nothing more at the role start whose drop deleted a copy, and a copy written after
+// that start must be left for the next pod by every later ask of this pod. It reads both copies for
+// update, and writes what the decision answered. A copy the volume holds is deleted with none of
+// its body read, since a copy runs to tens of megabytes and the volume holds the work; its restore
+// id, its time, its size and its source are answered, so the runtime can name them. An older copy
+// the decision closed is recorded superseded against this pod, as the take records it (takeCopy),
+// and keeps its bytes for an operator. A release bundle's delete lifts the hold its row puts on the
+// issue's pod (workspaceBundleUnrestored), as the keep of a confirmed restore does.
+//
+// The drop refuses an empty project, an empty podUID and a zero keptSince: an empty podUID would
+// never be the pod the work came off, and a zero keptSince would read as older than every copy.
+func (s *Store) DropHeldWorkspaceCopies(ctx context.Context, project, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
+	switch {
+	case project == "":
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the drop of the saved workspace copies of %s that a kept volume holds needs the project whose pod asks", issue)
+	case podUID == "":
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the drop of the saved workspace copies of %s that a kept volume holds needs the pod that mounts it", issue)
+	case keptSince.IsZero():
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the drop of the saved workspace copies of %s that a kept volume holds needs when the Sandbox of the pod %s was created", issue, podUID)
+	}
+	var dropped runtime.WorkspaceRestore
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		dropped = runtime.WorkspaceRestore{}
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
+		if recorded, err := projectRecordsIssue(ctx, tx, project, issue); err != nil || !recorded {
+			return err
+		}
+		var err error
+		if dropped.FirstAsked, err = firstRestoreAsk(ctx, tx, issue, podUID); err != nil {
+			return err
+		}
+		bundle, err := heldCopy(ctx, tx, releaseBundleCopies, issue)
+		if err != nil {
+			return err
+		}
+		running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
+		if err != nil {
+			return err
+		}
+		var bundleTake, runningTake runtime.WorkspaceBundleTake
+		bundleTake, runningTake, dropped.Offered = runtime.DecideKeptVolumeDrop(bundle, running, podUID, keptSince)
+		for _, decided := range []struct {
+			copies copyTable
+			take   runtime.WorkspaceBundleTake
+			taken  *runtime.WorkspaceCopyTaken
+		}{{releaseBundleCopies, bundleTake, &dropped.ReleaseBundle}, {runningCopyCopies, runningTake, &dropped.Running}} {
+			switch decided.take {
+			case runtime.WorkspaceBundleHeldByVolume:
+				*decided.taken, err = dropCopy(ctx, tx, decided.copies, issue)
+			case runtime.WorkspaceBundleSuperseded:
+				*decided.taken, err = takeCopy(ctx, tx, decided.copies, issue, podUID, decided.take)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return runtime.WorkspaceRestore{}, fmt.Errorf("drop the saved workspace copies of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)
+	}
+	return dropped, nil
+}
+
+// dropCopy deletes issue's copy in copies' table, which the drop's decision answered the asking
+// pod's kept volume holds (runtime.WorkspaceBundleHeldByVolume), and answers the row's facts as the
+// delete read them back: its restore id, its time, its size and the pod its work came off, none of
+// its body. The row was read for update in this same transaction (heldCopy), so a delete that
+// finds none is an error like any other.
+func dropCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue string) (runtime.WorkspaceCopyTaken, error) {
+	dropped := runtime.WorkspaceCopyTaken{Take: runtime.WorkspaceBundleHeldByVolume}
+	b := &dropped.Bundle
+	err := tx.QueryRow(ctx, fmt.Sprintf(`delete from %[1]s where issue = $1
+		returning %[2]s, at, size_bytes, source_pod_uid`, copies.table, copies.id), issue).
+		Scan(&b.Release, &b.At, &dropped.Size, &b.PodUID)
+	if err != nil {
+		return runtime.WorkspaceCopyTaken{}, fmt.Errorf("drop the %s: %w", copies.kind, err)
+	}
+	return dropped, nil
+}
+
 // workspaceBundleUnrestored is whether issue has a stored bundle whose restore is not recorded,
 // which is the idle rule's reason to release no pod of the issue (store.readIdleView,
 // workflow.IdleHoldBundleUnrestored). The row's own presence is that record: a restore the pod's
-// launcher confirmed deletes it (KeepRestoredWorkspaceBundle), and it does so before any role of
+// launcher confirmed deletes it (KeepRestoredWorkspaceBundle), and so does the drop for a pod
+// whose kept volume holds the work (DropHeldWorkspaceCopies). Each does so before any role of
 // the pod starts, so a row still here when the idle rule reads it is work no pod has put back —
 // the release that would overwrite it is the release the hold stops. A bundle whose restore failed
 // in a pod where a role then registered is such a row, and so is one refused to a pod or closed

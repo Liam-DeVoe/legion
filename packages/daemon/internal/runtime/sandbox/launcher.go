@@ -52,9 +52,12 @@ type launchers struct {
 	// between the issue's two copies and spends their attempts in one transaction, and restored
 	// the confirmation that keeps the copy a launcher put back as the running copy of that
 	// launcher's pod: the daemon's store behind both (Options.SavedWorkspaceBundle,
-	// WorkspaceBundleRestored). A launchers built without the pair restores nothing.
+	// WorkspaceBundleRestored). A launchers built without the pair restores nothing. dropHeld drops
+	// each copy that a pod's own kept volume holds already (Options.HeldWorkspaceCopies). A
+	// launchers built without it takes the copies for every pod.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
+	dropHeld runtime.HeldWorkspaceCopiesDrop
 	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
 	// no receiver took it, and drops it (memoryKilled).
@@ -72,9 +75,14 @@ type launcherSession struct {
 	// issue is the exact issue key this launcher's pod is of, as the role Secret's annotation
 	// carried it to the hello's authentication (launcherCredential.issue): the key the release
 	// saved that workspace's bundle under. "" for a pod of no issue, the project controller's.
-	issue  string
-	id     string
-	podUID string
+	issue string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. A copy of the issue's workspace taken after it came off that volume, so the pod takes
+	// none of it, and the store drops the copy (restoreWorkspace).
+	keptSince time.Time
+	id        string
+	podUID    string
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -92,16 +100,18 @@ type launcherSession struct {
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
+	dropHeld runtime.HeldWorkspaceCopiesDrop, guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, held: map[string]heldCopy{},
-		leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, saved: saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
+		leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, saved: saved, restored: restored, dropHeld: dropHeld,
+		guardKilled: guardKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue. The newest authenticated connection
-// for a role wins: a half-open predecessor is closed so its pending requests fail instead of
-// waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
+// volume since keptSince (the zero time for a pod on a volume of its own). The newest
+// authenticated connection for a role wins: a half-open predecessor is closed so its pending
+// requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
