@@ -25,7 +25,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
     # steps at their longest, 43 s, 5 s of its clock over them, and its test step's longest, 6 s,
-    # plus the package script's guard of 15 s: 69 s in all.
+    # plus the package script's two guards, 15 s and the 60 s of its second command, which runs
+    # main's src/build-entries.test.ts (#4538) alone and has no green run on record: 129 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

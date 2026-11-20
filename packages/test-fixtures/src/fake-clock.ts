@@ -17,16 +17,19 @@ export function turn(): Promise<void> {
   return promise;
 }
 
-/** What {@link turnsUntil} is told beside its condition. Neither is a bound. */
+/** What {@link turnsUntil} is told beside its condition. None is a bound. */
 export interface TurnsUntilOptions {
   /** What the row can say, at its deadline, of where things stand, after `what`. */
   readonly state?: () => string;
   /** Done before each turn, such as moving the fake clock a millisecond for a wait on a timer of
    *  the code's; nothing by default. */
   readonly each?: () => void;
+  /** How one turn is taken, {@link turn} by default: a React row takes each turn inside `act`, so
+   *  what the turn set going renders, inside `act`, before `done` reads it. */
+  readonly turn?: () => Promise<void>;
 }
 
-const OPTIONS: readonly string[] = ["state", "each"];
+const OPTIONS: readonly string[] = ["state", "each", "turn"];
 
 /**
  * Turns of the real event loop until `done` holds, the shape of `@legion/test-fixtures/wait`'s
@@ -37,7 +40,7 @@ const OPTIONS: readonly string[] = ["state", "each"];
  * after every turn before the deadline is. A wait that would not end fails with `turnsUntil gave
  * up waiting for <what>, <deadline>` and what `state` says. Its last parameter, as `./wait`'s,
  * takes nothing: a planted duration fails its type, and throws at run time, as an option other
- * than `state` and `each` does.
+ * than `state`, `each` and `turn` does.
  */
 export async function turnsUntil(
   what: string,
@@ -48,7 +51,7 @@ export async function turnsUntil(
   const unknown = Object.keys(options).filter((name) => !OPTIONS.includes(name));
   if (extra.length > 0 || unknown.length > 0 || typeof done !== "function") {
     throw new TypeError(
-      `turnsUntil(what, done, { state, each }) was given ${Bun.inspect([...unknown, ...extra])} ` +
+      `turnsUntil(what, done, { state, each, turn }) was given ${Bun.inspect([...unknown, ...extra])} ` +
         "beside what it takes, or a done that is no function. No wait takes a duration: each " +
         "ends at its row's deadline, which the command's --timeout sets (@legion/test-fixtures/wait)."
     );
@@ -64,6 +67,6 @@ export async function turnsUntil(
       throw new Error(`turnsUntil gave up waiting for ${what}, ${deadline.source}${state}`);
     }
     options.each?.();
-    await turn();
+    await (options.turn ?? turn)();
   }
 }

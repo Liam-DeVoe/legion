@@ -338,8 +338,11 @@ These rules are how a file leaves nothing behind:
   Anything staged under that root is staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
 
 - `temporaryDirectory` and `temporaryDirectories` take `root`, the directory the temporary one is made in, for a test that needs another filesystem, such as `/dev/shm` for a rename that must cross one.
-  A file whose one hook or row makes or removes hundreds of entries takes `root: memoryRoot()`, the same module's `/dev/shm` where it is a writable tmpfs that allows exec and `tmpdir()` otherwise:
-  on the dev box's shared disk each entry waits for metadata and I/O that every session of the box shares, 0.2 ms to 6 ms, and `score.test.ts`'s 5,004 entries took 1,122 ms to 12,608 ms there and 49 ms to 65 ms on `/dev/shm` (dispatch://INFRA-4311).
+  `memoryRoot({ need })` of the same module names `/dev/shm` where it is a tmpfs that allows exec, this process may write in and search it, and it has `need` bytes free (0 unless given), else `tmpdir()`:
+  a suite that makes or removes many entries inside one row's or hook's time takes it as `root`, so a busy shared disk does not set that time.
+  On the dev box's shared disk each entry waits for metadata and I/O that every session of the box shares, 0.2 ms to 6 ms, and `score.test.ts`'s 5,004 entries took 1,122 ms to 12,608 ms there and 49 ms to 65 ms on `/dev/shm` (dispatch://INFRA-4311).
+  A suite that holds much there gives `need`: the most one run holds at once, times the runs that may share the host, because a tmpfs is often small (a Kubernetes pod's is 64 MiB), keeps what a stopped run never removed, and fails a write past its end with ENOSPC.
+  tmpfs charges a page for each file that holds data, so a suite that removes files it has read holds less.
   Both remove a tree a test left read-only:
   the removal chmods `u+rwX` down the tree first, following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a tree can be a hard link to one outside it.
 
@@ -390,7 +393,7 @@ These rules are how a file leaves nothing behind:
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one rule here that holds only under a condition.
-  Oh My Pi's native modules, about 116 MiB a pin, are hardlinked into each test's fresh HOME from one copy per binary at `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
+  Oh My Pi's native modules, about 123 MiB a pin, are hardlinked into each test's fresh HOME from one copy per binary at `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a cache that exists to be shared by both languages and either fills for the other.
   The Go build and module caches of the `go run` in `runDaemonPane` (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason:
   CI's `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario (`.github/workflows/ci-job-pi-legion.yaml`).
@@ -406,7 +409,8 @@ It reads that process's command line from `/proc/<pid>/cmdline`, its state, pare
 A command name may hold spaces and parentheses, so the fields of `/proc/<pid>/stat` are read after its last `) `.
 `box_login_pid_args` in `scripts/e2e/lib/box-login.sh` prints one process's command line from that process's own `/proc/<pid>/cmdline`.
 `runsWith` in `packages/claude-envoy/tests/answers-hook.test.ts` asks whether one refresher still runs.
-Each of them asks `ps` or `pgrep` only on a host with no `/proc`.
+`scripts/e2e/lib/process-tree.sh`, which `scripts/e2e/lib/rig.sh` sources, has `proc_parent`, `proc_group`, `proc_children` and `proc_describe`.
+Each of them asks `ps` or `pgrep` only on a host with no `/proc`, but for `proc_children`, which also asks `pgrep -P` where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`).
 `commandRuns` in the same answers-hook test asks the kernel about a token command's whole process group with one `kill(-pid, 0)`, so it also sees a child that the command left running.
 The test of `psCommandLine` in `packages/test-fixtures/src/deadline.ts`, the reading of a host with no `/proc`, hands it a stand-in for `ps`.
 
@@ -420,6 +424,27 @@ Only a test that looks for processes whose pids nothing records, such as the sur
 When a test waits for a process that the code under test starts, the code tells the test that process's pid.
 The answers hook writes the pid of the refresher it starts into the record it writes to `ENVOY_ANSWERS_TIMING_FILE`, a variable only tests set.
 A command that a test hands to the code, such as a `!` token command or a stand-in, writes its own pid (`echo $$ >FILE`) as its first act.
+
+## The act rule of a Dispatch unit test
+
+The preload of Dispatch's unit suite (`web/src/__tests__/setup.ts`) fails a row in which React printed an act message, naming each message with its component and the frames that printed it (`web/src/__tests__/act-warnings.ts`).
+Each `web/src/` path in this section is under `packages/dispatch`.
+
+- Wrap a state update the row causes in `act`, and one that a promise settles in `await act(async () => …)`.
+
+- Under a held clock (`jest.useFakeTimers()`), hold the answer to the request a press sends, and give it inside `act` once the press is out.
+  A press's own wait ends a few turns after its last event, so an answer given at once lands after that wait and updates the page outside `act`.
+
+- A row that dispatches a DOM event itself (`window.dispatchEvent(new Event("scroll"))`, say) dispatches it inside `act` when a listener of a rendered component sets React state from it, even a state the event leaves as it was.
+  React drops a set of the same value without scheduling it only while the component has no update left from an earlier render;
+  when an update of that component lands just before the event, the set is scheduled outside `act` and the act rule fails the row.
+  Under a lane's load that is rare, and the file alone does not show it:
+  `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures, `web/src/__tests__/act-rule*.fixture.tsx`.
+  Four draw React's act messages.
+  `act-rule-quiet-restore.fixture.tsx` proves that the preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+  `act-rule-final-hook.fixture.tsx` proves that a row that the network report and the act check both fail fails with one report naming both, and that every reset and restore of the preload still runs after it, so the next row starts with nothing that row left.
 
 ## A Dispatch unit test runs in random order
 
@@ -457,6 +482,16 @@ Each `web/src/` and `e2e/` path below is under `packages/dispatch`, and each com
   a row that waits and still fails there ran out its wait behind a chain of holds, one lazy module loading the next, which a smaller `DISPATCH_COLD_HOLD_MS` tells apart.
   The weekly workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the modules its first run loaded, so only the first run is cold.
 
+- `bun run test:web:late-reads` is `test:web` with `web/src/__tests__/hold-read-answers.ts` added last to its preloads.
+  That file wraps the `queryFn` of every TanStack query, so each read's answer reaches its cache one turn of the real event loop after its request has answered, while what a page draws without a read comes at once.
+  A row that waits for what the page draws at once, then reads what a read brings without waiting for it, fails there under every seed, where under `test:web` it fails only on a runner loaded enough to split the two commits:
+  `settings.test.tsx`'s mapping row read the sidebar's Settings link after the page's heading, and the sidebar draws its links only once its inbox, pinned issues and projects have answered.
+  The wait is the real `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation and a write of the page's store run no `queryFn`, so none of them is held.
+  A row that fails there and passes under `test:web` reads before it waits.
+  Waiting fixes none of three other kinds of failure, which the head of `hold-read-answers.ts` names:
+  a row that times a read's answer (the query client's own rows, a write's 401 path through the sign-in check), a row that ends while a read it never reads is out, whose late answer React reports outside `act`, and a page that never reaches the state its row waits for, which is a finding about the page.
+  No workflow runs the lane: it is for a change to a test that reads what a read draws, and for a search of that class.
+
 - A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells:
   happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`, `scrollTo` and `scrollIntoView`.
   A restore, Bun's `mockRestore` or an assignment, leaves an own copy on a prototype that only inherited the method, and that copy shadows every later spy on the owner.
@@ -468,17 +503,6 @@ Each `web/src/` and `e2e/` path below is under `packages/dispatch`, and each com
   A lazily loaded part is anything that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone.
   A test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin, imports that module at its top:
   a load that a row starts can arrive between two of that row's `act` scopes or in a later row, where React reports a suspended resource outside `act` (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`, `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx` do).
-
-- A row that dispatches a DOM event itself (`window.dispatchEvent(new Event("scroll"))`, say) dispatches it inside `act` when a listener of a rendered component sets React state from it, even a state the event leaves as it was.
-  React drops a set of the same value without scheduling it only while the component has no update left from an earlier render;
-  when an update of that component lands just before the event, the set is scheduled outside `act` and the act rule fails the row.
-  Under a lane's load that is rare, and the file alone does not show it:
-  `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the reader position in O(1) rect reads" failed 1 run in 20 that way.
-
-- `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures, `web/src/__tests__/act-rule*.fixture.tsx`.
-  Four draw React's act messages.
-  `act-rule-quiet-restore.fixture.tsx` proves that the preload puts back a spy of `quietConsoleError()` that a row leaves in place.
-  `act-rule-final-hook.fixture.tsx` proves that a row that the network report and the act check both fail fails with one report naming both, and that every reset and restore of the preload still runs after it, so the next row starts with nothing that row left.
 
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not, while an autovacuum worker is attached (the doc of `dropDatabase` says why).
 

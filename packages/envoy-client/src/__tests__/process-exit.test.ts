@@ -27,9 +27,14 @@ test("a process ended by exitProcess first writes out everything queued on stdou
     writeFileSync(${JSON.stringify(queued)}, "")
     await exitProcess(0)
   `;
-  const child = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
-  // A reader that starts only once the child has queued what it wrote and called exitProcess.
-  await until("the child's output queued, and exitProcess called", () => existsSync(queued));
+  // This process's own Bun, by its path: PATH need not name a `bun` at all.
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+  // A reader that starts only once the child has queued what it wrote and called exitProcess. A
+  // child that exits first, as one whose exit drops what it queued does, ends the wait too, and
+  // the lengths below say what it dropped.
+  await until("the child's output queued, and exitProcess called", () => {
+    return existsSync(queued) || child.exitCode !== null || child.signalCode !== null;
+  });
   const [out, err, code] = await settled(
     "the child's output read whole and its exit",
     Promise.all([
@@ -73,7 +78,10 @@ function childExitingOnABound(queued: string, stderr: string, flushMs: number) {
     writeFileSync(${JSON.stringify(queued)}, "")
     await exitProcess(1, ${flushMs})
   `;
-  return Bun.spawn(["bun", "-e", script], { stdout: "ignore", stderr: Bun.file(stderr) });
+  return Bun.spawn([process.execPath, "-e", script], {
+    stdout: "ignore",
+    stderr: Bun.file(stderr),
+  });
 }
 
 test("an exit on a flush bound writes out what is queued for a reader that takes it", async () => {

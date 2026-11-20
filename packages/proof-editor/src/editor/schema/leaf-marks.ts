@@ -23,7 +23,7 @@
  * ordinary documents - and a display surface turns such a throw into a body drawn as its literal
  * source.
  */
-import { Fragment, type Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
+import { Fragment, type Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 
 /**
  * The steps `withoutLeafMarks` has taken in this process: one for each node it visits and one for

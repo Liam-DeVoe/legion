@@ -60,6 +60,24 @@ test("a wait returns once its condition holds, and moves no clock", async () => 
   expect(Date.now()).toBe(date);
 });
 
+test("a wait takes each turn through the turn it is given", async () => {
+  let answered = false;
+  void turn()
+    .then(turn)
+    .then(() => {
+      answered = true;
+    });
+  let taken = 0;
+  await turnsUntil("answered", () => answered, {
+    turn: async () => {
+      taken += 1;
+      await turn();
+    },
+  });
+  expect(answered).toBe(true);
+  expect(taken).toBeGreaterThan(0);
+});
+
 test("a wait refuses a duration, as an argument or an option", async () => {
   // @ts-expect-error: no wait takes a duration.
   await expect(turnsUntil("answered", () => true, {}, 100)).rejects.toThrow(

@@ -87,8 +87,8 @@
       "bun": true,
       "evidence_variable": "NATS_CALLOUT_SESSIONS_EVIDENCE_DIR",
       "timeout_minutes": 35,
-      "timeout_reading": "guard 600 s (its own 8 green e2e.yaml jobs up to 2026-11-19 took at most 245 s, setup and upload included) plus that 245 s: 845 s, in 35 minutes",
-      "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the two sessions are this checkout's plugins in processes of their own with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi and Claude Code on a model route, is run by hand on a Legion pod or a box given the pins and a route",
+      "timeout_reading": "guard 600 s (its own 9 green e2e.yaml jobs up to 2026-11-19, runs 44488343282 to 44607587303 of the four sessions' proof (#4490), took at most 245 s, setup and upload included) plus that 245 s: 845 s, in 35 minutes",
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the four sessions (Oh My Pi, Claude Code and two Codex CLI) are this checkout's plugins in processes of their own under stand-in hosts with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi, Claude Code and Codex CLI on model routes, is run by hand on a Legion pod or a box given the pins and the routes",
       "jj": false
     },
     {
