@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -52,10 +54,11 @@ func stepRunsOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // while the implementer ran task a's step 1, so after the roll forward the issue walks today's
 // line, where no step is task a's: no start and no end of that line names the place, and the
 // settle, which reads every open run of the issue a fact touched, is where it ends. Its end is the
-// record its start wrote, ended, under the id of that start. The runs of today's line go on as any
-// run does: the boot opens implementing's, the move to testing ends it and starts testing's, which
-// stays open. The control is the same issue with its plan rows kept: task a's step 1 ends passed
-// with the move, and nothing is logged.
+// record its start wrote, ended, under the id of that start, and it names the session and the
+// model of the daemon's read of the implementer at that end, as every end of a run does. The runs
+// of today's line go on as any run does: the boot opens implementing's, the move to testing ends
+// it and starts testing's, which stays open. The control is the same issue with its plan rows
+// kept: task a's step 1 ends passed with the move, naming the same read, and nothing is logged.
 func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
 	const offWalk = "workflow: a run on no step of the walk of its run is ended"
 	for _, dropped := range []bool{true, false} {
@@ -67,6 +70,13 @@ func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
 			pool := migratedPool(t)
 			engine, logged := loggedEngine()
 			root := stepRoot(t, pool, phase.Admitted)
+			implementer := treeRoleToken(t, root.Key, claim.RoleImplementer)
+			engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, agent claim.Token) StepAgent {
+				if string(agent) != implementer {
+					return StepAgent{}
+				}
+				return StepAgent{Session: "s1", Model: "first/first-model"}
+			}
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
 			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 			if dropped {
@@ -82,6 +92,10 @@ func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
 				if w.Task == taskA.Task && w.Kind == taskA.Kind && w.Step == taskA.Place && isEnd(w) {
 					if w.ID != StepID(root.Key, 1, taskA, 1) || w.Role != "implementer" || w.Type != "implementation" || w.StartedAt == nil {
 						t.Fatalf("the end of task a's step 1 = %+v, want the record its start wrote", w)
+					}
+					if !w.EndedAt.Equal(stepClock) || w.Session == nil || *w.Session != "s1" || w.Model == nil || *w.Model != "first/first-model" {
+						t.Fatalf("the end of task a's step 1 ended at %v with session %v and model %v, want %s, s1 and first/first-model: the read of the implementer at that end",
+							w.EndedAt, w.Session, w.Model, stepClock)
 					}
 					ends = append(ends, resultOf(w))
 				}

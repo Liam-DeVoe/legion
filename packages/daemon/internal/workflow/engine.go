@@ -148,7 +148,7 @@ type Config struct {
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
-	// step's end (endStep): the session its claim records and the model that answered it last in
+	// step's end (endRun): the session its claim records and the model that answered it last in
 	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
 	// on a decision in flight. tx is the fact's own transaction, which holds the fact lock: a read
 	// the agent's record needs is made in it, never on another connection and never a write. Nil

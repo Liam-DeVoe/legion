@@ -20,7 +20,7 @@ import (
 const defaultTask = "default"
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
-// write of a step's record that names either field (endStep): the session its claim records now,
+// write of a step's record that names either field (endRun): the session its claim records now,
 // and the model that answered it last in that session as `<provider>/<model>`, or the model alone
 // when the frame named no provider. Either is "" where the daemon reads none, or reads text outside
 // the form of a step's agent text (the daemon's stepAgent), and the end then leaves that field
@@ -183,7 +183,7 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // start counted at its place (record.Store.RaiseStepStarts), and a step record row, committed with
 // the start, carrying every identity field and the moment it started, and no session: Dispatch
 // keeps the first value it is given of each field and only the end names the model, so the end
-// writes the session and the model as one read's pair (endStep). The start first ends each run of
+// writes the session and the model as one read's pair (endRun). The start first ends each run of
 // the issue that is over, the run of its own place among them (settleStart), so the end of the run
 // the issue leaves, or that its place held, reaches Dispatch before this start. The record never
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
@@ -194,7 +194,7 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 		return err
 	}
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
-	// and the end reads back, so the start and the end write one moment (endStep).
+	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
 		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
@@ -217,38 +217,48 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // and the moment that start wrote, so the two writes agree whichever reaches Dispatch first. A
 // run no start of this release counted has an open row from the daemon's boot
 // (OpenUncountedRuns), which wrote the count and the agent its start would have named, so its end
-// is written the same way. One run gets one end: the end marks the run ended in the store, in its
-// own transaction
-// (record.Store.EndStepStart), and an end of a run already marked writes nothing. The end carries
-// the moment now, end's fields, and the session and the model of one read of the agent now, the
-// only write that names either (startStep). A phase that runs no step writes nothing, and neither
+// is written the same way. endRun writes it. A phase that runs no step writes nothing, and neither
 // does a record key that is no issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, end StepEnd) error {
 	step, ok := standingStep(w, before)
 	if !ok {
 		return nil
 	}
-	start, ended, err := e.store.EndStepStart(ctx, tx, before.Key, step.place)
+	_, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)
+	})
+	return err
+}
+
+// endRun is the one writer of the end of a run, the run at place on issue, for both of its callers:
+// endStep, for a run a step of its walk holds, and endOffWalk, for a run on no step of it. Each
+// gives identity, which builds the record's identity from the start the end reads. One run gets one
+// end: endRun marks the run ended in the store, in its own transaction (record.Store.EndStepStart),
+// and an end of a run already marked writes nothing and answers false. The end carries that
+// identity, the moment the start wrote, the moment now, end's fields, and the session and the model
+// of one read of the start's agent now, the only write that names either (startStep).
+func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, end StepEnd, identity func(start record.StepStart) record.StepRecord) (bool, error) {
+	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place)
 	if err != nil || !ended {
-		return err
+		return false, err
 	}
-	agent, startedAt := claim.Token(start.Agent), start.StartedAt
-	write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)
-	if !startedAt.IsZero() {
-		write.StartedAt = new(startedAt)
+	write := identity(start)
+	if !start.StartedAt.IsZero() {
+		write.StartedAt = new(start.StartedAt)
 	}
+	write.Session, write.Model, write.Report, write.PlanRating = nil, nil, nil, nil
 	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo
 	if end.Report != "" {
 		write.Report = new(end.Report)
 	}
-	read := e.readAgent(ctx, tx, agent)
+	read := e.readAgent(ctx, tx, claim.Token(start.Agent))
 	if read.Session != "" {
 		write.Session = new(read.Session)
 	}
 	if read.Model != "" {
 		write.Model = new(read.Model)
 	}
-	return e.enqueue(ctx, tx, before.Key, write)
+	return true, e.enqueue(ctx, tx, issue, write)
 }
 
 // reportEndedStep writes report, the handoff a role's completion of at named, onto the record of

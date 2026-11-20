@@ -2039,7 +2039,7 @@ type Store interface {
 	// stands in, and the zero StepEntry where none is open.
 	OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error)
 	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
-	// the transaction that writes the run's end (workflow's endStep); false where that run has its
+	// the transaction that writes the run's end (workflow's endRun); false where that run has its
 	// end already, so one run gets one end.
 	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
 	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start

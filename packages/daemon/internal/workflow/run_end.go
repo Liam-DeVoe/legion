@@ -153,11 +153,11 @@ func (e *Engine) settleStart(ctx context.Context, tx pgx.Tx, issue string, place
 // or stopped. starting is the place a start of one issue is about to begin (its generation unread),
 // whose settle reads that issue alone (settleStart); nil is the fact's own settle (SettleFact),
 // which adds the members of each tree whose root among keys lingers, and of each tree whose linger
-// the fact closed. It is the one writer of a run's end (endStep, and endOffWalk for a run on no
-// step of its walk). Every run it can end has an open row: a start writes it, and the daemon's
-// boot writes it for each run no start of this release counted (OpenUncountedRuns), before any
-// fact applies. It ends each run whose end rule holds, so an issue may have several runs open at
-// once, each ended on its own.
+// the fact closed. It alone ends a run (endStep, and endOffWalk for a run on no step of its walk,
+// which both write the end through endRun). Every run it can end has an open row: a start writes
+// it, and the daemon's boot writes it for each run no start of this release counted
+// (OpenUncountedRuns), before any fact applies. It ends each run whose end rule holds, so an issue
+// may have several runs open at once, each ended on its own.
 func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, starting *runAt) error {
 	issues := map[string]*record.Issue{}
 	read := func(key string) (*record.Issue, error) {
@@ -257,41 +257,24 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // endOffWalk ends row, an open run that is over and whose place no step of the walk of its own
 // generation holds: the plan rows that named its step are gone, as the way back of a rollback
 // drops them while a task's step runs, so no standing names its step, and endStep, which writes
-// the end of the step a standing names, would write nothing and leave the run open for good. The
-// run is marked ended (record.Store.EndStepStart), and its end is the record its start kept
-// (record.IssueStepRun.Kept), with end's fields and the session and the model of one read of its
-// agent now, as endStep writes them, so the two writes of the run agree. The log says why it
-// ended. A row with no kept start's record breaks the store invariant: every writer of a row keeps
-// the write in its transaction, so ending it without a record would mark it ended while Dispatch
-// never learned it started.
+// the end of the step a standing names, would write nothing and leave the run open for good. Its
+// end is the record its start kept (record.IssueStepRun.Kept), written by endRun, the writer of
+// endStep's ends too, so the two writes of the run agree. The log says why it ended. A row with no
+// kept start's record breaks the store invariant: every writer of a row keeps the write in its
+// transaction, so ending it without a record would mark it ended while Dispatch never learned it
+// started.
 func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStepRun, end StepEnd) error {
 	if row.Kept.ID == "" {
 		return fmt.Errorf("end the off-walk run of %s %s/%s/%d: its open start row holds no kept record", row.Issue, row.Place.Task, row.Place.Kind, row.Place.Place)
 	}
-	start, ended, err := e.store.EndStepStart(ctx, tx, row.Issue, row.Place)
+	ended, err := e.endRun(ctx, tx, row.Issue, row.Place, end, func(record.StepStart) record.StepRecord { return row.Kept })
 	if err != nil || !ended {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a run on no step of the walk of its run is ended", "issue", row.Issue, "generation", row.Generation,
 		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,
 		"reason", "no step of the walk of its run holds its place: the plan rows that named its step are gone")
-	write := row.Kept
-	if !start.StartedAt.IsZero() {
-		write.StartedAt = new(start.StartedAt)
-	}
-	write.Session, write.Model, write.Report, write.PlanRating = nil, nil, nil, nil
-	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo
-	if end.Report != "" {
-		write.Report = new(end.Report)
-	}
-	read := e.readAgent(ctx, tx, claim.Token(start.Agent))
-	if read.Session != "" {
-		write.Session = new(read.Session)
-	}
-	if read.Model != "" {
-		write.Model = new(read.Model)
-	}
-	return e.enqueue(ctx, tx, row.Issue, write)
+	return nil
 }
 
 // issueReader reads the record of an issue by key, nil for none: the settle's read of the store as
