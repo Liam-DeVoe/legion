@@ -773,9 +773,26 @@ async function explore(): Promise<Exploration> {
 // which judge 186,538 sequences of one to five, about 147 to 255 s in this pod on one core, so
 // each of the eight has a time limit of its own above the suite's minute: whichever runs first
 // pays for the exploration.
-let explored: Promise<Exploration> | undefined;
+//
+// The one deliberate exception to the rule that each row makes its own preconditions: the
+// exploration is also kept across reruns of this file in one process (`--rerun-each`). Its result
+// is a pure function of the code under test, and a rerun in the same process explores the same
+// sequences, so reruns 2 to 20 judge the result the first run computed. Bun evaluates this file
+// again for each rerun but keeps the modules it imports, so the result is kept on `globalThis`,
+// in a map keyed by the hook it explores: a hook module loaded again is a new function, which is
+// explored afresh. `globalThis` ends with the process, so each process's first run of the file
+// computes it.
+const shared = globalThis as typeof globalThis & {
+  useIssueDraftsExplorations?: WeakMap<typeof useIssueDrafts, Promise<Exploration>>;
+};
+shared.useIssueDraftsExplorations ??= new WeakMap();
+const explorations = shared.useIssueDraftsExplorations;
 function exploration(): Promise<Exploration> {
-  explored ??= explore();
+  let explored = explorations.get(useIssueDrafts);
+  if (explored === undefined) {
+    explored = explore();
+    explorations.set(useIssueDrafts, explored);
+  }
   return explored;
 }
 // Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest run on the slower of
