@@ -343,6 +343,87 @@ func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) 
 	}
 }
 
+// TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce holds the two warnings of an issue
+// event that meets its issue with no version, in the table or earlier in the batch, which only a
+// log that lacks the issue's issue.created holds (seedIssue): of an issue whose rows are there,
+// which its version reads, and of an issue whose rows are not, which starts no version. Each case
+// is a batch whose first event, the issue.created of an issue written as the create route writes
+// one, warns of nothing, and whose second is the issue.updated warned of: a batch bound to 1 byte
+// decides the first event alone and logs no warning, and the whole batch then logs exactly one,
+// which names the issue and the event. The cases are two batches rather than one of three events,
+// since a bound that ends a batch at its second event never decides its third.
+func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	textversionstest.SeedProject(t, database)
+	broker := events.NewBroker()
+
+	t.Run("an issue whose rows a reset of the log kept", func(t *testing.T) {
+		// ACME-1's rows, with version 1 of its primary document, are written with no
+		// issue.created, as a reset of the log that kept them leaves them. A retitle is then
+		// written as the update route writes one, and version 2 of the document after it, so the
+		// document's version at the retitle's time is not its latest.
+		rows, _ := beginTransaction(t, database)
+		defer rows.Rollback(ctx)
+		issue := textversionstest.InsertIssue(t, rows, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
+		if err := rows.Commit(ctx); err != nil {
+			t.Fatalf("commit %s's rows: %v", issue.Key, err)
+		}
+		created := createIssue(t, database, broker, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
+		retitle, _ := beginTransaction(t, database)
+		defer retitle.Rollback(ctx)
+		title := issue.Title + ", then audit the verifiers"
+		if _, err := retitle.Exec(ctx, `update issues set title = $2 where key = $1`, issue.Key, title); err != nil {
+			t.Fatalf("retitle %s: %v", issue.Key, err)
+		}
+		retitled := textversionstest.AppendEvents(t, retitle, broker, issue.Event("issue.updated", title))[0]
+		if err := retitle.Commit(ctx); err != nil {
+			t.Fatalf("commit %s's retitle: %v", issue.Key, err)
+		}
+		later, _ := beginTransaction(t, database)
+		defer later.Rollback(ctx)
+		textversionstest.AppendEvents(t, later, broker, issue.InsertVersion(t, later, 2, "# Rotation\n\nMove each signing key, then audit each verifier."))
+		if err := later.Commit(ctx); err != nil {
+			t.Fatalf("commit version 2 of %s's document: %v", issue.Key, err)
+		}
+
+		got, warned := requireWarnedOnceByItsBatch(t, database, readLoggedEvents(t, database, created, retitled),
+			"found no earlier version of the issue in the log", issue.Key, retitled)
+		if len(got.Versions) != 2 {
+			t.Fatalf("the batch's two events start %d versions, want 2", len(got.Versions))
+		}
+		// The retitle's version holds the title its event carries, which the issue's row holds
+		// too, and the version of the primary document of the issue's rows made by the event's
+		// time; the warning names where its body came from.
+		want := specVersion{artifact: issue.Artifact, number: 1}
+		v := startedBy(t, got, retitled)
+		if spec, _ := v.spec(); v.Body != title || v.BodyFrom != bodyFromEvent || spec != want {
+			t.Fatalf("the retitle's version holds %q from %q and names version %d of document %q; want %q from %q and version %d of %q, the primary document's at the event's time",
+				v.Body, v.BodyFrom, spec.number, spec.artifact, title, bodyFromEvent, want.number, want.artifact)
+		}
+		if warned["body_from"] != bodyFromEvent {
+			t.Fatalf("the warning names body_from %q, want the version's %q", warned["body_from"], bodyFromEvent)
+		}
+	})
+
+	t.Run("an issue the database does not hold", func(t *testing.T) {
+		// An event's issue_key references issues, so an event whose own columns name an issue
+		// names one the database holds: an issue event of an issue with no row names it in its
+		// payload alone, here in an event of the project. ACME-4 is never written.
+		created := createIssue(t, database, broker, 3, "Retire the old keys", "# Retirement\n\nRetire each key the rotation replaced.")
+		project, missing := textversionstest.Project, textversionstest.Project+"-4"
+		retitled := textversionstest.CommitEvents(t, database, broker, model.Event{ProjectKey: &project, Type: "issue.updated",
+			Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"key": missing, "title": "Audit the verifiers again"}})[0]
+
+		got, _ := requireWarnedOnceByItsBatch(t, database, readLoggedEvents(t, database, created, retitled),
+			"names an issue the log never created and the database does not hold", missing, retitled)
+		if len(got.Versions) != 1 {
+			t.Fatalf("the batch's two events start %d versions, want the issue.created's alone", len(got.Versions))
+		}
+		startedBy(t, got, created)
+	})
+}
+
 // requireKeptEventText holds the version event starts of comment id, whose body was body when
 // the event was written, to the event's cut text: body_from cut, as decided and as written, one
 // cut body in the batch, and one warning, naming the comment and the event.
@@ -378,6 +459,57 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 		t.Fatalf("the warning names %v %v at event %v, want comment %s at event %d: %q",
 			warnings[0]["kind"], warnings[0]["id"], warnings[0]["event_id"], id, event, logs.String())
 	}
+}
+
+// requireWarnedOnceByItsBatch holds the warning of event, the second of batch, to the batch that
+// decides event: batch bound to 1 byte decides its first event alone and logs no warning, and the
+// whole batch, decided and written (decideAndWrite), then logs exactly one, whose message holds
+// message and which names issue and event. It answers what the whole batch decided and the
+// warning, with every attribute as its text.
+func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []event, message, issue string, event int64) (decided, map[string]string) {
+	t.Helper()
+	ctx := t.Context()
+	var logs bytes.Buffer
+	bounded, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the bounded batch: %v", err)
+	}
+	_, decidedEvents, err := decideVersions(ctx, bounded, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
+	_ = bounded.Rollback(ctx)
+	if err != nil || decidedEvents != 1 {
+		t.Fatalf("the batch bound to 1 byte decided %d of its %d events (%v), want the first alone", decidedEvents, len(batch), err)
+	}
+	if warnings := loggedWarnings(t, &logs); len(warnings) != 0 {
+		t.Fatalf("the batch bound to 1 byte, which leaves event %d to the next batch, logged %d warnings, want none: %q",
+			event, len(warnings), logs.String())
+	}
+	got := decideAndWrite(t, database, &logs, batch)
+	warnings := loggedWarnings(t, &logs)
+	if len(warnings) != 1 {
+		t.Fatalf("the batches logged %d warnings, want the one of event %d: %q", len(warnings), event, logs.String())
+	}
+	warned := warnings[0]
+	if !strings.Contains(warned["msg"], message) || warned["issue"] != issue || warned["event_id"] != fmt.Sprint(event) {
+		t.Fatalf("the warning says %q of issue %s at event %s; want one that says %q of issue %s at event %d",
+			warned["msg"], warned["issue"], warned["event_id"], message, issue, event)
+	}
+	return got, warned
+}
+
+// createIssue writes issue ACME-n of textversionstest.Project with title and its primary document
+// of markdown, and its issue.created event, in one transaction, as the create route writes one,
+// so version 1 of the document is made at the event's created_at, and answers the event's id.
+func createIssue(t *testing.T, database *store.Store, broker *events.Broker, n int, title, markdown string) int64 {
+	t.Helper()
+	ctx := t.Context()
+	tx, _ := beginTransaction(t, database)
+	defer tx.Rollback(ctx)
+	issue := textversionstest.InsertIssue(t, tx, n, title, markdown)
+	event := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", title))[0]
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the create of %s: %v", issue.Key, err)
+	}
+	return event
 }
 
 // longCommentBody is a body over contracts.DispatchEventBodyMax UTF-16 units: three paragraphs of
