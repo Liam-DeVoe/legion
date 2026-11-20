@@ -15,4 +15,4 @@ body: |-
   a refusal with no status, so the turn is still recorded. A claim failed at its third refused
   turn before, at the shipped `launch_failure_limit`. A retry starts a new session only when its
   caller asks for one (`legion claims retry --fresh-session`, the controller's `fresh_session`). The
-  daemon API contract is 190, so install the plugins built from this release with this daemon.
+  daemon API contract is 197, so install the plugins built from this release with this daemon.

@@ -13,4 +13,4 @@ body: |-
   a retry of the same model or a walk down `retry.fallbackChains`) is reported as nothing, so a
   400 the host walks past to its fallback model fails no claim, and one overloaded prompt under the
   default retry counts one refused turn rather than one for each attempt. This plugin speaks
-  daemon API contract 190.
+  daemon API contract 197.
