@@ -578,6 +578,13 @@ type server struct {
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
 	commitPulls delivery.CommitPullReads
+	// readOnlyCommitPulls is commitPulls' twin for a read-only caller's results read, which stores
+	// nothing: a claim of its own and what GitHub last named for each commit's pull requests, kept
+	// in memory in place of the rows a writer's read stores, so a read-only read inside the span
+	// asks GitHub no more (delivery.CommitPullAnswers, comparisonReader.learnCommitPulls). A
+	// read-only read never touches commitPulls, so a writer's read of the same commit still reads
+	// through and stores as it always did.
+	readOnlyCommitPulls delivery.CommitPullAnswers
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
