@@ -117,14 +117,22 @@ end_recorded() {
 }
 
 end_tree() {
-  local walked=("$1") i=0 file kid found=()
-  kill -STOP "$1" 2>/dev/null || return 0
+  local walked=("$1") seen=" $1 " i=0 file kid found=()
+  if ! stop_process "$1"; then
+    [ -e "/proc/$1" ] && return 1
+    return 0
+  fi
   while ((i < ${#walked[@]})); do
     for file in "/proc/${walked[i]}"/task/*/children; do
       found=()
       { read -r -a found <"$file"; } 2>/dev/null || true
       for kid in "${found[@]}"; do
-        kill -STOP "$kid" 2>/dev/null || true
+        [[ $seen != *" $kid "* ]] || continue
+        if ! stop_process "$kid"; then
+          [ -e "/proc/$kid" ] && return 1
+          continue
+        fi
+        seen+="$kid "
         walked+=("$kid")
       done
     done

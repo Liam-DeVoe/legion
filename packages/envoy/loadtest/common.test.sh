@@ -532,6 +532,49 @@ case_ports_below_ephemeral_range() {
   printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
 }
 
+# case_end_tree_stops_before_walk: a child that the recorded parent forks while its STOP is still
+# pending is part of the tree end_tree must read and end. The kill wrapper delays that STOP: the
+# parent forks its child and stops itself. A one-pass walker reads before that fork, then kills only
+# the parent, leaving the child alive; a walker that confirms the stop reads the child and ends both.
+case_end_tree_stops_before_walk() {
+  local parent parent_start child child_file=$temporary_dir/tree-child i
+  rm -f -- "$child_file"
+  bash -c '"$1" 0.1; "$1" 300 & echo "$!" >"$2"; kill -STOP "$$"; wait' _ "$TEST_LIB_SLEEP" "$child_file" &
+  parent=$!
+  parent_start=$(process_start "$parent")
+  [ -n "$parent_start" ] || { fail "(k) the tree parent had no start time"; return; }
+  pids+=("$parent")
+  kill() {
+    if [ "$1" = -STOP ] && [ "${2:-}" = "$parent" ]; then
+      return 0
+    fi
+    if [ "$1" = -KILL ] && [ "${2:-}" = "$parent" ] && [ "$#" = 2 ]; then
+      for ((i = 0; i < 100; i++)); do
+        [ -s "$child_file" ] && break
+        "$TEST_LIB_SLEEP" 0.01
+      done
+      [ "$(process_start "$parent")" = "$parent_start" ] || return 1
+    fi
+    command kill "$@"
+  }
+  end_tree "$parent" || {
+    unset -f kill
+    fail "(k) end_tree could not end the recorded parent"
+    return
+  }
+  unset -f kill
+  [ -s "$child_file" ] || { fail "(k) the parent did not fork its delayed child"; return; }
+  child=$(<"$child_file")
+  pids+=("$child")
+  if ! process_ended "$child"; then
+    end_process "$child" || true
+    fail "(k) end_tree left the child (pid $child) that the parent forked while its STOP was pending"
+    return
+  fi
+  wait "$parent" 2>/dev/null || true
+  printf 'PASS: end_tree confirms a process is stopped before it reads and ends children it can still fork\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -543,8 +586,9 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_end_tree_stops_before_walk || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 12 cases failed\n' "$failed" >&2
   exit 1
 fi

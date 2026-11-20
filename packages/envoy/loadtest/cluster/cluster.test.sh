@@ -4093,17 +4093,15 @@ stuck_out=$fake/stuck.out
   ((stop_rc == 0)) || stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon that ended on its SIGTERM: $(cat "$stuck_out")"
   ! kill -0 "$STAND_IN" 2>/dev/null || stand_in_fail "stop_daemon returned with the heartbeat daemon (pid $STAND_IN) still there"
   [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of the heartbeat daemon it stopped"
-  # A daemon's process group can outlive the daemon: a member of it that takes longer to leave on
-  # the same TERM, as a role loop of the sampler can with its kubectl exec. The stop waits until
-  # each member has gone, and returns 1, naming the members still there, 10 s after the TERM. The
-  # stand-in daemon ends on its TERM at once. Its member holds one nap, a sleep of 300 s in the same
-  # group, and writes both pids before anything else, so the group's members are known and fixed:
-  # on the TERM the member leaves 2 s later with its nap gone (the nap takes the TERM, which the
-  # member traps), or the member ignores it, and so does the nap it started, and both stay.
+  # A daemon's process group can outlive the daemon: a member of it that receives the same TERM,
+  # as a role loop of the sampler with its kubectl exec can. The stop returns only after each
+  # member has gone. The member records when TERM reaches it, then waits for the fixture to release
+  # it, so this test orders the member's exit after the stop's signal rather than assuming a fixed
+  # delay is shorter than the driver's 10 s bound.
   member_stand_in() {
-    rm -f -- "$RUN_DIR/heartbeat.pid" "$fake/member.pid"
+    rm -f -- "$RUN_DIR/heartbeat.pid" "$fake/member.pid" "$fake/member-term" "$fake/member-release"
     # shellcheck disable=SC2016 # expanded by the stand-in's own bash
-    TRAP=$1 PIDFILE=$RUN_DIR/heartbeat.pid MEMBER=$fake/member.pid REAL=$real_sleep setsid bash -c \
+    TRAP=$1 PIDFILE=$RUN_DIR/heartbeat.pid MEMBER=$fake/member.pid EVENT_TERM=$fake/member-term EVENT_RELEASE=$fake/member-release REAL=$real_sleep setsid bash -c \
       '( trap "$TRAP" TERM; "$REAL" 300 & echo "$BASHPID $!" >"$MEMBER"; wait ) & echo "$$" >"$PIDFILE"; wait' \
       _heartbeat --namespace "$NS" --run "$RUN" </dev/null >/dev/null 2>&1 &
     local t0=$SECONDS
@@ -4117,16 +4115,34 @@ stuck_out=$fake/stuck.out
     record_pid "$started_record" "$MEMBER_PID"
     record_pid "$started_record" "$NAP_PID"
   }
-  # shellcheck disable=SC2016 # expanded by the member's trap
-  member_stand_in '"$REAL" 2; exit 0'
+  # The member begins its exit only when it has received the group's TERM, then this fixture
+  # releases it. A stop without the group wait returns before the release and fails here.
+  member_stand_in ': >"$EVENT_TERM"; until [ -e "$EVENT_RELEASE" ]; do "$REAL" 0.05; done; exit 0'
   stop_rc=0
-  stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
+  stop_daemon heartbeat 2>"$stuck_out" &
+  stop_pid=$!
+  t0=$SECONDS
+  until [ -e "$fake/member-term" ]; do
+    ((SECONDS - t0 <= 10)) || {
+      : >"$fake/member-release"
+      wait "$stop_pid" 2>/dev/null || true
+      stand_in_fail "the member of the heartbeat daemon's process group did not receive its SIGTERM within 10 s"
+    }
+    sleep 0.05
+  done
+  if ! kill -0 "$stop_pid" 2>/dev/null; then
+    : >"$fake/member-release"
+    wait "$stop_pid" 2>/dev/null || true
+    stand_in_fail "stop_daemon returned before the member of the heartbeat daemon's process group was released after its SIGTERM"
+  fi
+  : >"$fake/member-release"
+  wait "$stop_pid" || stop_rc=$?
   member_left=no
   ! kill -0 "$MEMBER_PID" 2>/dev/null || member_left=yes
   [ "$member_left" = no ] ||
-    stand_in_fail "stop_daemon returned with a member of the heartbeat daemon's process group (pid $MEMBER_PID) still there, which leaves 2 s after its SIGTERM: $(cat "$stuck_out")"
+    stand_in_fail "stop_daemon returned with a member of the heartbeat daemon's process group (pid $MEMBER_PID) still there after its release: $(cat "$stuck_out")"
   ((stop_rc == 0)) ||
-    stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon whose process group all left on its SIGTERM: $(cat "$stuck_out")"
+    stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon whose process group all left after the member's release: $(cat "$stuck_out")"
   [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of a heartbeat daemon whose process group it stopped"
   wait "$STAND_IN" 2>/dev/null || true
   member_stand_in ''
@@ -4398,6 +4414,64 @@ grep -qx 'child 2 runs on' "$kids_out" ||
 grep -qF "step kids: the start of a process of the disk watcher's act (pid $kid_unread) could not be read, so it is not killed, and nothing shows it ended" "$kids_out" ||
   fail "the stop does not name the child whose start it could not read (pid $kid_unread): $(cat "$kids_out")"
 pass "the stop of the disk watcher sends its SIGKILL to the watcher and to each child whose start it read, and names a child whose start it could not read"
+
+# A watcher can fork a child after SIGSTOP is sent but before the kernel has stopped it. The
+# fixture leaves that STOP pending until the watcher forks and stops itself. A freeze that reads
+# children without confirming the stop misses that child and kills the watcher alone; a confirmed
+# freeze reads and kills both.
+freeze_out=$fake/freeze.out
+freeze_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sources cluster.sh
+bash -c '
+  source "$1"
+  source "$4"
+  real_sleep=$2
+  child_file=$3/freeze-child
+  rm -f "$child_file"
+  (
+    trap "" TERM
+    "$real_sleep" 0.05
+    "$real_sleep" 300 & echo "$!" >"$child_file"
+    wait
+  ) &
+  watcher=$!
+  watcher_start=$(proc_start "$watcher")
+  [ -n "$watcher_start" ] || { echo "the watcher had no start time"; exit 1; }
+  PG_DISK_WATCHER=$watcher PG_DISK_WATCH_STEP=freeze PG_DISK_STOP_SECONDS=0
+  kill() {
+    if [ "$1" = -STOP ] && [ "${2:-}" = -- ] && [ "${3:-}" = "$watcher" ]; then
+      (
+        "$real_sleep" 0.1
+        [ "$(proc_start "$watcher")" = "$watcher_start" ] && command kill -STOP -- "$watcher"
+      ) &
+      return 0
+    fi
+    if [ "$1" = -KILL ] && [ "${2:-}" = -- ] && [ "${3:-}" = "$watcher" ] && [ "$#" = 3 ]; then
+      for ((i = 0; i < 100; i++)); do
+        [ -s "$child_file" ] && break
+        "$real_sleep" 0.01
+      done
+      [ "$(proc_start "$watcher")" = "$watcher_start" ] || return 1
+    fi
+    command kill "$@"
+  }
+  pg_disk_watch_stop
+  unset -f kill
+  [ -s "$child_file" ] || { echo "the watcher did not fork its delayed child"; exit 1; }
+  child=$(<"$child_file")
+  if ! process_ended "$child"; then
+    end_process "$child" || true
+    echo "the freeze left the child (pid $child) running"
+    exit 1
+  fi
+  wait "$watcher" 2>/dev/null || true
+  echo "the freeze ended its delayed child"
+' _ "$cluster" "$real_sleep" "$fake" "$test_lib" >"$freeze_out" 2>&1 || freeze_rc=$?
+((freeze_rc == 0)) ||
+  fail "the disk watcher's freeze did not end a child it could fork while its STOP was pending: $(cat "$freeze_out")"
+grep -qx 'the freeze ended its delayed child' "$freeze_out" ||
+  fail "the disk watcher's freeze did not prove the delayed child ended: $(cat "$freeze_out")"
+pass "the disk watcher's freeze confirms its STOP before it reads and ends children it can still fork"
 
 # The stop's KILL reaches every process of the act below the watcher, not its children alone. The
 # act runs kubectl under timeout (kube_for): runner_stop in the watcher's own shell, so the

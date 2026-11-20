@@ -5,9 +5,9 @@
 # the SIGTERM goes to that step's own `loadgen run`, found below the run-step.sh the script
 # started, and to no other process, whatever its command line; and the stop returns only once
 # that loadgen has ended, every thread of it. It needs no stack. The step is a shell that runs a
-# stand-in loadgen one subshell down, as run-step.sh runs stack.sh's; the stand-in is a Python
-# process whose main thread leaves first on SIGTERM while a second thread holds its port one
-# second more, as the threads of a Go loadgen end one by one. A second stand-in with the same
+# stand-in loadgen below an intermediate shell, as run-step.sh runs stack.sh's loadgen. The
+# stand-in is a Python process whose main thread leaves first on SIGTERM while a second thread holds
+# its port one second more, as the threads of a Go loadgen end one by one. A second stand-in with
 # command line runs in a session of its own, as another run's loadgen would, and the stop must
 # send it nothing. The functions under test are restart-step.sh's own text, read out of the
 # script and run with common.sh, which the script sources.
@@ -34,9 +34,10 @@ command -v python3 >/dev/null || fail "restart-step.test.sh needs python3 on PAT
 
 # The functions under test, each from its `NAME() {` line to the `}` that closes it.
 : >"$tmp/functions.sh"
-for fn in step_loadgen end_step; do
+for fn in listener_wait_ended step_loadgen end_step; do
   awk -v open="$fn() {" '$0 == open { on = 1 } on { print } on && $0 == "}" { exit }' "$here/restart-step.sh" >>"$tmp/functions.sh"
 done
+grep -qx 'listener_wait_ended() {' "$tmp/functions.sh" || fail "restart-step.sh holds no function listener_wait_ended"
 grep -qx 'end_step() {' "$tmp/functions.sh" || fail "restart-step.sh holds no function end_step"
 
 mkdir -p "$tmp/bin"
@@ -81,6 +82,30 @@ while True:
 EOF
 chmod +x "$tmp/bin/loadgen"
 
+# ---- listener_wait_ended: a zombie main thread is not an ended listener ------------------------
+source "$here/common.sh"
+source "$tmp/functions.sh"
+PIDFILE=$tmp/listener "$tmp/bin/loadgen" run -name listener-wait -out "$tmp/listener-out" &
+listener=$!
+record_pid "$tmp/started" "$listener"
+t0=$EPOCHSECONDS
+until [ -s "$tmp/listener.port" ]; do
+  ((EPOCHSECONDS - t0 <= 10)) || fail "the listener stand-in wrote no port within 10 s"
+  sleep 0.05
+done
+listener_start=$(process_start "$listener")
+[ -n "$listener_start" ] || fail "the listener stand-in had no start time"
+listener_port=$(<"$tmp/listener.port")
+kill -TERM "$listener"
+die() { return 1; }
+listener_wait_ended "$listener" "$listener_start" ||
+  fail "the listener wait did not wait for every thread of the listener to end"
+if : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$listener_port"; then
+  fail "the listener wait returned while the listener's port still took a connection"
+fi
+wait "$listener" 2>/dev/null || true
+pass "the listener wait returns only once every thread of the listener has ended and its port is free"
+
 # ---- end_step: the step's own loadgen, and no other process of that command line ---------------
 # The shell that runs end_step starts the step itself, as restart-step.sh does, so the step is its
 # child and end_step's wait on it is the script's own. The other loadgen is started once the step's
@@ -94,7 +119,7 @@ timeout 150 bash -c '
   source "$3"
   tmp=$4 name=$5 out=$6
   up() { local t0=$EPOCHSECONDS; until [ -s "$1" ]; do ((EPOCHSECONDS - t0 <= 10)) || { echo "no $1 within 10 s"; exit 1; }; sleep 0.05; done; }
-  PIDFILE=$tmp/own bash -c "( \"\$1\" run -name \"\$2\" -out \"\$3\" ); wait" _ "$tmp/bin/loadgen" "$name" "$out" &
+  PIDFILE=$tmp/own bash -c "( \"\$1\" run -name \"\$2\" -out \"\$3\"; : ); wait" _ "$tmp/bin/loadgen" "$name" "$out" &
   step=$!
   echo "$step" >"$tmp/step"
   record_pid "$tmp/started" "$step"

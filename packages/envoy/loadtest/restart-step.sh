@@ -103,9 +103,21 @@ sleep_until() {
   if ((left > 0)); then sleep "$left"; fi
 }
 
+# listener_wait_ended PID START: the listener at PID has left the process table, every thread of
+# it. A zombie main thread is not enough: other threads can still hold the listener port.
+listener_wait_ended() {
+  local pid=$1 start=$2 rc=0
+  proc_wait_ended "$pid" "$start" "$((EPOCHSECONDS + 60))" || rc=$?
+  case $rc in
+  0) ;;
+  1) die "the killed listener (pid $pid) has not ended 60 s after its SIGKILL" ;;
+  *) die "the killed listener's /proc entry (pid $pid) is there and could not be read, so nothing shows it ended" ;;
+  esac
+}
+
 # kill_and_restart: SIGKILL the stack's listener, keep it down, start it again with the same
 # binary, arguments and environment, and write restart.json. The killed listener is down once it
-# has ended (proc_wait_ended): its main thread a zombie is not enough, since its other threads
+# has ended (listener_wait_ended): its main thread a zombie is not enough, since its other threads
 # still hold its port until they too have gone. A listener not ended 60 s after its SIGKILL, or a
 # /proc entry that is there and cannot be read, fails this script, naming it.
 kill_and_restart() {
@@ -119,15 +131,9 @@ kill_and_restart() {
   local kill_ns first_ns restart_ns ready_ns attempts=0 new up start new_start rc
   start=$(proc_start "$pid") || die "the start of the stack's listener (pid $pid) could not be read, so nothing could show it ended once killed"
   kill_ns=$(date +%s%N)
-  # no-wait: proc_wait_ended below waits for it, every thread of it (common.sh).
+  # no-wait: listener_wait_ended below waits for it, every thread of it (common.sh).
   kill -KILL "$pid"
-  rc=0
-  proc_wait_ended "$pid" "$start" "$((EPOCHSECONDS + 60))" || rc=$?
-  case $rc in
-  0) ;;
-  1) die "the killed listener (pid $pid) has not ended 60 s after its SIGKILL" ;;
-  *) die "the killed listener's /proc entry (pid $pid) is there and could not be read, so nothing shows it ended" ;;
-  esac
+  listener_wait_ended "$pid" "$start"
   note "killed the listener (pid $pid); it stays down $down s"
   sleep "$down"
   first_ns=$(date +%s%N)

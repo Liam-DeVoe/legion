@@ -1548,17 +1548,38 @@ pg_disk_watch() {
   done
 }
 
+# proc_stopped PID: PID sent SIGSTOP and observed stopped before its children are read. A signal
+# reaches a process only when the kernel next runs it, so reading first can miss a child the parent
+# forks before the stop takes effect.
+proc_stopped() {
+  local pid=$1 bound=${2:-10} t0=$EPOCHSECONDS stat
+  kill -STOP -- "$pid" 2>/dev/null || return 1
+  while :; do
+    if ! read -r stat 2>/dev/null <"/proc/$pid/stat"; then
+      [ -e "/proc/$pid" ] && return 1
+      return 0
+    fi
+    stat=${stat##*) }
+    [ "${stat%% *}" != T ] || return 0
+    ((EPOCHSECONDS - t0 <= bound)) || return 1
+    sleep 0.05
+  done
+}
+
 # pg_disk_freeze PID NAME: the disk watcher PID of step NAME stopped (SIGSTOP) with every process
 # below it, for pg_disk_watch_stop's SIGKILL: the tree read through each thread's children file,
-# each process stopped before its own children are read, and read again until a reading finds no
-# process it had not read. Each process it found goes, with its start, into the caller's kids and
-# kid_starts, and all of them, the watcher first, into PG_DISK_FROZEN; one whose start cannot be
-# read is named and left out.
+# each process confirmed stopped before its own children are read, and read again until a reading
+# finds no process it had not read. Each process it found goes, with its start, into the caller's
+# kids and kid_starts, and all of them, the watcher first, into PG_DISK_FROZEN; one whose start
+# cannot be read is named and left out.
 pg_disk_freeze() {
   local walked=("$1") seen=" $1 " more=1 at file kid start found=()
   start=$(proc_start "$1" 2>/dev/null) || start=""
   PG_DISK_FROZEN=${start:+$1:$start}
-  kill -STOP -- "$1" 2>/dev/null || true
+  if ! proc_stopped "$1"; then
+    [ ! -e "/proc/$1" ] || note "step $2: the disk watcher (pid $1) could not be confirmed stopped before its children were read, so nothing shows every process of its act ended"
+    return 1
+  fi
   while ((more)); do
     more=0
     for at in "${walked[@]}"; do
@@ -1574,7 +1595,10 @@ pg_disk_freeze() {
           fi
           [ -n "$start" ] || continue
           PG_DISK_FROZEN+=" $kid:$start"
-          kill -STOP -- "$kid" 2>/dev/null || true
+          if ! proc_stopped "$kid"; then
+            [ ! -e "/proc/$kid" ] || note "step $2: a process of the disk watcher's act (pid $kid) could not be confirmed stopped before its children were read, so nothing shows every process of its act ended"
+            return 1
+          fi
           kids+=("$kid") kid_starts+=("$start") walked+=("$kid")
         done
       done
@@ -1628,7 +1652,7 @@ pg_disk_watch_stop() {
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
   while kill -0 -- "$pid" 2>/dev/null; do
     if ((EPOCHSECONDS >= deadline)); then
-      pg_disk_freeze "$pid" "$name"
+      pg_disk_freeze "$pid" "$name" || note "step $name: the disk watcher's whole process tree was not confirmed stopped before its SIGKILL, so the lines above name what is not shown ended"
       # no-wait: the watcher is reaped by the wait on it below, and each of kids[@] is waited for
       # after that, every thread of it, by proc_wait_ended (common.sh).
       kill -KILL -- "$pid" "${kids[@]}" 2>/dev/null || true

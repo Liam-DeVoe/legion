@@ -4093,11 +4093,9 @@ pass "a step stopped between the & that starts its load, its sampler or Postgres
 # no pid, said the part was gone, and the start went on and left it running. So such a stop's kill
 # waits for the record, up to REMOTE_GONE_SECONDS, and ends what it names; a record that does not
 # come within that bound is a start that nothing shows gone, and the kill says so. Here an ssh in
-# front of the fake one carries the start's command late: it returns 255 at once, as an ssh cut
-# short does, and runs that command LATE_DELAY s later in a session of its own, as the load machine
-# runs it on once that ssh has gone, where no signal of this pod reaches it; it writes `carried`
-# once it has handed the command on, and the load's row stops its load after that. The first row of
-# each part gives the kill 10 s and the start 2 s; the second gives the kill 1 s and the start 4 s.
+# front of the fake one carries the start's command only after the fake remote kill has reached its
+# no-pid path. That order means a delayed kill starts the late command after the kill, not after a
+# racing wall-clock delay. The delay is then relative to the kill the start must outrun.
 jj_dir=$tmp/jj
 mkdir -p "$jj_dir/bin"
 cat >"$jj_dir/bin/ssh" <<EOF
@@ -4110,9 +4108,17 @@ case "\$*" in
   *"\$LATE_MATCH"*)
     if [ ! -e "$jj_dir/taken" ]; then
       : >"$jj_dir/taken"
-      setsid -f bash -c 'source "\$FAKE_RECORD"; "\$1" "\$2"; : >"\$3"; shift 3; exec env --default-signal=TERM "\$@"' _ "$REAL_SLEEP" "\$LATE_DELAY" "$jj_dir/ran" "$bin/ssh" "\$@" </dev/null >/dev/null 2>&1
+      setsid -f bash -c 'source "\$FAKE_RECORD"; until [ -e "\$3" ]; do "\$1" 0.05; done; "\$1" "\$2"; : >"\$4"; shift 4; exec env --default-signal=TERM "\$@"' _ "$REAL_SLEEP" "\$LATE_DELAY" "$jj_dir/kill-sent" "$jj_dir/ran" "$bin/ssh" "\$@" </dev/null >/dev/null 2>&1
       : >"$jj_dir/carried"
       exit 255
+    fi
+    ;;
+esac
+case "\$*" in
+  *no-pid*)
+    if [ -e "$jj_dir/taken" ]; then
+      [ -z "\${JJ_KILL_HOLD:-}" ] || "$REAL_SLEEP" "\$JJ_KILL_HOLD"
+      : >"$jj_dir/kill-sent"
     fi
     ;;
 esac
@@ -4140,10 +4146,10 @@ jj_end() {
   for pid in "$jj_pid" "$(cut -d' ' -f1 "$fake/tunnel-up" 2>/dev/null)" "$(cat "$jj_dir/started" 2>/dev/null)"; do
     [ -z "$pid" ] || end_process "$pid" || fail "what the late start left (pid $pid) still runs 10 s after its SIGKILL"
   done
-  rm -f -- "$jj_file" "$jj_dir/taken" "$jj_dir/carried" "$jj_dir/ran" "$jj_dir/started"
+  rm -f -- "$jj_file" "$jj_dir/taken" "$jj_dir/carried" "$jj_dir/kill-sent" "$jj_dir/ran" "$jj_dir/started"
 }
-for row in "tunnel 10 2" "tunnel 1 4" "load 10 2" "load 1 4"; do
-  read -r part gone delay <<<"$row"
+for row in "tunnel 10 2 0" "tunnel 1 4 0" "tunnel 1 4 2" "tunnel 1 4 3" "tunnel 1 4 5" "load 10 2 0" "load 1 4 0" "load 1 4 2" "load 1 4 3" "load 1 4 5"; do
+  read -r part gone delay hold <<<"$row"
   reset_fake
   mkdir -p "$(dirname -- "${kill_cases[1]#* }")" "$fn_run_dir/logs"
   jj_pid=""
@@ -4157,7 +4163,7 @@ for row in "tunnel 10 2" "tunnel 1 4" "load 10 2" "load 1 4"; do
     body+="; until [ -e $(printf %q "$jj_dir/carried") ]; do $(printf %q "$REAL_SLEEP") 0.05; done; load_stop"
   fi
   # shellcheck disable=SC2016 # expanded by the shell run_fn starts
-  PATH=$jj_dir/bin:$PATH LATE_MATCH=$match LATE_DELAY=$delay \
+  PATH=$jj_dir/bin:$PATH LATE_MATCH=$match LATE_DELAY=$delay JJ_KILL_HOLD=$hold \
     run_fn REMOTE_GONE_SECONDS="$gone" NOT_GONE="" eval "$body"'; echo "the stop returned, NOT_GONE=$NOT_GONE"'
   jj_after
   grep -q '^the stop returned' "$tmp/out" || { jj_end; fail "the stop after the late start of $what did not return ($row): $(cat "$tmp/out")"; }
