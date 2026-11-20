@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -41,6 +42,63 @@ func approvedVersions(t *testing.T, tree specFormTree, artifactID string) []int 
 		}
 	}
 	return versions
+}
+
+// The carry judges a version before the transaction's write phase stores it. Reads outside that
+// transaction must still report it missing, and a stored version must keep its own text.
+func TestSpecFormMarkdownReadsTheVersionItsTransactionQueued(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const stored = "# Spec\n\nThe stored text.\n"
+	const pending = "# Spec\n\nThe queued text.\n"
+	document := createFormIssue(t, tree.handler, tree.root, "A queued version", stored)
+	artifact, err := artifactMetadata(t.Context(), tree.database.Pool, document.PrimaryArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := tree.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(t.Context())
+	ctx, ledger := tree.deps.Docs.Join(t.Context(), tx)
+	defer ledger.Discard()
+	version, err := ledger.QueueVersion(ctx, artifact.ID, pending, nil, nil)
+	if err != nil || version.Number != 2 {
+		t.Fatalf("queue version = %#v, %v; want version 2", version, err)
+	}
+	otherTx, err := tree.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherTx.Rollback(t.Context())
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		q       queryer
+		version int
+		want    string
+		found   bool
+	}{
+		{"stored version", ctx, tx, 1, stored, true},
+		{"no queued context", t.Context(), tx, 2, "", false},
+		{"another transaction", ctx, otherTx, 2, "", false},
+		{"another reader", ctx, tree.database.Pool, 2, "", false},
+		{"another version", ctx, tx, 3, "", false},
+		{"queued version", ctx, tx, 2, pending, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := specFormMarkdown(test.ctx, test.q, artifact, test.version)
+			if (err == nil) != test.found || got != test.want {
+				t.Fatalf("read version %d = %q, %v; want %q, found %t", test.version, got, err, test.want, test.found)
+			}
+		})
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := specFormMarkdown(ctx, tree.database.Pool, artifact, 2); err != nil || got != pending {
+		t.Fatalf("committed version = %q, %v; want %q", got, err, pending)
+	}
 }
 
 // The person approves a covered spec, the agent adds a decision block whose option is a statement,

@@ -949,9 +949,15 @@ func (s *server) nearestSpecRoot(ctx context.Context, q queryer, parent *string)
 	return "", nil
 }
 
-// specFormMarkdown is the stored markdown of version of artifact. A version the document does not
-// have is 404 VERSION_NOT_FOUND.
+// specFormMarkdown is the markdown of version of artifact as q's transaction leaves it: queued
+// text before the write phase stores it, otherwise the stored row. A version the document does
+// not have is 404 VERSION_NOT_FOUND.
 func specFormMarkdown(ctx context.Context, q queryer, artifact model.Artifact, version int) (string, error) {
+	if tx, ok := q.(pgx.Tx); ok {
+		if markdown, pending := docs.PendingVersionMarkdown(ctx, tx, artifact.ID, version); pending {
+			return markdown, nil
+		}
+	}
 	var markdown string
 	err := q.QueryRow(ctx, `select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifact.ID, version).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {

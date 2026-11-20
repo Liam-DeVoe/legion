@@ -22,5 +22,7 @@ body: |-
   "## TERMS" or "## Terms:". A line of the term-line form under another heading, or under none, is
   a definition too. It adds no term, and it breaks the form when it names a term of the list. GET
   /api/v1/artifacts/{id}/spec-form answers the list of terms of the document's root.
+  A carried approval judges the text its transaction has queued before that version is stored.
+  A broken version still settles, but takes no carried approval.
 custom:
     Issue: pr4207
