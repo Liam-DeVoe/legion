@@ -2458,7 +2458,10 @@ function readWhole(text: string): { entries: SessionEntry[]; messages: SessionMe
     }
     entries.push(SessionEntry.parse(value));
   }
-  return { entries, messages: currentBranch(entries).flatMap((entry) => messageOf(entry) ?? []) };
+  const messages = currentBranch(entries)
+    .map(messageOf)
+    .filter((message): message is SessionMessage => message !== undefined);
+  return { entries, messages };
 }
 
 test("a transcript read from its spool, in chunks of any size, gives the entries, branch and messages its whole text gives, and holds no message's text", () => {

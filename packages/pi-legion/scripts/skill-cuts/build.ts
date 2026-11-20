@@ -1081,7 +1081,7 @@ function heldWhole(entry: SessionEntry): boolean {
  *  and, for a tool result, its first block, holding only the `[Skill file: …]` line it starts
  *  with. */
 function slimMessage(message: SessionMessage): SessionMessage {
-  const content = message.content?.flatMap((block, n) => {
+  const content = message.content?.flatMap((block, n): NonNullable<SessionMessage["content"]> => {
     if (block.type === "toolCall") {
       return [
         {
@@ -1440,12 +1440,13 @@ function messagesBefore(
       )
     : -1;
   if (
+    entry === undefined ||
     !compaction.success ||
     kept < 0 ||
-    entry?.preserveData !== undefined ||
-    entry?.providerReplayThroughEntryId !== undefined ||
-    entry?.method === "snapcompact" ||
-    (isRecord(entry?.details) && entry.details.kind === "experimental-context-rollover")
+    entry.preserveData !== undefined ||
+    entry.providerReplayThroughEntryId !== undefined ||
+    entry.method === "snapcompact" ||
+    (isRecord(entry.details) && entry.details.kind === "experimental-context-rollover")
   ) {
     return {
       drop: "compaction-unsupported",
