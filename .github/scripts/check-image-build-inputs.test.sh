@@ -83,10 +83,12 @@ check "names the step's line, the file and where it belongs" \
   "$(contains "$out" 'app.Dockerfile:5: .*which reads data/pages.json, and no COPY above line 5 puts it at /repo/data/pages.json')"
 
 echo "case: a COPY below the step counts for nothing"
+# The late COPY puts the file where the build reads it, so only its place below the step can make
+# it count for nothing.
 root=$(fixture copied-too-late)
 write_dockerfile "$root"
 sed -i '/data\/pages.json/d' "$root/docker/app.Dockerfile"
-printf 'COPY data/pages.json data/pages.json\n' >> "$root/docker/app.Dockerfile"
+printf 'COPY data/pages.json /repo/data/pages.json\n' >> "$root/docker/app.Dockerfile"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "still names the file" "$(contains "$out" 'which reads data/pages.json')"
