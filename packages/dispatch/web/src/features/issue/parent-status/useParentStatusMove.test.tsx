@@ -1,6 +1,6 @@
 import { expect, jest, type Mock, mock, spyOn, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, skipToken, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -10,7 +10,7 @@ import { realClock, settle, tick } from "../../../__tests__/fake-clock";
 import { keyedAttempt } from "../../../__tests__/keyed-attempt";
 import { answerRequests } from "../../../__tests__/network";
 import { ApiError } from "../../../api/client";
-import type { StatusChangeAnswer, StatusChangeInput } from "../../../api/types";
+import type { IssueDetails, StatusChangeAnswer, StatusChangeInput } from "../../../api/types";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { refusedNote } from "../../writes/useKeyedWrite";
 import { ParentStatusDialog } from "./ParentStatusDialog";
@@ -21,6 +21,7 @@ import {
   type StatusChangeAnswerer,
 } from "./status-change-fixtures";
 import {
+  issueHasParentOrOpenChild,
   type ParentStatusMove,
   type StatusMove,
   type StatusMoveEnd,
@@ -316,6 +317,53 @@ test("checking: the dry run answers no route after the client's retries, so noth
   }
 });
 
+/** ACME-4 as the issue page reads it: under no parent, with ACME-5, a child in work. */
+const acme4WithChildInWork: Pick<IssueDetails, "children" | "parent"> = {
+  children: [
+    {
+      active_at: "2026-09-09T00:00:00Z",
+      external_links: [],
+      key: "ACME-5",
+      status: "todo",
+      subtree_done: 0,
+      subtree_total: 1,
+      title: "Child in work",
+    },
+  ],
+  parent: null,
+};
+
+/** The issue page's Close of ACME-4, as the page makes it: it reads the issue from the cache, which
+ *  an event of the issue refreshes, and takes whether it has a parent or an open child from that
+ *  read at the press (`issueHasParentOrOpenChild`). */
+function CloseFromTheCache({ patch }: { patch: () => void }): ReactNode {
+  const parentStatus = useParentStatusMove();
+  // The test writes the issue into the cache as its read and its event would; nothing fetches it.
+  const issue = useQuery<Pick<IssueDetails, "children" | "parent">>({
+    queryFn: skipToken,
+    queryKey: ["issue", "ACME-4"],
+  }).data;
+  if (issue === undefined) return null;
+  const related = issueHasParentOrOpenChild(issue);
+  return (
+    <>
+      <output aria-label="Parent or open child">{related ? "yes" : "no"}</output>
+      <button
+        onClick={() => void parentStatus.move({ key: "ACME-4", patch, related, status: "done" })}
+        type="button"
+      >
+        Close ACME-4
+      </button>
+      {parentStatus.question === undefined ? null : (
+        <ParentStatusDialog question={parentStatus.question} />
+      )}
+    </>
+  );
+}
+
+// The page knew ACME-4 had a child in work, so the close sent the dry run. While it is out, the
+// issue's event shows the child done, which would let a press made now go straight to the PATCH.
+// The move in flight still goes as its dry run answers: the answer, not the page's read, decides.
 test("checking: a live event changes the issue, and the dry run's answer is still used", async () => {
   const held = Promise.withResolvers<StatusChangeAnswer>();
   const statusChanges = answerBy({
@@ -323,15 +371,35 @@ test("checking: a live event changes the issue, and the dry run's answer is stil
     "dry run of done with include_children": never,
     "dry run of done with unlink_children": never,
   });
-  const surface = renderSurface();
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(["issue", "ACME-4"], acme4WithChildInWork);
+  const patch = mock(() => {});
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeymapProvider>
+        <CloseFromTheCache patch={patch} />
+      </KeymapProvider>
+    </QueryClientProvider>
+  );
+  const related = () => screen.getByRole("status", { name: "Parent or open child" });
   try {
-    const move = closeAcme4();
-    await surface.start(move);
+    await user.click(screen.getByRole("button", { name: "Close ACME-4" }));
+    expect(requests(statusChanges)).toEqual(["dry run of done with no option"]);
     // The issue's event refreshes what the page reads of it: its child is done now.
-    await act(async () => {
-      surface.client.setQueryData(["issue", "ACME-4"], { children: [], key: "ACME-4" });
-      await surface.client.invalidateQueries({ queryKey: ["issue", "ACME-4"] });
+    act(() => {
+      client.setQueryData(["issue", "ACME-4"], {
+        ...acme4WithChildInWork,
+        children: (acme4WithChildInWork.children ?? []).map((child) => ({
+          ...child,
+          status: "done",
+        })),
+      });
     });
+    expect(related()).toHaveTextContent("no");
     await act(async () => {
       held.reject(fixtureRefusal("conflict"));
       await settle();
@@ -343,9 +411,14 @@ test("checking: a live event changes the issue, and the dry run's answer is stil
       "dry run of done with include_children",
       "dry run of done with unlink_children",
     ]);
-    expect(move.patch).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    // A press made after the question closes reads the issue as the event left it: no dry run.
+    await user.click(choice("Cancel"));
+    await user.click(screen.getByRole("button", { name: "Close ACME-4" }));
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(requests(statusChanges)).toHaveLength(3);
   } finally {
-    surface.unmount();
+    view.unmount();
   }
 });
 
@@ -479,7 +552,6 @@ test("writing: answered 200, the question closes and each changed issue and the 
       ["issue", "ACME-3"],
       ["issue", "ACME-2"],
       ["issues"],
-      ["issues"],
     ]);
   } finally {
     invalidated.mockRestore();
@@ -575,15 +647,60 @@ test("idle: a PATCH answered 409 PARENT_STATUS_CONFLICT opens the question as a 
   }
 });
 
-test("a second move while one is checking does nothing", async () => {
-  const statusChanges = answerBy({ "dry run of done with no option": never });
+// The issue page takes a second pick while the first is out, as it takes one while a write is out
+// (its select is never disabled), so the hook drops none: the second shows at once and goes once
+// the first has made its write, in the order the two came.
+test("checking: a second move while one is checking shows at once, and goes once the first has made its write", async () => {
+  const first = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerBy({
+    "dry run of done with no option": () => first.promise,
+    "dry run of backlog with no option": async () => fixtureAnswer("dry-run"),
+  });
+  const surface = renderSurface();
+  try {
+    const closing = closeAcme4();
+    const { ended: closed } = await surface.start(closing);
+    const shelving = { ...closeAcme4(), status: "backlog" };
+    const { ended: shelved } = await surface.start(shelving);
+    expect(pendingStatus()).toHaveTextContent("backlog");
+    expect(requests(statusChanges)).toEqual(["dry run of done with no option"]);
+    await act(async () => {
+      first.resolve(fixtureAnswer("dry-run"));
+      expect(await closed).toEqual({ kind: "patched" });
+      expect(await shelved).toEqual({ kind: "patched" });
+    });
+    expect(requests(statusChanges)).toEqual([
+      "dry run of done with no option",
+      "dry run of backlog with no option",
+    ]);
+    expect(closing.patch.mock.invocationCallOrder[0]).toBeLessThan(
+      shelving.patch.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(pendingStatus()).toHaveTextContent("");
+  } finally {
+    surface.unmount();
+  }
+});
+
+test("asking: a second move while the question is open does nothing", async () => {
+  const statusChanges = answerBy({
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": never,
+    "dry run of done with unlink_children": never,
+  });
   const surface = renderSurface();
   try {
     await surface.start(closeAcme4());
-    const second = closeAcme4();
+    expect(question()).toBeInTheDocument();
+    const second = { ...closeAcme4(), status: "backlog" };
     expect(await (await surface.start(second)).ended).toEqual({ kind: "busy" });
-    expect(requests(statusChanges)).toEqual(["dry run of done with no option"]);
+    expect(requests(statusChanges)).toEqual([
+      "dry run of done with no option",
+      "dry run of done with include_children",
+      "dry run of done with unlink_children",
+    ]);
     expect(second.patch).not.toHaveBeenCalled();
+    expect(pendingStatus()).toHaveTextContent("done");
   } finally {
     surface.unmount();
   }

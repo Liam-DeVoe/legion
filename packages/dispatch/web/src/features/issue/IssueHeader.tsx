@@ -80,7 +80,7 @@ import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { ParentStatusDialog } from "./parent-status/ParentStatusDialog";
 import {
-  isParentStatusConflict,
+  askOnConflict,
   issueHasParentOrOpenChild,
   useParentStatusMove,
 } from "./parent-status/useParentStatusMove";
@@ -191,8 +191,8 @@ export function IssueHeader({
   });
   // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
   // through the rule's question (`useParentStatusMove`): a dry run first for an issue with a
-  // parent or an open child, then the write below as before, or the question where Dispatch's
-  // rule would refuse it.
+  // parent or an open child, then the write below, or the question where Dispatch's rule would
+  // refuse it.
   const parentStatus = useParentStatusMove();
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
@@ -204,13 +204,10 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    // A status the page took for one the rule could not refuse, which Dispatch refused under it
+    // all the same, asks as a refused dry run does (`askOnConflict`).
     onError: (error, input) => {
-      // A status the page took for one the rule could not refuse, which Dispatch refused under
-      // it all the same: the page read the parent or the children before they changed. It asks
-      // as a refused dry run does.
-      if (statusPickOnly(input) && input.status !== undefined && isParentStatusConflict(error)) {
-        void parentStatus.ask({ key: issue.key, status: input.status }, error);
-      }
+      askOnConflict(parentStatus, issue.key, input, error);
     },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);

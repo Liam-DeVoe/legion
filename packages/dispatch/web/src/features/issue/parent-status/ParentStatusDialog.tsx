@@ -14,7 +14,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../../theme/classes";
-import { statusText } from "../../project/board-model";
+import { IN_WORK_STATUSES, statusText } from "../../project/board-model";
 import { useDialog } from "../../shell/useDialog";
 import type {
   ParentStatusChoice,
@@ -23,17 +23,26 @@ import type {
 } from "./useParentStatusMove";
 
 /** What each choice's button says. */
-export const CHOICE_LABELS: Readonly<Record<ParentStatusOption, string>> = {
+const CHOICE_LABELS: Readonly<Record<ParentStatusOption, string>> = {
   include_children: "Move them with it",
   include_parent: "Move the parents into work too",
   unlink_children: "Unlink them",
 };
 
-/** What each choice does, in a sentence under its button. */
+/** What each choice does, in a sentence under its button. Move them with it moves only the open
+ *  issues whose status is in another group than `status` (not started, in work, done): an open
+ *  issue is either not started or in work. */
 function choiceSentence(option: ParentStatusOption, key: string, status: string): string {
   switch (option) {
-    case "include_children":
-      return `Dispatch moves each open issue under ${key} to ${statusText(status)} too.`;
+    case "include_children": {
+      const which =
+        status === "done"
+          ? ""
+          : IN_WORK_STATUSES.has(status)
+            ? " that is not in work"
+            : " that is in work";
+      return `Dispatch moves each open issue under ${key}${which} to ${statusText(status)} too.`;
+    }
     case "unlink_children":
       return `Dispatch removes ${key} as the parent of each open child. Each child keeps its status.`;
     case "include_parent":

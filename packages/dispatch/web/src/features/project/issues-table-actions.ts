@@ -16,7 +16,7 @@ import { settledWithLimit } from "../../lib/settled";
 import { dryRunStatusChange, optionInput } from "../issue/parent-status/useParentStatusMove";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
-import { statusText } from "./board-model";
+import { IN_WORK_STATUSES, statusText } from "./board-model";
 import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
@@ -65,16 +65,6 @@ export type EpicNaming =
 const mergeReason = (into: string, title: string) =>
   `Merged into ${into} (“${title}”) from the issues table.`;
 
-/** The statuses Dispatch's rule (R24) counts as in work: an epic stays in work while an issue
- *  under it is in work, and a done epic holds no open issue. */
-const IN_WORK: Readonly<Record<string, true>> = {
-  todo: true,
-  in_progress: true,
-  testing: true,
-  needs_review: true,
-  retro: true,
-};
-
 /** The status change that takes an epic into work with each parent above it that is not in work
  *  (`include_parent`): what an action sends before it moves issues under an epic the rule needs in
  *  work (D12). */
@@ -89,8 +79,8 @@ function targetMustMove(
 ): boolean {
   if (target?.status === "done") return moving.length > 0;
   return (
-    (target === undefined || IN_WORK[target.status] !== true) &&
-    moving.some((issue) => IN_WORK[issue.status] === true)
+    (target === undefined || !IN_WORK_STATUSES.has(target.status)) &&
+    moving.some((issue) => IN_WORK_STATUSES.has(issue.status))
   );
 }
 
@@ -264,7 +254,9 @@ export function useIssueTableActions({
   const listed = (keys: readonly string[]) => issues.filter((issue) => keys.includes(issue.key));
   /** Which of `rows` are in work, as the question says it: `CORE-1 “…” is in work`. */
   const inWorkOf = (rows: readonly IssueSummary[]) => {
-    const working = rows.filter((issue) => IN_WORK[issue.status] === true).map(({ key }) => key);
+    const working = rows
+      .filter((issue) => IN_WORK_STATUSES.has(issue.status))
+      .map(({ key }) => key);
     return `${named(working)} ${working.length === 1 ? "is" : "are"} in work`;
   };
   /** Sends the status change the reader said yes to: `epic` into work, with each parent above it
@@ -457,13 +449,16 @@ export function useIssueTableActions({
     }
     runQueued(queued);
   };
-  /** `intoWork` is the reader's yes to the new epic's move into work, which the action asks for
-   *  before its create where an issue it moves is in work (D12). */
+  /** `title` is the name the reader gave, `force` makes the epic past a near copy Dispatch named,
+   *  and `intoWork` is the reader's yes to the new epic's move into work, which the action asks
+   *  for before its create where an issue it moves is in work (D12). */
   const newEpic = async (
     keys: readonly string[],
-    chosenTitle?: string,
-    force = false,
-    intoWork?: true
+    {
+      force = false,
+      intoWork,
+      title: chosenTitle,
+    }: { readonly force?: boolean; readonly intoWork?: true; readonly title?: string } = {}
   ) => {
     if (project === undefined || unansweredEpic || !canBegin()) return;
     const open = openSelected(keys);
@@ -490,7 +485,7 @@ export function useIssueTableActions({
         body: `${inWorkOf(rows)}, and a new epic is not. An epic stays in work while an issue under it is in work. Dispatch makes the epic and then makes this change:`,
         changes: [`“${title}” moves to ${statusText("in_progress")}`],
         confirmLabel: "Move into work too",
-        run: () => void newEpic(keys, title, force, true),
+        run: () => void newEpic(keys, { force, intoWork: true, title }),
       });
       return;
     }

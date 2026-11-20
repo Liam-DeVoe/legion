@@ -9,7 +9,7 @@ import type {
   IssueDetails,
   IssueRouteStatus,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import {
   type DispatchClient,
@@ -48,11 +48,7 @@ import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
-import {
-  issuesBeforeStatusChange,
-  statusChangeCommand,
-  statusChangeOptions,
-} from "./status-change";
+import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
@@ -273,7 +269,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
-  const options = statusChangeOptions(args);
+  // The schema refused an option beside any field but status and reason, include_children beside
+  // unlink_children, and include_children with done.
+  const options = issueStatusOptionsOf(args);
   let before: IssueDetails;
   try {
     before = await client.getIssue(issueKey);

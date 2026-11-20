@@ -1328,13 +1328,17 @@ unsetting it replaces the app's pods as any change to its pod template does.
 Dispatch, right after `DISPATCH_SERVER_URL` and, with `outsideOrigin`, `DISPATCH_OUTSIDE_ORIGIN`.
 With it Dispatch refuses a write that leaves a parent's status out of line with its children's,
 and at boot it runs the one-time fix of the parents and children that break the rule. The fix
-runs once per database, so turning the input off and on again runs nothing. Set it only once
-every Legion daemon that writes to this Dispatch runs the release that sends the parent-status
-options, and with no process of the earlier setting serving beside the new one ([The
-pods](#the-pods)). Unset, nothing is rendered, so a deployment that leaves it unset renders the
-pod it always had. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as it
-ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
-list. Setting or unsetting it replaces the app's pods as any change to its pod template does.
+runs once per database, so turning the input off and on again runs nothing. Set it only when two
+conditions hold. First, each Legion daemon that writes to this Dispatch runs the releases with
+the daemon's side of the rule, which send the parent-status options. Second, each project's
+instructions retry a failed root architect with a status write of `todo` alone, not `backlog`
+and then `todo`, and that project's daemon and controller have read them. The rule refuses that
+`backlog` while an issue under the root is in work. Set it with no process of the earlier
+setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is rendered, so a
+deployment that leaves it unset renders the pod it always had. An `envoyImage` whose
+`envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings
+table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting it
+replaces the app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component

@@ -38,11 +38,7 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     error.code,
     error.status,
     `${error.code}: ${error.message}${joined}`,
-    error.candidates,
-    error.current,
-    error.mismatches,
-    error.issues,
-    error.changed
+    error
   );
 }
 

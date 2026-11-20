@@ -225,17 +225,9 @@ func (rig ruleRig) file(t *testing.T, title, status, parent string) string {
 	}
 	key := decodeBody[model.Issue](t, created).Key
 	if status != model.IssueStatusTriage {
-		rig.move(t, key, status)
+		setIssueStatus(t, rig.handler, key, status)
 	}
 	return key
-}
-
-// move writes the status of key and fails unless the write is taken.
-func (rig ruleRig) move(t *testing.T, key, status string) {
-	t.Helper()
-	if moved := rig.send(t, patchOf(key, map[string]any{"status": status})); moved.Code != http.StatusOK {
-		t.Fatalf("move %s to %s: status=%d body=%s", key, status, moved.Code, moved.Body.String())
-	}
 }
 
 // send sends write as alice.
@@ -322,8 +314,8 @@ var parentDoneBreaches = []ruleBreach{
 		root := rig.file(t, "Closed root", "in_progress", "")
 		middle := rig.file(t, "Closed middle", "in_progress", root)
 		leaf := rig.file(t, "Closed leaf", "done", middle)
-		rig.move(t, middle, "done")
-		rig.move(t, root, "done")
+		setIssueStatus(t, rig.handler, middle, "done")
+		setIssueStatus(t, rig.handler, root, "done")
 		return patchOf(leaf, map[string]any{"status": "backlog"}), []ruleHolder{
 			{middle, "Closed middle", "done", "parent", middle + " (done) is the parent of " + leaf + " and is done"},
 		}
@@ -452,7 +444,7 @@ func TestAParentIsDoneOnlyWhenEachChildIsDone(t *testing.T) {
 		t.Errorf("the refused close left %s %s, want in_progress", middle, status)
 	}
 	for _, key := range []string{leaf, middle, root} {
-		rig.move(t, key, "done")
+		setIssueStatus(t, rig.handler, key, "done")
 	}
 }
 
@@ -515,7 +507,7 @@ func TestTheRuleJudgesOnlyThePairsAWriteChanges(t *testing.T) {
 }
 
 // TestACreateRacingItsParentsCloseIsRefusedEitherWay: a create under a parent and the close of
-// that parent end the same way in either order (D4), with the rule on. A create holds no owner
+// that parent end the same way in either order, with the rule on. A create holds no owner
 // lock of its parent, so each order is made by a transaction of the test's own that holds what
 // the first of the two writes takes. Each wait is on the backend of the write under test
 // (oneConnectionHandler), which pg_locks shows queued behind the test's transaction.
@@ -682,7 +674,7 @@ func TestAStepAndItsCommentCommitTogether(t *testing.T) {
 		fields:      updateIssueInput{Status: new("done")},
 		outliving:   ctx,
 		adviceRoute: "PATCH /api/v1/issues/{key}",
-		comment:     &issueComment{body: body, author: parentStatusRuleActor},
+		comment:     &issueComment{author: parentStatusRuleActor, words: func(model.Issue) string { return body }},
 	}
 	served := directServer(rig.deps)
 
@@ -724,16 +716,8 @@ func TestAStepAndItsCommentCommitTogether(t *testing.T) {
 			from events where issue_key = $1 and seq > $2 order by seq
 		`, parent, seq)
 	}
-	lastSeq := func(t *testing.T) int {
-		t.Helper()
-		var seq int
-		if err := rig.database.Pool.QueryRow(ctx, `select last_seq from issues where key = $1`, parent).Scan(&seq); err != nil {
-			t.Fatalf("read the last_seq of %s: %v", parent, err)
-		}
-		return seq
-	}
 
-	refusedAt := lastSeq(t)
+	refusedAt := issueLastSeq(t, rig.database, parent)
 	if _, err := served.writeIssue(ctx, call); !errors.As(err, new(*parentStatusConflict)) {
 		t.Fatalf("the close of %s with a comment over its open child answered %v, want the rule's conflict", parent, err)
 	}
@@ -747,7 +731,7 @@ func TestAStepAndItsCommentCommitTogether(t *testing.T) {
 		t.Errorf("the refused close left %s %s, want in_progress", parent, status)
 	}
 
-	rig.move(t, child, "done")
+	setIssueStatus(t, rig.handler, child, "done")
 	written, err := served.writeIssue(ctx, call)
 	if err != nil {
 		t.Fatalf("the close of %s with a comment once its child is done: %v", parent, err)

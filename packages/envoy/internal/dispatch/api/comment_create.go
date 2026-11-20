@@ -1030,27 +1030,20 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 }
 
 // issueComment is a comment that a write in this process leaves on an issue, in the write's own
-// transaction (issueWriteCall.comment): a body and its author. It mentions nobody, replies to
-// nothing and has no anchor.
+// transaction (issueWriteCall.comment): its author, and its words from the issue as the write
+// reads it under its owner lock. It mentions nobody, replies to nothing and has no anchor, so it
+// asks the Envoy listener nothing and its write needs no lookup before its transaction.
 type issueComment struct {
-	body   string
 	author model.Actor
+	words  func(before model.Issue) string
 }
 
-// resolveIssueComment makes the Envoy listener lookups of comment on the issue key. Its writer
-// calls it before its transaction opens, as every comment's write calls resolveCommentDeliveries.
-// The comment mentions nobody, so it asks the listener nothing and answers at once.
-func (s *server) resolveIssueComment(ctx context.Context, key string, comment issueComment) (commentResolution, error) {
-	return s.resolveCommentDeliveries(ctx, issueOwner(key), commentInput{Body: comment.body}, nil, "")
-}
-
-// queueIssueComment queues comment on the issue key in the transaction and on the ledger of the
-// write that leaves it, which holds the issue's owner lock: the row, its references and its
-// comment.created event, in the order that the comment route queues them. resolved is what
-// resolveIssueComment answered before that transaction opened. The event is the author's, so a
-// system author wakes nobody (events.Broker.Notify).
+// queueIssueComment queues a comment by author with body on the issue key in the transaction and
+// on the ledger of the write that leaves it, which holds the issue's owner lock: the row, its
+// references and its comment.created event, in the order that the comment route queues them. The
+// event is the author's, so a system author wakes nobody (events.Broker.Notify).
 func (s *server) queueIssueComment(
-	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string, written issueComment, resolved commentResolution,
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string, author model.Actor, body string,
 ) (*model.Event, error) {
 	id, err := commentRowID(ctx, tx)
 	if err != nil {
@@ -1058,7 +1051,7 @@ func (s *server) queueIssueComment(
 	}
 	owner := issueOwner(key)
 	comment := model.Comment{
-		ID: id, IssueKey: owner.IssueKey, Author: written.author, Body: written.body,
+		ID: id, IssueKey: owner.IssueKey, Author: author, Body: body,
 		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
 	}
 	if err := queueCommentRow(ctx, tx, ledger, &comment); err != nil {
@@ -1068,7 +1061,7 @@ func (s *server) queueIssueComment(
 	if err != nil {
 		return nil, err
 	}
-	return s.queueCommentCreated(ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, resolved)
+	return s.queueCommentCreated(ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, commentResolution{})
 }
 
 // commentRowID is the id of a new comment, read before its row is queued.

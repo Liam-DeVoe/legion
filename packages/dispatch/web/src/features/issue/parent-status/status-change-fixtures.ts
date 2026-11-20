@@ -38,7 +38,7 @@ const FIXTURES = join(
  *  option, a child in work), `browser-only` (the same with `include_children` from a token),
  *  `conflict-midway` (a call refused after its first step) and `stale` (a stale
  *  `expected_sequence`). */
-export type StatusChangeFixture =
+type StatusChangeFixture =
   | "browser-only"
   | "changed"
   | "conflict"
@@ -46,8 +46,17 @@ export type StatusChangeFixture =
   | "dry-run"
   | "stale";
 
+/** Each recorded answer's text, read from its file once. Each call parses it anew, so no test
+ *  changes what another reads. */
+const fixtureTexts = new Map<StatusChangeFixture, string>();
+
 function recorded(name: StatusChangeFixture): Recorded {
-  return JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), "utf8")) as Recorded;
+  let text = fixtureTexts.get(name);
+  if (text === undefined) {
+    text = readFileSync(join(FIXTURES, `${name}.json`), "utf8");
+    fixtureTexts.set(name, text);
+  }
+  return JSON.parse(text) as Recorded;
 }
 
 /** The 200 body of `name`, as the page's client resolves it. */

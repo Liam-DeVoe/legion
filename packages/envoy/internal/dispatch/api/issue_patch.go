@@ -118,8 +118,8 @@ type issueWriteCall struct {
 // under its own owner lock, not from the plan that the call read before its first step.
 type issueWriteCallStep struct {
 	// named is the issue that the status change names, or empty for a step of R25's fix, which
-	// names none. A step that holds its owner lock reads back the ids of every event the step
-	// appended on it (issueWriteResult.namedEvents).
+	// names none. A fenced step, or a step of a keyed call, that holds its owner lock reads back
+	// the ids of every event the step appended on it (issueWriteResult.namedEvents).
 	named string
 	// fence is the call's fence on named, or nil for a call that sent no expected_sequence.
 	fence *issueWriteFence
@@ -127,9 +127,6 @@ type issueWriteCallStep struct {
 	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
 	// its transaction back. It is nil for a step that always writes: the named issue's own.
 	leaves func(before model.Issue) bool
-	// words is the body of the step's comment (issueWriteCall.comment), from the issue as the
-	// step reads it under its owner lock. It is nil for a step that leaves no comment.
-	words func(before model.Issue) string
 	// sweepsLater is that the caller runs the ask sweep of the step's close itself, after the
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
@@ -185,11 +182,11 @@ type issueWriteResult struct {
 	// appended is each event the write appended, with its owner and its id, in the order the
 	// write queued them.
 	appended []*model.Event
-	// namedEvents is, for a step of a status change that holds the owner lock of the issue the
-	// call names, the ids of the events on that issue after its last_seq as the step read it
-	// under that lock: every event the step appended there, those that document work appends
-	// through the ledger's event sink included. They are what the fence of a later step of the
-	// call counts as its own. It is empty for every other write.
+	// namedEvents is, for a fenced step or a step of a keyed call that holds the owner lock of the
+	// issue the call names, the ids of the events on that issue after its last_seq as the step
+	// read it under that lock: every event the step appended there, those that document work
+	// appends through the ledger's event sink included. They are what the fence of a later step
+	// of the call counts as its own. It is empty for every other write.
 	namedEvents []int64
 	// closed is that the write closed the issue, and withdrawn is the asks that the close
 	// withdrew: what the close's ask sweep takes (sweepClosedIssueAsks). writeIssue runs that
@@ -297,14 +294,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// lock.
 		s.settleIssueBeforeClose(call.outliving, key)
 	}
-	// The call's comment makes its listener lookups before the transaction opens, as every
-	// comment's write does.
-	var commentResolved commentResolution
-	if call.comment != nil {
-		if commentResolved, err = s.resolveIssueComment(ctx, key, *call.comment); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return issueWriteResult{}, err
@@ -388,13 +377,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if step != nil && step.leaves != nil && step.leaves(before) {
 		return issueWriteResult{issue: before, previousLastSeq: before.LastSeq}, nil
 	}
-	// A step that holds the owner lock of the issue the call names reads back, in its write
-	// phase, every event it appends there after the last_seq it reads here: the named issue's own
-	// step, a fenced step, and the step of a direct child, whose parent lockPatchOwnersAndParent
-	// locked. The read is a plain one, before the first write.
+	// A fenced step, or a step of a keyed call, that holds the owner lock of the issue the call
+	// names reads back, in its write phase, every event it appends there after the last_seq it
+	// reads here: the named issue's own step, a fenced step, and the step of a direct child, whose
+	// parent lockPatchOwnersAndParent locked. The read is a plain one, before the first write. A
+	// step of an unfenced call with no request key reads none, since nothing reads those events.
+	var claim requestKeyClaim
+	keyed := false
 	namedLastSeq, holdsNamed := 0, false
 	if step != nil {
+		claim, keyed = ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 		switch {
+		case step.fence == nil && !keyed:
 		case step.named == key:
 			namedLastSeq, holdsNamed = before.LastSeq, true
 		case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
@@ -403,11 +397,11 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			}
 			holdsNamed = true
 		}
-		if step.words != nil && call.comment != nil {
-			worded := *call.comment
-			worded.body = step.words(before)
-			call.comment = &worded
-		}
+	}
+	// The call's comment is worded from the issue as the write reads it under its owner lock.
+	var commentBody string
+	if call.comment != nil {
+		commentBody = call.comment.words(before)
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(ctx, tx, key, before.Project, *parent); err != nil {
@@ -456,13 +450,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// after the refusals above and under the owner locks the write holds: the issue's, its
 	// current parent's and its proposed parent's. Every writer of a pair holds the parent's
 	// owner lock, so two writes of one pair are judged one after the other. A write that names
-	// the status the issue already has changes no pair and is not judged.
+	// the status the issue already has changes no pair and is not judged. With the rule off the
+	// plan is unjudged, so the check reads no conflict that the write would not refuse.
 	if statusChanged || parentChanged {
+		plan.unjudged = !s.deps.ParentStatusRule.On()
 		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
-		if conflict != nil && s.deps.ParentStatusRule.On() {
+		if conflict != nil {
 			return issueWriteResult{}, conflict
 		}
 	}
@@ -830,7 +826,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if call.comment != nil {
 		// The call's comment comes after the write's own events, on the issue's owner, which the
 		// write's lock holds.
-		commented, err := s.queueIssueComment(ctx, tx, ledger, key, *call.comment, commentResolved)
+		commented, err := s.queueIssueComment(ctx, tx, ledger, key, call.comment.author, commentBody)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
@@ -840,7 +836,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
 	// so the statement derives them in its own SQL, after the step's last event insert. They hold
 	// what document work appended there through the ledger's event sink too, which appended does
-	// not. A step of a keyed call writes the call's recovery point with the same statement (D7):
+	// not. A step of a keyed call writes the call's recovery point with the same statement:
 	// it adds to the point the key holds, which is the call's point so far, since only the
 	// attempt that holds the key writes it, the step's entry, those ids and, for the named issue's
 	// own close, the ids of the asks it withdrew. The statement is scoped to the request's own
@@ -848,7 +844,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// step that holds no lock of the named issue adds no ids, and an unkeyed step writes no point.
 	var namedEvents []int64
 	if step != nil {
-		claim, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 		switch {
 		case keyed:
 			entry, err := json.Marshal(statusChangeEntry{Key: key, Status: after.Status, Parent: after.Parent, PreviousLastSeq: before.LastSeq})
@@ -928,7 +923,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// allows.
 	s.publish(ctx, appendedEvents(appended...)...)
 	if call.comment != nil {
-		s.storeDisplayTrees(ctx, key, call.comment.body)
+		s.storeDisplayTrees(ctx, key, commentBody)
 	}
 	if closing && (step == nil || !step.sweepsLater) {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches

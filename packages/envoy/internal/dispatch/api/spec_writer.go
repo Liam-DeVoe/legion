@@ -382,9 +382,17 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	if writer.person {
 		return nil
 	}
-	labels := step.labelsBefore
-	if step.labelsAfter != nil {
+	// The labels the write leaves: those it writes, or, for a write of the parent alone, those the
+	// issue holds, read under the owner lock its writer holds. Only a move and a write that may take
+	// the issue out of Legion read them.
+	var labels []string
+	switch {
+	case step.labelsAfter != nil:
 		labels = *step.labelsAfter
+	case step.changesParent():
+		if err := tx.QueryRow(ctx, `select labels from issues where key = $1`, step.key).Scan(&labels); err != nil {
+			return err
+		}
 	}
 	if step.changesParent() && step.parentAfter != nil {
 		if err := refuseSpecWriter(ctx, tx, writer, specWrite{

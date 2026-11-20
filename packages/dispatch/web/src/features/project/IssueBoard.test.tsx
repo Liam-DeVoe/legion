@@ -1117,10 +1117,11 @@ test("board: checking - a second drop while the first is checking waits behind i
     });
     expect(statusChanges).toHaveBeenCalledTimes(1);
     // The card being checked has not moved; the second has, and its PATCH waits its turn.
-    expect(
-      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === "CORE-1")
-        ?.status
-    ).toBe("todo");
+    const statusOf = (key: string) =>
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === key)
+        ?.status;
+    expect(statusOf("CORE-1")).toBe("todo");
+    expect(statusOf("CORE-2")).toBe("in_progress");
     expect(patchIssue).not.toHaveBeenCalled();
 
     await act(async () => {
