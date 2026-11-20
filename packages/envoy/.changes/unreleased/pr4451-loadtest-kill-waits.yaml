@@ -8,6 +8,14 @@ body: |-
   did not reach the machine or timed out, returns 1, names it and keeps its pid file. A kill
   after a start whose ssh this pod did not see return first waits, up to that bound, for the
   start to record its pid, and names the part as not shown gone when no record comes.
+  Each pid file on the load machine now holds the process's start time beside its pid, read with
+  that machine's shell alone, so no awk is needed there. A kill signals no process whose start
+  differs from the one recorded: that pid is another process's now, so the recorded one has
+  ended, and the kill names the pid and the command that holds it now, and removes the file. A
+  process that leaves the table while the kill reads its start has gone. A start the kill cannot
+  read while the pid's entry is there is named, and nothing is signalled. A file of the pid alone,
+  which the driver before this one wrote, is ended and waited for as before, so a deployment it
+  started needs nothing done.
   A step whose earlier tunnel or earlier `loadgen run` is not shown gone is refused, and an `up`
   whose earlier stub embedder is not shown gone stops, rather than starting another beside it.
   A step stopped by `INT` or `TERM` names each part it did not show gone -- a kill that ran out,
@@ -15,12 +23,18 @@ body: |-
   ended.
   `cluster/cluster.sh`'s stop of a daemon fails, naming it and keeping its pidfile, while the
   daemon or any process of its process group is still there 10 s after its TERM, and `down`
-  then goes on with its delete and fails; the stop of a step's disk watcher kills every process
-  of its act, each `kubectl` below its `timeout` included, and waits until each has ended, every
-  thread of it, naming one that has not. A process whose `/proc` entry is there and cannot be
-  read is never taken for one that has ended, including with `ulimit -n 4`: the stop names it, and
-  the disk watcher and the wait on the runner job read the step shell again at their next poll.
-  `restart-step.sh` counts the listener it kills as down only once every thread of it has gone, and fails, naming it, on
-  a `/proc` entry it cannot read; when the script fails, its SIGTERM goes to its own step's
-  `loadgen run`, by its pid, and no longer to every process of that command line, another run's
-  included.
+  then goes on with its delete and fails. `kube` and `kube_for` run `kubectl` under `timeout
+  --foreground`, so the `kubectl` stays in its caller's process group, where a daemon's stop
+  sends its TERM and waits. The stop of a step's disk watcher stops each process of the
+  watcher's tree and sees it stopped, every thread of it, or a zombie, before it reads that
+  process's children, so a child forked while the stop was pending is not missed; a process it
+  cannot see stopped is named, and it and every process found below it still get the SIGKILL.
+  The stop then waits until each process of the act has ended, every thread of it, naming one
+  that has not. A process whose `/proc` entry is there and cannot be read is never taken for one
+  that has ended: the stop names it, and the disk watcher and the wait on the runner job read the
+  step shell again at their next poll, with the reads made in the shell itself, so a descriptor
+  limit (`ulimit -n 4`) that stops a read is no answer either.
+  `restart-step.sh` counts the listener it kills as down only once every thread of it has gone,
+  and fails, naming it, on a `/proc` entry it cannot read, or on a start it cannot read, which it
+  then does not kill; when the script fails, its SIGTERM goes to its own step's `loadgen run`, by
+  its pid, and no longer to every process of that command line, another run's included.
