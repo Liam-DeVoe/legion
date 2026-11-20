@@ -234,8 +234,9 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 }
 
 // newExcerptServiceOn is newExcerptService on serviceClock (Deps.Clock), which the reconciliation
-// reads for what a document's retry is due at (refs.DeferExcerpts, refs.DriftedExcerpts); the real
-// clock when nil.
+// reads for what a document's retry is due at (refs.DeferExcerpts, refs.DriftedExcerpts); nil is
+// the real clock, under which every retry is stamped and judged by the database's now()
+// (excerptMoment).
 func newExcerptServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: serviceClock})

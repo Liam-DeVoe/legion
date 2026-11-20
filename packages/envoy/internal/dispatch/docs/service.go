@@ -167,6 +167,10 @@ type Service struct {
 	// queue's waits (compactionQueue) and the edit notice sweep's gaps and due times
 	// (RunEditNotices).
 	clock clock.Clock
+	// onRealClock is whether clock is the real clock, Deps.Clock being nil, as in production: the
+	// reference excerpt reconciliation then hands its statements no moment of its own, and the
+	// database's now() alone stamps and judges its retries (excerptMoment).
+	onRealClock bool
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -906,6 +910,7 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		clock:             serviceClock,
+		onRealClock:       deps.Clock == nil,
 		editNoticeQuiet:   editNoticeQuiet,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,

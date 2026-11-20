@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  Dispatch retries a document's reference excerpts at its backoff measured on the database's clock.
+  Each process stamped and judged the retry by its own clock, so a process whose clock ran ahead of
+  another's, or behind it, retried a deferred document early or late. Postgres's now() now writes
+  and judges every retry, and the reconciliation's next pass is the wait the database measures.

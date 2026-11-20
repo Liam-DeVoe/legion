@@ -39,7 +39,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	drifted, err := DriftedExcerpts(ctx, database.Pool, 20, time.Now())
+	drifted, err := DriftedExcerpts(ctx, database.Pool, 20, nil)
 	if err != nil || len(drifted) != 1 || drifted[0] != (ExcerptDrift{FromID: document, Version: 1}) {
 		t.Fatalf("drift before recording = %#v, %v; want the document at version 1", drifted, err)
 	}
@@ -53,7 +53,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if want := []Target{{Kind: "issue", ID: "CORE-1"}}; !slices.Equal(moved, want) {
 		t.Fatalf("moved by the first record = %#v, want %#v", moved, want)
 	}
-	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, time.Now()); err != nil || len(drifted) != 0 {
+	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, nil); err != nil || len(drifted) != 0 {
 		t.Fatalf("drift after recording = %#v, %v; want none", drifted, err)
 	}
 	if stored, err := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
@@ -109,7 +109,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if marked, err := MarkStaleExcerpts(ctx, database.Pool); err != nil || marked != 2 {
 		t.Fatalf("marked stale = %d, %v; want both mentions", marked, err)
 	}
-	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, time.Now()); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
+	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, nil); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
 		t.Fatalf("drift after an older binary's version = %#v, %v; want the document at version 2", drifted, err)
 	}
 	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); len(stored) != 0 {
@@ -145,6 +145,10 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 	return document
 }
 
+// momentAt is moment as the backoff's statements take a caller's moment, in place of the
+// database's now().
+func momentAt(moment time.Time) *time.Time { return &moment }
+
 // backoffOf reads the document's backoff row: its version, its attempts, and how far after at,
 // the moment it was deferred at, its next attempt falls.
 func backoffOf(t *testing.T, database *store.Store, document string, at time.Time) (version, attempts int, wait time.Duration) {
@@ -176,7 +180,7 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 	const base, ceiling = time.Hour, 6 * time.Hour
 	for attempt, want := range []time.Duration{base, 2 * base, 4 * base, ceiling} {
 		deferred := clock.Now()
-		if err := DeferExcerpts(ctx, database.Pool, document, 1, base, ceiling, deferred); err != nil {
+		if err := DeferExcerpts(ctx, database.Pool, document, 1, base, ceiling, &deferred); err != nil {
 			t.Fatalf("defer %d: %v", attempt+1, err)
 		}
 		version, attempts, wait := backoffOf(t, database, document, deferred)
@@ -184,7 +188,7 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 			t.Fatalf("after failure %d: version %d, attempts %d, next in %v; want version 1, attempts %d, next in [%v, %v]",
 				attempt+1, version, attempts, wait, attempt+1, want, want+want/5)
 		}
-		if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, clock.Now()); err != nil || len(drifted) != 0 {
+		if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, momentAt(clock.Now())); err != nil || len(drifted) != 0 {
 			t.Fatalf("drift while deferred = %#v, %v; want none", drifted, err)
 		}
 	}
@@ -192,7 +196,7 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 		t.Fatal(err)
 	}
 	deferred := clock.Now()
-	if err := DeferExcerpts(ctx, database.Pool, document, 1, base, ceiling, deferred); err != nil {
+	if err := DeferExcerpts(ctx, database.Pool, document, 1, base, ceiling, &deferred); err != nil {
 		t.Fatalf("defer after many failures: %v", err)
 	}
 	if _, attempts, wait := backoffOf(t, database, document, deferred); attempts != 5001 || wait < ceiling || wait > ceiling+ceiling/5 {
@@ -202,14 +206,16 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 	if err := database.Pool.QueryRow(ctx, `select next_attempt_at from reference_excerpt_backoff`).Scan(&due); err != nil {
 		t.Fatal(err)
 	}
-	if next, err := NextExcerptRetry(ctx, database.Pool); err != nil || !next.Equal(due) {
-		t.Fatalf("next retry = %v, %v; want the deferred document's %v", next, err, due)
+	// The wait is measured from the moment the statement is handed, as the database keeps it (to
+	// the microsecond).
+	if wait, owed, err := NextExcerptRetry(ctx, database.Pool, &deferred); err != nil || !owed || wait != due.Sub(deferred.Truncate(time.Microsecond)) {
+		t.Fatalf("next retry = %v (owed %t), %v; want the deferred document's, %v after the deferral", wait, owed, err, due.Sub(deferred.Truncate(time.Microsecond)))
 	}
 
 	// The wait the last deferral set passes on the reconciliation's clock, and the document is
 	// listed again.
 	clock.Set(due)
-	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, clock.Now()); err != nil || len(drifted) != 1 || drifted[0] != (ExcerptDrift{FromID: document, Version: 1, BackedOff: true}) {
+	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, momentAt(clock.Now())); err != nil || len(drifted) != 1 || drifted[0] != (ExcerptDrift{FromID: document, Version: 1, BackedOff: true}) {
 		t.Fatalf("drift once due = %#v, %v; want the document, backed off", drifted, err)
 	}
 
@@ -219,14 +225,14 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 	if _, err := database.Pool.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 2, 'v2', '[]')`, document); err != nil {
 		t.Fatalf("write version 2: %v", err)
 	}
-	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, clock.Now()); err != nil || len(drifted) != 1 || drifted[0] != (ExcerptDrift{FromID: document, Version: 2, BackedOff: true}) {
+	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20, momentAt(clock.Now())); err != nil || len(drifted) != 1 || drifted[0] != (ExcerptDrift{FromID: document, Version: 2, BackedOff: true}) {
 		t.Fatalf("drift after a new version = %#v, %v; want the document at version 2, its old row no hold", drifted, err)
 	}
-	if next, err := NextExcerptRetry(ctx, database.Pool); err != nil || !next.IsZero() {
-		t.Fatalf("next retry with only an older version's row = %v, %v; want none", next, err)
+	if wait, owed, err := NextExcerptRetry(ctx, database.Pool, nil); err != nil || owed {
+		t.Fatalf("next retry with only an older version's row = %v (owed %t), %v; want none", wait, owed, err)
 	}
 	deferred = clock.Now()
-	if err := DeferExcerpts(ctx, database.Pool, document, 2, base, ceiling, deferred); err != nil {
+	if err := DeferExcerpts(ctx, database.Pool, document, 2, base, ceiling, &deferred); err != nil {
 		t.Fatalf("defer version 2: %v", err)
 	}
 	if version, attempts, wait := backoffOf(t, database, document, deferred); version != 2 || attempts != 1 || wait < base || wait > base+base/5 {
@@ -248,7 +254,7 @@ func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
 	ctx := context.Background()
 	settled, owed := owedDocument(t, database, "settled"), owedDocument(t, database, "owed")
 	for _, document := range []string{settled, owed} {
-		if err := DeferExcerpts(ctx, database.Pool, document, 1, time.Hour, 6*time.Hour, time.Now()); err != nil {
+		if err := DeferExcerpts(ctx, database.Pool, document, 1, time.Hour, 6*time.Hour, nil); err != nil {
 			t.Fatalf("defer %s: %v", document, err)
 		}
 	}
@@ -259,8 +265,8 @@ func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select next_attempt_at from reference_excerpt_backoff where artifact_id = $1::uuid`, owed).Scan(&due); err != nil {
 		t.Fatal(err)
 	}
-	if next, err := NextExcerptRetry(ctx, database.Pool); err != nil || !next.Equal(due) {
-		t.Fatalf("next retry = %v, %v; want the owed document's %v", next, err, due)
+	if wait, retries, err := NextExcerptRetry(ctx, database.Pool, momentAt(due.Add(-time.Hour))); err != nil || !retries || wait != time.Hour {
+		t.Fatalf("next retry an hour before the owed document's %v = %v (any %t), %v; want an hour", due, wait, retries, err)
 	}
 	var left []string
 	rows, err := database.Pool.Query(ctx, `select artifact_id::text from reference_excerpt_backoff`)
@@ -281,8 +287,8 @@ func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
 	if _, err := RecordExcerpts(ctx, database.Pool, owed, 1, nil); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if next, err := NextExcerptRetry(ctx, database.Pool); err != nil || !next.IsZero() {
-		t.Fatalf("next retry with nothing owed = %v, %v; want none", next, err)
+	if wait, retries, err := NextExcerptRetry(ctx, database.Pool, nil); err != nil || retries {
+		t.Fatalf("next retry with nothing owed = %v (any %t), %v; want none", wait, retries, err)
 	}
 }
 

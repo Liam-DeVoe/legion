@@ -477,7 +477,10 @@ func (s *Service) markStaleExcerpts(ctx context.Context) bool {
 // reconcileExcerptPass is one pass of the reconciliation's batch, and returns when the loop next
 // needs to run with no wake: now while a full batch leaves documents it can still record, else the
 // earliest due time of a document it deferred, else never. A pass whose own read failed asks again
-// after schedule.retryBase.
+// after schedule.retryBase. The due time is the wait to that retry on the clock that stamped it
+// (refs.NextExcerptRetry), from the moment the pass judges at: the database's now(), added to this
+// process's own clock, where the service runs on the real clock, so skew between the two does not
+// move the timer; a test's fake's reading where it runs on one (excerptMoment).
 func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSchedule) time.Time {
 	documents, full, err := s.reconcileReferenceExcerpts(ctx, schedule.retryBase)
 	if documents > 0 {
@@ -492,7 +495,8 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 	case full:
 		return time.Now()
 	}
-	next, err := refs.NextExcerptRetry(ctx, s.store.Pool)
+	judged := s.excerptMoment()
+	wait, owed, err := refs.NextExcerptRetry(ctx, s.store.Pool, judged)
 	if err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
@@ -500,7 +504,27 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 		slog.Error("dispatch: reconcile reference excerpts", "error", err)
 		return time.Now().Add(schedule.retryBase)
 	}
-	return next
+	if !owed {
+		return time.Time{}
+	}
+	if judged != nil {
+		return judged.Add(wait)
+	}
+	return time.Now().Add(wait)
+}
+
+// excerptMoment is the moment the reconciliation writes and judges a document's retry at, handed
+// to the statements in place of the database's now() (refs.DeferExcerpts, DriftedExcerpts,
+// NextExcerptRetry): nil where the service runs on the real clock, as it does in production, so
+// Postgres's clock alone stamps and judges every retry and no process's clock, however far it is off
+// the database's, moves one; a test's fake's reading, to the microsecond the database keeps, where
+// it runs on one.
+func (s *Service) excerptMoment() *time.Time {
+	if s.onRealClock {
+		return nil
+	}
+	at := s.clock.Now().Truncate(time.Microsecond)
+	return &at
 }
 
 // ReconcileReferenceExcerpts runs one batch of the reconciliation at the server's pace
@@ -524,16 +548,16 @@ func (s *Service) ReconcileReferenceExcerpts(ctx context.Context) (documents int
 // documents this one did not.
 func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time.Duration) (documents int, full bool, err error) {
 	// What this pass leaves out as not yet due (DriftedExcerpts) is judged at the pass's start, and
-	// each deferral (DeferExcerpts) counts its wait from the moment it is made, both read from the
-	// service's clock, so a test drives both with a fake: a document deferred after a pass that ran
-	// longer than its backoff still waits the whole of it, rather than falling due at once.
-	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch, s.clock.Now())
+	// each deferral (DeferExcerpts) counts its wait from the moment it is made, both on the
+	// database's clock, or on a test's fake (excerptMoment): a document deferred after a pass that
+	// ran longer than its backoff still waits the whole of it, rather than falling due at once.
+	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch, s.excerptMoment())
 	if err != nil {
 		return 0, false, err
 	}
 	moved := 0
 	deferDocument := func(document refs.ExcerptDrift) {
-		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling, s.clock.Now()); err != nil {
+		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling, s.excerptMoment()); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("dispatch: reference excerpt reconciliation could not defer a document; the next batch reads it again",
 					"artifact", document.FromID, "error", err)
