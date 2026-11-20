@@ -13,11 +13,13 @@ import (
 // Answer is the membership answer for one project and one person (K3), which the secrets broker
 // reads with a token of its own, outside any transaction: the project's owner and visibility, the
 // person's member kind as the answer spells it, whether the rule lets that person see the project,
-// the project's repositories, by their mapped and their renamed names, and its Slack channels with
-// when that list last changed. A person no people row holds reads as the broker reads them, a full
-// member, since the broker signs in only people of its own sign-in domain; the answer still names
-// their kind none. An unknown project is ErrProjectNotFound; a project the person cannot see still
-// answers, with visible false.
+// and the project's Slack channels with when that list last changed. It names no repositories. A
+// person no people row holds reads as the broker reads them, a full member, since the broker signs
+// in only people of its own sign-in domain; the answer still names their kind none. A question
+// naming no person reads as the rule reads a viewer with no person: it sees the project only when
+// the project is public, so visible says whether it is, as the broker reads it
+// (projectaccess.Client.States). An unknown project is ErrProjectNotFound; a project the person
+// cannot see still answers, with visible false.
 func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAnswer, error) {
 	login := model.CanonicalLogin(person)
 	answer := model.AccessAnswer{Person: login}
@@ -26,19 +28,13 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 			select (select member_kind from people where email = $2) as member_kind
 		)
 		select p.key, p.visibility, coalesce(p.owner, ''), coalesce(person.member_kind, 'none'),
-			$2 <> '' and coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false),
-			array(
-				select name from (
-					select repo as name from repo_projects where project = p.key
-					union
-					select renamed_to from repo_projects where project = p.key and renamed_to is not null
-				) repositories
-				order by name collate "C"),
+			case when $2 = '' then p.visibility = 'public'
+			else coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false) end,
 			p.slack_channels, p.slack_channels_changed_at
 		from projects p, person
 		where p.key = $1
 	`, key, login).Scan(&answer.Project, &answer.Visibility, &answer.Owner, &answer.MemberKind, &answer.Visible,
-		&answer.Repositories, &answer.SlackChannels, &answer.SlackChannelsChangedAt)
+		&answer.SlackChannels, &answer.SlackChannelsChangedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.AccessAnswer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}

@@ -15,7 +15,7 @@ import (
 
 // envoy-dispatch backfill-session-projects records, for every event written before the live
 // insert existed, the (session, project) pair the live insert would have recorded for it
-// (events.Broker.AppendAll): a session's events on an issue, on a project document and on a
+// (events.Broker.QueueAppend): a session's events on an issue, on a project document and on a
 // project, and none for a person's event or a personal token's, whose actor names no session. The
 // events here are appended through the broker, its pairs read, and then deleted, so the fill must
 // put back exactly what the live insert wrote. A second run writes no pair, and the run leaves the
@@ -67,7 +67,7 @@ func TestTheSessionProjectsFillCoversEveryEvent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if _, err := broker.AppendAll(ctx, tx, []model.Event{event}); err != nil {
+		if _, err := broker.Append(ctx, tx, event); err != nil {
 			t.Fatalf("append %s by %+v: %v", event.Type, event.Actor, err)
 		}
 		if err := tx.Commit(ctx); err != nil {

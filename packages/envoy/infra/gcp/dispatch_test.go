@@ -429,6 +429,9 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		{name: "an invalid allowed namespace", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", "Legion"} }, err: []string{"allowedNamespaces[1]", "DNS label"}},
 		{name: "a namespace longer than a DNS label", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef(strings.Repeat("a", 64)) }, err: []string{"namespace", "DNS label"}},
 		{name: "an allowed namespace longer than a DNS label", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{strings.Repeat("a", 64)} }, err: []string{"allowedNamespaces[0]", "DNS label"}},
+		{name: "an empty allowed app", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy-broker", ""} }, err: []string{"allowedApps[1]", "label value"}},
+		{name: "an allowed app that is no label value", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy broker"} }, err: []string{"allowedApps[0]", "label value"}},
+		{name: "an allowed app longer than a label value", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{strings.Repeat("a", 64)} }, err: []string{"allowedApps[0]", "label value"}},
 		{name: "no tailnet auth key", edit: func(a *gcp.DispatchArgs) { a.TailnetAuthKey = nil }, err: []string{"tailnetAuthKey", "required"}},
 		{name: "no NATS URL", edit: func(a *gcp.DispatchArgs) { a.NatsUrl = nil }, err: []string{"natsUrl", "required"}},
 		{name: "no NATS seed secret", edit: func(a *gcp.DispatchArgs) { a.NatsSeedSecret = nil }, err: []string{"natsSeedSecret", "required"}},
@@ -798,6 +801,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
 		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
+		{"a seed inside the public origin", "publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
@@ -843,6 +847,12 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the chat model", "chatModel", func(a *gcp.DispatchArgs) {
 			setChatEndpoint(a)
 			a.ChatModel = pulumi.StringRef(seed)
+		}},
+		{"a lowercase seed as the existing cluster's name", "existingCluster.name", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: lower, Location: "us-central1"}
+		}},
+		{"a seed inside the existing cluster's location", "existingCluster.location", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: "example-existing", Location: "us-" + lower + "1"}
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -1734,10 +1744,10 @@ func TestDispatchDeclaresItsTailscaleService(t *testing.T) {
 }
 
 // The Service's Protect follows deletionProtection, the input that already guards the cluster and
-// the database, and is true when the consumer sets nothing: no resource option of a consumer's own
-// program reaches a component's child, so a hard-coded Protect could be undone only by a state
-// edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's own pair
-// (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
+// the database the component makes, and is true when the consumer sets nothing: no resource option
+// of a consumer's own program reaches a component's child, so a hard-coded Protect could be undone
+// only by a state edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's
+// own pair (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
 func TestDispatchProtectsItsTailscaleServiceWithDeletionProtection(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -2731,6 +2741,39 @@ func TestDispatchRefusesAServiceAccountListWithNoAudience(t *testing.T) {
 	}
 }
 
+// A value Dispatch refuses at boot (cmd/dispatch checkAccessSettings) is refused when the stack
+// plans, naming the input, so one typo never reaches a Deployment whose one replica would then not
+// start: an account that is no service account's subject (a comma in one would also split it in
+// two, as the list is rendered comma-joined), an access account a set oidcAccounts leaves out, and
+// an owner fallback that is no lowercase email.
+func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	const reader = "system:serviceaccount:legion:reader"
+	for _, row := range []struct {
+		name, want string
+		edit       func(*gcp.DispatchArgs)
+	}{
+		{"an oidc account that is no subject", "oidcAccounts[0]", func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{"envoy-broker"} }},
+		{"an access account with a comma", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.AccessAccounts = []string{dispatchBrokerAccount + "," + reader}
+		}},
+		{"an access account the oidc accounts leave out", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.OidcAccounts = []string{dispatchBrokerAccount}
+			a.AccessAccounts = []string{reader}
+		}},
+		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
+		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
 // projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
 // the owner of every project the migration left without one, and renders nothing when it is unset.
 func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
@@ -3204,7 +3247,7 @@ func TestDispatchRegistersNoBudgetOrPriorityClassUnset(t *testing.T) {
 }
 
 // requireKubernetesChild asserts that r is a child of the component on its own Kubernetes
-// provider, waiting on the cluster, as AGENTS.md has every Kubernetes child do.
+// provider, waiting on the component's own Cluster (dispatchCluster.waitFor).
 func requireKubernetesChild(t *testing.T, r pulumitest.Registration) {
 	t.Helper()
 	require.Equal(t, "urn:pulumi:s::p::"+dispatchType+"::example-dispatch", r.RPC.GetParent())

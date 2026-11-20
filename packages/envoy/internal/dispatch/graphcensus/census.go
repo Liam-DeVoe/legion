@@ -343,7 +343,9 @@ func statedLinks(links ...string) string {
 // (graphstore.CurrentTupleRead). Each is written kind>to_kind:to_id, as statedLinks writes a
 // row's, and they are joined in order, so a node that states none reads the empty string. A link
 // whose newest tuple is a retraction is absent here exactly as a tuple never written is. The read
-// walks graph_tuples_current, whose columns are the ones the distinct on and the order by name.
+// walks graph_tuples_current where kinds lists the kinds it reads, which proves that index's
+// predicate, and graph_tuples_as_of_out where kinds lists the kinds it leaves out, as a block's
+// links do: graph_tuples_current leaves delivered_to out, and such a list does not.
 //
 // A block's part_of is one of these links, so a block that states no parent at all and a block
 // the document holds directly read differently: the first has no part_of link and the second
@@ -397,9 +399,9 @@ var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 // and of an event it rewrites only the payload's values that carry what a person wrote: never a
 // structural value such as an id, a state or a time (grapherase's structuralKey), and never the
 // actor column (grapherase's redactEvents). That actor is the one the row stored as its author
-// and the one graphstore.Authored wrote the author's node from: api's createComment and
-// replyComment pass all three the one actor. The erase leaves the author's node - it never takes a
-// session, and takes a person only when asked to - so without the event that node would be a
+// and the one graphstore.QueueAuthored wrote the author's node from: api's createComment and
+// replyComment pass all three the one actor. The erase leaves the author's node - it never takes
+// a session, and takes a person only when asked to - so without the event that node would be a
 // difference no erase can close. No route deletes a comment, and the erase takes only a comment
 // the store holds a node of, whose author's node the write that stored it made with it, so an
 // event whose comment is gone names an author a writer wrote a node for. An event of a comment the
@@ -486,11 +488,12 @@ var commentPeople = `
 // comment a session wrote (graphstore.AuthorOf), as its row names it or, for a comment the erase
 // took, the event that stored it (commentWriters); every session a delivery reached - a comment
 // mention's and a targeted message's attempt alike, whether the outbox's record states it
-// (outbox.deliveredGraph) or the attempt's own settle does (graphstore.Reached), and a fallback
-// copy the outbox published to a session's own topic (outbox.fallbackDelivered); an ask a session
-// opened, every session that follows an ask now, and every session an ask.follower_added event
-// ever named (asks.Follow), so a follower added and removed before the store existed is held to a
-// node as well. A node is history and never goes, so a session that once followed still owes it.
+// (outbox.deliveredGraph) or the attempt's own settle does (graphstore.QueueReached), and a
+// fallback copy the outbox published to a session's own topic (outbox.fallbackDelivered); an ask
+// a session opened, every session that follows an ask now, and every session an
+// ask.follower_added event ever named (asks.Follow), so a follower added and removed before the
+// store existed is held to a node as well. A node is history and never goes, so a session that
+// once followed still owes it.
 //
 // A comment mention's attempt is read twice for the same reason: as its row, and as the
 // comment.delivery receipt its settle appends in the transaction that records the session
@@ -504,7 +507,7 @@ var commentPeople = `
 // R14 is exact about which attempt is a delivery: an attempt the listener took is one, and a
 // pending or failed one is not. So this binds the two states that mean it
 // (model.DeliveryTakenStatesSQL), on an attempt's row and on its receipt alike, the test the
-// writers bind too (graphstore.Reached, outbox.mentionReached): an attempt still pending has
+// writers bind too (graphstore.QueueReached, outbox.mentionReached): an attempt still pending has
 // reached nobody yet and a failed one never will, and counting either here would hold the store to
 // a node no writer is meant to have written. A queued attempt later answered is read by the same
 // test before and after, so the flip to sent owes no node the settle did not already write.

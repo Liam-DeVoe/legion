@@ -187,6 +187,17 @@ func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "alice\x07@example.com", by)
 			return err
 		}, ErrPrincipalInput, "control"},
+		// fold.ASCII lowers A-Z alone, and the people table holds only lower(email), so a capital
+		// beyond A-Z names nobody who could sign in: it is refused as input, not left to the
+		// column's check, which would answer 500.
+		{"an email with a capital letter beyond A-Z", func(tx pgx.Tx) error {
+			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "\u00c4@example.com", by)
+			return err
+		}, ErrPrincipalInput, "lowercase"},
+		{"a group member with a capital letter beyond A-Z", func(tx pgx.Tx) error {
+			_, _, err := PutGroup(ctx, tx, broker, "accents", olga, []string{dave, "\u00c4@example.com"}, by)
+			return err
+		}, ErrPrincipalInput, "lowercase"},
 		{"a group member who is restricted", func(tx pgx.Tx) error {
 			_, _, err := PutGroup(ctx, tx, broker, "mixed", olga, []string{dave, bob}, by)
 			return err
@@ -227,17 +238,10 @@ func countEvents(t *testing.T, database *store.Store) int {
 
 // MemberKind and the membership answer read a person as the people table holds them: a full or
 // restricted member, and none for a login nobody has signed in as. The answer says whether the
-// person sees the project and names the project's repositories.
+// person sees the project.
 func TestTheMembershipAnswerReadsTheRule(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
-	if _, err := database.Pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, renamed_to) values
-			('acme/priv-api', 'PRIV', '{"kind":"user","id":"olga@example.com"}', 'acme/private-api'),
-			('acme/priv-web', 'PRIV', '{"kind":"user","id":"olga@example.com"}', null)
-	`); err != nil {
-		t.Fatalf("seed repositories: %v", err)
-	}
 	for _, test := range []struct {
 		person string
 		kind   model.MemberKind
@@ -264,10 +268,9 @@ func TestTheMembershipAnswerReadsTheRule(t *testing.T) {
 		want := model.AccessAnswer{
 			Project: "PRIV", Visibility: model.ProjectPrivate, Owner: olga, Person: model.CanonicalLogin(test.person),
 			MemberKind: test.answer, Visible: test.sees,
-			Repositories: []string{"acme/priv-api", "acme/priv-web", "acme/private-api"},
 		}
 		if answer.Project != want.Project || answer.Visibility != want.Visibility || answer.Owner != want.Owner || answer.Person != want.Person ||
-			answer.MemberKind != want.MemberKind || answer.Visible != want.Visible || !slices.Equal(answer.Repositories, want.Repositories) {
+			answer.MemberKind != want.MemberKind || answer.Visible != want.Visible {
 			t.Errorf("Answer(PRIV, %s) = %+v, want %+v", test.person, answer, want)
 		}
 	}

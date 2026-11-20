@@ -10,10 +10,10 @@ import (
 )
 
 // The membership answer (K3) is what the secrets broker reads to decide a project's secrets and a
-// token's list: one project's owner, visibility and repositories, and whether one person sees it,
-// one person's member kind, and every private project's Slack channels. It is plain data read
-// outside any transaction. Only a Kubernetes service account the deployment names in
-// DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before anything is read, a
+// token's list: one project's owner, visibility and Slack channels, and whether one person sees it,
+// one person's member kind, and every private project's Slack channels. It names no repositories. It
+// is plain data read outside any transaction. Only a Kubernetes service account the deployment names
+// in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before anything is read, a
 // caller with no credential, or one whose credential does not verify, is refused as every route
 // refuses it (401 NO_IDENTITY for none: optionalActor's error, writeAuthenticationError), and
 // every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED. A deployment that names
@@ -46,7 +46,7 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 }
 
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
-// to read the project alone (visible false, member_kind none).
+// to read the project alone (member_kind none, and visible whether the project is public).
 func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAccessAccount(w, r) {
 		return

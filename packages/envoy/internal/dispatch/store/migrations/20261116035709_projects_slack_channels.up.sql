@@ -1,8 +1,9 @@
 -- 20261116035709_projects_slack_channels.up.sql — the Slack channels a project's credentials may
 -- post to, named by its owner.
 --
--- INFRA-3862 R14: the secrets broker releases the Legion Slack bot token to a private project's
--- credentials only for the channels that project names, and for no channel where it names none.
+-- INFRA-3862 R14: the secrets broker reads the channels a private project names to release the
+-- Legion Slack bot token to that project's credentials only for those channels, and for no channel
+-- where it names none.
 -- The list is the project's own, so it is a column of `projects`, written by its owner alone
 -- (PATCH /api/v1/projects/{key}/access, `slack_channels`).
 --

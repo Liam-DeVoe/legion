@@ -15,7 +15,7 @@ const sessionProjectsFillBatch = 10_000
 // backfillSessionProjects runs `envoy-dispatch backfill-session-projects`: it records in
 // session_projects the (session, project) pair of every event written before the live insert
 // existed (fillSessionProjects), then writes the one session_projects_filled row. It runs after the
-// deploy whose events.Broker.AppendAll records each new event's pair, so every event is covered by
+// deploy whose events.Broker.QueueAppend records each new event's pair, so every event is covered by
 // the one or the other. It is safe to run again, and at any time: a pair a row holds already is
 // not written again. It exits 0 once it has read every event, and 1 when the database cannot be
 // opened or written.
@@ -40,7 +40,7 @@ type sessionProjectsFill struct {
 }
 
 // fillSessionProjects reads every event in id order, batch at a time, one statement and so one
-// transaction each, and records each pair the live insert (events.queueSessionProjects) records:
+// transaction each, and records each pair the live insert (events.queueSessionProject) records:
 // an event whose actor is a session (`kind` session and a non-empty `id`; a personal token's actor
 // has an empty one) on a project, which is the event's own project_key, else its issue's for an
 // issue's event, else its document's for a document's event. A person's event, and an event of no

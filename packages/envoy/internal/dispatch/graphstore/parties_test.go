@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -16,7 +17,7 @@ import (
 // space, so a party that held white space would become two parties in the column, and an empty
 // party would be none. PartiesValue is the one place that joins them, and it refuses such a party
 // with ErrBadParty. Every write that binds parties goes through it - a node write (Write,
-// WriteUncaused, the publisher's arms) and the backfill's fill (FillScopes) - so no row ever holds
+// QueueNodes, the publisher's arms) and the backfill's fill (FillScopes) - so no row ever holds
 // a party the writer did not mean, and nothing of the refused write reaches the store.
 //
 // The control of both tests is the refusal taken out of PartiesValue: the join then answers
@@ -27,8 +28,8 @@ import (
 var badParties = []string{"session:a b", "session:a\tb", "session:a\u00a0b", " session:a", ""}
 
 // TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the two callers that
-// bind nothing: BaseAttributeFacts and the publisher's arms, which build their statement without a
-// database.
+// bind nothing: QueueWrite, which queues its statements on a batch it has not sent, and the
+// publisher's arms, which build their statement without a database.
 func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
@@ -37,8 +38,9 @@ func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 			t.Errorf("PartiesValue of %q answered %q, %v, want ErrBadParty", party, value, err)
 		}
 		node := MessageNode("m-bad", "", []string{party}, who, at)
-		if _, err := BaseAttributeFacts([]Node{node}); !errors.Is(err, ErrBadParty) {
-			t.Errorf("BaseAttributeFacts of a node between %q answered %v, want ErrBadParty", party, err)
+		var batch store.WriteBatch
+		if err := QueueWrite(&batch, []Node{node}, nil); !errors.Is(err, ErrBadParty) {
+			t.Errorf("QueueWrite of a node between %q answered %v, want ErrBadParty", party, err)
 		}
 		if _, _, err := WriteArms(1, []Node{node}, nil, nil); !errors.Is(err, ErrBadParty) {
 			t.Errorf("WriteArms of a node between %q answered %v, want ErrBadParty", party, err)
@@ -59,9 +61,9 @@ func TestAWriteBetweenAPartyThatHoldsWhiteSpaceWritesNothing(t *testing.T) {
 	bad := MessageNode("44444444-4444-4444-8444-000000000001", "", []string{PartySession("a b")}, who, at)
 	for name, write := range map[string]func(pgx.Tx) error{
 		"Write": func(tx pgx.Tx) error { return Write(ctx, tx, []Node{bad}, nil) },
-		"WriteUncaused": func(tx pgx.Tx) error {
-			_, err := WriteUncaused(ctx, tx, []Node{bad}, nil)
-			return err
+		"QueueNodes": func(tx pgx.Tx) error {
+			write := PlanUncaused([]Node{bad}, nil)
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) })
 		},
 		"FillScopes": func(tx pgx.Tx) error {
 			_, err := FillScopes(ctx, tx, []Scope{{Kind: KindMessage, ID: bad.ID, Parties: bad.Parties}})

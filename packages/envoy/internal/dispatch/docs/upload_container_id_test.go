@@ -29,7 +29,7 @@ const containerListItems = 1980
 //
 // The upload is the function the upload route calls: api's uploadArtifactFor hands a document to
 // storeArtifact, which writes a new version of an existing document with Docs.ReplaceText, then
-// the version row (writeDocumentVersion), then Docs.IndexDocumentReferences, in one transaction
+// the version row (Ledger.QueueVersion), then Docs.IndexDocumentReferences, in one transaction
 // (uploadDocumentVersion). The test drains the block-index reconciliation after each version as
 // well, so the edit's blocks are read once indexed, whether the write indexed them or left them to
 // the reconciliation (deferBlockIndexBlocks).
@@ -182,7 +182,7 @@ func uploadDocumentVersion(t *testing.T, database *store.Store, service *Service
 		if err != nil {
 			return err
 		}
-		return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("upload a version of %s: %v", artifactID, err)
 	}

@@ -103,6 +103,7 @@ func TestEveryStoreWriteTakesOneLockOrder(t *testing.T) {
 	t.Run("the foreign key check takes no row lock", func(t *testing.T) {
 		requireTheForeignKeyTakesNoRowLock(t, ctx, fixture)
 	})
+	storetest.RequireNoMarkedCause(t, fixture.database, "every write the lock order test committed")
 }
 
 // --- the fixture ------------------------------------------------------------------------
@@ -346,10 +347,14 @@ func waitForTheHolderItWaitsOn(
 func requireEachStepIsWaitedAt(t *testing.T, ctx context.Context, f *lockOrderFixture) {
 	t.Helper()
 	const (
-		ownerMarker      = "from issues where key = $1"
-		eventMarker      = "from projects where key = $1"
-		nodeMarker       = "insert into graph_nodes"
-		tupleMarker      = "insert into graph_tuples"
+		ownerMarker = "from issues where key = $1"
+		eventMarker = "from projects where key = $1"
+		nodeMarker  = "insert into graph_nodes"
+		// A write that wrote nodes appends its tuples in one statement with the base attributes
+		// of the nodes it made or moved and their move onto the cause (queueAppend), whose
+		// common table expressions come before its insert into graph_tuples. pg_stat_activity
+		// keeps only the head of so long a statement, so the step is told by that head.
+		tupleMarker      = "with written as ("
 		projectionMarker = "update comments set node_kind"
 	)
 	for _, step := range []struct {
@@ -483,7 +488,7 @@ func holdTheTupleAppend(t *testing.T, ctx context.Context, holder pgx.Tx) {
 // storeWriters are the two ways a write reaches the store, each run on a connection of its own:
 // Write inside a transaction, as the comment path, the block index and the backfill run it, and
 // WriteArms spliced into one statement that is its own transaction, as outbox.recordBatch runs
-// it and as Authored and Reached run it inside theirs.
+// it and as QueueAuthored and QueueSessionRecorded queue it in statements of their own.
 var storeWriters = []struct {
 	name  string
 	write func(ctx context.Context, conn *pgxpool.Conn, nodes []Node, tuples []Tuple) error
@@ -645,14 +650,14 @@ const lockOrderFunction = "func (s *server) markInboxReadThreads("
 // before its owner would hold the fence while it waited for a writer that holds the owner and
 // waits for the fence.
 var storeLockOrderClauses = []string{
-	"the owner row comes first, through ownerrowlock (owner.go) or lockartifactowner (docs/service.go)",
+	"the owner's lock comes first, through store.lockowner (store/ownerlock.go) or lockartifactowner (docs/service.go)",
 	"a node's graph_nodes row is written before any projection row whose foreign key names it",
 	"the event is appended before the tuples whose cause it is",
 	"a graph_nodes write touching several nodes takes them in ascending (kind, id)",
 	"a writer under the revision fence",
-	"takes the document's owner row, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
+	"takes the document's owner lock, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
 	"appending a tuple locks no row of another table",
-	"takes no owner row at all",
+	"takes no owner lock at all",
 }
 
 // requireTheWrittenLockOrder reads the lock order off markInboxReadThreads' own doc comment and

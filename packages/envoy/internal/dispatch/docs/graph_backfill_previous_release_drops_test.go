@@ -129,7 +129,7 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 		replaceText(tree, "Inner of "+slug+", after dispatch://CORE-2.", "Inner of "+slug+".")
 		replaceText(tree, "Middle of "+slug+".", "Middle of "+slug+", after dispatch://CORE-2.")
 		return tree
-	}, dropped, added)
+	}, []blockLinkRow{dropped}, []blockLinkRow{added})
 	if after := holderOf(t, service, document, "dispatch://CORE-2"); after != middle {
 		t.Fatalf("the edit moved the mention to block %s, want the middle paragraph %s: the room minted new ids and this test proves nothing", after, middle)
 	}
@@ -214,10 +214,11 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 // indexAsThePreviousRelease writes the document's next version as the release before this one
 // writes and indexes it, with every write that release makes and none of the store: the edit
 // reaches the store through the room, the settlement writes the version and its artifact.version
-// event and clears the pending settlement, and that release's index pass then indexes the version
-// in the same transaction (indexVersionAsThePreviousRelease), dropping the link dropped and adding
-// the link added.
-func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, artifactID string, edit func(*pmdoc.Node) *pmdoc.Node, dropped, added blockLinkRow) {
+// event, whose seq it takes off the issue's own counter as that release's events.Append does, and
+// clears the pending settlement, and that release's index pass then indexes the version in the
+// same transaction (indexVersionAsThePreviousRelease), deleting each link of dropped and adding
+// each link of added.
+func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, artifactID string, edit func(*pmdoc.Node) *pmdoc.Node, dropped, added []blockLinkRow) {
 	t.Helper()
 	ctx := context.Background()
 	editLiveTree(t, service, artifactID, edit)
@@ -242,10 +243,11 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 	}
 	var eventID int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
+		select 'CORE-1', bumped.last_seq, 'artifact.version', '{"kind":"user","id":"alice"}',
 		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
+		from bumped
 		returning id
 	`, artifactID, version).Scan(&eventID); err != nil {
 		t.Fatalf("append the version's event: %v", err)
@@ -253,7 +255,7 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, artifactID); err != nil {
 		t.Fatalf("settle the version: %v", err)
 	}
-	indexVersionAsThePreviousRelease(t, tx, artifactID, version, versionAt, eventID, markdown, blocks, []blockLinkRow{dropped}, []blockLinkRow{added})
+	indexVersionAsThePreviousRelease(t, tx, artifactID, version, versionAt, eventID, markdown, blocks, dropped, added)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -46,13 +46,15 @@ const (
 	// testHookLockNamespace is the first key of every test-hook lock ("HOOK"), in the two-key form
 	// so it can never collide with the single-key locks internal/dispatch/docs takes, and apart
 	// from the other two-key namespaces of the server: the loop leases' (duty.leaseNamespace,
-	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), a conditional edit's
-	// admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the issue dependencies'
+	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the owner locks'
+	// (store.OwnerLockNamespace, "OWNR"), the owner lock gate's (store.OwnerLockGateNamespace,
+	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
+	// the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite), the
 	// rename graph's own (refuseRepoRenameChain), the Slack channels' (access's lockSlackChannels)
-	// and the delivery change log's (store migration 0100's delivery_change_log). The second key is
-	// the listening connection's backend pid, which no other live connection has, so two
+	// and the delivery change log's (store migration 0100's delivery_change_log, 6900). The second
+	// key is the listening connection's backend pid, which no other live connection has, so two
 	// processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
