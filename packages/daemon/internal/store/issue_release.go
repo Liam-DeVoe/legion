@@ -433,12 +433,14 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// workflow under a live tree, where the outbox's start fence declines nothing and a
 		// queued start row really is a start. The cause is the one a role stop reads for it.
 		//
-		// The one start passed over is a wake's own: a start that names no phase and waits for
-		// no slot (resumeStartRow), of a role in the mark's suspended set that has a wake recorded
-		// since the mark (workflow's wakeRow). That wake came after this release recorded the
-		// role (releaseOvertaken), and its start waits for this row (record's outboxInOrder), so
-		// it starts the role in the pod that comes back. A phase's start of the same role names
-		// its phase, and it still cancels the release.
+		// The one start passed over is a wake's own: a start that names no phase, waits for no
+		// slot and carries the wake's kind (wakeStartRow), of a role in the mark's suspended set
+		// that has a wake recorded since the mark (workflow's wakeRow). That wake came after this
+		// release recorded the role (releaseOvertaken), and its start waits for this row (record's
+		// outboxInOrder), so it starts the role in the pod that comes back. A phase's start of the
+		// same role names its phase, and it still cancels the release. So do a root architect's
+		// entry start and a production check's look of that role: they name no phase either, but
+		// they are work the pod was given, not a wake's start, and they carry no wake's kind.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
 		if err != nil {
 			return err
@@ -446,7 +448,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start'
-				and not (`+resumeStartRow+` and payload->>'role' = any(coalesce($3::text[], '{}'))
+				and not (`+wakeStartRow+` and payload->>'role' = any(coalesce($3::text[], '{}'))
 					and exists (select 1 from pod_resumes woken where woken.project = $4 and woken.issue = $1
 						and woken.id > $5 and woken.role = outbox.payload->>'role')))`,
 				release.Issue, mark.last, mark.suspended, project, mark.wake).Scan(&overtaken); err != nil {

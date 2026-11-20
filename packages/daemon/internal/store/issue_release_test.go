@@ -988,20 +988,46 @@ func stoppedByTheRelease(t *testing.T, st *Store, role claim.Role, row int64) {
 	}
 }
 
-// queueStart queues a `start` of the root's role above the release's rows, as a fact's
-// transaction does. With no phase it is a wake's own start (workflow's wakeRow), which names no
-// phase and carries the wake's task; with one it is a phase's start, which names that phase.
+// queueStart queues a phase's `start` of the root's role above the release's rows, as a fact's
+// transaction does: a start that names phase and carries the phase's task.
 func queueStart(t *testing.T, st *Store, role claim.Role, phase string) {
 	t.Helper()
-	payload := fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"task":"the wake's task"}`, rootIssue, role)
-	if phase != "" {
-		payload = fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"phase":%q,"task":"the phase's task"}`,
-			rootIssue, role, phase)
-	}
+	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"phase":%q,"task":"the phase's task"}`,
+		rootIssue, role, phase))
+}
+
+// queueWakeStart queues a wake's own `start` of the root's role above the release's rows, as the
+// workflow's wake queues it in a fact's transaction (workflow's wakeRow): a start that names no
+// phase, carries the wake's task and carries kind, the kind of the resume the wake took.
+func queueWakeStart(t *testing.T, st *Store, role claim.Role, kind string) {
+	t.Helper()
+	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"task":"the wake's task","wakeKind":%q}`,
+		rootIssue, role, kind))
+}
+
+// queueStartPayload queues payload, a `start` of the root's role, as a supervise row of the outbox.
+func queueStartPayload(t *testing.T, st *Store, role claim.Role, payload string) {
+	t.Helper()
 	if _, err := st.Pool().Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
 		values ('supervise', $1, $2, 0, now(), '', '')`, rootIssue, payload); err != nil {
 		t.Fatalf("queue a start of the %s: %v", role, err)
 	}
+}
+
+// queueSupervise queues req, a supervise request of the root issue, as the workflow's enqueue
+// writes it (record.NewOutboxRow), and answers the row's id.
+func queueSupervise(t *testing.T, st *Store, req record.SuperviseRequest) int64 {
+	t.Helper()
+	row, err := record.NewOutboxRow(rootIssue, req, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("encode the %s of %s's %s: %v", req.Op, rootIssue, req.Role, err)
+	}
+	var id int64
+	if err := st.Pool().QueryRow(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '') returning id`, string(row.Kind), rootIssue, string(row.Payload)).Scan(&id); err != nil {
+		t.Fatalf("queue the %s of %s's %s: %v", req.Op, rootIssue, req.Role, err)
+	}
+	return id
 }
 
 // R3 and R4 (dispatch://INFRA-3589, fix B): a wake takes only a released claim, so a wake of a
@@ -1042,7 +1068,7 @@ func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *test
 					pods.WakeAgentMessage, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 				}
-				queueStart(t, st, claim.RoleImplementer, "")
+				queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
 			}
 			if tc.phase {
 				queueStart(t, st, claim.RoleImplementer, "implementing")
@@ -1095,7 +1121,7 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 		pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 	}
-	queueStart(t, st, claim.RoleImplementer, "")
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 	if resumed := cancelled.Resumed; err != nil || len(resumed) != 1 || resumed[0] != claim.RoleImplementer {

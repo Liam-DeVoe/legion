@@ -297,9 +297,14 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // error, a routine wait of deliveryWakeInRelease (routineWaiting, wait.Until), whose text names
 // the release it waits for: the attempts stay at debug, and the text is not the wake pacing's.
 // Once the teardown has cleared the mark, the row's next attempt takes the wake against the
-// release the teardown recorded and resumes the role in the new pod. Once a cancel has cleared
-// it, the next attempt finds the claim live again, as the cancel resumed it, and publishes; a
-// claim the cancel did not resume is still released, and the attempt wakes it in the same pod.
+// release the teardown recorded and resumes the role in the new pod. A cancel clears the mark too,
+// but it resumes no claim itself. It queues a start for each claim it resumes
+// (store.Store.CancelIssueRelease), and the claim reads released until that start runs. An attempt
+// in that time takes the wake and resumes the role here, in the same pod, which the release never
+// took. The cancel's start then finds the claim no longer suspended, so it resumes nothing and
+// only delivers the task it carries, if any. An attempt after that start ran finds the claim live
+// and publishes. A claim the cancel did not resume is still released, and the attempt wakes it in
+// the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left

@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -430,7 +431,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	if err != nil || !found {
 		t.Fatalf("the reviewer's open resume = %t, %v; want the one its wake recorded", found, err)
 	}
-	queueStart(t, store, claim.RoleImplementer, "")
+	queueWakeStart(t, store, claim.RoleImplementer, pods.WakeChecks)
 	last := int64(pauseCount(t, store, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
 	markRelease(t, store, last, last, last, 0, claim.RoleImplementer, claim.RoleReviewer)
 	if _, err := store.Pool().Exec(ctx, `update issue_releases set wake_row = $2 where project = 'legion' and issue = $1`,
@@ -461,7 +462,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 		t.Fatalf("queue the held wake's start: %v", err)
 	}
 	queueStart(t, store, claim.RoleImplementer, "implementing")
-	queueStart(t, store, claim.RoleReviewer, "")
+	queueWakeStart(t, store, claim.RoleReviewer, pods.WakeChecks)
 	retell := func(kind, task string) string { return "the release's " + kind + " wake: " + task }
 
 	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
@@ -488,10 +489,10 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 		t.Fatalf("read the queued starts: %v", err)
 	}
 	want := []string{
-		"implementer||the wake's task||",
+		"implementer||the wake's task|" + pods.WakeChecks + "|",
 		"implementer||the release's " + pods.WakeChecks + " wake: " + paused + "|" + pods.WakeChecks + "|" + strconv.FormatInt(pause.ID, 10),
 		"implementer|implementing|the phase's task||",
-		"reviewer||the wake's task||",
+		"reviewer||the wake's task|" + pods.WakeChecks + "|",
 	}
 	if !slices.Equal(starts, want) {
 		t.Fatalf("queued starts after the record = %q, want %q: only the held wake's start is told again", starts, want)
@@ -504,5 +505,108 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	if resumed != 0 || seen != release || held != pause.ID {
 		t.Errorf("the held wake's resume = release %d, seen release %d, pause %d; want release 0, seen release %d, pause %d",
 			resumed, seen, held, release, pause.ID)
+	}
+}
+
+// A release's record and a project's resume at the same moment (the reviewer's read-ahead of
+// dispatch://INFRA-3589, finding 1). A wake that the pause holds was taken under the release's
+// mark, and its start carries the pause's words. The record writes the held wake's resume and
+// then retells its start (RecordPodRelease). The resume writes the starts the pause holds
+// (ResumeRequest.MarkHeld) and then the project's open resumes (SetProjectResumeClocksTx). Those
+// are the same two rows in the other order. Interleaved, each waits for a row the other wrote,
+// and Postgres aborts one of the two as a deadlock. An aborted record writes no release, and the
+// start keeps the pause's words. The record locks the pause's row after the mark and before it
+// writes anything, and the resume locks that row first, so one of the two waits for the other.
+//
+// A barrier holds each transaction inside its first lock. The record waits in its retell, which
+// runs after it wrote the resume. The resume waits in MarkHeld, which runs while it holds the
+// pause's row. Each waits until the other reaches its own barrier, or until a transaction waits
+// for a lock. Where both reach their barriers, the resume marks the start before the record
+// rewrites it, which is the order that deadlocks. Both must commit, and the start must end in the
+// release's words.
+func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, store)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	// A phase's start the pod was given before the mark, so the mark's rows have an id to name.
+	queueStart(t, store, claim.RoleImplementer, "implementing")
+	last := int64(pauseCount(t, store, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
+	markRelease(t, store, last, last, last, 0, claim.RoleImplementer)
+	pause, _ := pauseLegion(t, store, at.Add(-time.Minute))
+	records := podRecords(t, store)
+	inTx(t, store, func(tx pgx.Tx) error {
+		held, _, err := records.PauseOfWake(ctx, tx, rootIssue, releasedToken, 0)
+		if err != nil || held != pause.ID {
+			t.Fatalf("the pause of the implementer's wake = %d, %v; want pause %d", held, err, pause.ID)
+		}
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
+		}
+		return nil
+	})
+	const paused = "the pause's words for the settlement"
+	start := queueSupervise(t, store, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, Pause: pause.ID})
+
+	recordIn, resumeIn, resumeMarked := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var recordOnce, resumeOnce, markedOnce sync.Once
+	// meet holds a transaction at its barrier until arrived is closed, or until a transaction of
+	// this test's database waits for a lock that another holds.
+	meet := func(arrived <-chan struct{}, what string) {
+		if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
+			select {
+			case <-arrived:
+				return true
+			default:
+			}
+			var waiting bool
+			err := store.Pool().QueryRow(ctx, `select exists (select 1 from pg_stat_activity
+				where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0)`).Scan(&waiting)
+			return err == nil && waiting
+		}) {
+			t.Errorf("the barrier waited 20s for %s, and no transaction waited for a lock", what)
+		}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	recorded, resumed := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := store.RecordPodRelease(runCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+			Roles: []string{"implementer"}, At: at, WakeTask: func(kind, task string) string {
+				recordOnce.Do(func() { close(recordIn) })
+				meet(resumeIn, "the resume to hold the pause's row")
+				meet(resumeMarked, "the resume to mark the rows the pause holds")
+				return "the release's " + kind + " wake: " + task
+			}})
+		recorded <- err
+	}()
+	go func() {
+		_, err := store.Resume(runCtx, ResumeRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator}, At: time.Now().UTC(),
+			MarkHeld: func(ctx context.Context, tx pgx.Tx, held Pause) error {
+				resumeOnce.Do(func() { close(resumeIn) })
+				meet(recordIn, "the record to write the held wake's resume")
+				defer markedOnce.Do(func() { close(resumeMarked) })
+				_, err := record.NewStore().MarkPauseHeldRows(ctx, tx, "LEGION", held.ID, time.Now().UTC())
+				return err
+			}})
+		resumed <- err
+	}()
+	recordErr, resumeErr := <-recorded, <-resumed
+	if recordErr != nil || resumeErr != nil {
+		t.Fatalf("the release's record = %v and the project's resume = %v; want both committed: they write the held wake's resume and its start, and the pause's row orders them",
+			recordErr, resumeErr)
+	}
+
+	var task string
+	var releases int
+	if err := store.Pool().QueryRow(ctx, `select coalesce(payload->>'task', ''),
+		(select count(*) from pod_releases where project = 'legion' and issue = $2)::int from outbox where id = $1`,
+		start, rootIssue).Scan(&task, &releases); err != nil {
+		t.Fatalf("read the held wake's start: %v", err)
+	}
+	if want := "the release's " + pods.WakeChecks + " wake: " + paused; task != want || releases != 1 {
+		t.Errorf("the held wake's start says %q, and %d releases are recorded; want %q and the one release: the release took the pod",
+			task, releases, want)
 	}
 }

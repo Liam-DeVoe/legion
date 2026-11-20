@@ -261,7 +261,7 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 	openRunningTree(t, st)
 	servingReleasedClaim(t, st, claim.RoleArchitect)
 	servingReleasedClaim(t, st, claim.RoleImplementer)
-	queueStart(t, st, claim.RoleImplementer, "")
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
 	last := int64(pauseCount(t, st, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
 	markRelease(t, st, last, last, last, 0, claim.RoleArchitect, claim.RoleImplementer)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -272,9 +272,9 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 		}
 		return nil
 	})
-	queueStart(t, st, claim.RoleImplementer, "")
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
 	queueStart(t, st, claim.RoleImplementer, "implementing")
-	queueStart(t, st, claim.RoleArchitect, "")
+	queueWakeStart(t, st, claim.RoleArchitect, pods.WakeChecks)
 	retell := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
@@ -310,6 +310,59 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 	}
 	if held, open := heldOpenResume(t, st, claim.RoleImplementer); !open || held != pause.ID {
 		t.Fatalf("the implementer's open resume = pause %d, open %t; want the kept wake, held by pause %d", held, open, pause.ID)
+	}
+}
+
+// A cancel made while the project is paused keeps a wake that a role of the mark's set took since
+// the mark, as the launch the pause owes the role (decision 12 of dispatch://INFRA-3759). A wake
+// taken while the project still ran is no wake of the pause: no pause holds its resume, and the
+// resume names the newest release recorded before the wake, which is not the release the wake
+// waited for. The cancel makes it a held wake of the pause (the reviewer's read-ahead of
+// dispatch://INFRA-3589, finding 3): its resume names the pause and release 0, as the resume of a
+// wake taken while the project is paused does (decision 15, pod_resumes_held_wake_pairs_with_no_release).
+// So the release records count no return of a pod for a release that did not take it. The
+// resume keeps its kind and its seen release.
+func TestACancelWhileThePausedProjectHoldsAWakeTakenWhileTheProjectRan(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	earlier, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer"}, At: pausedAt.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("record the earlier release: %v", err)
+	}
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer)
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, pausedAt.Add(-time.Minute), 0); err != nil || !taken {
+		t.Fatalf("take the wake while the project runs = %t, %v; want it taken", taken, err)
+	}
+	resume := func() (release, pause, seen int64, kind string) {
+		t.Helper()
+		if err := st.Pool().QueryRow(ctx, `select release_id, coalesce(pause_id, 0), seen_release, kind from pod_resumes
+			where project = 'legion' and issue = $1 and role = 'implementer'`, rootIssue).Scan(&release, &pause, &seen, &kind); err != nil {
+			t.Fatalf("read the implementer's resume: %v", err)
+		}
+		return release, pause, seen, kind
+	}
+	if release, held, _, _ := resume(); release != earlier || held != 0 {
+		t.Fatalf("the wake taken while the project runs = release %d, pause %d; want release %d and no pause: the case's premise",
+			release, held, earlier)
+	}
+	pause, _ := pauseLegion(t, st, pausedAt)
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+	if err != nil || cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 {
+		t.Fatalf("cancel the release while paused = %+v, %v; want pause %d and no role resumed", cancelled, err, pause.ID)
+	}
+	if release, held, seen, kind := resume(); release != 0 || held != pause.ID || seen != earlier || kind != pods.WakeChecks {
+		t.Errorf("the kept wake's resume = release %d, pause %d, seen release %d, kind %s; want release 0, pause %d, seen release %d and kind %s: the cancel keeps it as the launch the pause owes",
+			release, held, seen, kind, pause.ID, earlier, pods.WakeChecks)
+	}
+	if records, err := st.PodReleaseRecords(ctx, "legion", pausedAt.Add(-3*time.Hour)); err != nil || len(records.Resumes) != 1 ||
+		records.Resumes[0].Release != 0 || records.Resumes[0].Pause != pause.ID {
+		t.Errorf("the release records = %+v, %v; want the kept wake's one resume, paired with no release and held by pause %d",
+			records, err, pause.ID)
 	}
 }
 

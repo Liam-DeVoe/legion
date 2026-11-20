@@ -146,8 +146,19 @@ type PodReleaseRecords struct {
 // start that the wake queued in the take's transaction. When this lock comes first, the take
 // waits until this transaction commits, and then reads this release. Without the lock, a take
 // still open when this transaction commits keeps the release before, and the update never reads
-// its resume. The record holds no other lock when it locks the mark, so it cannot deadlock with a
-// take; PodRecords.TakePodWake gives the whole lock order.
+// its resume.
+//
+// After the mark, and before it writes anything, the transaction locks the project's open pause
+// row `for share` (LockOpenPauseByTokenTx). A project's resume (Resume) locks that row `for
+// update`. It then writes the starts the pause holds (ResumeRequest.MarkHeld) and the project's
+// open resumes (SetProjectResumeClocksTx). This record writes a held wake's resume and then its
+// start, which is the other order. So the pause row makes the record and the resume run one after
+// the other. Without the lock, each could wait for a row the other wrote, and Postgres would abort
+// one of the two as a deadlock. An aborted record writes no release, and the held wake's start
+// keeps the pause's words. While the project runs there is no open pause, and this lock locks
+// nothing. The record holds no lock when it locks the mark, and only the mark when it locks the
+// pause row, so it cannot deadlock with a take, a cancel or a resume; PodRecords.TakePodWake
+// gives the whole lock order.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
@@ -157,6 +168,9 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 		if _, err := tx.Exec(ctx, `select 1 from issue_releases where project = $1 and issue = $2 for update`,
 			rel.Project, rel.Issue); err != nil {
 			return fmt.Errorf("lock the release mark: %w", err)
+		}
+		if _, _, err := LockOpenPauseByTokenTx(ctx, tx, rel.Project); err != nil {
+			return err
 		}
 		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
 			values ($1, $2, $3, $4, $5, $6) returning id`,
@@ -185,16 +199,17 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 // mark queued, for the release's record (RecordPodRelease). The wakes are the ones the record
 // points at itself: a resume of a role of the mark's suspended set above the mark's wake_row,
 // with no first turn and not closed. Their starts are the starts of that role above the mark's
-// last_row that have a wake's shape (resumeStartRow). retell answers the task a start carries
-// from now on, from the kind of the role's newest such resume and the task the start carries now
-// (PodRelease.WakeTask). A start of a role with no such resume is no such wake's, and keeps its
-// task. With no mark or a nil retell, it writes nothing.
+// last_row that have a wake's own shape (wakeStartRow). A root architect's entry start and a
+// production check's look are no wake's start, and keep their task. retell answers the task a
+// start carries from now on, from the kind of the role's newest such resume and the task the
+// start carries now (PodRelease.WakeTask). A start of a role with no such resume is no such
+// wake's, and keeps its task. With no mark or a nil retell, it writes nothing.
 func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, task string) string) error {
 	if retell == nil {
 		return nil
 	}
 	return retellStarts(ctx, tx, issue, retell, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind
-		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+resumeStartRow+`
+		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+wakeStartRow+`
 			and outbox.payload->>'role' = any(m.suspended)
 		join lateral (select r.kind from pod_resumes r where r.project = m.project and r.issue = m.issue
 			and r.id > m.wake_row and r.role = outbox.payload->>'role' and r.first_turn_at is null and r.closed_at is null

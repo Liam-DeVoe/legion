@@ -506,12 +506,13 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 	}
 
 	// The settlement's wake, as the workflow takes it (wakeReleased): the resume, and the start
-	// that carries the wake's task.
+	// that carries the wake's task and the wake's kind (workflow's wakeRow).
 	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
 	wake, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease)}, time.Now().UTC())
+		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
+		WakeKind: pods.WakeChecks}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("encode the wake's start: %v", err)
 	}
@@ -643,6 +644,80 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 	}
 	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || !open || held != pause {
 		t.Fatalf("the implementer's open resume = pause %d, open %t, %v; want the kept wake, held by pause %d", held, open, err, pause)
+	}
+}
+
+// A cancel after a CI settlement's wake, as in TestACancelAfterASettlementWakeTellsTheRoleTheSettlement,
+// with a production check's look of the implementer queued beside the wake's start (the reviewer's
+// read-ahead of dispatch://INFRA-3589, finding 2). The look names no phase and waits for no slot,
+// as the wake's start does, but it carries no wake's kind (record.SuperviseRequest.WakeKind): it
+// is work the pod was given, not a wake. So the cancel deletes the wake's resume and the wake's
+// start and keeps the look as it was queued. The cancel's own start tells the role the
+// settlement, and nothing of the look's task.
+func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the teardown back: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
+	}
+	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
+		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
+		WakeKind: pods.WakeChecks}, time.Now().UTC()))
+	const lookTask = "Production check of LEGION-208: the look the merge's deploy woke."
+	opened := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
+		Role: claim.RoleImplementer, Generation: 1, Task: lookTask, CheckLook: 1, CheckOpenedAt: opened}, time.Now().UTC()))
+
+	if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
+		t.Fatalf("move the issue's generation on: %v", err)
+	}
+	var teardown record.OutboxRow
+	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+		t.Fatalf("read the teardown row: %v", err)
+	}
+	if err := rig.runner.execute(ctx, teardown); err != nil {
+		t.Fatalf("run the teardown: %v", err)
+	}
+	if rig.marked(t) {
+		t.Fatal("the teardown left the release marked, want it cancelled")
+	}
+
+	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+		order by id`, rig.issue.Key)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []record.SuperviseRequest
+	for rows.Next() {
+		var payload []byte
+		var start record.SuperviseRequest
+		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, start)
+	}
+	rows.Close()
+	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
+		"Your session, your workspace and any work you had not pushed are as you left them. "
+	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
+	if len(starts) != 2 || starts[0].CheckLook != 1 || !starts[0].CheckOpenedAt.Equal(opened) || starts[0].Task != lookTask ||
+		starts[1].Role != claim.RoleImplementer || starts[1].CheckLook != 0 || starts[1].Task != cancelled+settled {
+		t.Fatalf("queued starts = %+v, want the check's look as it was queued and then the cancel's start of the implementer with the task %q: the look is no wake's start",
+			starts, cancelled+settled)
+	}
+	if records := rig.records(t); len(records.Resumes) != 0 {
+		t.Fatalf("resumes = %+v, want none: the release was cancelled, so no released pod came back", records.Resumes)
 	}
 }
 

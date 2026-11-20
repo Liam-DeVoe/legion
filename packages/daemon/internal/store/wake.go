@@ -670,13 +670,22 @@ func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what 
 }
 
 // resumeStartRow is the shape of an outbox `start` that names no phase and waits for no admission
-// slot, over the outer table `outbox`, unaliased. It is the shape of the row a wake queues
-// (workflow's wakeRow) and of the row a cancelled release queues for each claim it suspended
-// (CancelIssueRelease). Three reads share it: StartQueued, a release's teardown, which passes over
-// a wake's own start of a role the release recorded (IssueRelease), and a cancel, which deletes
-// that start (CancelIssueRelease).
+// slot, over the outer table `outbox`, unaliased. Four rows have that shape: the row a wake queues
+// (workflow's wakeRow), the row a cancelled release queues for each claim it suspended
+// (CancelIssueRelease), a root architect's entry start, and a production check's look.
+// StartQueued reads each of them.
 const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'
 	and coalesce(outbox.payload->>'phase', '') = '' and coalesce(outbox.payload->>'needsSlot', '') <> 'true'`
+
+// wakeStartRow is the shape of a wake's own start: a resumeStartRow that carries the wake's kind
+// (record.SuperviseRequest.WakeKind). Only a wake's start carries one (workflow's wakeRow and
+// PauseWakeRow). A root architect's entry start and a production check's look have the shape of
+// resumeStartRow and carry no kind: they are work the pod is given, not a wake. Four reads of the
+// wakes taken while a release stands read this shape. The teardown passes over a wake's own start
+// of a role the release recorded (IssueRelease). A cancel deletes that start
+// (dropWakesUnderRelease). The release's record and a paused cancel rewrite its task
+// (retellWakesUnderRelease, retellWakesUnderPause).
+const wakeStartRow = resumeStartRow + ` and coalesce(outbox.payload->>'wakeKind', '') <> ''`
 
 // StartQueued is whether the outbox holds a `start` of issue's role at generation that names no
 // phase and waits for no admission slot (resumeStartRow). Rows of that shape come from a cancelled
@@ -753,10 +762,11 @@ func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (boo
 // (releaseOvertaken), and its `start` waits for the teardown (record's outboxInOrder), so the role
 // starts once, in the pod that comes back. A cancel of the release for another cause deletes the
 // resume instead (CancelIssueRelease, dropWakesUnderRelease), unless the project is paused: then
-// the wake is the launch the pause owes the role. Only a workflow wake, or the owed launch of a
-// pause's stop (pods.WakePause), is taken so. The outbox's delivery wake resumes its claim in
-// process, with no `start` to wait for the teardown, so it takes nothing while any release mark of
-// the issue stands, whether or not that release recorded its role (Store.TakeDeliveryWake).
+// the wake is the launch the pause owes the role, and the cancel makes it a held wake of that
+// pause (holdWakesUnderPause). Only a workflow wake, or the owed launch of a pause's stop
+// (pods.WakePause), is taken so. The outbox's delivery wake resumes its claim in process, with no
+// `start` to wait for the teardown, so it takes nothing while any release mark of the issue
+// stands, whether or not that release recorded its role (Store.TakeDeliveryWake).
 //
 // The take, the record and the cancel run in different transactions, so the record or the cancel
 // can run while a take has not committed. Under READ COMMITTED a statement reads only what
@@ -778,17 +788,20 @@ func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (boo
 // it (PauseOfWake), which reads the newest release too (StoppingPauseTx). Each of the three locks
 // the mark `for share` before it reads, so the take's own lock is held already when the take runs.
 //
-// This lock order cannot deadlock. A wake locks the mark before the project's pause row
+// This lock order cannot deadlock. Each transaction that takes both the mark and the project's
+// pause row takes the mark first. A wake locks the mark before the project's pause row
 // (PauseOfWake's LockOpenPauseByTokenTx) and before it writes a resume. The stop transaction of a
 // project's pause (internal/daemon's projectPause.stopTx), whose owed launch is a take, locks the
 // mark first (LockReleaseMark), before the issue's pause lock (LockIssueForPause), the pause's row
 // and its writes. The workflow's take and the cancel both take the global fact serializer first
 // (treelifecycle.Serialize), then the mark. The cancel takes the issue's pause lock and the pause's
-// row after the mark, and before it deletes a resume. The record and the outbox's delivery take
-// hold no lock when they lock the mark. A project's resume (Resume) locks the pause's row `for
-// update` and never the mark, and a take or a cancel that waits for it has written no resume yet.
-// The teardown's delete of the mark (ClearIssueRelease) waits for a take's share lock, as every
-// delete of a locked row does.
+// row after the mark, and before it deletes a resume. The outbox's delivery take holds no lock
+// when it locks the mark. The record holds no lock when it locks the mark. It locks the pause's
+// row after the mark, and before it writes a resume or a start (Store.RecordPodRelease). A
+// project's resume (Resume) locks the pause's row `for update` and never the mark. It then writes
+// the starts the pause holds and the project's open resumes. A take, a cancel or a record that
+// waits for that row has written no resume and no start yet. The teardown's delete of the mark
+// (ClearIssueRelease) waits for a take's share lock, as every delete of a locked row does.
 //
 // Every wake runs through here — the four the workflow applies inside a fact's transaction, the
 // delivery wake the outbox takes in one of its own (Store.TakeDeliveryWake) and the stop
