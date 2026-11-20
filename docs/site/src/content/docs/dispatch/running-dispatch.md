@@ -538,11 +538,13 @@ before. It holds:
 - `permissions`: each permission the installation grants the App, with its access, as the
   installation list named them. It is `{}` when the list named none, and it is on the line of a
   reading that failed too.
-- `before_reset`, true when one of this installation's counters was read in its last minute
-  before a reset, including on a regular pass. Once a line of an installation is written in a
-  counter's last minute, the server takes no other reading for that reset, even when GitHub's next
-  answer names the reset a second later. If that line failed, the hour has no last-minute reading
-  of that counter: the server does not ask GitHub again until the reset.
+- `before_reset`, true when the line was written in the last minute before a reset of one of this
+  installation's counters, including on a regular pass. A reading that failed there is a
+  `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
+  an installation is written in a counter's last minute, the server takes no other reading for
+  that reset, even when GitHub's next answer names the reset a second later. If that line failed,
+  the hour has no last-minute reading of that counter: the server does not ask GitHub again until
+  the reset.
 - For the REST core counter and the GraphQL counter: `core_used`, `core_limit` and `core_reset`,
   and `graphql_used`, `graphql_limit` and `graphql_reset`, as GitHub answered them, with each reset
   in RFC 3339 UTC.

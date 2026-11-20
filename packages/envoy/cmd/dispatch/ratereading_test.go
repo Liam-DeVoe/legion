@@ -35,7 +35,9 @@ import (
 // calls with, and how GitHub fails its reading, if at all. coreReset and graphQLReset, where set,
 // are this installation's resets in place of the fake's. The repository listing's headers name
 // listingUsed as the core used count, and GET /rate_limit's body names rateLimitUsed for core,
-// each coreUsed where 0, so a reading that took core from the wrong answer shows.
+// each coreUsed where 0, so a reading that took core from the wrong answer shows. tokenLife, an
+// hour where 0, is how long a token GitHub mints for it lasts: one that lasts less than the
+// client's slack before expiry is minted again at every read.
 type rateInstallation struct {
 	id                         int64
 	owner, repository          string
@@ -44,6 +46,7 @@ type rateInstallation struct {
 	graphQLUsed, graphQLLimit  int
 	coreReset, graphQLReset    int64
 	listingUsed, rateLimitUsed int
+	tokenLife                  time.Duration
 	failure                    string
 }
 
@@ -154,7 +157,8 @@ func (g *rateReadingGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		token := fmt.Sprintf("ghs_example_%d_%d", id, g.minted)
 		g.tokens[token] = id
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		expires := time.Now().Add(cmpOr(installation.tokenLife, time.Hour)).UTC().Format(time.RFC3339)
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": expires})
 		return
 	}
 	id, minted := g.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
@@ -538,6 +542,49 @@ func TestAFailedTryInsideALastMinuteSchedulesNoPassAtOnce(t *testing.T) {
 			}
 			if clock.waits[1] != 10*time.Minute {
 				t.Errorf("after the failed try in the last minute the next pass was due %s later, want the interval, 10m0s", clock.waits[1])
+			}
+		})
+	}
+}
+
+// A reading that fails in a counter's last minute is a before_reset line carrying its error: that
+// minute was tried and read nothing, which a reader of a day's before_reset lines must see, where a
+// false says no reading was tried there. Where the failed reading read no counter, before_reset
+// comes from the installation's known resets: the core reset the first pass read 70 s out is 45 s
+// out at the before-reset pass, where GitHub refuses the token mint in one row (the first pass's
+// token lasts a minute, so the client mints again) and answers the workflows read with no core
+// counter in the other. An installation with no known reset whose reading fails says false
+// (installation 103 of TestRateReadingIsOneJSONLine).
+func TestAFailedReadingInALastMinuteIsABeforeResetErrorLine(t *testing.T) {
+	for failure, cause := range map[string]string{
+		mintRefused:   "mint a token of installation 101",
+		noCoreCounter: "read the core counter",
+	} {
+		t.Run(failure, func(t *testing.T) {
+			start := time.Now().Truncate(time.Second)
+			github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
+				rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000, tokenLife: time.Minute})
+			clock := &steppedClock{at: start, passes: 2, between: func(pass int) {
+				if pass == 1 {
+					github.change(failing(101, failure))
+				}
+			}}
+			var written logtest.Buffer
+			lines := readPasses(t, rateReadingClient(t, base), &written, clock)
+			if want := 70*time.Second - githubrate.BeforeReset; clock.waits[0] != want {
+				t.Fatalf("the before-reset pass was due %s after the first, want %s", clock.waits[0], want)
+			}
+			if len(lines) != 2 {
+				t.Fatalf("the passes logged %d lines, want one each:\n%s", len(lines), written.String())
+			}
+			if lines[0]["before_reset"] != false || lines[0]["error"] != nil {
+				t.Fatalf("the first pass's line is %v, want a reading 70 s before the reset, not before_reset", lines[0])
+			}
+			if text, _ := lines[1]["error"].(string); !strings.Contains(text, cause) {
+				t.Errorf("the before-reset pass's error is %q, want it to name %q", text, cause)
+			}
+			if lines[1]["before_reset"] != true {
+				t.Errorf("the failed reading 45 s before the installation's known core reset says before_reset %v, want true: %v", lines[1]["before_reset"], lines[1])
 			}
 		})
 	}

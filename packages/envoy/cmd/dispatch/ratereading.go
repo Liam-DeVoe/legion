@@ -31,9 +31,10 @@ const rateReadingCaller = "rate_reading"
 // yet tried in their last minute: a pass that ends inside a counter's last minute it read the
 // installation outside of is followed by one at once, and a reset the reading tried in its last
 // minute asks for nothing more, whatever its header drifts to. A pass that fails to read a counter
-// keeps the reset read before it. Each installation's line says before_reset when that
-// installation was read in a counter's last minute, whether the pass was regular or scheduled
-// before a reset. It runs until ctx ends.
+// keeps the reset read before it. Each installation's line says before_reset when it was written in
+// the last minute before one of that installation's known resets, whether the pass was regular or
+// scheduled before a reset, and whether the reading succeeded or failed: a failed reading there is
+// a before_reset line carrying its error. It runs until ctx ends.
 //
 // log is a JSON logger of its own (main's slog.NewJSONHandler on stderr), not the process's text
 // logger, so that the line is one JSON object a log store reads field by field.
@@ -217,14 +218,18 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		if ctx.Err() != nil {
 			return nil
 		}
+		// The known resets take this reading's: each counter it read replaces its reset, and one
+		// it did not read keeps the reset read before. The line says before_reset when the
+		// reading was taken in the last minute before one of them, so a failed reading in a last
+		// minute is a before_reset line carrying its error: that minute was tried and read nothing.
 		at := r.clock.now()
-		reading.BeforeReset = githubrate.InLastMinute(at, reading.Core.Reset, reading.GraphQL.Reset)
-		if err != nil {
-			reading.Error = err.Error()
-		}
 		resets := r.resets[installation.ID]
 		resets.core.observe(reading.Core.Reset, at)
 		resets.graphql.observe(reading.GraphQL.Reset, at)
+		reading.BeforeReset = githubrate.InLastMinute(at, resets.core.at, resets.graphql.at)
+		if err != nil {
+			reading.Error = err.Error()
+		}
 		githubrate.Write(r.log, reading)
 		known[installation.ID] = resets
 		if repository, ok := r.repositories[installation.ID]; ok {
