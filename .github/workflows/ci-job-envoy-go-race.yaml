@@ -38,7 +38,8 @@ jobs:
     # (internal/broker/natscallout) add two test binaries to that compile and two packages,
     # natscallout and natsgrant, since the rest of their race build (`go list -deps -test -race`)
     # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
-    # where cmd/listener took 785 s here (run 43875539224), so the sum stands.
+    # where cmd/listener took 913 s here (run 44671344972), its static check of the contexts made
+    # under a lock (TestNoContextMadeUnderALockIsFresh, about 40 s) among it, so the sum stands.
     timeout-minutes: 45
     services:
       postgres:

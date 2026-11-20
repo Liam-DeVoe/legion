@@ -227,8 +227,8 @@ func (r *roleActRig) keep(t *testing.T, role, key string) contracts.Envelope {
 }
 
 // walk reads role's kept lane head and walks it once for holder (walkKeptRole), as a handover's
-// pass that resolved holder does, and settles what the walk owes, as the handover does once it has
-// given the role's guard back: the drain hold is read before each copy of that walk.
+// pass that resolved holder does, and settles what the walk owes, as the handover's caller does
+// once it has given the role's guard back: the drain hold is read before each copy of that walk.
 func (r *roleActRig) walk(t *testing.T, role, holder string) (roleKeepDrainResult, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -237,9 +237,9 @@ func (r *roleActRig) walk(t *testing.T, role, holder string) (roleKeepDrainResul
 	if err != nil || !head.left {
 		t.Fatalf("read role %s's kept lane head: %+v, %v; want a copy left on it", role, head, err)
 	}
-	var owed keptRoleOwed
-	result, err := walkKeptRole(ctx, r.cfg, role, holder, liveRoleActEntry, head, time.Now, &owed)
-	owed.settle(ctx, r.cfg)
+	owed := newKeptRoleOwed(ctx)
+	result, err := walkKeptRole(ctx, r.cfg, role, holder, liveRoleActEntry, head, time.Now, owed)
+	owed.settle(r.cfg)
 	return result, err
 }
 

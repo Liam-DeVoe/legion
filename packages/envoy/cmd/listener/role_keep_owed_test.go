@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -20,9 +21,9 @@ import (
 // and the exception goes out though the probe of the main client reads a false "down" for every
 // read the exception's own publish makes - a read a loaded box keeps waiting past the probe's
 // budget, made here by the seam, keyed to the publish's own frames (publishDeliveryException).
-// The handover runs the copy's report once it has given the role's guard back, under its own
-// context, which no guard marks (keptRoleOwed), so the publish waits for a connection that is down
-// within its own bound and never asks the probe.
+// The handover's reporter runs the copy's report off the role's guard, under the context of the
+// handover's caller, which no guard marks (keptRoleOwed), so the publish waits for a connection
+// that is down within its own bound and never asks the probe.
 //
 // The control is the report run under the walk's context, marked as made under the role's guard,
 // as at 820ab98fa6: the publish asks the probe, reads the false "down" as the connection lost,
@@ -169,6 +170,89 @@ func TestAKeptForwardsConfirmWhoseReadBackTheLossCutIsSettledAndReportedOnce(t *
 	}
 	if !cfg.dedupeCache.Seen(item.DedupeKey, holder) {
 		t.Fatalf("the dedupe cache holds no record of %s for %s", item.DedupeKey, holder)
+	}
+}
+
+// The reports a handover owes run as they are owed, on the handover's reporter, so what it holds
+// does not grow with the copies its walks end: each of a hundred reports runs before the next is
+// owed, and the queue is empty each time one has run. The wait for each is bounded only by the
+// test's deadline.
+//
+// The control is owe with no reporter started, as the handover at 7eb4320b67 held its reports until
+// it ended: the first report never runs, and the row fails at its wait for it.
+func TestAHandoversReportsRunAsTheyAreOwedAndQueueNothing(t *testing.T) {
+	owed := newKeptRoleOwed(t.Context())
+	queued := func() int {
+		owed.mu.Lock()
+		defer owed.mu.Unlock()
+		return len(owed.queue)
+	}
+	for i := range 100 {
+		ran := make(chan struct{})
+		owed.owe(func(context.Context) { close(ran) })
+		select {
+		case <-ran:
+		case <-time.After(testnats.Remaining(t)):
+			t.Fatalf("report %d had not run by the test's deadline, with %d reports queued", i, queued())
+		}
+		owed.settle(listenerDeliveryHandlerConfig{})
+		if n := queued(); n != 0 {
+			t.Fatalf("after report %d ran, %d reports are still queued", i, n)
+		}
+	}
+}
+
+// A confirm whose answer was lost and whose read-back did not answer is settled by its own token
+// (bus.KeptRoleCursor.Confirm). When its write did not land, the cursor written after the walk's
+// claim can be another walk's {kept} of the same copy - a forward repeat this listener's attempt
+// record ends with no claim (keptCopyEnd), once the claim is no longer outstanding - whose kept and
+// claim are the confirm's own: the settle does not take it for the confirm, so the copy's forward is
+// not reported beside that walk's report of it, and the copy counts once. A confirm that did land is
+// settled as landed, and reported.
+//
+// The control is the settle at 7eb4320b67, which compared the cursor's kept and claim alone: it
+// takes the other walk's {kept} for its confirm, and the row fails at its count of the first
+// settle's reports.
+func TestAnUnsettledConfirmIsNotTakenForAnotherWalksWriteAfterItsClaim(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	cfg := harness.config
+	const role = "kept-unsettled-token"
+	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
+	defer cancel()
+	lane := &roleKeepLaneCursor{cfg: cfg, role: role, subject: bus.KeptRoleCursorSubject(role)}
+	settle := func(claim uint64, confirm bus.KeptRoleCursor) int32 {
+		t.Helper()
+		var reported atomic.Int32
+		owed := newKeptRoleOwed(ctx)
+		owed.unsettled = append(owed.unsettled, unsettledCursorWrite{role: role, claim: claim, cursor: confirm,
+			report: func(context.Context) { reported.Add(1) }})
+		owed.settle(cfg)
+		return reported.Load()
+	}
+
+	// The walk's claim of copy 9, whose confirm did not land; another walk then ended copy 9.
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: 8, Claiming: 9}); err != nil {
+		t.Fatalf("write the walk's claim: %v", err)
+	}
+	claim := lane.seq
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: 9}); err != nil {
+		t.Fatalf("write the other walk's end of the copy: %v", err)
+	}
+	if n := settle(claim, bus.KeptRoleCursor{Kept: 9, Confirm: id.New()}); n != 0 {
+		t.Fatalf("the settle reported a confirm that did not land %d times, taking the other walk's write after its claim for its own", n)
+	}
+
+	// The walk's claim of copy 10, whose confirm landed.
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: 9, Claiming: 10}); err != nil {
+		t.Fatalf("write the walk's second claim: %v", err)
+	}
+	claim = lane.seq
+	confirm := bus.KeptRoleCursor{Kept: 10, Confirm: id.New()}
+	if err := lane.write(ctx, confirm); err != nil {
+		t.Fatalf("write the walk's confirm: %v", err)
+	}
+	if n := settle(claim, confirm); n != 1 {
+		t.Fatalf("the settle reported a confirm that landed %d times, want once", n)
 	}
 }
 

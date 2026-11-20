@@ -52,7 +52,13 @@ body: |-
   present a new token, answers the loss even when its answer is read once the connection is back,
   rather than nats.go's `connection closed`. A start that waits for a stream's leader or copies and
   loses its connection waits for the reconnect and then reads the stream again, as its other
-  requests do, and a read the loss cut off leaves the start's read limit as it was.
+  requests do, and a read the loss cut off leaves the start's read limit as it was. A kept role
+  message's handover reports each copy it ends without a forward - a refusal's `delivery_failed`
+  exception, a dead letter's line and count, an expiry's count - as soon as the copy's cursor write
+  lands, off the role's guard, so a slow read of the connection or a drop no longer drops the
+  exception; a confirm it could not read back is settled once the guard is given back, by a token
+  of its own, and reported once. The listener's stop ends the handovers it started and waits for
+  them, within its existing stop budget, before it drains NATS.
 time: 2026-11-17T05:19:00Z
 custom:
     Issue: pr4278

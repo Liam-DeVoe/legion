@@ -320,8 +320,8 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // stream keeps one copy however many listeners raise it for that message, each from its own
 // durable, a lane only a newer build's subjects capture among them.
 //
-// ctx is its caller's: a delivery handler's own (listenerDeliveryHandler), or the handover's own
-// once it has given the role's keep guard back (keptRoleOwed). Neither holds a lock across the
+// ctx is its caller's: a delivery handler's own (listenerDeliveryHandler), or the handover's own,
+// on the reporter that runs its reports off the role's keep guard (keptRoleOwed). Neither holds a lock across the
 // publish, so a connection that is down is waited for within the publish's own bound. It carries
 // the original payload whatever its size.
 func publishDeliveryException(ctx context.Context, client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
@@ -404,10 +404,13 @@ type deliveryOutcome struct {
 // shares — metrics, duration, logging, exception publication, and
 // attempt/dedupe cache updates — and reports whether the attempt should be
 // retried (NAKed). ctx is the context the exception is published under
-// (publishDeliveryException): no caller holds a lock across it, so a publish
-// waits for a connection that is down within its own bound. The kept lane's
-// walk, which holds the role's keep guard, runs its reports only once it has
-// given the guard back (keptRoleOwed).
+// (publishDeliveryException). No outcome that publishes is applied under a
+// lock, so a publish waits for a connection that is down within its own bound:
+// the kept lane's walk, which holds the role's keep guard, owes the report of
+// each copy it ends without a forward to a reporter of the handover's own, which
+// runs it off the guard (keptRoleOwed), and the one outcome it applies under the
+// guard is a forward the stream acknowledged, which publishes nothing
+// (finishRoleForward).
 func applyDeliveryOutcome(ctx context.Context, cfg listenerDeliveryHandlerConfig, item contracts.Envelope, outcome deliveryOutcome) bool {
 	if outcome.recordAttempt {
 		cfg.attemptCache.Record(item.DedupeKey, outcome.sessionID)

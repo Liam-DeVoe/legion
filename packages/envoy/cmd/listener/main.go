@@ -1584,6 +1584,7 @@ func main() {
 		caches:    caches,
 		known:     known,
 		stopWakes: stopWakeReports,
+		handovers: deliveryConfig.roleKeepDrains,
 	}
 
 	// From here a SIGTERM or SIGINT is an ordered shutdown: /v1 serves from the next step, and the
@@ -1887,6 +1888,10 @@ type listenerParts struct {
 	// stopWakes ends the wake reports still retrying (wakeReporter), nil on a shutdown reached
 	// before the reporter was built.
 	stopWakes func()
+	// handovers counts the handovers of the roles' kept lanes the listener started
+	// (roleKeepGuards.start), which the stop ends and waits for; nil on a shutdown reached before
+	// the delivery configuration was built.
+	handovers *roleKeepGuards
 }
 
 // The listener's stop budget: the deadlines shutdownListener spends after SIGTERM, one after
@@ -1894,12 +1899,13 @@ type listenerParts struct {
 // has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
 // TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
-	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
+	// stopHTTPGrace bounds the first part of the stop: seven waits run under the one context it
 	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
 	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
-	// running (loops.monitorDone) and the wait for each KV bucket pass still running
-	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
-	// node, so whoever sizes this number reads them too.
+	// running (loops.monitorDone), the wait for each KV bucket pass still running
+	// (loops.kvLoopsDone) and the wait for the roles' handovers still running, each with what it
+	// owes reported (roleKeepGuards.await). The last three are the ones that most plausibly spend
+	// it on a loaded node, so whoever sizes this number reads them too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -1937,6 +1943,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 	if parts.stopWakes != nil {
 		parts.stopWakes()
+	}
+	// The roles' handovers end here too, so each has its walk ended and its reports run before
+	// the wait for them below.
+	if parts.handovers != nil {
+		parts.handovers.end()
 	}
 
 	// Ordered shutdown:
@@ -1982,6 +1993,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 		case <-shutdownCtx.Done():
 			logger.Warn("a KV bucket pass still running at shutdown")
 		}
+	}
+	// The handovers of the roles' kept lanes publish their reports through the main client, so the
+	// stop waits for them, within what is left of the same budget, before it drains that client: a
+	// report not run by then is one of a copy whose cursor write has moved the lane past it.
+	if parts.handovers != nil && !parts.handovers.await(shutdownCtx) {
+		logger.Warn("role handovers still running at shutdown")
 	}
 	// The role lane drains before the main client: a delivery still in its handler, and each role
 	// forward, publishes through the main client and reads the caches stopped below. Core NATS

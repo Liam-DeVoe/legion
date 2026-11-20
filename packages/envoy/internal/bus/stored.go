@@ -131,6 +131,14 @@ type KeptRoleCursor struct {
 	// it reads only Kept and Claiming; an earlier listener's struct has no such field, and
 	// encoding/json drops it when that listener decodes the body.
 	DeadLetter string `json:"dead_letter,omitempty"`
+	// Confirm is a token of the write's own on a walk's confirm, the last write of a copy it
+	// claimed (cmd/listener/role_keep.go: roleKeepLaneCursor.confirm), empty on every other write.
+	// A walk that could not read its confirm back reads the first cursor written after its claim
+	// and takes the confirm as landed only when that cursor carries this token: another walk's
+	// write after the same claim can carry the same Kept and Claiming, and never the token. Like
+	// DeadLetter it is left out of the body when empty, Dispatch's outbox does not read it, and an
+	// earlier listener drops it when it decodes the body.
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a

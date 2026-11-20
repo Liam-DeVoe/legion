@@ -94,6 +94,8 @@ var heldFreshContexts = map[string]heldFresh{
 		"the life of the pull's connection, read to tell whether it ended; no request is made under it"},
 	"(*github.com/sjawhar/envoy/internal/bus.PendingForward).Wait -> the field github.com/sjawhar/envoy/internal/bus.PendingForward.ctx": {2,
 		"the forward's own context, which StartRequestStoredTo builds from its caller's (context.WithoutCancel, which keeps the caller's mark) and its own timeout; the forward row reads that at run time"},
+	"(*github.com/sjawhar/envoy/cmd/listener.keptRoleOwed).settle -> the field github.com/sjawhar/envoy/cmd/listener.keptRoleOwed.ctx": {1,
+		"the handover caller's own context with its cancellation taken off (newKeptRoleOwed), which no guard marks: settle reads its writes back with the guard given back (drainKeptRole, handOverSweptLane), and the settled-confirm row reads that at run time"},
 }
 
 // A context a function makes from context.Background() or context.TODO() while its caller holds a
@@ -106,7 +108,10 @@ var heldFreshContexts = map[string]heldFresh{
 // a package variable or a struct field is one too: it was made outside the walk, where no call the
 // walk reads made it, so each such read is named as a call of context.Background is, by what it
 // reads. A goroutine a walked function starts, a closure made only to be started among them, runs
-// outside the lock and is not walked.
+// outside the lock and is not walked. One shape it does not see: a context a closure captures as a
+// free variable from a function the walk does not reach, which is made outside the walk as a
+// stored one is; envoy's code holds no such closure (the deep review of round 11 searched for one,
+// and for contexts kept in maps, slices and channels, and found none).
 //
 // The walk is variable type analysis over the program (golang.org/x/tools/go/callgraph/vta), with
 // the launcher walk's rules for callbacks (childstarts_test.go): a call the standard library makes
@@ -164,8 +169,8 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			"var plantedContext = context.Background()\n\nfunc walkKeptRole(")
 		// A goroutine the sweep's handover starts runs outside the guard, so a fresh context in it
 		// is no context made under the lock, and the check must not name it.
-		plantContext(t, overlay, "role_keep_sweep.go", "\tvar owed keptRoleOwed\n",
-			"\tgo func() { _ = context.TODO() }()\n\tvar owed keptRoleOwed\n")
+		plantContext(t, overlay, "role_keep_sweep.go", "\towed := newKeptRoleOwed(handoverCtx)\n",
+			"\tgo func() { _ = context.TODO() }()\n\towed := newKeptRoleOwed(handoverCtx)\n")
 		found := freshContextsUnderLocks(t, overlay)
 		for _, want := range []struct{ what, caller string }{
 			{"the registration repair's record read, a plain call under the delete's lock", "(*" + listenerPackage + ".sessionDelivery).registeredTarget"},

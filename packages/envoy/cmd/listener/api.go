@@ -1948,7 +1948,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				held, _ := d.registry.RolesHeldBy(body.SessionID)
 				for _, role := range held {
 					if !landed || role != body.Role {
-						go runKeptRoleDrain(*d.delivery, role)
+						startKeptRoleDrain(*d.delivery, role)
 					}
 				}
 			}()
@@ -2151,7 +2151,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			go runKeptRoleDrain(*d.delivery, body.Role)
+			startKeptRoleDrain(*d.delivery, body.Role)
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}
@@ -3066,7 +3066,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (registeredSession.returning).
 		if registered.returning {
 			for _, role := range renewal.Set {
-				go runKeptRoleDrain(*d.delivery, role)
+				startKeptRoleDrain(*d.delivery, role)
 			}
 		}
 		// The session is known for the next 30 days, with the topics just stored, which are the

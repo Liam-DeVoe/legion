@@ -114,13 +114,15 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 			slog.String("role", role),
 			slog.Uint64("kept", head.cursor.Kept),
 			slog.Uint64("last", head.last))
-		go func() {
+		// The handover runs on a goroutine of its own, counted for the shutdown
+		// (roleKeepGuards.start), under the sweep's own context, which the shutdown ends first.
+		cfg.roleKeepDrains.start(func(context.Context) {
 			from := handOverSweptLane(ctx, cfg, role, release)
 			if from != 0 {
 				raiseKeptRoleWake(ctx, cfg, role, from)
 			}
 			<-slots
-		}()
+		})
 	}
 }
 
@@ -192,12 +194,12 @@ func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role 
 func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, release func()) uint64 {
 	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
-	var owed keptRoleOwed
+	owed := newKeptRoleOwed(handoverCtx)
 	for {
-		handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now, &owed)
+		handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now, owed)
 		release()
 		again := errors.Is(err, bus.ErrConnectionLost) && bus.Reconnected(handoverCtx, err)
-		owed.settle(handoverCtx, cfg)
+		owed.settle(cfg)
 		if again {
 			var taken bool
 			if release, taken = cfg.roleKeepDrains.tryHold(role); taken {
