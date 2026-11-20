@@ -2667,6 +2667,18 @@ check "fails" "$(is "$status" 1)"
 check "reads the comments as no fetch" \
   "$(contains "$out" 'job fetch-suite saves Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line before it, so it fills nothing its readers fetch')"
 
+# An actions/cache/save saves what the steps before it left: a fetch after it fills nothing.
+echo "case: a Go fill whose fetch runs after its save"
+root=$(fixture fetch-fills-after-save)
+fetch_tree "$root"
+fill_step=$'      - name: Fetch what the suite\'s readers fetch\n        if: steps.go-fetch-suite.outputs.cache-hit != \'true\'\n        run: |\n'"$fill_lines"
+save_step=$'      - if: steps.go-fetch-suite.outputs.cache-hit != \'true\'\n        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ~/go/pkg/mod\n          key: '"$suite_key"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_step"$'\n'"$save_step" "$save_step"$'\n'"$fill_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and the fill job that saves before it fetches" \
+  "$(contains "$out" 'job fetch-suite saves Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line before it, so it fills nothing its readers fetch')"
+
 # A deps or tools line takes its arguments on the line, in no file a key hashes (rule 23), so a
 # change to them would change no key.
 echo "case: a reader running a go-fetch.sh deps line after its restore"
