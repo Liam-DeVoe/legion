@@ -1691,49 +1691,59 @@
       ],
       "held": [
         {
-          "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+          "function": "github.com/sjawhar/envoy/internal/redact.newLibraryError",
           "field": "github.com/sjawhar/envoy/internal/redact.LibraryError.err",
-          "why": "the library's error itself, kept for errors.Is and errors.As alone: LibraryError has no Unwrap, its Error is the rule's reading, and fmt prints a *error as an address under every verb (print-redact.LibraryError)"
+          "why": "the library error itself, kept for errors.Is and errors.As alone: LibraryError has no Unwrap, its Error is the rule's reading, and fmt prints a *error as an address under every verb (print-redact.LibraryError)"
+        },
+        {
+          "function": "(*github.com/sjawhar/envoy/internal/redact.scope).add",
+          "field": "github.com/sjawhar/envoy/internal/redact.scope.records",
+          "why": "the records a CallScope keeps while its one library call runs, whose request values are read only by Tokens and print nowhere"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.newRecord",
+          "field": "[]*net/http.Request element 0",
+          "why": "a request whose credentials the answer record reads only through requestTokens and Tokens, and which prints nowhere"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.answerRecord",
+          "field": "[]*net/http.Request element 0",
+          "why": "a request whose credentials the answer record reads only through requestTokens and Tokens, and which prints nowhere"
+        },
+        {
+          "function": "(*github.com/sjawhar/envoy/internal/redact.record).add",
+          "field": "github.com/sjawhar/envoy/internal/redact.record.requests",
+          "why": "another request of the same answer, kept only to read its credentials through requestTokens and Tokens"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.answerOf",
+          "field": "net/url.Error.URL",
+          "why": "a redirect URL, kept as ruled with every request credential redacted, or empty when no record covers the error"
+        },
+        {
+          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+          "field": "github.com/sjawhar/envoy/internal/redact.hopError.err",
+          "why": "the failed hop's error, held only for its class and errors.Is/As; hopError prints it only through the boundary"
+        },
+        {
+          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+          "field": "net/http.Response.Request",
+          "why": "the answer's request carrying its opaque record context, which response readers use only through Carried and the boundary uses only through answerRecord"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.refusalClient",
+          "field": "github.com/sjawhar/envoy/internal/redact.refusalTransport.base",
+          "why": "the transport or scope the RefusalClient closes over, neither of which is remote text and each of which only records requests for Tokens"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.refusalClient",
+          "field": "github.com/sjawhar/envoy/internal/redact.refusalTransport.bound",
+          "why": "the transport or scope the RefusalClient closes over, neither of which is remote text and each of which only records requests for Tokens"
         },
         {
           "function": "github.com/sjawhar/envoy/internal/redact.TokenSource",
           "field": "github.com/sjawhar/envoy/internal/redact.BoundTokenSource.source",
           "why": "the token source the boundary wraps, which holds no answer: its Token answers only through OAuth2 (BoundTokenSource.Token)"
-        },
-        {
-          "function": "github.com/sjawhar/envoy/internal/redact.RefusalClient",
-          "field": "github.com/sjawhar/envoy/internal/redact.refusalTransport.base",
-          "why": "the transport the caller's client sends through, which holds no answer: RoundTrip redacts each answer it gives"
-        },
-        {
-          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-          "field": "net/http.Response.Body",
-          "why": "the refused answer's body handed back to the library that asked for it, the same bytes as they came: the library prints it only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
-        },
-        {
-          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-          "field": "github.com/sjawhar/envoy/internal/redact.readCloser.Reader",
-          "why": "the refused answer's body as it came, the bytes read first and the rest after, which the library reads in place of the body it would have: it prints them only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
-        },
-        {
-          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-          "field": "github.com/sjawhar/envoy/internal/redact.readCloser.Closer",
-          "why": "the refused answer's body as it came, the bytes read first and the rest after, which the library reads in place of the body it would have: it prints them only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
-        },
-        {
-          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-          "field": "github.com/sjawhar/envoy/internal/redact.refusal.quote",
-          "why": "the start of a refused answer's body, kept only to tell whether an error quotes it (refusals.quotedBy, strings.Contains), which prints nothing"
-        },
-        {
-          "function": "(*github.com/sjawhar/envoy/internal/redact.refusals).record",
-          "field": "github.com/sjawhar/envoy/internal/redact.refusals.kept",
-          "why": "the refusals kept for quotedBy, which answers only a refusal's request credentials, to redact them (Tokens), and prints nothing"
-        },
-        {
-          "function": "(*github.com/sjawhar/envoy/internal/redact.refusals).join",
-          "field": "github.com/sjawhar/envoy/internal/redact.refusal.tokens",
-          "why": "the credentials an outer RefusalClient's request carried, added to the one refusal of the answer, kept only to redact them (Tokens), and printed nowhere"
         },
         {
           "function": "github.com/sjawhar/envoy/internal/redact.escapedAndNot",
