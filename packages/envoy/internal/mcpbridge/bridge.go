@@ -68,15 +68,20 @@ func (b *Bridge) startServer(s, replaced Server) error {
 }
 
 // Stop stops every server the bridge has registered, one still starting included, and ends its
-// starts and restarts. A second Stop stops them again, which ends nothing more.
+// starts and restarts. The servers are stopped at the same time, so the whole stop takes as long
+// as its slowest server's, at most StopGrace however many there are, rather than StopGrace for
+// each one that ignores its closed input. A second Stop stops them again, which ends nothing
+// more.
 func (b *Bridge) Stop() {
 	b.stopOnce.Do(func() { close(b.stopCh) })
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.stopped = true
+	var stopping sync.WaitGroup
 	for _, s := range b.servers {
-		s.Stop()
+		stopping.Go(s.Stop)
 	}
+	stopping.Wait()
 }
 
 func (b *Bridge) Healthy() bool {

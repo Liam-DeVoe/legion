@@ -60,8 +60,9 @@ type ManagedServer struct {
 }
 
 // StopGrace is how long Stop waits for a server to exit once its standard input is closed, the
-// stdio transport's own signal to end, before it kills the server: the longest a Stop takes,
-// and so the longest a stop of a bridge whose server is still starting takes (Bridge.Stop).
+// stdio transport's own signal to end, before it kills the server: the longest a Stop takes, and
+// so the longest a bridge's stop takes, which stops its servers at the same time (Bridge.Stop),
+// the one still starting included.
 const StopGrace = 5 * time.Second
 
 // errStopped is Start's answer for a server Stop has already stopped.
