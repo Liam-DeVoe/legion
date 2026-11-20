@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -18,7 +19,7 @@ import (
 // the caller's context does not end, and logs at WARN each revoke GitHub does not confirm with the
 // secret's name and never the token. Nobody waits on a give-back, so each revoke is made once and
 // never again after a failure: a retry would draw on the budget the live mints retry from. A value
-// that is no such object holds nothing it can name.
+// that is no such object and no bare token holds nothing it can name.
 func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -31,7 +32,7 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 			github := newBreakingGitHub(t, false)
 			retry, _, _ := testRetry(atTheBottom)
 			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: github.client, Retry: retry}
-			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHubOwners: []string{"acme-org", "ada"}})
+			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: readScope("acme-org", "ada")})
 			if err != nil {
 				t.Fatalf("the release: %v", err)
 			}
@@ -68,5 +69,35 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGiveBackRevokesTheBareTokenOfAValueTokenProfile: a value-token profile's release is the one
+// account's token itself, not an object of installations, and GiveBack revokes it as that token.
+func TestGiveBackRevokesTheBareTokenOfAValueTokenProfile(t *testing.T) {
+	key, err := testAppKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := newBreakingGitHub(t, false)
+	retry, _, _ := testRetry(atTheBottom)
+	app := secrets.GitHubApp{Base: github.service.URL(), HTTP: github.client, Retry: retry}
+	scope := readScope("ada")
+	scope.Value = policy.ValueToken
+	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: scope})
+	if err != nil {
+		t.Fatalf("the release: %v", err)
+	}
+	tokens := github.tokens()
+	if len(tokens) != 1 || minted.Value != tokens[0] {
+		t.Fatalf("the release handed over %d bytes and minted %d tokens; want the one token itself", len(minted.Value), len(tokens))
+	}
+	before := github.revoked()
+	app.GiveBack(t.Context(), "APP_TOKEN", minted.Value)
+	if sent := github.revoked() - before; sent != 1 {
+		t.Fatalf("GiveBack sent GitHub %d revokes for a bare token, want one", sent)
+	}
+	if live := github.live(t, tokens); len(live) != 0 {
+		t.Fatalf("the bare token is live after GiveBack")
 	}
 }

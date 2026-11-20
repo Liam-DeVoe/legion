@@ -3,8 +3,8 @@
 // machine_read.go) and the proxy's (AirlockValues, airlock.go). It reads or mints each granted
 // name, splits the names the airlock holds back into their slots, and writes the one grant.used
 // row and the one log line the release writes, with the detail of whichever caller wrote it. One
-// loop rather than two, because a fix to the split, to that row, or to what a narrowing may reach
-// must not land in one release and not in the other.
+// loop rather than two, because a fix to the split or to that row must not land in one release
+// and not in the other.
 package requests
 
 import (
@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
@@ -22,11 +21,10 @@ import (
 // which the row's detail holds too: names=<the names it released>, reason=<the reason the grant's
 // request gave> and then, for the session's release (Values), call_reason=<the reason the
 // session's own call gave, as record.Sanitize leaves it> where that says something the grant's
-// reason does not, command=<the argument vector the session said the release starts, as
-// loggedCommand records it: empty from a client from before the field> and github_app=<the
-// narrowing it applied>, where it applied one; or, for the proxy's (AirlockValues), airlock=true,
-// since that release starts no command. It is the operator's line for what each grant was spent
-// on and why.
+// reason does not, and command=<the argument vector the session said the release starts, as
+// loggedCommand records it: empty from a client from before the field>; or, for the proxy's
+// (AirlockValues), airlock=true, since that release starts no command. It is the operator's line
+// for what each grant was spent on and why.
 //
 // What the command does not hold is what loggedCommand redacts (redact.go): each value this
 // release handed out of eight bytes or more, each string of eight bytes or more inside a stored
@@ -52,16 +50,14 @@ type ReleaseCall struct {
 // caller adds.
 type grantUse struct {
 	names []string
-	// airlock marks the proxy's release (AirlockValues), which starts no command and narrows
-	// nothing; command, callReason and narrowing are the session's release's (Values) alone.
+	// airlock marks the proxy's release (AirlockValues), which starts no command; command and
+	// callReason are the session's release's (Values) alone.
 	airlock bool
 	// command is the argument vector the session's release starts, as loggedCommand records it.
 	command []string
 	// callReason is the reason the session's own call gave, as callReasonOf records it: "" when
 	// it gave none or gave the grant's own.
 	callReason string
-	// narrowing is the GitHub App narrowing the session's release applied, nil for none.
-	narrowing *secrets.GitHubNarrowing
 }
 
 // recordedField is one key and value a release records, in its grant.used row's detail and in
@@ -82,11 +78,7 @@ func (u grantUse) recorded(reason string) []recordedField {
 	if u.callReason != "" {
 		fields = append(fields, recordedField{"call_reason", u.callReason})
 	}
-	fields = append(fields, recordedField{"command", u.command})
-	if u.narrowing != nil {
-		fields = append(fields, recordedField{"github_app", auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}})
-	}
-	return fields
+	return append(fields, recordedField{"command", u.command})
 }
 
 // callReasonOf is the reason a session's call gave (said) as its release records it, beside
@@ -102,12 +94,9 @@ func callReasonOf(said, granted string) string {
 }
 
 // releaseRead is what one caller wants of the shared read. The session's release asks for every
-// granted name and may narrow; the proxy's asks for the names behind the airlock alone, since
-// the session was handed the rest at its own release.
+// granted name; the proxy's asks for the names behind the airlock alone, since the session was
+// handed the rest at its own release.
 type releaseRead struct {
-	// narrowing is this release's GitHub App narrowing, nil for a release that asks for none.
-	// It reaches the github-app minter of every github-app name the grant holds.
-	narrowing *secrets.GitHubNarrowing
 	// airlockOnly leaves every name the airlock does not hold back out of the read: no value of
 	// it is read, and none is minted.
 	airlockOnly bool
@@ -130,6 +119,10 @@ type releasedName struct {
 	// what it mints again before, the second what says how to spend them.
 	expires    time.Time
 	secretType string
+	// leftOut is, for a github-app profile, each entry the cut of its permissions to what an
+	// installation holds left out, by account (secrets.Minted.LeftOut); nil for any other name
+	// and where the cut left nothing out.
+	leftOut map[string][]string
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -157,13 +150,13 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 			continue
 		}
 		served := checked.set.Secrets[g.name]
-		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served, want.narrowing)
+		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
 		if err != nil {
 			return nil, err
 		}
 		// Held for the give-back as soon as it is read, so a split that refuses this value gives
 		// it back as well as every value before it.
-		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type()})
+		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type(), leftOut: minted.LeftOut})
 		if entry != nil {
 			released := &read[len(read)-1]
 			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {

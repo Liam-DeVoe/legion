@@ -831,11 +831,14 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 }
 
 // mintRefusal is type's minter's answer to value, run as the broker runs it, with the stored
-// value the first thing it reads (the Azure minter on its own configured human-tier secret): the
-// words a client's refusal of the same value must carry.
+// value the first thing it reads (the Azure minter on its own configured human-tier secret, the
+// GitHub App minter under a profile's scope, which it refuses a mint without): the words a
+// client's refusal of the same value must carry.
 func mintRefusal(t *testing.T, secretType, value string) string {
 	t.Helper()
-	req := secrets.MintRequest{Name: "TYPE_KEY", HumanTier: true, Value: value, GitHubOwners: []string{"acme-org"}}
+	req := secrets.MintRequest{Name: "TYPE_KEY", HumanTier: true, Value: value, GitHub: &secrets.GitHubScope{
+		Accounts: []string{"acme-org"}, Permissions: map[string]string{"metadata": "read"}, Value: policy.ValueInstallations,
+	}}
 	var err error
 	switch secretType {
 	case policy.TypeGitHubApp:

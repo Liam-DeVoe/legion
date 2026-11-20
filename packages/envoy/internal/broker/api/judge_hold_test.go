@@ -130,8 +130,7 @@ func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
 			enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 			current := ts.machine.Audience
 			ts.machine.Audience = "https://the-old-public-url.example"
-			stale, err := ts.machine.Create(t.Context(), enrollmentID,
-				signAgentSecretRequestFor(t, sessionKey, ts.machine.Audience, "export the payroll", 600, "DEEL_API_KEY"), "", nil)
+			stale, err := ts.machine.Create(t.Context(), enrollmentID, signAgentSecretRequestFor(t, sessionKey, ts.machine.Audience, "export the payroll", 600, "DEEL_API_KEY"), "")
 			ts.machine.Audience = current
 			if err != nil || stale.RecordID == nil || stale.State != "pending" {
 				t.Fatalf("Create under the old audience = %+v, %v; want a pending request", stale, err)

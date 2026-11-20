@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
@@ -340,6 +341,40 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 				t.Errorf("the request named lifetime %q, want the fixed 3600s", sent.Lifetime)
 			}
 		})
+	}
+}
+
+// TestAGoogleProfileAsksForItsOwnScopes: a profile of a google-service-account source asks Google
+// for the scopes of its google block, which narrow the source's scopes tag, and never for the
+// source's. The release's scopes are built the way a release builds them: from the profile as the
+// policy serves it (policy.Secret.ScopeURLs), so what is pinned is the path a release takes.
+func TestAGoogleProfileAsksForItsOwnScopes(t *testing.T) {
+	source := policytest.TypeSecret("GCP_FLEET", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, serviceAccountValue)
+	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
+	current := policytest.ProfiledCurrent(t, secrets.NewLocal(source),
+		policytest.ProfilesFile(`{"name": "GCP_FLEET_BIGQUERY", "source": "GCP_FLEET", "google": {"scopes": ["bigquery"]}}`))
+	served, ok := current.Get().Secrets["GCP_FLEET_BIGQUERY"]
+	if !ok {
+		t.Fatalf("the policy serves no GCP_FLEET_BIGQUERY: refused %v", current.Get().Refused)
+	}
+	var sent struct {
+		Scope []string `json:"scope"`
+	}
+	server, _ := iamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Errorf("the request body is no JSON object of its fields: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
+	})
+	minter := &secrets.GoogleServiceAccount{
+		BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
+		Accounts: map[string]string{"GCP_FLEET_BIGQUERY": serviceAccountEmail},
+	}
+	if _, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET_BIGQUERY", Value: serviceAccountValue, GoogleScopes: served.ScopeURLs()}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if want := []string{"https://www.googleapis.com/auth/bigquery"}; !slices.Equal(sent.Scope, want) {
+		t.Fatalf("the request named scope %v, want the profile's own, %v", sent.Scope, want)
 	}
 }
 

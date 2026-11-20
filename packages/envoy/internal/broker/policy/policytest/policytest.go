@@ -259,7 +259,17 @@ func ProfilesFile(profiles ...string) string {
 // (policy.NewUnservableSecrets).
 func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
 	t.Helper()
+	return MeteredProfiledCurrent(t, store, registry, "", services...)
+}
+
+// MeteredProfiledCurrent is MeteredCurrent with file as the deployment's profiles file (Profiles),
+// or none for "", as BROKER_PROFILES_FILE is set or not.
+func MeteredProfiledCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, file string, services ...string) *policy.Current {
+	t.Helper()
 	loader := Loader(store, services...)
+	if file != "" {
+		loader.Profiles = Profiles(t, file, services...)
+	}
 	loader.StoreReads = policy.NewStoreReads(registry)
 	cur := current(t, loader)
 	policy.NewUnservableSecrets(registry, cur)

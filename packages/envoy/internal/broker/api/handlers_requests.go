@@ -6,10 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,11 +20,48 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// createRequestBody is POST /v1/requests's exact shape: a signed
-// request object plus two optional,
-// unsigned fields, session_id (wake-only) and github_app (the narrowing the release will ask
-// for). The v8 "secrets"/"reason"/"issue" top-level fields are gone —
-// they now live inside the signed request object itself.
+// gitHubAppFieldRemovedMessage is the refusal of a body carrying github_app, the narrowing a
+// command line of an earlier release sends (refusedGitHubApp).
+const gitHubAppFieldRemovedMessage = "github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY]"
+
+// refusedGitHubApp answers 400 GITHUB_APP_FIELD_REMOVED, and reports true, for a body that
+// carries a top-level github_app, whatever its value, null included, and whatever else the body
+// holds; it reports false, with r.Body left to be read whole again, for every other body. It
+// reads the body before the route's own reader (readJSON), which answers a field it does not take
+// 400 INVALID_REQUEST on POST /v1/requests: agent-secrets of an earlier release reads that code as
+// a broker from before github_app and sends the same request again without it, which would run
+// its command with a token wider than the one it asked for. A body that is no JSON object, or past
+// the size readJSON allows, is left to readJSON, which answers it as before.
+func refusedGitHubApp(w http.ResponseWriter, r *http.Request) bool {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), errorReader{err}))
+	var fields map[string]json.RawMessage
+	if err != nil || json.Unmarshal(data, &fields) != nil {
+		return false
+	}
+	if _, carried := fields["github_app"]; !carried {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "GITHUB_APP_FIELD_REMOVED", gitHubAppFieldRemovedMessage)
+	return true
+}
+
+// errorReader answers err at its first read, nil err being io.EOF: what remains of a body
+// refusedGitHubApp read, so readJSON meets the read's own error (a body past its size among them)
+// where the body ended.
+type errorReader struct{ err error }
+
+func (e errorReader) Read([]byte) (int, error) {
+	if e.err == nil {
+		return 0, io.EOF
+	}
+	return 0, e.err
+}
+
+// createRequestBody is POST /v1/requests's exact shape: a signed request object plus one optional,
+// unsigned field, session_id (wake-only). The v8 "secrets"/"reason"/"issue" top-level fields are
+// gone — they now live inside the signed request object itself. A body carrying github_app, the
+// narrowing an earlier release took, is refused 400 GITHUB_APP_FIELD_REMOVED (refusedGitHubApp).
 type createRequestBody struct {
 	// The session's signed request: a compact ES256 JWS, signed with the session's key and
 	// addressed to the broker's public URL, naming the secrets (authorization_details) and the
@@ -33,15 +69,6 @@ type createRequestBody struct {
 	Request string `json:"request"`
 	// Optional: the Envoy session the broker notifies if this request expires undecided.
 	SessionID *string `json:"session_id"`
-	// Optional: the narrowing this request's grant will be released with, as POST
-	// /v1/grants/{id}/values takes it. It is unsigned, as session_id is. It narrows nothing by
-	// itself: the release is what applies a narrowing, and a release that asks for none is
-	// owner-wide whatever this field said. The broker checks it before it asks a person to
-	// approve the request, so a narrowing it cannot serve is refused here and costs no
-	// approval. An object that does not read as a narrowing, with a field it does not take or a
-	// field of the wrong type, is refused 400 INVALID_NARROWING naming that field, as the release
-	// refuses it; 400 INVALID_REQUEST is kept for the body's own fields.
-	GitHubApp *githubNarrowing `json:"github_app"`
 }
 
 // createRequestResponse is POST /v1/requests's exact wire shape: request_id, state, secrets,
@@ -96,18 +123,14 @@ type createRequestResponse struct {
 // the body: a session may only ever request secrets for itself. The request object itself (not
 // this handler) names the secrets, the reason, and — implicitly, via the policy — the approver.
 func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
+	if refusedGitHubApp(w, r) {
+		return
+	}
 	var body createRequestBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
 	}
-	// The narrowing the release will ask for, read exactly as the release's own route reads it
-	// (grantValues), so one narrowing is refused by one parser and the caller reads one answer
-	// for one mistake.
-	narrowing, ok := parsedNarrowing(w, body.GitHubApp)
-	if !ok {
-		return
-	}
-	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), narrowing)
+	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
 	switch {
 	case errors.Is(err, record.ErrRequestInvalid):
 		writeError(w, http.StatusBadRequest, "REQUEST_INVALID", err.Error())
@@ -145,18 +168,14 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// UNKNOWN_SECRET, so the caller may ask again once the owner stores the value.
 		writeError(w, http.StatusBadRequest, "PENDING_VALUE", err.Error())
 		return
-	case writeNarrowingRefusal(w, err):
-		// Create refused the narrowing the request carries, before anybody was asked to approve
-		// it. The release route answers those refusals through the same helper.
-		return
-	case errors.Is(err, secrets.ErrMintNoInstallation):
-		// Create's check found no installation of the App on the account the narrowing names,
-		// before anybody was asked to approve the request. The caller can still name an account
-		// the App is installed on, so this route answers it as a refused narrowing. The release
-		// route does not: it wraps the same refusal in requests.ErrMintFailed and answers it 502
-		// MINT_FAILED, as it answers every refused mint. So this arm is the request route's own,
-		// outside writeNarrowingRefusal, which holds only the refusals both routes answer alike.
-		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
+	case errors.Is(err, secrets.ErrMintNarrowingRefused) || errors.Is(err, secrets.ErrMintNoInstallation):
+		// Create's check mint refused a GitHub profile the request names before anybody was asked
+		// to approve it: its permissions cut to what the installation holds leave none, GitHub
+		// refused a repository it names, or the App has no installation on an account in effect.
+		// The release route answers the first two alike and not the last: it wraps that refusal
+		// in requests.ErrMintFailed and answers it 502 MINT_FAILED, as it answers every refused
+		// mint. So this arm is the request route's own.
+		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
@@ -233,17 +252,11 @@ type requestStatusResponse struct {
 	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
-// grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all, or one with no
-// github_app, releases every value as the grant holds it.
+// grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all releases every
+// value as the grant holds it, and so does one naming only what the session says of the release. A
+// body carrying github_app, the narrowing an earlier release took, is refused 400
+// GITHUB_APP_FIELD_REMOVED (refusedGitHubApp), and one the route cannot read 400 INVALID_RELEASE.
 type grantValuesBody struct {
-	// Optional: narrows the token of every github-app secret the grant holds to one account's
-	// installation and, within it, to named repositories, to read access, or to both. A grant
-	// that holds no github-app secret refuses it (NARROWING_NOT_APPLICABLE), one whose
-	// github-app secret does not list the account refuses it (NARROWING_OWNER_NOT_LISTED), and
-	// one holding a name behind the airlock refuses it (NARROWING_BEHIND_AIRLOCK), since the
-	// proxy spends that grant's values and mints them owner-wide. It
-	// narrows this release alone: the grant's next release without it is owner-wide.
-	GitHubApp *githubNarrowing `json:"github_app"`
 	// Optional: the command this release starts, as its argument vector. The broker logs it with
 	// the grant's reason: its first 32 arguments, each cut to 256 bytes, with `[redacted]` in place
 	// of each value of 8 bytes or more that the release hands out, each string of 8 bytes or more
@@ -261,121 +274,6 @@ type grantValuesBody struct {
 	Reason string `json:"reason"`
 }
 
-// githubNarrowing is one release's narrowing of its GitHub App tokens: as the request names it,
-// and as the answer names what the broker applied.
-type githubNarrowing struct {
-	// The one GitHub account whose installation the token is minted for: a login the secret's
-	// github-owners lists, compared without regard to case. The answer names it lowercased.
-	Owner string `json:"owner"`
-	// Optional: names of the account's repositories, without the account, at least one and at most
-	// 100: the token reaches those repositories alone, but keeps every permission the App holds, its
-	// organization permissions among them, unless read_only is set too. The answer names them
-	// sorted, each once.
-	Repositories []string `json:"repositories,omitempty"`
-	// Optional: true limits the token to contents, metadata, pull_requests, actions, checks and
-	// statuses, each at read, less each of the last three the installation does not hold. A
-	// machine that must only read needs it, with or without repositories.
-	ReadOnly bool `json:"read_only,omitempty"`
-	// unread is why the github_app object a body sent does not read as a narrowing, "" when it
-	// does. UnmarshalJSON sets it in place of returning an error, so parsedNarrowing answers it
-	// with the narrowing's own code rather than readJSON with the body's (UnmarshalJSON).
-	unread string `json:"-"`
-}
-
-// UnmarshalJSON reads a github_app object strictly, as a narrowing: a field a narrowing does not
-// take and a field of the wrong JSON type are the narrowing's mistakes, which parsedNarrowing
-// refuses 400 INVALID_NARROWING naming github_app.<field>, on POST /v1/requests as on the
-// release's route. Returned as a decode error, readJSON would answer them with the body's own
-// code, and on POST /v1/requests that is INVALID_REQUEST: the code agent-secrets reads as a
-// broker from before github_app, which it answers by sending the same request again without the
-// narrowing (brokerTookNoNarrowing), so a narrowing this broker read and refused would go on to
-// the person the check before the approval exists to spare. A JSON null never reaches it: the
-// field's pointer stays nil, a body that names no narrowing.
-func (n *githubNarrowing) UnmarshalJSON(data []byte) error {
-	type plain githubNarrowing // the same fields, without this method
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var read plain
-	if err := decoder.Decode(&read); err != nil {
-		*n = githubNarrowing{unread: unreadNarrowing(err)}
-		return nil
-	}
-	*n = githubNarrowing(read)
-	return nil
-}
-
-// unreadNarrowing is the refusal of a github_app object that does not read as a narrowing,
-// naming the field at fault as github_app.<field>, the way policy.ParseGitHubNarrowing's
-// refusals name theirs.
-func unreadNarrowing(err error) string {
-	var wrongType *json.UnmarshalTypeError
-	if errors.As(err, &wrongType) {
-		field := "github_app"
-		if wrongType.Field != "" {
-			field += "." + wrongType.Field
-		}
-		return field + " must be " + jsonValueOf(wrongType.Type) + ", not " + jsonKindOf(wrongType.Value)
-	}
-	if name, unknown := strings.CutPrefix(err.Error(), "json: unknown field "); unknown {
-		if unquoted, unquoteErr := strconv.Unquote(name); unquoteErr == nil {
-			name = unquoted
-		}
-		return "github_app." + name + " is not a field of a narrowing"
-	}
-	return "github_app does not read as a narrowing: " + err.Error()
-}
-
-// jsonValueOf names the JSON a narrowing's field of Go type t takes.
-func jsonValueOf(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.String:
-		return "a string"
-	case reflect.Bool:
-		return "true or false"
-	case reflect.Slice:
-		return "an array of " + strings.TrimPrefix(jsonValueOf(t.Elem()), "a ") + "s"
-	default:
-		return "an object"
-	}
-}
-
-// jsonKindOf names the JSON a caller sent, from encoding/json's word for it ("string",
-// "number", "bool", "array", "object", a number sometimes followed by its literal).
-func jsonKindOf(value string) string {
-	kind, _, _ := strings.Cut(value, " ")
-	switch kind {
-	case "array", "object":
-		return "an " + kind
-	case "bool":
-		return "a boolean"
-	default:
-		return "a " + kind
-	}
-}
-
-// parsedNarrowing is the github_app field of a body as the narrowing the broker works with. Both
-// routes that take one read it through here — the request's own (createRequest) and the
-// release's (grantValues) — so one narrowing is refused by one parser and a caller reads one
-// answer for one mistake. A body naming no narrowing answers nil and true. An object that did not
-// read as a narrowing (githubNarrowing.UnmarshalJSON), and a narrowing the parser refuses, answer
-// false, with the 400 INVALID_NARROWING already written, naming the field it refused: its caller
-// returns and writes nothing more.
-func parsedNarrowing(w http.ResponseWriter, sent *githubNarrowing) (*secrets.GitHubNarrowing, bool) {
-	if sent == nil {
-		return nil, true
-	}
-	if sent.unread != "" {
-		writeError(w, http.StatusBadRequest, "INVALID_NARROWING", sent.unread)
-		return nil, false
-	}
-	narrowing, refusal := policy.ParseGitHubNarrowing(sent.Owner, sent.Repositories, sent.ReadOnly)
-	if refusal != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_NARROWING", "github_app."+refusal.Field+" "+refusal.Reason)
-		return nil, false
-	}
-	return &narrowing, true
-}
-
 // grantValuesResponse is POST /v1/grants/{id}/values's answer.
 type grantValuesResponse struct {
 	// When the grant expires; the session can read the values again until then. Null for a grant
@@ -383,10 +281,12 @@ type grantValuesResponse struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 	// Each granted name's value, read fresh from the secret store.
 	Values map[string]string `json:"values"`
-	// The narrowing this release applied to its GitHub App tokens, absent when it applied none. A
-	// client that asked for one and finds none here is answered by a broker from before
-	// narrowing, which released the owner-wide tokens.
-	GitHubApp *githubNarrowing `json:"github_app,omitempty"`
+	// For each GitHub profile whose permissions this release cut to what an installation holds,
+	// by profile name and then account, every entry the cut left out: "<permission>" for a
+	// permission the installation holds none of, "<permission>:<level>" for one it holds at a
+	// lower level, which the token holds at that level instead. Absent when no cut left anything
+	// out.
+	GitHubLeftOut map[string]map[string][]string `json:"github_left_out,omitempty"`
 	// How to reach the values this release did not hand over: the names the airlock holds back
 	// are not in "values" at all, and this says where the proxy that holds them is. Absent when
 	// no granted name is behind the airlock, which is every release of a broker with no rules
@@ -567,57 +467,16 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	writeJSON(w, http.StatusOK, stateResponse{State: "cancelled"})
 }
 
-// writeNarrowingRefusal answers err where it is one of the refusals of a GitHub App narrowing,
-// and reports whether it answered. The request route (createRequest, where Create's check makes
-// these refusals before anybody is asked) and the release route (grantValues, where Values
-// makes them again) answer them in this one place, so neither route can answer the same
-// refusal differently. Each is the caller's own input to fix, so each is a 4xx and none is
-// MINT_FAILED.
-func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
-	switch {
-	case errors.Is(err, requests.ErrNarrowingNotApplicable):
-		// The request or the grant holds no github-app secret, so nothing it releases could be
-		// narrowed. Bad input.
-		writeError(w, http.StatusBadRequest, "NARROWING_NOT_APPLICABLE", err.Error())
-	case errors.Is(err, requests.ErrNarrowingBehindAirlock):
-		// It holds a name the airlock keeps back, whose value the proxy spends on the session's
-		// behalf and mints owner-wide once per pod, so no narrowing of its release could hold
-		// for it. A conflict between the narrowing and the names asked for, not bad input, so
-		// 409 rather than 400.
-		writeError(w, http.StatusConflict, "NARROWING_BEHIND_AIRLOCK", err.Error())
-	case errors.Is(err, requests.ErrNarrowingOwnerNotListed):
-		// The narrowing names an account a github-app secret of it does not list; no minter ran
-		// and GitHub was not asked.
-		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
-	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// GitHub refused the narrowed token: a repository the installation does not reach, or a
-		// permission the App does not hold. The message says which it is, and the caller fixes
-		// the narrowing.
-		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
-	default:
-		return false
-	}
-	return true
-}
-
 func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "GRANT_ID_INPUT", "grant")
 	if !ok {
 		return
 	}
 	var body grantValuesBody
-	if r.ContentLength != 0 && !readJSON(w, r, &body, "INVALID_NARROWING") {
+	if r.ContentLength != 0 && (refusedGitHubApp(w, r) || !readJSON(w, r, &body, "INVALID_RELEASE")) {
 		return
 	}
-	narrowing, ok := parsedNarrowing(w, body.GitHubApp)
-	if !ok {
-		return
-	}
-	var applied *githubNarrowing
-	if narrowing != nil {
-		applied = &githubNarrowing{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}
-	}
-	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
+	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
 	switch {
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
@@ -632,14 +491,17 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
 	case errors.Is(err, requests.ErrMintFailed):
-		// The type's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
-		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
-		// upstream that could not be asked. Its message says why and never holds the stored value.
+		// The type's upstream (GitHub or Google) refused or failed a mint the profile's scope is
+		// not at fault for: an App with no installation, a Google login that needs a new sign-in,
+		// an upstream that could not be asked. Its message says why and never holds the stored
+		// value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
 		return
-	case writeNarrowingRefusal(w, err):
-		// The narrowing refusals Values makes for a grant released a second time, answered as
-		// the request route answers Create's own.
+	case errors.Is(err, secrets.ErrMintNarrowingRefused):
+		// The release's mint refused a GitHub profile's scope: its permissions cut to what the
+		// installation holds leave none, or GitHub refused a repository it names. The message
+		// says which; the profiles file or the caller's target fixes it, and nothing was released.
+		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)
@@ -649,7 +511,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if values == nil {
 		values = map[string]string{}
 	}
-	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubApp: applied}
+	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubLeftOut: release.GitHubLeftOut}
 	if release.Airlock != nil {
 		answer.Airlock = &airlockRelease{
 			ProxyURL:      release.Airlock.ProxyURL,

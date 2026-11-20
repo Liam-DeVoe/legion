@@ -2,7 +2,7 @@
 // A release that fails after it minted a GitHub App token for one of the grant's names hands that
 // token to nobody, so it gives it back to GitHub (Machine.GiveBacks): driven against the airlock's
 // GitHub stand-in through the broker's real github-app minter, with the fixture of
-// narrowing_check_test.go's helpers.
+// profile_check_test.go's helpers.
 package requests_test
 
 import (
@@ -92,8 +92,8 @@ func newGiveBackFixture(t *testing.T, rules airlock.Rules) *giveBackFixture {
 		Airlock:    rules,
 	}
 	f.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, f.Airlock)
-	narrowing := &narrowingFixture{Machine: f.Machine, enrollmentID: enrollmentID, key: key}
-	request, err := narrowing.create(t, nil, "APP_KEY", "ZED_KEY")
+	session := &profileFixture{Machine: f.Machine, enrollmentID: enrollmentID, key: key}
+	request, err := session.create(t, "APP_KEY", "ZED_KEY")
 	if err != nil || request.State != "granted" || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant at once of two agent-tier secrets", request, err)
 	}
@@ -215,7 +215,7 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 				_, _, err = f.AirlockValues(t.Context(), f.grantID)
 			} else {
 				var release requests.Release
-				release, err = f.Values(t.Context(), f.grantID, f.enrollmentID, nil, requests.ReleaseCall{})
+				release, err = f.Values(t.Context(), f.grantID, f.enrollmentID, requests.ReleaseCall{})
 				if err != nil && release.Values != nil {
 					t.Fatalf("a failed release handed over %d values", len(release.Values))
 				}
@@ -259,7 +259,7 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 			}
 			answered := make(chan error, 1)
 			go func() {
-				_, err := f.Values(t.Context(), f.grantID, f.enrollmentID, nil, requests.ReleaseCall{})
+				_, err := f.Values(t.Context(), f.grantID, f.enrollmentID, requests.ReleaseCall{})
 				answered <- err
 			}()
 			select {

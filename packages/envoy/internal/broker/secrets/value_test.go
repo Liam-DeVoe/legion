@@ -68,7 +68,7 @@ func minterOf(t *testing.T, secretType string) (mint, secrets.MintRequest) {
 	t.Helper()
 	switch secretType {
 	case "github-app":
-		return secrets.GitHubApp{}.Mint, secrets.MintRequest{Name: "APP_KEY", GitHubOwners: []string{"acme"}}
+		return secrets.GitHubApp{}.Mint, secrets.MintRequest{Name: "APP_KEY", GitHub: readScope("acme")}
 	case "google-login":
 		return secrets.GoogleLogin{}.Mint, secrets.MintRequest{Name: "LOGIN_KEY"}
 	case "google-service-account":
@@ -150,24 +150,29 @@ func TestParseValueRefusesATypeNoMinterReads(t *testing.T) {
 
 // TestParseValueLeavesTheOtherChecksInTheirPlace: the decoder is each minter's one reader of the
 // value, and no more. The Azure minter's gate on the configured human-tier secret comes before it,
-// so a release that gate refuses is refused whatever the value holds; the GitHub minter's
-// narrowing check comes after it, so a bad value under a bad narrowing is the stored value's.
+// so a release that gate refuses is refused whatever the value holds; the GitHub minter's refusal
+// of the profile's scope comes after it, so a bad value under a scope it refuses is the stored
+// value's.
 func TestParseValueLeavesTheOtherChecksInTheirPlace(t *testing.T) {
 	_, err := (secrets.AzureLogin{SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "OTHER", HumanTier: true, Value: leak})
 	if got := secrets.MintErrorClass(err); got != "refused" {
 		t.Fatalf("Azure mint of another secret with a bad value = %v (class %s); want refused", err, got)
 	}
-	narrowed := secrets.MintRequest{Value: `{"app_id":"123456"}`, GitHubOwners: []string{"acme"}, GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "outsider"}}
-	_, err = (secrets.GitHubApp{}).Mint(t.Context(), narrowed)
+	// refused names repositories of two accounts, which the GitHub minter refuses before it asks
+	// GitHub anything, since a scope's repositories are names of one account's.
+	refused := readScope("acme", "outsider")
+	refused.Repositories = []string{"widgets"}
+	scoped := secrets.MintRequest{Value: `{"app_id":"123456"}`, GitHub: refused}
+	_, err = (secrets.GitHubApp{}).Mint(t.Context(), scoped)
 	if got := secrets.MintErrorClass(err); got != "stored-value" {
-		t.Fatalf("GitHub mint of a bad value under an unlisted owner = %v (class %s); want stored-value", err, got)
+		t.Fatalf("GitHub mint of a bad value under a refused scope = %v (class %s); want stored-value", err, got)
 	}
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	narrowed.Value = githubAppValue(t, "123456", key)
-	if _, err := (secrets.GitHubApp{}).Mint(t.Context(), narrowed); !errors.Is(err, secrets.ErrMintNarrowingRefused) {
-		t.Fatalf("GitHub mint of a good value under an unlisted owner = %v; want ErrMintNarrowingRefused", err)
+	scoped.Value = githubAppValue(t, "123456", key)
+	if _, err := (secrets.GitHubApp{}).Mint(t.Context(), scoped); !errors.Is(err, secrets.ErrMintNarrowingRefused) {
+		t.Fatalf("GitHub mint of a good value under a refused scope = %v; want ErrMintNarrowingRefused", err)
 	}
 }

@@ -1,0 +1,524 @@
+// packages/envoy/internal/broker/requests/profile_check_test.go
+// The check mint Machine.Create makes of each GitHub profile a request names before it writes a
+// row or asks anybody to approve the request (profile_check.go), driven against the GitHub
+// stand-in the airlock's own checks are driven against and through the broker's real github-app
+// minter: each refusal read here is one GitHub itself makes, or the minter's own cut of the
+// profile to what the installation holds, and each is read where the policy would have sent the
+// request to a person.
+//
+// These rows are an external test package, unlike the rest of this directory's: the stand-in
+// lives in airlocktest, which imports requests, so a test inside the package could not reach it.
+// Everything below therefore drives the broker through its exported surface alone, which is the
+// surface the broker's own callers have. The fixture is this file's and profile_check_trouble_test.go's.
+package requests_test
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/broker/store"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+)
+
+const (
+	// checkAudience is the broker's public URL every request object is signed for.
+	checkAudience = "broker"
+	// checkOperator is the person whose box the fixture's session runs on, and the owner and
+	// approver of every secret below; checkOutsider is a second person, who owns none of them.
+	checkOperator = "sami@example.com"
+	checkOutsider = "alice@example.com"
+)
+
+// The accounts the fixture's App can be installed on. Both are in the github-owners tag every
+// policytest type secret carries (policytest.FixtureGitHubOwners), so a profile of either is one
+// the policy serves and GitHub alone decides. standInOwner is the account every fixture below
+// installs the App on. otherOwner is the second account that tag lists, which each test installs
+// or leaves alone as it needs.
+const (
+	standInOwner      = "ada"
+	otherOwner        = "acme"
+	standInRepository = "proofs"
+)
+
+// gitHubStand is the GitHub the fixture's github-app minter reaches: airlocktest's own stand-in
+// on a plain service of its own, plus a hook over its token route for the trouble no stand-in
+// answer holds — an answer that is no verdict on a profile's scope (a 500, a rate limit) and one
+// that comes after the check's own bound. The hook is held under the same lock as the count,
+// since the minter calls the route from the goroutine under test while the test installs it.
+type gitHubStand struct {
+	*airlocktest.GitHubStand
+	service *airlocktest.Service
+
+	mu    sync.Mutex
+	asked int
+	hook  func(w http.ResponseWriter, nth int) bool
+}
+
+// newGitHubStand starts one, answering ordinarily for the installations it is given, and closes
+// it when t ends.
+func newGitHubStand(t *testing.T, installations map[string]int64) *gitHubStand {
+	t.Helper()
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatalf("start the GitHub stand-in: %v", err)
+	}
+	t.Cleanup(service.Close)
+	stand := &gitHubStand{
+		GitHubStand: airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: installations}),
+		service:     service,
+	}
+	service.AnswerWith(stand.answer)
+	return stand
+}
+
+// answer is the stand-in's own answer, with this test's hook given each token request first: a
+// hook that answered one is the whole answer, and every other request reaches the stand-in.
+func (g *gitHubStand) answer(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
+	if isTokenRequest(seen) {
+		g.mu.Lock()
+		g.asked++
+		nth, hook := g.asked, g.hook
+		g.mu.Unlock()
+		if hook != nil && hook(w, nth) {
+			return true
+		}
+	}
+	return g.GitHubStand.Answer(w, r, seen)
+}
+
+// answersTokensWith installs that hook: it is given each token request's number, counted from
+// one, and reports whether it answered it.
+func (g *gitHubStand) answersTokensWith(hook func(w http.ResponseWriter, nth int) bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hook = hook
+}
+
+// tokenRequests is every token request the stand-in was sent, which is what a check that reached
+// GitHub leaves behind and a check that never ran leaves none of.
+func (g *gitHubStand) tokenRequests() []airlocktest.Request {
+	var asked []airlocktest.Request
+	for _, seen := range g.service.Requests() {
+		if isTokenRequest(seen) {
+			asked = append(asked, seen)
+		}
+	}
+	return asked
+}
+
+// revokedTokens is every credential given back to the stand-in, in order: GitHub's revoke names
+// the token itself in its Authorization header and nothing else, so this is exactly what a
+// caller minted and did not keep.
+func (g *gitHubStand) revokedTokens() []string {
+	var given []string
+	for _, seen := range g.service.Requests() {
+		if seen.Method == http.MethodDelete && seen.Path == "/installation/token" {
+			given = append(given, strings.TrimPrefix(seen.Header.Get("Authorization"), "Bearer "))
+		}
+	}
+	return given
+}
+
+// isTokenRequest reports whether a recorded request is GitHub's access_tokens route, the one call
+// that mints.
+func isTokenRequest(seen airlocktest.Request) bool {
+	return seen.Method == http.MethodPost && strings.HasSuffix(seen.Path, "/access_tokens")
+}
+
+// profileFixture is a broker on a schema of its own, with one live box session of checkOperator
+// and the stand-in behind a real github-app minter. Its secrets are four github-app secrets of
+// one App — APP_KEY and OTHER_APP_KEY, human tier, which the policy sends to their owner and whose
+// profiles are therefore checked; AUTO_APP_KEY, agent tier, which the policy grants at once; and
+// UNLISTED_APP_KEY, which a requesters tag naming somebody else turns into a denial — beside
+// PLAIN_KEY, a stored secret of the same owner and tier, which is the request that names no GitHub
+// profile at all. Each App is served through a profile of its own name: the github block a test
+// gives it (profileFixtureOptions.github), else policytest.AppProfile's.
+type profileFixture struct {
+	*requests.Machine
+	enrollmentID string
+	key          *ecdsa.PrivateKey
+	stand        *gitHubStand
+}
+
+// appNames are the github-app secrets of every profileFixture.
+var appNames = []string{"APP_KEY", "OTHER_APP_KEY", "AUTO_APP_KEY", "UNLISTED_APP_KEY"}
+
+// newProfileFixture builds one against a stand-in installed on installations, serving each App by
+// a profile of its own name whose github block is github's entry for it, or policytest.AppProfile's.
+func newProfileFixture(t *testing.T, installations map[string]int64, github map[string]string) *profileFixture {
+	t.Helper()
+	st := storetest.Open(t)
+	value := standInAppValue(t)
+	unlisted := policytest.TypeSecret("UNLISTED_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value)
+	unlisted.Tags[policy.TagRequesters] = checkOutsider
+	local := secrets.NewLocal(
+		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
+		policytest.TypeSecret("OTHER_APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
+		policytest.TypeSecret("AUTO_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value),
+		unlisted,
+		policytest.Secret("PLAIN_KEY", checkOperator, policy.TierHuman, "plain-v1"),
+	)
+	profiles := make([]string, len(appNames))
+	for i, name := range appNames {
+		profiles[i] = policytest.AppProfile(name)
+		if block, set := github[name]; set {
+			profiles[i] = `{"name": "` + name + `", "github": ` + block + `}`
+		}
+	}
+	enrollmentID, key := newEnrollment(t, st)
+	stand := newGitHubStand(t, installations)
+	machine := &requests.Machine{
+		Store:      st,
+		Policy:     policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(profiles...)),
+		Secrets:    policytest.Store(local),
+		PendingTTL: 12 * time.Hour,
+		Audience:   checkAudience,
+		Skew:       time.Minute,
+		Replay:     replayer(st),
+		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
+	}
+	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)
+	return &profileFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand}
+}
+
+// standInAppValue is a github-app secret's stored value for the stand-in: the App id it answers
+// for, and a key of this test's own, which the minter signs its App JWT with.
+func standInAppValue(t *testing.T) string {
+	t.Helper()
+	_, pemText := githubapptest.Key(t)
+	value, err := json.Marshal(map[string]string{"app_id": "123456", "private_key": pemText})
+	if err != nil {
+		t.Fatalf("encode the github-app secret: %v", err)
+	}
+	return string(value)
+}
+
+// newEnrollment inserts one live box session of checkOperator, under a launcher credential of
+// their own, and answers its id and the key its request objects are signed with. The rows are
+// written directly, as this package's own fixtures write them: enroll.Service is exercised by
+// the enrollment routes' tests, and a request needs only a live row to be verified against.
+func newEnrollment(t *testing.T, st *store.Store) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	ctx := context.Background()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate the enrollment key: %v", err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("thumbprint: %v", err)
+	}
+	credentialID := uuid.NewString()
+	if _, err := st.Pool.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values ($1,$2,'devbox-test',$3,'{}'::jsonb, now() + interval '30 days')`, credentialID, checkOperator, uuid.NewString()); err != nil {
+		t.Fatalf("insert launcher_credentials: %v", err)
+	}
+	id := uuid.NewString()
+	if _, err := st.Pool.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
+		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, id, "box-"+t.Name(), checkOperator, thumbprint, credentialID); err != nil {
+		t.Fatalf("insert enrollments: %v", err)
+	}
+	return id, key
+}
+
+// replayer is the Machine.Replay seam over the proof_jtis table: one request object is spent
+// once, as the enrollment service spends it in production.
+func replayer(st *store.Store) func(context.Context, string, time.Time) (bool, error) {
+	return func(ctx context.Context, jti string, expires time.Time) (bool, error) {
+		_, err := st.Pool.Exec(ctx, `insert into proof_jtis (jti, expires_at) values ($1,$2)`, jti, expires)
+		if store.IsUniqueViolation(err) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+}
+
+// create asks for names as a session does: a request object signed with this session's own key,
+// naming no lifetime of its own.
+func (f *profileFixture) create(t *testing.T, names ...string) (requests.Request, error) {
+	t.Helper()
+	details := make([]record.AuthorizationDetail, len(names))
+	for i, name := range names {
+		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
+	}
+	compact, err := record.Sign(f.key, checkAudience, details, "read the App key", "", nil, time.Now())
+	if err != nil {
+		t.Fatalf("sign the request object: %v", err)
+	}
+	return f.Create(t.Context(), f.enrollmentID, compact, "")
+}
+
+// heldRows counts the request rows, grant rows and credential-request records the broker holds.
+// storetest.Open gives each test a schema of its own, so these are this session's rows and
+// nobody else's.
+func heldRows(t *testing.T, machine *requests.Machine) (requestRows, grants, records int) {
+	t.Helper()
+	if err := machine.Store.Pool.QueryRow(context.Background(), `select (select count(*) from requests),
+		(select count(*) from grants), (select count(*) from credential_requests)`).Scan(&requestRows, &grants, &records); err != nil {
+		t.Fatalf("count what the broker holds: %v", err)
+	}
+	return requestRows, grants, records
+}
+
+// everyMintGivenBack checks that the stand-in minted at least one token for the check and that
+// the check gave back each one it minted, so the stand-in holds no token of the check's live.
+func everyMintGivenBack(t *testing.T, stand *gitHubStand) {
+	t.Helper()
+	minted := 0
+	for _, seen := range stand.service.Requests() {
+		if isTokenRequest(seen) && !strings.Contains(seen.Body, `"missing"`) {
+			minted++
+		}
+	}
+	if revoked := stand.revokedTokens(); minted == 0 || len(revoked) != minted {
+		t.Fatalf("the stand-in minted %d tokens for the check and was given back %d; want the check's mint and a revoke of each", minted, len(revoked))
+	}
+}
+
+// TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked: a human-tier profile naming a
+// repository the installation does not reach is refused by Create itself — before any request
+// row is written, before any credential-request record opens, and so before anybody is asked to
+// decide it — as the scope GitHub refused (secrets.ErrMintNarrowingRefused, which the API answers
+// 422 PROFILE_MINT_REFUSED), naming that repository. The check mints the profile's token for the
+// scope in effect, and then each repository alone to find which one GitHub refused; each token
+// GitHub minted for it is revoked at once.
+func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/lean", "ada/missing"], "permissions": {"contents": "read"}}`,
+	})
+	f.stand.Answers(airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefusedRepository, Repository: "missing"})
+
+	request, err := f.create(t, "APP_KEY")
+	if !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" || request.RecordID != nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want ErrMintNarrowingRefused and no request", request, err)
+	}
+	for _, word := range []string{"APP_KEY", "missing", "does not reach"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal says %q; want it to name %q", err, word)
+		}
+	}
+	if rows, grants, records := heldRows(t, f.Machine); rows != 0 || grants != 0 || records != 0 {
+		t.Fatalf("the refused request left %d request rows, %d grants and %d records; want none of any", rows, grants, records)
+	}
+	everyMintGivenBack(t, f.stand)
+}
+
+// TestAPendingRequestWithAnAccountTargetIsCheckedToo: the check mint runs for every pending
+// request that names a GitHub profile, whether or not its scope names repositories. Here the
+// account in effect is the profile's single account (a request's target narrows it in a later
+// change): an account the App is installed on is minted, revoked at once and the request goes on
+// to its approver; an account the App has no installation on is refused before anybody is asked
+// (secrets.ErrMintNoInstallation, naming the account).
+func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		account string
+		// want is the refusal Create answers, nil where it writes the request pending; held is
+		// how many request rows and credential-request records the request leaves behind.
+		want error
+		held int
+	}{
+		{name: "an account the App is installed on", account: standInOwner, held: 1},
+		{name: "an account the App has no installation on", account: otherOwner, want: secrets.ErrMintNoInstallation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logged := policytest.CaptureLog(t)
+			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
+				"APP_KEY": `{"accounts": ["` + tc.account + `"], "permissions": {"contents": "read"}}`,
+			})
+
+			request, err := f.create(t, "APP_KEY")
+			switch {
+			case tc.want == nil && (err != nil || request.State != "pending" || request.RecordID == nil):
+				t.Fatalf("Create(APP_KEY) of %s = %+v, %v; want it pending on its approver", tc.account, request, err)
+			case tc.want != nil && (!errors.Is(err, tc.want) || request.ID != "" || !strings.Contains(err.Error(), "has no installation on "+tc.account)):
+				t.Fatalf("Create(APP_KEY) of %s = %+v, %v; want %v naming the account, and no request", tc.account, request, err, tc.want)
+			}
+			if rows, grants, records := heldRows(t, f.Machine); rows != tc.held || grants != 0 || records != tc.held {
+				t.Fatalf("the request left %d request rows, %d grants and %d records; want %d, none and %d", rows, grants, records, tc.held, tc.held)
+			}
+			listed := 0
+			for _, seen := range f.stand.service.Requests() {
+				if seen.Method == http.MethodGet && seen.Path == "/app/installations" {
+					listed++
+				}
+			}
+			if listed != 1 {
+				t.Fatalf("the check listed the App's installations %d times; want once: the check ran for a profile naming no repository", listed)
+			}
+			if tc.want == nil {
+				everyMintGivenBack(t, f.stand)
+			} else if asked := f.stand.tokenRequests(); len(asked) != 0 {
+				t.Fatalf("the check asked GitHub for %d tokens for an account with no installation; want none", len(asked))
+			}
+			if strings.Contains(logged.String(), requests.NarrowingCheckSkippedMessage) {
+				t.Fatalf("the check logged %q; want its verdict reached: %s", requests.NarrowingCheckSkippedMessage, logged.String())
+			}
+		})
+	}
+}
+
+// TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked: a profile whose permissions the
+// installation holds none of is refused by Create before anybody is asked to approve it
+// (secrets.ErrMintEmptyCut, inside secrets.ErrMintNarrowingRefused), naming the profile and the
+// permissions it asks for, and GitHub is asked for no token: a request naming no permissions is
+// one GitHub answers with every permission the installation holds.
+func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"administration": "write"}}`,
+	})
+
+	request, err := f.create(t, "APP_KEY")
+	if !errors.Is(err, secrets.ErrMintEmptyCut) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" || request.RecordID != nil {
+		t.Fatalf("Create(APP_KEY) of a profile the installation holds nothing of = %+v, %v; want ErrMintEmptyCut and no request", request, err)
+	}
+	for _, word := range []string{"APP_KEY", "administration: write"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal says %q; want it to name %q", err, word)
+		}
+	}
+	if strings.Contains(err.Error(), "missing") {
+		t.Errorf("the refusal says %q; an empty cut is no repository's fault", err)
+	}
+	if rows, grants, records := heldRows(t, f.Machine); rows != 0 || grants != 0 || records != 0 {
+		t.Fatalf("the refused request left %d request rows, %d grants and %d records; want none of any", rows, grants, records)
+	}
+	if asked := f.stand.tokenRequests(); len(asked) != 0 {
+		t.Fatalf("GitHub was asked for %d tokens for an empty cut; want none", len(asked))
+	}
+}
+
+// TestACheckMintGitHubServesLetsTheRequestThrough is the control of the refusals above: a profile
+// the stand-in mints writes the pending request and its record exactly as a request naming no
+// GitHub profile does, and the check that said so released no token — the one it minted it gave
+// straight back, so that string reaches nothing. A request that names no GitHub profile is not
+// checked at all.
+func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read"}}`,
+	})
+
+	request, err := f.create(t, "APP_KEY")
+	if err != nil || request.State != "pending" || request.RecordID == nil {
+		t.Fatalf("Create(APP_KEY) of a profile GitHub serves = %+v, %v; want it pending on its approver", request, err)
+	}
+	if rows, grants, records := heldRows(t, f.Machine); rows != 1 || grants != 0 || records != 1 {
+		t.Fatalf("the served profile left %d request rows, %d grants and %d records; want the one pending request and its one record", rows, grants, records)
+	}
+	asked, revoked := f.stand.tokenRequests(), f.stand.revokedTokens()
+	if len(asked) != 1 || len(revoked) != 1 {
+		t.Fatalf("the check asked GitHub for %d tokens and gave %d back; want the one verdict mint and its revoke", len(asked), len(revoked))
+	}
+	if status, body := readStandInRepository(t, f.stand, revoked[0], standInOwner, standInRepository); status != http.StatusUnauthorized {
+		t.Fatalf("the token the check minted reads %s/%s with HTTP %d (%s); want 401: a check releases no token it minted",
+			standInOwner, standInRepository, status, body)
+	}
+
+	plain, err := f.create(t, "PLAIN_KEY")
+	if err != nil || plain.State != "pending" {
+		t.Fatalf("Create(PLAIN_KEY) = %+v, %v; want it pending on its approver", plain, err)
+	}
+	if again := f.stand.tokenRequests(); len(again) != len(asked) {
+		t.Fatalf("a request naming no GitHub profile asked GitHub for %d tokens; want none", len(again)-len(asked))
+	}
+}
+
+// TestTheCheckMintAsksGitHubNothingWhereNobodyIsAsked: the check buys back an approval nobody
+// should have spent, so it runs only where the policy would ask a person for one. A request the
+// policy grants at once reaches GitHub for nothing; the same request again hands back that live
+// grant and reaches it for nothing either; and a request the policy denies is answered with its
+// denial, GitHub having been asked nothing about a profile no grant will ever release.
+func TestTheCheckMintAsksGitHubNothingWhereNobodyIsAsked(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, nil)
+
+	granted, err := f.create(t, "AUTO_APP_KEY")
+	if err != nil || granted.State != "granted" || granted.GrantID == nil {
+		t.Fatalf("Create(AUTO_APP_KEY) = %+v, %v; want the grant the policy makes at once", granted, err)
+	}
+	again, err := f.create(t, "AUTO_APP_KEY")
+	if err != nil || again.GrantID == nil || *again.GrantID != *granted.GrantID {
+		t.Fatalf("the same request again = %+v, %v; want the live grant %s handed back", again, err, *granted.GrantID)
+	}
+	denied, err := f.create(t, "UNLISTED_APP_KEY")
+	if err != nil || denied.State != "denied" {
+		t.Fatalf("Create(UNLISTED_APP_KEY) = %+v, %v; want it denied, as its requesters tag denies it", denied, err)
+	}
+	if denied.Detail == nil || !strings.Contains(*denied.Detail, policy.ReasonRequesterNotListed) {
+		t.Errorf("the denial says %v; want it to name the requesters rule that made it", denied.Detail)
+	}
+	if asked := f.stand.tokenRequests(); len(asked) != 0 {
+		t.Fatalf("GitHub was asked for %d tokens over requests no person decides; want none", len(asked))
+	}
+}
+
+// TestTheCheckMintAsksGitHubNothingForTheGrantAPersonApproved: the check runs only once Create has
+// found no live grant to hand back (reuseLiveGrant), never before it looks. The policy puts a
+// human-tier secret's request to a person every time, so here only the order keeps the check
+// away: the first request is checked on its way to its approver, the approver grants it, and the
+// same request again, for the same lifetime, gets that grant back with GitHub asked nothing — no
+// token, and not even the App's installations.
+func TestTheCheckMintAsksGitHubNothingForTheGrantAPersonApproved(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, nil)
+
+	pending, err := f.create(t, "APP_KEY")
+	if err != nil || pending.State != "pending" || pending.RecordID == nil {
+		t.Fatalf("Create(APP_KEY) = %+v, %v; want it pending on its approver", pending, err)
+	}
+	if asked := f.stand.tokenRequests(); len(asked) != 1 {
+		t.Fatalf("the first request's check asked GitHub for %d tokens; want the one verdict mint, which shows the check runs for this profile", len(asked))
+	}
+	decision, err := f.ApplyDecision(t.Context(), *pending.RecordID, true, checkOperator)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("the approver's decision = %+v, %v; want the grant their approval makes", decision, err)
+	}
+
+	mark := len(f.stand.service.Requests())
+	again, err := f.create(t, "APP_KEY")
+	if err != nil || again.ID != pending.ID || again.GrantID == nil || *again.GrantID != decision.GrantID {
+		t.Fatalf("the same request again = %+v, %v; want request %s and its approved grant %s handed back", again, err, pending.ID, decision.GrantID)
+	}
+	if made := f.stand.service.Requests()[mark:]; len(made) != 0 {
+		t.Fatalf("handing back the approved grant made %d calls to GitHub; want none: the check runs only after reuseLiveGrant found no live grant", len(made))
+	}
+}
+
+// readStandInRepository reads owner/repository at the stand-in with credential, as a caller
+// spends a released token: the status and what it answered.
+func readStandInRepository(t *testing.T, stand *gitHubStand, credential, owner, repository string) (int, string) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, stand.service.URL()+"/repos/"+owner+"/"+repository, nil)
+	if err != nil {
+		t.Fatalf("build the repository read: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credential)
+	answer, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("read %s/%s at the stand-in: %v", owner, repository, err)
+	}
+	defer answer.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(answer.Body, 1<<10))
+	if err != nil {
+		t.Fatalf("read the stand-in's answer: %v", err)
+	}
+	return answer.StatusCode, string(body)
+}

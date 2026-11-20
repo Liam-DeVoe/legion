@@ -87,7 +87,7 @@ func recordedDigests(t *testing.T, m *Machine, requestID string) map[string]stri
 func TestARequestRecordsEachNamesProfileDigest(t *testing.T) {
 	file := proxied("api.example.com", "AUTO_TOKEN")
 	m, enr, key := newAirlockFixture(t, file)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read both", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read both", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -108,12 +108,12 @@ func TestAChangedProfileEndsTheGrantsItAffects(t *testing.T) {
 	before := policytest.ProfilesFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`, `{"name": "SHARED_KEY", "proxy": {"hosts": ["shared.example.com"]}}`)
 	changed := policytest.ProfilesFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.org"]}}`, `{"name": "SHARED_KEY", "proxy": {"hosts": ["shared.example.com"]}}`)
 	m, enr, key := newAirlockFixture(t, before)
-	moved, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "", nil)
+	moved, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "")
 	if err != nil || moved.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", moved, err)
 	}
 	// SHARED_KEY is human tier, so its grant comes of an approval; its entry never moves.
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
 	}
@@ -123,15 +123,15 @@ func TestAChangedProfileEndsTheGrantsItAffects(t *testing.T) {
 	}
 
 	rollProfiles(t, m, changed)
-	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil, ReleaseCall{}); err == nil || release.Values != nil {
+	if release, err := m.Values(t.Context(), *moved.GrantID, enr, ReleaseCall{}); err == nil || release.Values != nil {
 		t.Fatalf("Values after the entry changed = %v, %v; want the grant ended", release.Values, err)
 	}
-	if release, err := m.Values(t.Context(), kept.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
+	if release, err := m.Values(t.Context(), kept.GrantID, enr, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values of the grant whose entry did not change = %v, %v; want the value", release.Values, err)
 	}
 
 	rollProfiles(t, m, before)
-	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil, ReleaseCall{}); err == nil || release.Values != nil {
+	if release, err := m.Values(t.Context(), *moved.GrantID, enr, ReleaseCall{}); err == nil || release.Values != nil {
 		t.Fatalf("Values once the entry is back = %v, %v; want the grant to stay ended", release.Values, err)
 	}
 	if by, audits := endedForGood(t, m, *moved.GrantID); by != GrantEndedActor || audits != 1 {
@@ -160,7 +160,7 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 	one, two, three := proxied("one.example.com", "SHARED_KEY"), proxied("two.example.com", "SHARED_KEY"), proxied("three.example.com", "SHARED_KEY")
 	m, enr, key := newAirlockFixture(t, one)
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
 	}
@@ -174,7 +174,7 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 	if got, want := recordedDigests(t, m, pending.ID)["SHARED_KEY"], profileDigest(t, two, "SHARED_KEY"); got != want {
 		t.Fatalf("the approved request records the digest %q; want %q, the profile it was decided under", got, want)
 	}
-	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
+	if release, err := m.Values(t.Context(), decided.GrantID, enr, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values of the grant the approval made = %v, %v; want the value: the approval was given under this entry", release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, decided.GrantID); by != "" {
@@ -183,7 +183,7 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 
 	// A profile that moves after the decision ends the grant it was decided under.
 	rollProfiles(t, m, three)
-	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), decided.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values after the entry changed = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
 	}
 	if by, audits := endedForGood(t, m, decided.GrantID); by != GrantEndedActor || audits != 1 {

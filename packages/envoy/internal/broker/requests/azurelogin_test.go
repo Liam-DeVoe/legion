@@ -33,7 +33,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 		Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
 	}
 	secret := set.Secrets["AZURE_LOGIN"]
-	value, err := machine.release(t.Context(), requestedSecret{name: secret.Name, source: secret.Source, decision: policy.Approval}, secret, nil)
+	value, err := machine.release(t.Context(), requestedSecret{name: secret.Name, source: secret.Source, decision: policy.Approval}, secret)
 	if value.Value != "" || !errors.Is(err, ErrMintFailed) || secrets.MintErrorClass(err) != "refused" {
 		t.Fatalf("release returned class %s, value present %t; want refused mint and no token", secrets.MintErrorClass(err), value.Value != "")
 	}
@@ -94,7 +94,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 				Secrets: policytest.Store(local),
 				Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
 			}
-			value, err := machine.release(t.Context(), granted, secret, nil)
+			value, err := machine.release(t.Context(), granted, secret)
 			if row.allowed {
 				var got map[string]string
 				if err != nil || json.Unmarshal([]byte(value.Value), &got) != nil || got["federated_token"] != token {

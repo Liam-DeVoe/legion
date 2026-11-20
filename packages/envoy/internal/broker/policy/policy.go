@@ -556,49 +556,6 @@ func TagRules(t TagSet) string {
 // '.', '-' and '_', at most 100 of them. The names . and .. are refused beside it.
 var gitHubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 
-// NarrowingError is ParseGitHubNarrowing's refusal: Field is the narrowing's field it names,
-// "owner" or "repositories", so a caller can name it in its own terms (the API's
-// github_app.<field>, the CLI's flag), and Reason says what is wrong with it.
-type NarrowingError struct {
-	Field, Reason string
-}
-
-func (e *NarrowingError) Error() string {
-	return e.Field + " " + e.Reason
-}
-
-// ParseGitHubNarrowing checks one release's narrowing of its GitHub App tokens as a caller wrote it
-// and answers it in its canonical form: owner one GitHub login (ParseGitHubLogin, once white space
-// around it is trimmed), lowercased, and repositories names GitHub can hold, without the owner, at
-// most secrets.MaxNarrowedRepositories, sorted and each once. Repositories nil names none, so the
-// token reaches every repository of the installation; present but empty is refused, since a caller
-// that built it from a list that matched nothing would otherwise get that widest token. Nothing
-// else reaches GitHub: the permissions a narrowing can name are fixed, so a caller can only
-// narrow. It answers its refusal as a *NarrowingError, typed rather than error, so a caller names
-// the field without reading the text. The broker applies a narrowing in this form and names it back in
-// the release's answer, and the CLI builds its request with this function too, so the CLI's check
-// that the broker applied the narrowing it asked for compares like with like.
-func ParseGitHubNarrowing(owner string, repositories []string, readOnly bool) (secrets.GitHubNarrowing, *NarrowingError) {
-	login, err := ParseGitHubLogin(strings.TrimSpace(owner))
-	if err != nil {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"owner", fmt.Sprintf("must name one GitHub login, not %q", owner)}
-	}
-	if repositories != nil && len(repositories) == 0 {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", "is empty: name at least one repository, or leave it out for every repository of the installation"}
-	}
-	if len(repositories) > secrets.MaxNarrowedRepositories {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), secrets.MaxNarrowedRepositories)}
-	}
-	for _, name := range repositories {
-		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {
-			return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %s's repositories by name alone, in ASCII letters, digits, '.', '-' and '_', not %q", login, name)}
-		}
-	}
-	sorted := slices.Clone(repositories)
-	slices.Sort(sorted)
-	return secrets.GitHubNarrowing{Owner: login, Repositories: slices.Compact(sorted), ReadOnly: readOnly}, nil
-}
-
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
 // least one account. Only a github-app secret reads the tag.
 func TypeNeedsGitHubOwners(secretType string) bool {

@@ -1,5 +1,5 @@
 // packages/envoy/internal/broker/airlock/airlocktest/github.go
-// The GitHub stand-in a Service answers as: the App endpoints a narrowed github-app release is
+// The GitHub stand-in a Service answers as: the App endpoints a github-app profile's release is
 // made and given back over, and the repository read one of its tokens is spent at. It is a
 // value holding what it answers and what it was asked, as the seven stand-ins of stands.go are,
 // and it installs its Answer on a Service (Service.AnswerWith), so it may play a host of its own
@@ -43,6 +43,12 @@ type GitHubOptions struct {
 	// string for each scope, so that two runs of a check read one value; a test that counts the
 	// tokens left live, one for each request GitHub served, sets it.
 	DistinctTokens bool
+	// Permissions is what the App's installation on each owner holds, by owner: each permission
+	// and its level. The installations listing names it, and the token route refuses a request
+	// naming a permission the owner's map does not hold at that level or above, as GitHub does.
+	// An owner it has no entry for, and every owner while it is nil, holds
+	// standInGitHubPermissions.
+	Permissions map[string]map[string]string
 }
 
 // GitHubAnswer is what a GitHubStand answers each token request with: the mode, and the one
@@ -69,27 +75,26 @@ const (
 	GitHubTokensOrdinary GitHubTokenAnswer = "ordinary"
 	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing, which is what
 	// GitHub answers a body naming a permission the installation does not hold. The answer says
-	// nothing of a rate limit, so the minter reads it as the caller's narrowing and refuses the
-	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble, and no token
-	// is ever released.
+	// nothing of a rate limit, so the minter reads it as the caller's scope and refuses the
+	// release (secrets' refusal) rather than as the upstream's trouble, and no token is ever
+	// released.
 	GitHubTokensRefused GitHubTokenAnswer = "refuse"
 	// GitHubTokensRefusedRepository answers that same 422 to a token request whose repositories
-	// name the answer's Repository, and answers every other token request ordinarily. So a
-	// narrowing naming that repository is refused while one naming another is minted, and a
-	// request that leaves the repositories out is minted too: that is the reading a caller
-	// asking GitHub again with less of the narrowing makes to find which part was refused.
+	// name the answer's Repository, and answers every other token request ordinarily. So a scope
+	// naming that repository is refused while one naming another is minted, and a request that
+	// leaves the repositories out is minted too: that is the reading a caller asking GitHub again
+	// with fewer repositories makes to find which one was refused.
 	GitHubTokensRefusedRepository GitHubTokenAnswer = "refuse-repository"
 	// GitHubTokensRefusedPermissions answers that 422 to a token request whose body names any
-	// permissions — the request a read-only narrowing makes — and answers every other token
-	// request ordinarily. So the read-only half of a narrowing is refused while the repositories
-	// it names are minted, which is the other part a caller looking for the refused one reads.
+	// permissions, which every profile's token request does (secrets' cut), and answers a request
+	// that names none ordinarily. A per-owner refusal of the permissions alone is
+	// GitHubOptions.Permissions instead, which refuses what that owner does not hold.
 	GitHubTokensRefusedPermissions GitHubTokenAnswer = "refuse-permissions"
 	// GitHubTokensWider answers each token request a token wider than its body asked for: every
-	// repository of the account rather than the ones the body named, and a grant past the read
-	// set a read-only body asks for. GitHub applies the body it is sent, so a token like this is
-	// one something between the broker and GitHub widened: the minter revokes it and releases
-	// nothing (secrets.GitHubNarrowing.heldBy). It is how a check drives that path, which nothing
-	// else reaches.
+	// repository of the account rather than the ones the body named, and a grant the body did not
+	// name. GitHub applies the body it is sent, so a token like this is one something between the
+	// broker and GitHub widened: the minter revokes it and releases nothing (secrets' heldBy). It
+	// is how a check drives that path, which nothing else reaches.
 	GitHubTokensWider GitHubTokenAnswer = "widen"
 	// GitHubTokensFailOnce answers the next token request HTTP 503, as a GitHub outage does, and
 	// mints nothing for it, and then answers as GitHubTokensOrdinary from the request after it on.
@@ -117,24 +122,29 @@ func (a GitHubAnswer) refuses(asked githubAccessTokens) bool {
 	}
 }
 
-// standInGitHubPermissions is what this stand-in says every installation of the App was granted:
-// what the installations listing names, and what a token holds when its request named none. It
-// holds each read a read-only narrowing asks for, so such a narrowing asks for all of them, as
-// it does of an installation that holds them (secrets' heldReadOnlyPermissions). GitHub answers a
-// request naming no permissions a token holding all of the installation's, and the minter checks
-// the permissions of a read-only narrowing alone, which always names them, so nothing but a
-// caller reading what it got reads these on a token.
+// standInGitHubPermissions is what this stand-in says an installation of the App holds where
+// GitHubOptions.Permissions names none for its owner: what the installations listing names, and
+// what a token holds when its request named none. A profile's permissions are cut to it (secrets'
+// cut), so a profile asking for a permission it does not name, or for one at a level past it,
+// has that entry left out, and the release says so.
 var standInGitHubPermissions = map[string]string{
 	"actions": "read", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "read",
 }
 
-// widerPermission is the grant a widened answer holds past what its body asked for. No narrowing
-// asks for it, and the minter refuses a read-only token holding a permission outside contents,
-// metadata, pull requests, actions, checks and statuses, so it is the permission half of a token
-// wider than asked.
+// standInLevelRank orders the levels GitHub gives a permission, so the token route refuses a
+// level past the one an installation holds. A level it does not know ranks 0.
+var standInLevelRank = map[string]int{"read": 1, "write": 2, "admin": 3}
+
+// writeOnlyPermissions are the permissions GitHub grants at write alone (components.schemas.
+// app-permissions of its REST description), so the token route refuses one asked for at read.
+var writeOnlyPermissions = []string{"profile", "workflows"}
+
+// widerPermission is the grant a widened answer holds past what its body asked for. No stand-in
+// profile asks for it, and the minter refuses a token holding a permission its request did not
+// name, so it is the permission half of a token wider than asked.
 const widerPermission, widerPermissionLevel = "administration", "write"
 
-// GitHubStand is the four routes a narrowed github-app release is made, spent and given back
+// GitHubStand is the four routes a github-app profile's release is made, spent and given back
 // over: GET /app/installations, which answers the installations it was given; POST
 // /app/installations/{id}/access_tokens, which answers that installation's token, its expiry and
 // what the token holds, read from the body the request sent; GET /repos/{owner}/{repo}, the
@@ -172,6 +182,31 @@ func NewGitHubStand(o GitHubOptions) *GitHubStand {
 		answer.Mode = GitHubTokensOrdinary
 	}
 	return &GitHubStand{options: o, answer: answer, scopes: map[string]githubScope{}}
+}
+
+// held is what the App's installation on owner holds: its entry of GitHubOptions.Permissions, or
+// standInGitHubPermissions where there is none.
+func (g *GitHubStand) held(owner string) map[string]string {
+	if held, set := g.options.Permissions[owner]; set {
+		return held
+	}
+	return standInGitHubPermissions
+}
+
+// holdsAll reports whether the App's installation on owner holds every permission asked names,
+// each at the level asked or above, and whether each is asked at a level GitHub gives it: GitHub
+// answers 422 to a request past what the installation holds, and to workflows or profile at read.
+func (g *GitHubStand) holdsAll(owner string, asked map[string]string) bool {
+	held := g.held(owner)
+	for permission, level := range asked {
+		if standInLevelRank[level] == 0 || standInLevelRank[held[permission]] < standInLevelRank[level] {
+			return false
+		}
+		if level == "read" && slices.Contains(writeOnlyPermissions, permission) {
+			return false
+		}
+	}
+	return true
 }
 
 // Answers replaces what the token requests from here on are answered with - every one of them,
@@ -214,10 +249,11 @@ func (g *GitHubStand) owners() []string {
 
 // token is the installation token this stand-in answers for owner, and a token of its own for a
 // request that named repositories: GitHub mints a token for each request, and a stand-in that
-// answered one string for every scope could not tell a narrowed caller from a wide one at its
-// repository route. Two requests naming the same repositories are answered the same token, so
-// two runs of a check read one value, and what that token reaches is what the last mint of that
-// scope recorded (remember) - unless DistinctTokens is set, which numbers each request's token.
+// answered one string for every scope could not tell a caller of named repositories from a wide
+// one at its repository route. Two requests naming the same repositories are answered the same
+// token, so two runs of a check read one value, and what that token reaches is what the last mint
+// of that scope recorded (remember) - unless DistinctTokens is set, which numbers each request's
+// token.
 func (g *GitHubStand) token(owner string, repositories []string) string {
 	token := g.options.Token
 	if token == "" {
@@ -273,7 +309,7 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 			installations = append(installations, map[string]any{
 				"id":          g.options.Installations[owner],
 				"account":     map[string]string{"login": owner},
-				"permissions": standInGitHubPermissions,
+				"permissions": g.held(owner),
 			})
 		}
 		_ = json.NewEncoder(w).Encode(installations)
@@ -290,11 +326,13 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 }
 
 // answerToken is GitHub's answer to one access_tokens request: the token, its expiry and what
-// GitHub says the token holds, which is what the minter checks a narrowing against
-// (secrets.GitHubNarrowing.heldBy). The answer echoes the body: a selection of the repositories
-// it named, or all of the account's when it named none, and the permissions it asked for. The
-// other answers (Answers) answer in its place: three that refuse this request or every one, one
-// that mints wider than asked, and one outage before it.
+// GitHub says the token holds, which is what the minter checks its request against (secrets'
+// heldBy). A request naming a permission the owner's installation does not hold at that level,
+// or workflows or profile at read, is answered 422 and minted nothing, as GitHub answers it
+// (holdsAll). The answer echoes the body: a selection of the repositories it named, or all of the
+// account's when it named none, and the permissions it asked for. The other answers (Answers)
+// answer in its place: three that refuse this request or every one, one that mints wider than
+// asked, and one outage before it.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
 	answering := g.answering()
 	asked := githubTokenRequest(seen)
@@ -305,10 +343,10 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Service Unavailable", "status": "503"})
 		return
 	}
-	if answering.refuses(asked) {
+	if answering.refuses(asked) || !g.holdsAll(owner, asked.Permissions) {
 		// GitHub's own 422, which mints nothing. One body serves whichever part the answer
-		// refuses: the minter reads the status alone and quotes none of GitHub's text
-		// (secrets.GitHubNarrowing.refusal), which it writes from the narrowing it sent.
+		// refuses: the minter reads the status alone and quotes none of GitHub's text (secrets'
+		// refusal), which it writes from the request it sent.
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"message":           "The permissions requested are not granted to this installation.",
@@ -324,11 +362,11 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 	}
 	permissions := asked.Permissions
 	if len(permissions) == 0 {
-		permissions = standInGitHubPermissions
+		permissions = g.held(owner)
 	}
 	if answering.Mode == GitHubTokensWider {
-		// Wider on both of the rules a narrowed token is checked by: every repository of the
-		// account, and a grant the body did not ask for.
+		// Wider on both of the rules a token is checked by: every repository of the account, and
+		// a grant the body did not ask for.
 		selection, repositories = "all", nil
 		wider := maps.Clone(permissions)
 		wider[widerPermission] = widerPermissionLevel
@@ -370,7 +408,7 @@ func (g *GitHubStand) answerRepository(w http.ResponseWriter, credential, owner,
 		return
 	}
 	// A scope that names no repository reaches every repository of its account, which is the
-	// token a narrowing that named none is minted as.
+	// token a scope that named none is minted as.
 	reaches := len(scope.repositories) == 0 ||
 		slices.ContainsFunc(scope.repositories, func(name string) bool { return strings.EqualFold(name, repository) })
 	if !strings.EqualFold(scope.owner, owner) || !reaches {
@@ -410,7 +448,7 @@ type githubAccessTokens struct {
 }
 
 // githubTokenRequest is that body as the request sent it, and both fields empty for a request
-// that sent no body, which is a mint narrowing nothing, and for a body that is no such object.
+// that sent no body, which names nothing, and for a body that is no such object.
 func githubTokenRequest(seen Request) githubAccessTokens {
 	var asked githubAccessTokens
 	if strings.TrimSpace(seen.Body) == "" {

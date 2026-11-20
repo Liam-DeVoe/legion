@@ -34,6 +34,7 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/broker/judge"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -204,14 +205,13 @@ func hashOfBody(body string) string {
 
 // TestTheGitHubStandAnswersTheInstallationsItWasGiven drives the broker's own GitHub App minter
 // against the stand-in: the two routes answer what that minter needs, so a github-app secret
-// released against this stand-in holds a token for each owner it was given and for no other.
+// released against this stand-in holds a token for each account the profile's scope names that
+// it was given an installation on, and for no other.
 func TestTheGitHubStandAnswersTheInstallationsItWasGiven(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7, "zed-org": 9}}).Answer)
 
-	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-		Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
-	})
+	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: gitHubAppValue(t), GitHub: acmeScope()})
 	if err != nil {
 		t.Fatalf("mint a github-app secret against the stand-in: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestTheGitHubStandAnswersTheInstallationsItWasGiven(t *testing.T) {
 		t.Fatalf("the minted value is no JSON object of installations: %v", err)
 	}
 	if len(held.Installations) != 1 {
-		t.Fatalf("the mint holds %d installations; want the one owner it was asked for", len(held.Installations))
+		t.Fatalf("the mint holds %d installations; want the one account its scope names", len(held.Installations))
 	}
 	if got := held.Installations["acme-org"]; got.InstallationID != 7 || got.Token != "ghs_standin_acme-org" {
 		t.Errorf("acme-org's installation is %+v; want installation 7 and its own token", got)
@@ -250,6 +250,16 @@ func gitHubAppValue(t *testing.T) string {
 	return string(value)
 }
 
+// acmeScope is the profile's scope each GitHub row below mints for unless it says otherwise:
+// contents at read on acme-org, on repositories, or on every repository the installation reaches
+// where it names none, released as the JSON of installations.
+func acmeScope(repositories ...string) *secrets.GitHubScope {
+	return &secrets.GitHubScope{
+		Accounts: []string{"acme-org"}, Repositories: repositories,
+		Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
+	}
+}
+
 // mintedGitHubToken is the installation token a github-app release holds for owner.
 func mintedGitHubToken(t *testing.T, value, owner string) string {
 	t.Helper()
@@ -265,10 +275,11 @@ func mintedGitHubToken(t *testing.T, value, owner string) string {
 }
 
 // TestTheGitHubStandAnswersWhatATokenRequestAsked: the access_tokens answer is what the minter
-// checks a narrowing against (its heldBy), so the stand-in has to say what the body it was sent
+// checks its request against (its heldBy), so the stand-in has to say what the body it was sent
 // asked for - a selection of the repositories it named, and the permissions it named - and "all"
-// for a body that named no repositories at all. A stand-in that answered the token alone would
-// refuse every repository narrowing driven against it.
+// for a body that named no repositories at all. Against a stand-in that answered the token
+// alone, the minter would refuse every profile's token, since it refuses a token that names no
+// permissions.
 func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
@@ -287,7 +298,7 @@ func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 			permissions:  map[string]string{"contents": "read", "metadata": "read"},
 		},
 		{
-			name:        "a body naming neither, which is a mint that narrows nothing",
+			name:        "a body naming neither, which GitHub answers with all the installation holds",
 			selection:   "all",
 			permissions: standInGitHubPermissions,
 		},
@@ -329,35 +340,117 @@ func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 	}
 }
 
-// TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne drives the broker's own minter at
-// the stand-in, which is the assertion the two above rest on: a narrowing the stand-in answers
-// as GitHub does is released, so every repository-narrowed check of this stack has a token to
-// spend; and the token the widening option answers is refused with nothing released, which is
-// the path a check cannot otherwise drive, since GitHub itself never widens.
-func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
+// TestTheGitHubStandHoldsThePermissionsItWasGiven: what an installation holds is what the minter
+// cuts a profile's permissions to (secrets' cut), so the installations listing names each owner's
+// own map of GitHubOptions.Permissions, and an owner with no entry holds standInGitHubPermissions.
+// The token route answers 422, as GitHub does, to a request naming a permission at a level past
+// what that owner's map holds, to one naming a permission the map does not name at all, and to
+// workflows at read, a level GitHub never gives it; it mints a request within the map, and each
+// owner's own map decides that owner's requests. Driven through the broker's own minter, a profile
+// asking past the map is cut to it, and the release names what the cut left out.
+func TestTheGitHubStandHoldsThePermissionsItWasGiven(t *testing.T) {
+	acme := map[string]string{"contents": "read", "metadata": "read", "workflows": "write"}
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewGitHubStand(GitHubOptions{
+		Installations: map[string]int64{"acme-org": 7, "zed-org": 9},
+		Permissions:   map[string]map[string]string{"acme-org": acme},
+	}).Answer)
+	client := clientOf(service)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, service.URL()+"/app/installations", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := answerOf(t, client, request)
+	var listed []struct {
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+		Permissions map[string]string `json:"permissions"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &listed) != nil {
+		t.Fatalf("the installations listing answered %d: %s; want 200 and a list of installations", status, body)
+	}
+	held := map[string]map[string]string{}
+	for _, installation := range listed {
+		held[installation.Account.Login] = installation.Permissions
+	}
+	if len(held) != 2 || !maps.Equal(held["acme-org"], acme) || !maps.Equal(held["zed-org"], standInGitHubPermissions) {
+		t.Fatalf("the listing says the installations hold %v; want acme-org's own map, and zed-org the stand-in's default", held)
+	}
+
+	for _, tc := range []struct {
+		name, installation, body string
+		want                     int
+	}{
+		{"a permission within acme-org's map", "7", `{"permissions":{"contents":"read"}}`, http.StatusCreated},
+		{"workflows at the write acme-org holds it at", "7", `{"permissions":{"workflows":"write","metadata":"read"}}`, http.StatusCreated},
+		{"a permission at a level past acme-org's map", "7", `{"permissions":{"contents":"write"}}`, http.StatusUnprocessableEntity},
+		{"a permission acme-org's map does not name", "7", `{"permissions":{"pull_requests":"read"}}`, http.StatusUnprocessableEntity},
+		{"workflows at read, a level GitHub never gives it", "7", `{"permissions":{"workflows":"read"}}`, http.StatusUnprocessableEntity},
+		{"that same level past acme-org's map, for zed-org, which holds the default", "9", `{"permissions":{"contents":"write","pull_requests":"write"}}`, http.StatusCreated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, service.URL()+"/app/installations/"+tc.installation+"/access_tokens", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status, body := answerOf(t, client, request); status != tc.want {
+				t.Fatalf("the token request answered %d: %s; want %d", status, body, tc.want)
+			}
+		})
+	}
+
+	t.Run("the broker's minter, for a profile asking past acme-org's map", func(t *testing.T) {
+		scope := acmeScope()
+		scope.Permissions = map[string]string{"contents": "write", "issues": "read", "workflows": "write"}
+		minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: gitHubAppValue(t), GitHub: scope})
+		if err != nil {
+			t.Fatalf("mint a profile asking past acme-org's map: %v", err)
+		}
+		if left := minted.LeftOut["acme-org"]; len(minted.LeftOut) != 1 || !slices.Equal(left, []string{"contents:write", "issues"}) {
+			t.Fatalf("the release says the cut left out %v; want contents at write and issues, of acme-org alone", minted.LeftOut)
+		}
+		asked := service.Requests()
+		last := asked[len(asked)-1]
+		var sent struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if last.Path != "/app/installations/7/access_tokens" || json.Unmarshal([]byte(last.Body), &sent) != nil ||
+			!maps.Equal(sent.Permissions, map[string]string{"contents": "read", "workflows": "write"}) {
+			t.Fatalf("the stand-in was last asked %s %s with %s; want acme-org's token asking for contents at read and workflows at write", last.Method, last.Path, last.Body)
+		}
+	})
+}
+
+// TestTheGitHubStandReleasesAProfilesTokenAndRefusesAWiderOne drives the broker's own minter at
+// the stand-in, which is the assertion the rows above rest on: a profile's scope the stand-in
+// answers as GitHub does is released, so every check of this stack has a token to spend, of named
+// repositories or of every one; and the token the widening option answers is refused with
+// nothing released, which is the path a check cannot otherwise drive, since GitHub itself never
+// widens.
+func TestTheGitHubStandReleasesAProfilesTokenAndRefusesAWiderOne(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
-		name      string
-		answer    GitHubTokenAnswer
-		narrowing *secrets.GitHubNarrowing
-		class     string
+		name   string
+		answer GitHubTokenAnswer
+		scope  *secrets.GitHubScope
+		class  string
 	}{
-		{name: "the repositories the narrowing named", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
-		{name: "the read access the narrowing named", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
-		{name: "every repository, for a narrowing that named one", answer: GitHubTokensWider, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
-		{name: "a grant past the read set, for a read-only narrowing", answer: GitHubTokensWider, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
+		{name: "the repositories the scope named", scope: acmeScope("proofs")},
+		{name: "the permissions the profile named, on every repository", scope: acmeScope()},
+		{name: "every repository, for a scope that named one", answer: GitHubTokensWider, class: "upstream", scope: acmeScope("proofs")},
+		{name: "a grant the profile did not name, for a scope of every repository", answer: GitHubTokensWider, class: "upstream", scope: acmeScope()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
 				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: tc.answer},
 			}).Answer)
-			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
-			})
+			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: tc.scope})
 			if tc.class == "" {
 				if err != nil {
-					t.Fatalf("mint a narrowed token against the stand-in: %v", err)
+					t.Fatalf("mint a profile's token against the stand-in: %v", err)
 				}
 				if token := mintedGitHubToken(t, minted.Value, "acme-org"); token == "" {
 					t.Error("the release holds no token for acme-org")
@@ -373,26 +466,26 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 }
 
 // TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo: the refusing option answers the 422 GitHub
-// answers a body it will not mint for, and the minter must read that as the caller's narrowing
-// rather than as the upstream's trouble, so no narrowing driven against it releases a token.
+// answers a body it will not mint for, and the minter must read that as the caller's scope
+// rather than as the upstream's trouble, so no profile's token driven against it is released.
+// The refusal names what the scope likely got wrong: its repositories where it names some, and
+// else the permissions it asked for.
 func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
-		name      string
-		narrowing *secrets.GitHubNarrowing
-		names     string
+		name  string
+		scope *secrets.GitHubScope
+		names string
 	}{
-		{"a narrowing that named repositories", &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}, "proofs"},
-		{"a read-only narrowing", &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}, "contents: read"},
+		{"a scope that named repositories", acmeScope("proofs"), "proofs"},
+		{"a scope of every repository", acmeScope(), "contents: read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
 				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: GitHubTokensRefused},
 			}).Answer)
-			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
-			})
+			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: tc.scope})
 			if err == nil {
 				t.Fatalf("mint against the refusing stand-in released %q; want a refusal", minted.Value)
 			}
@@ -406,43 +499,38 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 }
 
 // TestTheGitHubStandRefusesOnePartOfATokenRequest: the two answers that refuse one part of a
-// request and mint every other, which is what a caller that asks GitHub again with less of a
-// narrowing reads. The repository answer refuses the narrowing naming its repository, mints the
-// one naming another, and mints the request that names no repository at all - the probe that
-// finds the repositories to be the refused part. The permissions answer refuses a read-only
-// narrowing and mints a narrowing that names repositories alone.
+// request and mint every other. The repository answer refuses the scope naming its repository,
+// mints the one naming another, and mints the request that names no repository at all - the
+// probe that finds the repositories to be the refused part, which the broker's check makes by
+// asking again with fewer repositories (requests' narrowingCause). The permissions answer refuses
+// a request naming permissions, which every profile's token request does (secrets' cut), so it
+// refuses every scope the minter mints, of named repositories or of every one; and it mints a
+// request naming none, which only a caller other than the minter sends.
 func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 	value := gitHubAppValue(t)
 	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}
 	refusedPermissions := GitHubAnswer{Mode: GitHubTokensRefusedPermissions}
 	for _, tc := range []struct {
-		name      string
-		answer    GitHubAnswer
-		narrowing *secrets.GitHubNarrowing
-		refused   bool
+		name    string
+		answer  GitHubAnswer
+		scope   *secrets.GitHubScope
+		refused bool
 	}{
-		{name: "the repository the answer names", answer: refusedRepository, refused: true,
-			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
-		{name: "another repository, under that same answer", answer: refusedRepository,
-			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"ledger"}}},
-		{name: "a request naming no repository, under that same answer", answer: refusedRepository,
-			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
-		{name: "the permissions a read-only narrowing names", answer: refusedPermissions, refused: true,
-			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
-		{name: "repositories alone, under that same answer", answer: refusedPermissions,
-			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
+		{name: "the repository the answer names", answer: refusedRepository, refused: true, scope: acmeScope("proofs")},
+		{name: "another repository, under that same answer", answer: refusedRepository, scope: acmeScope("ledger")},
+		{name: "a request naming no repository, under that same answer", answer: refusedRepository, scope: acmeScope()},
+		{name: "the permissions a scope of every repository names", answer: refusedPermissions, refused: true, scope: acmeScope()},
+		{name: "the permissions a scope of named repositories names too", answer: refusedPermissions, refused: true, scope: acmeScope("proofs")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
 				Installations: map[string]int64{"acme-org": 7}, Answer: tc.answer,
 			}).Answer)
-			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
-			})
+			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: tc.scope})
 			if !tc.refused {
 				if err != nil {
-					t.Fatalf("mint the narrowing the answer leaves alone: %v", err)
+					t.Fatalf("mint the scope the answer leaves alone: %v", err)
 				}
 				if token := mintedGitHubToken(t, minted.Value, "acme-org"); token == "" {
 					t.Error("the release holds no token for acme-org")
@@ -456,10 +544,24 @@ func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a request naming repositories alone, under the permissions answer", func(t *testing.T) {
+		service := newService(t, ServiceOptions{Plain: true})
+		service.AnswerWith(NewGitHubStand(GitHubOptions{
+			Installations: map[string]int64{"acme-org": 7}, Answer: refusedPermissions,
+		}).Answer)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, service.URL()+"/app/installations/7/access_tokens", strings.NewReader(`{"repositories":["proofs"]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status, body := answerOf(t, clientOf(service), request); status != http.StatusCreated {
+			t.Fatalf("a token request naming no permissions answered %d: %s; want 201, the part the answer leaves alone", status, body)
+		}
+	})
 }
 
 // TestTheGitHubStandsAnswerIsSetWhileItRuns: the answers one after another against one
-// running stand, which is what a check of the narrowing drives on one stack - the ordinary mint,
+// running stand, which is what a check of a profile drives on one stack - the ordinary mint,
 // the 422 that releases nothing, the token wider than asked that the minter revokes, and the
 // ordinary mint again as that check's negative control - and the one outage, which a minter
 // that makes one attempt fails at as the upstream's and a minter with a Retry mints through at
@@ -470,7 +572,7 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	stand := NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
 	value := gitHubAppValue(t)
-	narrowing := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}
+	scope := acmeScope("proofs")
 	// retry waits no real time: the row is about what the stand answers, not the backoff.
 	retry := &secrets.Retry{Sleep: func(context.Context, time.Duration) error { return nil }}
 	mint := func(retried bool) (secrets.Minted, error) {
@@ -478,7 +580,7 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 		if retried {
 			app.Retry = retry
 		}
-		return app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: narrowing})
+		return app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: scope})
 	}
 
 	for _, tc := range []struct {
@@ -535,35 +637,33 @@ func tokenRequests(seen []Request) int {
 	return count
 }
 
-// TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt: a check spends a narrowed token
-// at GitHub, so the stand-in has to answer the repository that token reaches and refuse every
-// other one - another repository of the same account, and a repository of another account - and
-// refuse a credential it never minted at all. A token that narrowed nothing reaches every
-// repository of its own account and none of anyone else's, which is the other scope it mints.
+// TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt: a check spends a token of named
+// repositories at GitHub, so the stand-in has to answer the repository that token reaches and
+// refuse every other one - another repository of the same account, and a repository of another
+// account - and refuse a credential it never minted at all. A token of a scope that named no
+// repository reaches every repository of its own account and none of anyone else's, which is
+// the other scope it mints.
 func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7, "zed-org": 9}}).Answer)
 	app := secrets.GitHubApp{Base: service.URL()}
 	value := gitHubAppValue(t)
 
-	narrowed, err := app.Mint(t.Context(), secrets.MintRequest{
-		Value: value, GitHubOwners: []string{"acme-org", "zed-org"},
-		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}},
-	})
+	named, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: acmeScope("proofs")})
 	if err != nil {
-		t.Fatalf("mint a token narrowed to one repository: %v", err)
+		t.Fatalf("mint a token of one repository: %v", err)
 	}
-	// The record a check reads the narrowing back from: the token request named that one
-	// repository and nothing else.
+	// The record a check reads the scope back from: the token request named that one repository
+	// and nothing else.
 	asked := service.Requests()
 	if last := asked[len(asked)-1]; last.Path != "/app/installations/7/access_tokens" || !strings.Contains(last.Body, `"repositories":["proofs"]`) {
 		t.Fatalf("the stand-in was last asked %s %s with %s; want the token request for proofs alone", last.Method, last.Path, last.Body)
 	}
-	wide, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org"}})
+	wide, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: acmeScope()})
 	if err != nil {
-		t.Fatalf("mint a token that narrows nothing: %v", err)
+		t.Fatalf("mint a token of every repository: %v", err)
 	}
-	narrowedToken := mintedGitHubToken(t, narrowed.Value, "acme-org")
+	namedToken := mintedGitHubToken(t, named.Value, "acme-org")
 	wideToken := mintedGitHubToken(t, wide.Value, "acme-org")
 
 	client := clientOf(service)
@@ -571,12 +671,12 @@ func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T)
 		name, path, credential, full string
 		want                         int
 	}{
-		{"the repository the narrowing names", "/repos/acme-org/proofs", "Bearer " + narrowedToken, "acme-org/proofs", http.StatusOK},
-		{"that repository under GitHub's other scheme", "/repos/acme-org/proofs", "token " + narrowedToken, "acme-org/proofs", http.StatusOK},
-		{"another repository of the same account", "/repos/acme-org/widgets", "Bearer " + narrowedToken, "", http.StatusNotFound},
-		{"a repository of another account", "/repos/zed-org/proofs", "Bearer " + narrowedToken, "", http.StatusNotFound},
+		{"the repository the scope names", "/repos/acme-org/proofs", "Bearer " + namedToken, "acme-org/proofs", http.StatusOK},
+		{"that repository under GitHub's other scheme", "/repos/acme-org/proofs", "token " + namedToken, "acme-org/proofs", http.StatusOK},
+		{"another repository of the same account", "/repos/acme-org/widgets", "Bearer " + namedToken, "", http.StatusNotFound},
+		{"a repository of another account", "/repos/zed-org/proofs", "Bearer " + namedToken, "", http.StatusNotFound},
 		{"a credential this stand-in never minted", "/repos/acme-org/proofs", "Bearer ghs_no_token_of_this_runs", "", http.StatusUnauthorized},
-		{"any repository of the account, for a token that narrowed none", "/repos/acme-org/widgets", "Bearer " + wideToken, "acme-org/widgets", http.StatusOK},
+		{"any repository of the account, for a token that named none", "/repos/acme-org/widgets", "Bearer " + wideToken, "acme-org/widgets", http.StatusOK},
 		{"another account's repository, for that same token", "/repos/zed-org/proofs", "Bearer " + wideToken, "", http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -605,7 +705,7 @@ func TestTheGitHubStandRevokesATokenItMinted(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-		Name: "legion-github-app", Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
+		Name: "legion-github-app", Value: gitHubAppValue(t), GitHub: acmeScope(),
 	})
 	if err != nil {
 		t.Fatalf("mint a github-app secret against the stand-in: %v", err)
@@ -652,8 +752,7 @@ func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
 	}).Answer)
 
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-		Name: "legion-github-app", Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
-		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}},
+		Name: "legion-github-app", Value: gitHubAppValue(t), GitHub: acmeScope("proofs"),
 	})
 	if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
 		t.Fatalf("mint against the widened answer = %q, %v (class %s); want nothing released and class upstream",

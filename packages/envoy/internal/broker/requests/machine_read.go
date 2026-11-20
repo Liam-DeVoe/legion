@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,16 +39,25 @@ const MintFailedMessage = "broker: mint failed"
 // part of any value. It is the operator's line for reading which secrets the rule reaches.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
-// NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
-// refused for what it names, which happens in two places. A release's refusal is one: an account
-// a github-app secret of the grant does not list (403 NARROWING_OWNER_NOT_LISTED, before any
-// minter runs), or GitHub's 422 to the narrowed token (422 NARROWING_REFUSED); that case carries
-// grant=, enrollment=, name=<the secret's name> and error=. Create's check of a request's
-// narrowing is the other (narrowing_check.go): every refusal it makes before anybody is asked to
-// approve the request, which carries enrollment=, name= and error= and no grant= key at all,
-// since no grant exists and the refusal is why none will. Neither case holds a value or a token
-// in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.
+// NarrowingRefusedMessage is logged, at WARN, each time a GitHub profile's scope is refused for
+// what it names (secrets.ErrMintNarrowingRefused: its permissions cut to what an installation
+// holds leave none, or GitHub's 422 to its token request), which happens in two places. A
+// release's refusal is one (422 PROFILE_MINT_REFUSED), which carries grant=, enrollment=,
+// name=<the profile's name> and error=. Create's check before an approval is the other
+// (profile_check.go): every refusal it makes before anybody is asked to approve the request,
+// which carries enrollment=, name= and error= and no grant= key at all, since no grant exists and
+// the refusal is why none will. Neither case holds a value or a token in any key. A refused
+// scope the profiles file or the caller fixes, not a mint failure the operator acts on in the App.
 const NarrowingRefusedMessage = "broker: narrowing refused"
+
+// ProfilePermissionLeftOutMessage is logged, at WARN, by each release of a github-app profile, once
+// for each entry the cut of the profile's permissions to what an installation holds left out
+// (secrets.Minted.LeftOut), followed by name=<the profile's name>, account=<the account> and
+// permission=<the entry: the permission, or the permission and the level the installation does
+// not hold, as permission:level>. The token was released without it, and the release's answer
+// names it too (Release.GitHubLeftOut). The App's owner grants it on that account, or the
+// profiles file stops asking for it.
+const ProfilePermissionLeftOutMessage = "cipherd: a profile's permission was left out, since the installation does not hold it"
 
 // PendingLeftOutMessage is logged, at WARN, once for each pending record PendingForApprover
 // leaves out of an approver's list because its signed record does not verify for this broker:
@@ -99,12 +110,14 @@ const RequestEndedBrokerMovedMessage = "broker: a pending request's record is si
 const GrantChainInvalidMessage = "broker: a grant's approval chain does not verify; it releases nothing"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
-// and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
-// rest.
+// when the grant holds a name behind the airlock, how to reach the proxy that holds the rest,
+// and, for each github-app profile whose permissions the cut to what an installation holds left
+// something out of, each entry it left out, by profile name and account (secrets.Minted.LeftOut).
 type Release struct {
-	Values  map[string]string
-	Expires *time.Time
-	Airlock *AirlockRelease // nil when no granted name is behind the airlock
+	Values        map[string]string
+	Expires       *time.Time
+	Airlock       *AirlockRelease                // nil when no granted name is behind the airlock
+	GitHubLeftOut map[string]map[string][]string // nil when no cut left anything out
 }
 
 // grantRelease is a live grant as checkRelease found it: the enrollment that holds it, the
@@ -249,15 +262,9 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 // nil for a grant that lasts until its session ends. Every call runs checkRelease's whole set of
 // re-checks and then the release loop both releases of a grant run (readRelease, release.go). A
 // stored secret releases its frozen source. A type secret reads that same stored source and
-// passes its value to the type's minter. It holds no pooled connection across a Secrets Manager
-// read: the grant's names are read into memory before the first value is fetched. A non-nil
-// narrowing is this release's alone: it reaches the github-app minter of every github-app name
-// the grant holds, and the grant records nothing of it, so its next release without one is
-// owner-wide again. A grant that holds no github-app name refuses a narrowing
-// (ErrNarrowingNotApplicable), one whose github-app name does not list the narrowing's owner in
-// the snapshot the release mints from refuses it (ErrNarrowingOwnerNotListed), and so does one
-// any of whose granted names is behind the airlock (ErrNarrowingBehindAirlock, narrowingRefusal);
-// each releases nothing and runs no minter.
+// passes its value to the type's minter, with the scope of the profile it is served as
+// (mintRequest). It holds no pooled connection across a Secrets Manager read: the grant's names
+// are read into memory before the first value is fetched.
 //
 // A granted name the airlock's rules name is released as placeholders instead of as its value:
 // its value is read or minted exactly as every other name's is, which is what says the value
@@ -271,26 +278,25 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
 // row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
 // nothing about the release.
-func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
+func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call ReleaseCall) (Release, error) {
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID, "values")
 	if err != nil {
 		return Release{}, err
 	}
-	if narrowing != nil {
-		if name, err := m.narrowingRefusal(checked.set, checked.granted, narrowing); err != nil {
-			if errors.Is(err, ErrNarrowingOwnerNotListed) {
-				slog.Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", name, "error", err)
-			}
-			return Release{}, err
-		}
-	}
-	read, err := m.readRelease(ctx, grantID, checked, releaseRead{narrowing: narrowing})
+	read, err := m.readRelease(ctx, grantID, checked, releaseRead{})
 	if err != nil {
 		return Release{}, err
 	}
 	values := map[string]string{}
 	splits := map[string]airlockSplit{}
+	var leftOut map[string]map[string][]string
 	for _, released := range read {
+		if released.leftOut != nil {
+			if leftOut == nil {
+				leftOut = map[string]map[string][]string{}
+			}
+			leftOut[released.name] = released.leftOut
+		}
 		if released.behindAirlock() {
 			// The real value goes no further than the loop that read it: the session is given
 			// the placeholders airlockRelease mints for the slots the split found.
@@ -299,7 +305,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 		}
 		values[released.name] = released.value
 	}
-	release := Release{Values: values, Expires: checked.expires}
+	release := Release{Values: values, Expires: checked.expires, GitHubLeftOut: leftOut}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
 			m.giveBack(ctx, read)
@@ -312,7 +318,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	if len(call.Command) > 0 {
 		command = loggedCommand(call.Command, handedOut(read, release.Airlock))
 	}
-	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
+	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason)}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
 		// The row is what says the values left the broker, and a release whose row failed hands
 		// nothing over, so what it minted is given back.
@@ -324,11 +330,11 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 }
 
 // readValue is one granted name's value and, for a minted type, when that value stops working,
-// with the refusals every release answers: a name the
-// store no longer holds (ErrSecretNotInStore), a narrowing the minter refused, which is logged as
-// a refused narrowing and handed back as it is, and any other failure named with the secret.
-func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
-	minted, err := m.release(ctx, g, served, narrowing)
+// with the refusals every release answers: a name the store no longer holds
+// (ErrSecretNotInStore), a profile's scope the minter refused, which is logged as a refused scope
+// and handed back as it is, and any other failure named with the secret.
+func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
+	minted, err := m.release(ctx, g, served)
 	if errors.Is(err, secrets.ErrNotFound) {
 		return secrets.Minted{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
@@ -339,49 +345,6 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 		return secrets.Minted{}, fmt.Errorf("read %s: %w", g.name, err)
 	}
 	return minted, nil
-}
-
-// narrowingRefusal is why narrowing cannot reach granted, with the name it refuses for, in the
-// order the three are reported: the grant holds no github-app secret
-// (ErrNarrowingNotApplicable), a github-app secret of it does not list the narrowing's owner in
-// its github-owners tag in set, the snapshot the names are judged against
-// (ErrNarrowingOwnerNotListed), or the airlock holds back one of those names
-// (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint refuses that owner
-// too, as a second barrier.
-//
-// Both places a narrowing is judged make these three refusals through this one function, so
-// neither can answer one of them differently: the release of a grant (Values, where set is the
-// snapshot the release mints from and granted its granted names) and Create's check before
-// anybody is asked (checkNarrowing, where set is the snapshot the request is evaluated against
-// and granted the names it asks for).
-//
-// The airlock's refusal is there because the broker would answer that it applied the narrowing
-// while the proxy went on swapping in the value it holds for that grant, which is minted
-// owner-wide. Recording the narrowing with the grant's placeholders instead was the other way
-// out, and is not taken: a narrowing is one release's alone — the grant records nothing of it,
-// and its next release without one is owner-wide again (Values) — while the proxy mints per pod
-// for the life of the grant, so recording it there would make a per-release narrowing stick to
-// the grant, which is a different promise from the one the CLI's help makes.
-func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, narrowing *secrets.GitHubNarrowing) (string, error) {
-	held := false
-	for _, g := range granted {
-		if secretType, _, minted, err := policy.ParseTypeSource(g.source); err != nil || !minted || secretType != policy.TypeGitHubApp {
-			continue
-		}
-		held = true
-		if !slices.Contains(set.Secrets[g.name].GitHubOwnerLogins(), narrowing.Owner) {
-			return g.name, fmt.Errorf("%w: %s's github-owners tag does not list %s", ErrNarrowingOwnerNotListed, g.name, narrowing.Owner)
-		}
-	}
-	if !held {
-		return "", ErrNarrowingNotApplicable
-	}
-	for _, g := range granted {
-		if m.Airlock.Bound(g.name) != nil {
-			return g.name, fmt.Errorf("%w: the airlock holds %s, whose value the proxy spends for this grant", ErrNarrowingBehindAirlock, g.name)
-		}
-	}
-	return "", nil
 }
 
 // recheckStoredSources checks every name of grantID that releases its stored value (a source no
@@ -476,20 +439,20 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 }
 
 // release is one granted name's value, and when that value stops working for a type whose
-// minter says. A stored secret reads its frozen source and ignores the
-// policy metadata and narrowing; it carries no expiry, since nothing but a new stored version
-// ends it. A type source reads its frozen store source (on Secret
-// Manager its deletion verdict is cached for 30 s, as for every secret), then passes that value
-// and the name, tier, GitHub owners and Google OAuth scopes from the policy snapshot Values
-// checked to the minter. Either value is spent by the one line-ending rule
-// (policy.TrimLineEnding): the stored value a session is handed, and the input the minter is
-// given, are read by the one rule, and each value the rule changed is logged as
-// TrailingLineEndingRemovedMessage with the secret's name. A token a minter makes is never
-// touched; the rule reaches the stored value alone.
+// minter says. A stored secret reads its frozen source and ignores the policy metadata; it
+// carries no expiry, since nothing but a new stored version ends it. A type source reads its
+// frozen store source (on Secret Manager its deletion verdict is cached for 30 s, as for every
+// secret), then passes that value and the name, tier, the scope of the GitHub profile it is
+// served as and its Google OAuth scopes from the policy snapshot Values checked to the minter
+// (mintRequest). Either value is spent by the one line-ending rule (policy.TrimLineEnding): the
+// stored value a session is handed, and the input the minter is given, are read by the one rule,
+// and each value the rule changed is logged as TrailingLineEndingRemovedMessage with the secret's
+// name. A token a minter makes is never touched; the rule reaches the stored value alone.
 // An Azure login also requires this name's grant decision to be approval, never automatic.
-// Only the github-app minter reads narrowing. A minter's refusal of the narrowing itself
-// (secrets.ErrMintNarrowingRefused) is returned as it is,
-// for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
+// Each entry the cut of a GitHub profile's permissions left out is logged as
+// ProfilePermissionLeftOutMessage, and the release carries them (secrets.Minted.LeftOut).
+// A minter's refusal of the profile's scope itself (secrets.ErrMintNarrowingRefused) is returned
+// as it is, for Values to log as a refused scope, and is no mint failure. A minter that refuses the
 // stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
 // refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
 // policy listed when this release read the value and under the type it was decoded
@@ -497,7 +460,7 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // to the decode of its new type. The failure line and this release's answer are every
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
-func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
+func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
 	secretType, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
@@ -523,7 +486,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), narrowing))
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name)))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
@@ -536,26 +499,58 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
+	for _, account := range slices.Sorted(maps.Keys(token.LeftOut)) {
+		for _, permission := range token.LeftOut[account] {
+			slog.Warn(ProfilePermissionLeftOutMessage, "name", g.name, "account", account, "permission", permission)
+		}
+	}
 	return token, nil
 }
 
 // mintRequest is the input one granted name's release gives its minter: the name, the type tag
-// its minters count their attempts under, the stored value as the line-ending rule spends it, the
-// tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
-// against, and the narrowing the caller asked for, nil where it asked for none. Create's check
-// builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
-// worth of the check: it asks GitHub about the same secret, with the same owners and the same
-// narrowing, as the release it stands for.
-func mintRequest(name, secretType string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+// its minters count their attempts under, the stored value as the line-ending rule spends it, and,
+// from the policy snapshot the release was checked against, the tier, the Google OAuth scopes
+// (the profile's google block, else its source's scopes tag) and the scope of the GitHub profile
+// the name is served as (gitHubScope). Create's check builds its request here too and sets Check
+// on it (checkMint), which is the whole worth of the check: it asks GitHub about the same profile,
+// with the same scope, as the release it stands for.
+func mintRequest(name, secretType string, served policy.Secret, value string) secrets.MintRequest {
 	return secrets.MintRequest{
-		Name:            name,
-		Type:            secretType,
-		HumanTier:       served.Tier == policy.TierHuman,
-		Value:           value,
-		GitHubOwners:    served.GitHubOwnerLogins(),
-		GoogleScopes:    served.ScopeURLs(),
-		GitHubNarrowing: narrowing,
+		Name:         name,
+		Type:         secretType,
+		HumanTier:    served.Tier == policy.TierHuman,
+		Value:        value,
+		GoogleScopes: served.ScopeURLs(),
+		GitHub:       gitHubScope(served.Profile),
 	}
+}
+
+// gitHubScope is the scope a release of profile mints, nil for a name that is no GitHub profile:
+// the profile's own accounts, repositories, permissions and value form. A profile that names
+// repositories mints for the accounts they belong to, with their names alone, so an account the
+// profile lists but names no repository of reaches none and is not minted for; a scope of
+// repositories of more than one account is refused by the minter (secrets.GitHubScope), since
+// one list of names cannot say which account holds each.
+func gitHubScope(profile *policy.Profile) *secrets.GitHubScope {
+	if profile == nil || profile.GitHub == nil {
+		return nil
+	}
+	block := profile.GitHub
+	scope := &secrets.GitHubScope{Accounts: block.Accounts, Permissions: block.Permissions, Value: block.Value}
+	if block.Repositories == nil {
+		return scope
+	}
+	scope.Accounts = nil
+	for _, repository := range block.Repositories {
+		account, name, _ := strings.Cut(repository, "/")
+		if !slices.Contains(scope.Accounts, account) {
+			scope.Accounts = append(scope.Accounts, account)
+		}
+		scope.Repositories = append(scope.Repositories, name)
+	}
+	slices.Sort(scope.Accounts)
+	slices.Sort(scope.Repositories)
+	return scope
 }
 
 // trimmedValue answers the value release spends for a stored value it has just read
