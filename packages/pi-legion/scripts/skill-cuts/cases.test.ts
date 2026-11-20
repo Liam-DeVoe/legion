@@ -93,6 +93,21 @@ test("a case of F1 loads", () => {
   expect(cases[0]?.messages[2]?.content?.[0]?.text).toStartWith("[Skill file: /");
 });
 
+test("a case with the builder's evidence loads, and an evidence entry with no source is refused", () => {
+  const base = alphaDir("base-evidence");
+  const evidence = [
+    { item: "role", source: "no role: the context is devbox" },
+    { item: "skill alpha", source: "[Skill file: …/skills/alpha/SKILL.md] at message 2" },
+  ];
+  const withEvidence = { ...f1Case("c-evidence"), evidence };
+  expect(loadCases(caseFile("evidence", [withEvidence]), base)).toEqual([withEvidence]);
+  const blank = { ...f1Case("c-blank"), evidence: [{ item: "role", source: "" }] };
+  const file = caseFile("evidence-blank", [blank]);
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-blank (${file}:1) is not a case: evidence.0.source`
+  );
+});
+
 test("refuses a line that is not a whole line of the base text", () => {
   const base = alphaDir("base-line");
   const part = {

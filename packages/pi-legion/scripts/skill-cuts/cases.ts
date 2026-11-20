@@ -62,7 +62,10 @@ const InsidePath = z
  * results of this skill's files, and `realStep` the real agent's next assistant message. `source`
  * names the store and the SHA-256 of the transcript's path (`pathHash`), never the path.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
- * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null. */
+ * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
+ * `evidence`, when the case builder wrote it, says where each part of the case came from that the
+ * transcript does not show by itself (the context's role, each skill, plugin and context file of
+ * the profile), one `{item, source}` per part, so a reader can check it. */
 export const Case = z.strictObject({
   id: z.string().min(1),
   cut: z.string().min(1),
@@ -93,6 +96,9 @@ export const Case = z.strictObject({
   sessionStart: z.iso.datetime({ offset: true }),
   secretsRemoved: z.int().nonnegative(),
   sessionDigest: z.string().min(1).nullable(),
+  evidence: z
+    .array(z.strictObject({ item: z.string().min(1), source: z.string().min(1) }))
+    .optional(),
 });
 export type Case = z.infer<typeof Case>;
 
