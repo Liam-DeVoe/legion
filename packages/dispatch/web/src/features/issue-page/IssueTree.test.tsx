@@ -86,6 +86,7 @@ import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stag
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
+import { overflowing } from "./words-scroll-fixtures";
 
 /**
  * What a reader does to the tree with the keyboard alone.
@@ -1252,9 +1253,14 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
   });
   // The rules that make a block of a row's words scroll, which `useOutOfTabOrder` reads through
   // the computed style: happy-dom applies no rule of styles.css.
+  const scrollers = "[data-node-words] pre, [data-node-words] table";
   const sheet = document.createElement("style");
-  sheet.textContent = "[data-node-words] pre, [data-node-words] table { overflow-x: auto; }";
+  sheet.textContent = `${scrollers} { overflow-x: auto; }`;
   document.head.append(sheet);
+  // A block keeps its tab stop only while its content runs past its box, and happy-dom lays
+  // nothing out, so the code block's long line and the table are laid out past theirs from the
+  // first pass on.
+  const restoreOverflow = overflowing(scrollers);
   try {
     const { container } = renderTree(root);
     await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
@@ -1324,6 +1330,7 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
     );
   } finally {
     sheet.remove();
+    restoreOverflow();
   }
 });
 

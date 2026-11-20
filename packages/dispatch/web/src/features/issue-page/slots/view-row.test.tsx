@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../../api/client";
 import { issueResultsQuery } from "../../../api/queries";
 import type { ArtifactBlock } from "../../../api/types";
-import { stubMatchMedia } from "../../margin/margin-fixture";
+import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
@@ -75,7 +75,7 @@ function answerReads() {
 }
 
 /** The view row of the fixtures' issue at its own address, under the page's providers. Each case
- *  matches no media query (`stubMatchMedia(false)`), where the row is the row of five. */
+ *  draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the row of five. */
 function renderViewRow(client: QueryClient) {
   const issue = issueDetails();
   const route = { key: issue.key, kind: "issue" } as const;
@@ -110,7 +110,7 @@ function newClient(): QueryClient {
 }
 
 test("the view row draws no count, unit word or flag while a read of the tree is out, and the real counts once every read has answered", async () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
   // The asks' read, held out until the case answers it.
@@ -151,7 +151,7 @@ test("the view row draws no count, unit word or flag while a read of the tree is
 });
 
 test("the view row draws no count while a read of the tree stands failed", async () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
   reads.results.mockRejectedValue(new Error("the results' read failed"));
@@ -182,7 +182,7 @@ test("the view row draws no count while a read of the tree stands failed", async
 // Conversation counts the threads the reader began, so until the reader's login has answered it
 // counts none of them: every read of the tree holding its answer is not enough on its own.
 test("the view row draws no count while the reader's login is out, and the real counts once it has answered", async () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
   // The reader's login, held out until the case answers it.
