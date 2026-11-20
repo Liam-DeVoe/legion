@@ -707,7 +707,11 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		// The held compaction answers after about 70 s (this step's row of scripts/e2e/README.md),
+		// past `legion claims`'s own --wait default of a minute (cmd/legion's
+		// operatorCall.withWait), so the caller is given a bound past it: what this step reads is
+		// the daemon's answer, not the command's own refusal at its bound.
+		out, err := r.legionClaimsTry("compact", "--wait", "3m", "--claim", string(token))
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
