@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -63,20 +62,6 @@ func registerPlan(h *harness, grant, issue, artifactID string, version int) *htt
 	}, nil)
 }
 
-// assertRefusalText is refused with the refusal's sentence held to its exact words.
-func assertRefusalText(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, text string) {
-	t.Helper()
-	body := recorder.Body.String()
-	refused(t, recorder, status, code)
-	var failure Failure
-	if err := json.Unmarshal([]byte(body), &failure); err != nil {
-		t.Fatalf("decode %s: %v", body, err)
-	}
-	if failure.Error != text {
-		t.Fatalf("%s says %q, want %q", code, failure.Error, text)
-	}
-}
-
 // assertPlanRefused holds the answer to a 409 PLAN_REFUSED with exactly reasons, in their order,
 // and the sentence that holds every one of them.
 func assertPlanRefused(t *testing.T, recorder *httptest.ResponseRecorder, reasons ...PlanReason) {
@@ -122,7 +107,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	statuses.givePlan(planDoc, 6, taskBlock(plan.DefaultTask, ""), taskBlock("a", "implementer reviewer"))
 
 	refused(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
 	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks)
@@ -173,14 +158,14 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 		PlanReason{Reason: `task a: the step "Implementer!" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*.`})
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Reason: "the plan has no task block, so it gives Legion no work."})
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", childDoc, 1), http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", childDoc, 1), http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE",
 		childDoc+" is not a document of LEGION-208")
 	statuses.planErr = dispatch.ErrNoBlocks
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "PLAN_UNREADABLE",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "PLAN_UNREADABLE",
 		"Dispatch gave version 1 of "+planDoc+" without its blocks, so Legion cannot read a plan from it: that Dispatch predates the plan's blocks. "+
 			"Nothing was recorded; give the plan again once Dispatch is upgraded")
 	statuses.planErr = errors.New("connection reset")
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
 		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("unreadable documents recorded %#v, want nothing", got)
@@ -209,7 +194,7 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 				assertPlanRefused(t, recorder, PlanReason{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."})
 				return
 			}
-			assertRefusalText(t, recorder, tc.refusal.Status, tc.refusal.Code, tc.refusal.Message)
+			refusedSaying(t, recorder, tc.refusal.Status, tc.refusal.Code, tc.refusal.Message)
 		})
 	}
 }
@@ -246,13 +231,13 @@ func TestAPlanGivenBeforeTheWorkStartsIsTheFirstStep(t *testing.T) {
 	if recorder := registerPlan(h, architect.grant(t), "LEGION-209", childDoc, 1); recorder.Code != http.StatusOK {
 		t.Fatalf("register the unreleased child's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-300", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-300", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
 		"LEGION-300 is outside the architect tree LEGION-208")
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-404", childDoc, 1), http.StatusNotFound, "ISSUE_NOT_FOUND",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-404", childDoc, 1), http.StatusNotFound, "ISSUE_NOT_FOUND",
 		"LEGION-404 is not a Dispatch issue")
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-211", childDoc, 1), http.StatusConflict, "ISSUE_ALREADY_RELEASED",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-211", childDoc, 1), http.StatusConflict, "ISSUE_ALREADY_RELEASED",
 		"LEGION-211 is in_progress in Dispatch and the daemon holds no record of it; register_plan takes a plan for an issue the daemon has not recorded only while it is triage, backlog, icebox or todo")
-	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-500", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-500", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
 		"issue is outside the architect tree")
 
 	want := []intake.Fact{
@@ -293,7 +278,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	if recorder := registerPlan(h, owner.grant(t), "LEGION-209", childDoc, 2); recorder.Code != http.StatusOK {
 		t.Fatalf("the new owner's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	assertRefusalText(t, registerPlan(h, earlier.grant(t), "LEGION-209", childDoc, 3), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+	refusedSaying(t, registerPlan(h, earlier.grant(t), "LEGION-209", childDoc, 3), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
 		"issue is outside the architect tree")
 
 	want := []intake.Fact{
@@ -339,9 +324,9 @@ func TestAnArchitectWhoseIssueLeftTheTreeOwnsNoIssueOfIt(t *testing.T) {
 	}
 
 	seedIssueAt(t, h, "LEGION-211", phase.Admitted)
-	assertRefusalText(t, registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 2), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+	refusedSaying(t, registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 2), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
 		"issue is outside the architect tree")
-	assertRefusalText(t, stopTask(h, sub.grant(t), "LEGION-209", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+	refusedSaying(t, stopTask(h, sub.grant(t), "LEGION-209", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
 		"issue is outside the architect tree")
 	if recorder := registerPlan(h, root.grant(t), "LEGION-209", childDoc, 3); recorder.Code != http.StatusOK {
 		t.Fatalf("the root's architect's plan = %d %s, want 200", recorder.Code, recorder.Body)
@@ -372,9 +357,9 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 
 	refused(t, stopTask(h, worker.grant(t), "LEGION-208", "a"), http.StatusForbidden, "ARCHITECT_REQUIRED")
-	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-208", " "), http.StatusBadRequest, "MISSING_FIELD", "task is required")
-	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-404", "a"), http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
-	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-208", " "), http.StatusBadRequest, "MISSING_FIELD", "task is required")
+	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-404", "a"), http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
+	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused stops recorded %#v, want nothing", got)
 	}
@@ -391,6 +376,6 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 
 	for _, refusal := range []*intake.Refusal{intake.TaskNotFound("LEGION-208", "b", []string{"a"}), intake.TaskDone("LEGION-208", "a")} {
 		facts.refusal = refusal
-		assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-208", "a"), refusal.Status, refusal.Code, refusal.Message)
+		refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-208", "a"), refusal.Status, refusal.Code, refusal.Message)
 	}
 }
