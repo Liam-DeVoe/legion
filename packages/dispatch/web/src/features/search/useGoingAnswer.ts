@@ -18,11 +18,9 @@ import { ApiError, api, REQUEST_DEADLINE_MS, type WriteBounds } from "../../api/
 import type {
   GoingBlockData,
   GoingContextInput,
-  GoingDecisionEvent,
   GoingEndEvent,
   GoingEvent,
   GoingItemEvent,
-  GoingProposalEvent,
   GoingRosterEvent,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
@@ -87,9 +85,8 @@ function answerTo(answer: GoingAnswer | undefined, words: string): GoingAnswer |
 /**
  * One run of Dispatch's answer to the words in the bar, as the frames of its stream have built
  * it so far. Every field is a frame's: the text is the `text` frames joined, the items are the
- * `item` frames in order, and so on. `decision` and `proposal` are what the decision model chose
- * and the arguments of each action it offered, which the bar's operations are drawn from; the
- * answer itself draws neither.
+ * `item` frames in order, and so on. The decision model's `decision` and `proposal` frames are
+ * no part of the answer the bar draws, and change nothing of it.
  */
 export interface GoingAnswer {
   /** The run, which addresses its stream; undefined while the request that starts it is out. */
@@ -118,8 +115,6 @@ export interface GoingAnswer {
   readonly unreachable: string | undefined;
   readonly roster: GoingRosterEvent["data"] | undefined;
   readonly block: GoingBlockData | undefined;
-  readonly decision: GoingDecisionEvent["data"] | undefined;
-  readonly proposal: GoingProposalEvent["data"] | undefined;
 }
 
 /** The last run of this page that answered, kept outside the bar so that reopening the bar draws
@@ -155,12 +150,10 @@ function freshAnswer(words: string, replayed: boolean, runId?: string): GoingAns
     block: undefined,
     changed: undefined,
     cut: undefined,
-    decision: undefined,
     end: undefined,
     error: undefined,
     items: [],
     none: false,
-    proposal: undefined,
     replayed,
     roster: undefined,
     runId,
@@ -187,9 +180,8 @@ function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
     case GOING_EVENT_NONE:
       return { ...answer, none: true };
     case GOING_EVENT_DECISION:
-      return { ...answer, decision: frame.data, state: "streaming" };
     case GOING_EVENT_PROPOSAL:
-      return { ...answer, proposal: frame.data };
+      return answer;
     case GOING_EVENT_BLOCK:
       return { ...answer, block: frame.data };
     case GOING_EVENT_ROSTER:
@@ -219,17 +211,14 @@ interface OutRun {
   ended: boolean;
 }
 
-/** What `useGoingAnswer` answers: the answer, the earlier answer the panel keeps in its place,
- *  and how a submit inside the pause asks at once. */
+/** What `useGoingAnswer` answers: the answer, and the earlier answer the panel keeps in its
+ *  place. */
 export interface GoingAnswerHook {
   readonly answer: GoingAnswer | undefined;
   /** The answer to words the person has typed past, as it stood at the keystroke, which the
    *  panel keeps marked as theirs while `answer` has come to nothing of its own
    *  (`answerArrived`); undefined while the box is empty, and never a replay. */
   readonly earlier: GoingAnswer | undefined;
-  /** Asks for the words in the box at once where the pause is still standing, and answers
-   *  whether an answer to them is coming or came: false where there is nothing to ask. */
-  readonly askNow: () => boolean;
 }
 
 /**
@@ -249,9 +238,8 @@ export interface GoingAnswerHook {
  * A run that answered is kept outside the bar (`lastAnsweredRun`), and the bar opening again with
  * an empty box draws it from the first frame of its stream, as Dispatch still serves it.
  *
- * Answers the run of the words in the box, the replay while the box is empty, or undefined; the
- * earlier answer; and `askNow`: a submit made inside the pause asks at once rather than waiting
- * it out.
+ * Answers the run of the words in the box, the replay while the box is empty, or undefined, and
+ * the earlier answer.
  */
 export function useGoingAnswer({
   context,
@@ -296,8 +284,6 @@ export function useGoingAnswer({
     });
   }
   const out = useRef<OutRun | null>(null);
-  // The pause standing for the words in the box, which a submit inside it cuts short.
-  const pause = useRef<{ readonly timer: number; readonly ask: () => void } | null>(null);
   // The chip and the asker are read as a request goes, not watched: moving the chip between
   // keystrokes is no new question, and the run asked before the move keeps the chip it was asked
   // with.
@@ -305,8 +291,6 @@ export function useGoingAnswer({
   contextNow.current = context;
   const loginNow = useRef(login);
   loginNow.current = login;
-  const wordsNow = useRef(words);
-  wordsNow.current = words;
   // Each request under a key of its own, carrying the asker's login and held to the page's
   // silence deadline, as the one keyed path takes every write of the page.
   const bounds = useCallback(
@@ -425,10 +409,7 @@ export function useGoingAnswer({
   useEffect(() => {
     // The run before answers words the person has typed past, so it is cancelled and its answer
     // let go; the replay stays only while the box is still empty. What the panel keeps of it the
-    // render the words changed in worked out already (`keeping`). Letting the answer go here,
-    // before the pause asks again, is also how the bar's operation tells that the request a press
-    // waited on was dropped (`useGoingOperations`' preparing effect), so the press never binds to
-    // the next ask's run.
+    // render the words changed in worked out already (`keeping`).
     if (out.current?.replayed !== true || words !== "") {
       stop();
     }
@@ -436,16 +417,8 @@ export function useGoingAnswer({
     if (!enabled) {
       return;
     }
-    const asking = () => {
-      pause.current = null;
-      ask(words, project);
-    };
-    const standing = { ask: asking, timer: window.setTimeout(asking, MEANING_PAUSE_MS) };
-    pause.current = standing;
-    return () => {
-      window.clearTimeout(standing.timer);
-      if (pause.current === standing) pause.current = null;
-    };
+    const timer = window.setTimeout(() => ask(words, project), MEANING_PAUSE_MS);
+    return () => window.clearTimeout(timer);
   }, [ask, enabled, project, stop, words]);
 
   // The bar opens with an empty box: the last run that answered is drawn again, from its stream's
@@ -470,22 +443,9 @@ export function useGoingAnswer({
   // Closing the bar cancels the run it has out.
   useEffect(() => stop, [stop]);
 
-  const askNow = useCallback((): boolean => {
-    const standing = pause.current;
-    if (standing !== null) {
-      window.clearTimeout(standing.timer);
-      standing.ask();
-      return true;
-    }
-    // No pause standing: the words were asked already, or there is nothing to ask.
-    const run = out.current;
-    return run !== null && !run.replayed && run.words === wordsNow.current;
-  }, []);
-
   const current = answerTo(answer, words);
   return {
     answer: current,
-    askNow,
     earlier: current !== undefined && answerArrived(current) ? undefined : keeping.answer,
   };
 }

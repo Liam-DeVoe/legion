@@ -20,6 +20,7 @@ import {
   badgeLow,
   borderDefault,
   card,
+  dangerText,
   inputClasses,
   kbdHint,
   searchHitBg,
@@ -34,6 +35,18 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import { ConversationView } from "../going/ConversationView";
+import {
+  conversationWorking,
+  markSeen,
+  movePanel,
+  newConversation,
+  useGoing,
+} from "../going/going-store";
+import { History } from "../going/History";
+import { BROWSER_PANEL_KEYS } from "../going/panel-states";
+import { ConversationHeader, LevelControl } from "../going/RunControls";
+import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -50,11 +63,10 @@ import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { CapabilityNote } from "./CapabilityNote";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
-import { barNoteClassName, type Offer, type OfferRow } from "./offer";
+import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
-import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
 import { type SearchBarFilters, searchRequest } from "./search-filters";
 import {
   groupResults,
@@ -71,9 +83,26 @@ import { useTieredSearch } from "./useTieredSearch";
 const emptyResults: SearchResult[] = [];
 const emptyProjects: Project[] = [];
 const ACTIONS_GROUP_ID = "search-group-actions";
+/** The group of the line on top, and the line's own id. */
+export const LINE_GROUP_ID = "search-group-line";
+export const LINE_OPTION_ID = "search-option-line";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
+
+/** Words that are an issue's key alone (`CORE-12`): their hit is the next step, and they ask no
+ *  model for an answer. */
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+
+/** Whether `result` is the very item `words` name: its issue's key or title, or its document's
+ *  name, whatever the case. Such a hit heads the list, and the line on top is not offered. */
+function namesHit(result: SearchResult, words: string): boolean {
+  const said = words.toLowerCase();
+  const owner = result.owner;
+  return owner.kind === "issue"
+    ? (owner.key ?? "").toLowerCase() === said || (owner.title ?? "").toLowerCase() === said
+    : (owner.name ?? "").toLowerCase() === said;
+}
 
 interface ActionRow {
   action: KeymapAction;
@@ -292,9 +321,9 @@ function CommandOption({
   );
 }
 
-/** One labelled run of command rows: the Recent items the bar opens on, the Actions a query
- *  leads to, the More actions it matches further in, the Projects it names, the New issue it
- *  offers for words that matched nothing, or the send to this issue's own agent. */
+/** One labelled run of command rows: the line on top, the Recent items the bar opens on, the
+ *  Actions a query leads to, the More actions it matches further in, the Projects it names, or
+ *  the New issue it offers for words that matched nothing. */
 interface CommandSection {
   id: string;
   label: string;
@@ -303,18 +332,6 @@ interface CommandSection {
     label: string;
     row: ActionRow | OfferRow | ProjectRow | RecentRow;
   }[];
-}
-
-/** The section one offer is listed in: its own row where it has one to press, and no row at
- *  all where it has none. The two offers are the same section built from the same parts, so
- *  they are built here once rather than written out twice. */
-function offerSection(id: string, label: string, offer: Offer | undefined): CommandSection {
-  const row = offer?.row;
-  return {
-    id,
-    label,
-    options: row === undefined ? [] : [{ hint: null, label: row.label, row }],
-  };
 }
 
 /* The heading is `aria-hidden` for the same reason as an owner row: the group below takes its
@@ -435,17 +452,36 @@ function PaletteDialog({
   // row bound to the card, row or control the reader was actually on.
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
+  // The conversation the bar holds, which outlives this open of it (`features/going`), and what
+  // its box does with Enter and Esc there (`useAsk`), with the chip's context.
+  const going = useGoing();
+  const asking = useAsk(scope.context);
+  const [history, setHistory] = useState(false);
+  const login = whoAmI.data?.login;
   // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own
-  // close, so pressing it twice still opens and closes.
+  // close, so pressing it twice still opens and closes, and `$mod+Shift+k` keeps the
+  // conversation at the side of the page. In a browser whose page never gets Ctrl-Shift-K,
+  // `$mod+k` pressed while the bar is open does that instead (`BROWSER_PANEL_KEYS`).
   useKeymap(DIALOG_SCOPE, [
     {
       id: "search-close",
       inEditable: true,
       keys: "$mod+k",
-      label: "Close search",
-      run: onClose,
+      label: BROWSER_PANEL_KEYS.sideByModK ? "Keep at the side" : "Close search",
+      run: () =>
+        BROWSER_PANEL_KEYS.sideByModK
+          ? movePanel({ kind: "mod_k" }, login, BROWSER_PANEL_KEYS)
+          : onClose(),
+    },
+    {
+      id: "search-side",
+      inEditable: true,
+      keys: "$mod+Shift+k",
+      label: "Keep at the side",
+      run: () => movePanel({ kind: "mod_shift_k" }, login),
     },
   ]);
+  useEffect(() => markSeen());
   const searchText = query.trim();
   const needle = searchText.toLowerCase();
   const tooShort = searchText.length < 2;
@@ -529,24 +565,53 @@ function PaletteDialog({
         ),
       }))
     : [];
-  // Dispatch's answer to the words and the bar's operations (useGoingBar): the operation the
-  // decision acts on, or the two best actions to pick from, as rows above the hits, and the run's
-  // plan under the list once one is pressed. A new issue and a send to this issue's agent stay the
-  // two offers below, which always ask.
-  const { gaps, operations, runHint, shownAnswer, stale } = useGoingBar({
+  // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits. Words
+  // that are an issue's key alone ask no model: their hit is the answer.
+  const { answers, gaps, shownAnswer, stale } = useGoingBar({
     context: scope.context,
-    enabled: queryEnabled,
-    login: whoAmI.data?.login,
+    enabled: queryEnabled && !ISSUE_KEY.test(searchText),
+    login,
     project: filters.project ?? "",
     showHits,
     words: searchText,
   });
+  // The line on top (R2, R3): the next step the words lead to, which Enter on it takes - a run of
+  // the agent on them, or, while the conversation's plan waits, a revision of that plan in those
+  // words. Words that are a hit's own key or title lead to that hit instead, so no line is
+  // offered and the hit heads the list.
+  const namesItsHit =
+    ISSUE_KEY.test(searchText) ||
+    (showHits && results.some((result) => namesHit(result, searchText)));
+  const lineLabel = asking.planWaits ? "Revise the plan" : "Ask";
+  const lineSection: CommandSection = {
+    id: LINE_GROUP_ID,
+    label: "Next step",
+    options:
+      answers && queryEnabled && !namesItsHit
+        ? [
+            {
+              hint: <KeyHints keys={["Enter"]} />,
+              label: lineLabel,
+              row: {
+                id: LINE_OPTION_ID,
+                kind: "offer",
+                label: lineLabel,
+                select: () => {
+                  if (asking.enter(searchText)) {
+                    setQuery("");
+                    setActive({ hits: "", id: null, left: false });
+                  }
+                },
+              },
+            },
+          ]
+        : [],
+  };
   // Words the search answered and matched nothing with: the bar offers them as a new issue,
   // under the rows this page can do and the projects they name, and never above them - the
-  // offer is the last thing left when nothing else answers. Where the bar's decision chose a new
-  // issue, it is offered once the proposal offers it, whatever the search found.
+  // offer is the last thing left when nothing else answers.
   const newIssue = useNewIssueOffer({
-    offered: operations.newIssue?.offered ?? (showHits && results.length === 0),
+    offered: showHits && results.length === 0,
     onOpen: (key) => {
       navigate(buildIssuePath({ key, kind: "issue" }));
       onClose();
@@ -554,16 +619,8 @@ function PaletteDialog({
     project: scope.targets.project,
     words: searchText,
   });
-  // The words in the box as a message to the agent on the issue the chip names, offered only
-  // while a live session holds that issue's claim. It asks whatever the words are: the row is
-  // what sends, and it sits among the foot rows below, so no Enter aimed at a hit sends
-  // anything.
-  const sendToAgent = useSendToAgentOffer({
-    block: scope.targets.block,
-    issue: scope.targets.issue,
-    words: searchText,
-  });
   const commandSections: readonly CommandSection[] = [
+    lineSection,
     {
       id: RECENT_GROUP_ID,
       label: "Recent",
@@ -592,16 +649,17 @@ function PaletteDialog({
       })),
     },
   ];
-  // The three sections at the foot of the list, which the highlight never starts on and the
-  // arrows reach last: a More action is a coincidence of words, and each offer is a write, so
-  // none of them runs on an Enter the reader meant for the row above. The two offers come
-  // under the actions, because they are the rows that write.
-  const newIssueSection = offerSection(NEW_ISSUE_GROUP_ID, "New issue", newIssue);
-  const sendToAgentSection = offerSection(
-    SEND_TO_AGENT_GROUP_ID,
-    "This issue's agent",
-    sendToAgent
-  );
+  // The two sections at the foot of the list, which the highlight never starts on and the arrows
+  // reach last: a More action is a coincidence of words, and the new issue is a write, so neither
+  // runs on an Enter the reader meant for the row above. The new issue comes under the actions,
+  // because it is the row that writes.
+  const newIssueRow = newIssue?.row;
+  const newIssueSection: CommandSection = {
+    id: NEW_ISSUE_GROUP_ID,
+    label: "New issue",
+    options:
+      newIssueRow === undefined ? [] : [{ hint: null, label: newIssueRow.label, row: newIssueRow }],
+  };
   const moreActions: CommandSection = {
     id: MORE_ACTIONS_GROUP_ID,
     label: "More actions",
@@ -609,26 +667,15 @@ function PaletteDialog({
   };
   // The order the foot is listed and walked in, written once: the rows, the count the highlight
   // rule keeps off them, and the groups drawn below all read this one array.
-  const footSections: readonly CommandSection[] = [
-    moreActions,
-    sendToAgentSection,
-    newIssueSection,
-  ];
+  const footSections: readonly CommandSection[] = [moreActions, newIssueSection];
   const footRows = footSections.reduce((count, section) => count + section.options.length, 0);
-  // The bar's operation rows, between the rows this page can do and the hits.
-  const operationSections: readonly CommandSection[] =
-    operations.section === undefined ? [] : [operations.section];
   const leadRows = commandSections.flatMap((section) =>
-    section.options.map((option) => option.row)
-  );
-  const operationRows = operationSections.flatMap((section) =>
     section.options.map((option) => option.row)
   );
   const hitRows = hitGroups.flatMap((group) => group.rows);
   // What the list shows, in the order it shows it: the arrows walk this same list.
   const rows: PaletteRow[] = [
     ...leadRows,
-    ...operationRows,
     ...hitRows,
     ...footSections.flatMap((section) => section.options.map((option) => option.row)),
   ];
@@ -638,9 +685,9 @@ function PaletteDialog({
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
   // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
   // send it to the head, and the head it lands on is then adopted, so a row coming back does
-  // not take the highlight back from it. The head is the first row unless that is an operation
-  // row or one of the foot rows - the two offers and the More actions, which come last: the
-  // highlight never moves to an operation by itself, so an Enter never runs a write the reader
+  // not take the highlight back from it. The head is the first row - the line on top where the
+  // words lead to one - unless that is one of the foot rows - the two offers and the More
+  // actions, which come last: the highlight never moves to a write by itself, so an Enter never runs a write the reader
   // did not point at, and with only foot rows listed nothing is highlighted, and Enter runs
   // nothing until the reader arrows.
   // A row that leaves a list already answering this query takes the highlight with it and
@@ -654,7 +701,7 @@ function PaletteDialog({
   const chosen = rows.findIndex((row) => row.id === active.id);
   const held = active.id !== null || active.left;
   const reranked = listedQuery !== "" && listedQuery === active.hits && held;
-  const head = leadRows.length > 0 ? 0 : hitRows.length > 0 ? operationRows.length : -1;
+  const head = leadRows.length > 0 || hitRows.length > 0 ? 0 : -1;
   const activeIndex = chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
@@ -687,12 +734,11 @@ function PaletteDialog({
 
   const selectRow = (row: PaletteRow) => {
     if (row.kind === "offer") {
-      // The rows that write, each pressed through the row it carries rather than through the
-      // offer behind it. The new issue is made with the bar still open, so the person reads
+      // The rows that write or ask, each pressed through the row it carries rather than through
+      // the offer behind it. The new issue is made with the bar still open, so the person reads
       // what was made and, with no session named, that nothing was started on it; that press
-      // closes the bar itself, by opening the issue. Pressing the send is the approval, and
-      // the approval is what sends: the bar stays open, so the person reads that it went and
-      // to whom.
+      // closes the bar itself, by opening the issue. The line on top starts a run, which the bar
+      // stays open to show.
       row.select();
       return;
     }
@@ -722,9 +768,19 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (scope.handleKey(event)) {
-      // The browser's own move is what this cancels: the box is the dialog's first focusable,
-      // so the dialog's Tab trap, which acts at either end, leaves this key alone.
+    if (event.key === "Escape" && query === "" && conversationWorking()) {
+      // Esc in the empty box while the run works stops the run, and the bar stays open on it: the
+      // dialog's own Escape, which closes it, never hears this one.
+      event.preventDefault();
+      event.stopPropagation();
+      asking.escape("");
+    } else if (event.key === "Enter" && searchText === "" && asking.planWaits) {
+      // Enter in the empty box approves the plan that waits, with the ticks and edits made.
+      event.preventDefault();
+      asking.enter("");
+    } else if (scope.handleKey(event)) {
+      // The browser's own move is what this cancels: Tab narrows the chip rather than leaving
+      // the box.
       event.preventDefault();
     } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && walkable > 0) {
       event.preventDefault();
@@ -763,6 +819,18 @@ function PaletteDialog({
           ref={dialog.containerRef}
           role="dialog"
         >
+          <ConversationHeader
+            history={history}
+            move="Keep at the side"
+            onClose={onClose}
+            onHistory={() => setHistory((shown) => !shown)}
+            onMove={() => movePanel({ kind: "keep_at_side" }, login)}
+            onNew={() => {
+              newConversation();
+              setHistory(false);
+            }}
+            onStop={asking.stop}
+          />
           {scope.header}
           <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
             <input
@@ -785,6 +853,19 @@ function PaletteDialog({
               value={query}
             />
           </div>
+          {/* The conversation the bar holds, under the box with the level of the next run: the
+              runs, their steps and their plan, or History in their place. */}
+          <LevelControl />
+          {history ? (
+            <History onOpen={() => setHistory(false)} />
+          ) : (
+            <ConversationView answering={asking.answering} onContinue={asking.onContinue} />
+          )}
+          {going.refusal === undefined ? null : (
+            <p className={`shrink-0 px-3 py-2 text-xs ${dangerText}`} role="alert">
+              {going.refusal}
+            </p>
+          )}
           {/* What narrows the search and what the words themselves can do, between the box and
               the hits: the chips the reader has added with the controls for the rest, and the
               three operator forms. That meaning search did not run is the foot's to say, with
@@ -804,7 +885,7 @@ function PaletteDialog({
               ref={listRef}
               role="listbox"
             >
-              {[...commandSections, ...operationSections].map((section) => (
+              {commandSections.map((section) => (
                 <CommandGroup
                   activeId={activeRow?.id}
                   key={section.id}
@@ -894,11 +975,14 @@ function PaletteDialog({
               ))}
             </div>
           )}
-          {operations.panel}
-          {shownAnswer === undefined ? null : <AnswerPanel answer={shownAnswer} stale={stale} />}
+          {/* The short answer, beside the hits, while the box holds words or no conversation is
+              open: an empty box over an open conversation draws the conversation instead. */}
+          {shownAnswer === undefined ||
+          (searchText === "" && going.conversation !== undefined) ? null : (
+            <AnswerPanel answer={shownAnswer} stale={stale} />
+          )}
           {/* What the bar says about what it sent and what it made from these words, above the
               message that says the search found none: each is an answer to that search. */}
-          {sendToAgent?.said}
           {newIssue?.said}
           {tooShort ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
@@ -964,7 +1048,6 @@ function PaletteDialog({
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
               to open
             </span>
-            {runHint}
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>
               to close

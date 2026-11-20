@@ -99,6 +99,12 @@ const shellHandlers: RequestHandler[] = [
   // the server's own default, Ask - and a test of the setting spies `api.myGoingSettings`. It is
   // answered at any origin, as the capability read above is.
   http.get("*/api/v1/me/going/settings", () => Response.json({ mode: "ask" })),
+  // The Inbox lists the plans of the person's runs that wait for them (`goingWaitingPlansQuery`)
+  // wherever it is drawn, the drawer included. The answer is a person with no plan waiting, which
+  // draws nothing; a test of the waiting plans spies `api.myGoingPlans`.
+  http.get("*/api/v1/me/going-plans", () =>
+    Response.json({ limit: 50, offset: 0, rows: [], total: 0 })
+  ),
   // The base an upload names: before it posts a markdown file, the Upload control reads the
   // token of the document the owner already holds under that name
   // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can

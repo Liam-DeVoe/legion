@@ -113,6 +113,9 @@ const READS = {
     key: ["references", "to", "dispatch://CORE/artifact/plan-md"],
   },
   grandparent: { key: issueQuery("CORE-00").queryKey },
+  // The Inbox's plans that wait for the person, and History of the person's conversations.
+  goingConversations: { key: ["going-conversations"] },
+  goingPlans: { key: ["going-waiting-plans"] },
   handoffs: { key: ["handoffs", "CORE-1"] },
   inbox: { key: inboxQuery().queryKey },
   inboxThreads: { key: inboxThreadsQuery().queryKey },
@@ -1194,6 +1197,16 @@ const rules: Record<string, Rule> = {
     event: event("user_agent_state.updated", { login: "bob" }, { issue_key: null }),
     refreshes: [],
     spares: ["inboxThreads", "replies"],
+  },
+  "a going_plan.updated naming the viewer refreshes the Inbox's waiting plans and History": {
+    event: event("going_plan.updated", { login: "alice" }, { issue_key: null }),
+    refreshes: ["goingConversations", "goingPlans"],
+    spares: ["inbox"],
+  },
+  "a going_plan.updated naming somebody else refreshes nothing of the viewer's": {
+    event: event("going_plan.updated", { login: "bob" }, { issue_key: null }),
+    refreshes: [],
+    spares: ["goingConversations", "goingPlans"],
   },
   "a user_thread_state.updated naming no thread - a Mark all read - refreshes the Inbox's thread rows":
     {

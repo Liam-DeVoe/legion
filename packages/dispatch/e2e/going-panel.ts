@@ -3,11 +3,11 @@ import type { ChatReply } from "./fake-chat-model";
 import type { DecisionReply } from "./fake-decision-model";
 import { expect, type Locator, type Page } from "./test";
 
-// What the command bar's answer rows share: the bar, its answer panel, opening the bar over a
-// page, asking it a question, the issue a question is answered from, and the fake writing model's
-// replies those rows script. The panel and its lines are read by the test ids
-// `features/search/AnswerPanel.tsx` gives them, the bar's operations by those of
-// `features/search/OperationRows.tsx`.
+// What the command bar's rows share: the bar, its answer panel, opening the bar over a page,
+// asking it a question, the issue a question is answered from, the fake writing model's replies
+// those rows script, and the conversation of the agent's runs. The panel and its lines are read by
+// the test ids `features/search/AnswerPanel.tsx` gives them, the conversation, its steps and its
+// plan by those of `features/going`.
 
 /** How long a row waits for one answer to end: the run's own window (`GOING_RUN_MS`, 30 s) and
  *  the stream's grace past it. */
@@ -127,48 +127,6 @@ export async function shownWords(page: Page): Promise<string[]> {
   return text.split(/\s+/).filter((word) => word !== "");
 }
 
-/** The bar's operation row: the action the decision chose at or above the action threshold. */
-export function operationRow(page: Page): Locator {
-  return bar(page).locator("#search-option-going-run");
-}
-
-/** The offer row of `action`, one of the two best below the action threshold. */
-export function offerRow(page: Page, action: string): Locator {
-  return bar(page).locator(`#search-option-going-offer-${action}`);
-}
-
-/** The lines of the turn the bar shows, one per write. */
-export function writeLines(page: Page): Locator {
-  return page.getByTestId("going-operation").getByTestId("going-write-line");
-}
-
-/** The bar's submit, from the box: `$mod+Enter`. */
-export async function submitOperation(page: Page): Promise<void> {
-  await page.keyboard.press("Control+Enter");
-}
-
-/** The body of a write the bar sent to `POST /api/v1/going/runs/{id}/writes`: the offer, the
- *  invocation and how it came to run. The server no longer serves that route, and the bar sends
- *  none: every change of a run is a row of its plan, approved through the plan's own route. */
-interface GoingWriteBody {
-  readonly offer: string;
-  readonly invocation?: number;
-  readonly approved: string;
-  readonly fill?: unknown;
-}
-
-/** Every write of the bar the page sends from here on to `POST /api/v1/going/runs/{id}/writes`,
- *  each with its body. */
-export function countGoingWrites(page: Page): { readonly bodies: GoingWriteBody[] } {
-  const sent = { bodies: [] as GoingWriteBody[] };
-  page.on("request", (request) => {
-    if (request.method() !== "POST") return;
-    if (!/^\/api\/v1\/going\/runs\/[^/]+\/writes$/.test(new URL(request.url()).pathname)) return;
-    sent.bodies.push(request.postDataJSON() as GoingWriteBody);
-  });
-  return sent;
-}
-
 /** A decision of `action` at `confidence`, about the items the words name, with no runner-up
  *  unless `runnerUp` names one: the probabilities are written out, so the two best are the
  *  row's own and not the fake's even share of the rest. */
@@ -189,11 +147,59 @@ export function decided(
   };
 }
 
-/** A structured reply whose answer is `answer` and whose arguments are `args`: each offered
- *  action's invocations, one per item it changes. */
-export function withArguments(
-  args: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>>,
-  answer = "On it."
-): ChatReply {
-  return { final: { answer, arguments: args } };
+/** How long a row waits for a run of the fake model to reach a step, a plan or its end. */
+export const RUN_STEPS_MS = 40_000;
+
+/** The line on top of the bar's list: the next step the words lead to (`search-option-line`). */
+export function lineOnTop(page: Page): Locator {
+  return bar(page).locator("#search-option-line");
+}
+
+/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run. */
+export async function askTheAgent(page: Page, words: string): Promise<void> {
+  await searchBox(page).fill(words);
+  await expect(lineOnTop(page)).toBeVisible();
+  await searchBox(page).press("Enter");
+  await expect(page.getByTestId("going-run").last()).toBeVisible({ timeout: RUN_STEPS_MS });
+}
+
+/** The conversation of the agent's runs, in the bar over the page or in the panel at the side. */
+export function conversation(page: Page): Locator {
+  return page.getByTestId("going-conversation");
+}
+
+/** The newest run of the conversation on the screen. */
+export function newestRun(page: Page): Locator {
+  return page.getByTestId("going-run").last();
+}
+
+/** The panel at the side of the page. */
+export function sidePanel(page: Page): Locator {
+  return page.getByTestId("going-side-panel");
+}
+
+/** The plan card of the conversation's newest run, in the bar or the panel. */
+export function planCard(page: Page): Locator {
+  return page.getByTestId("going-plan");
+}
+
+/** The rows of the open plan the page draws on itself. */
+export function planOnPage(page: Page): Locator {
+  return page.getByTestId("going-plan-on-page");
+}
+
+/** The plan rows of `where`, a card or the page's drawing. */
+export function planRows(where: Locator): Locator {
+  return where.getByTestId("going-plan-row");
+}
+
+/** Every `POST /api/v1/going/runs` the page sends from here on, each with its body. */
+export function countStartedRuns(page: Page): { readonly bodies: Record<string, unknown>[] } {
+  const started = { bodies: [] as Record<string, unknown>[] };
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/going/runs") {
+      started.bodies.push(request.postDataJSON() as Record<string, unknown>);
+    }
+  });
+  return started;
 }

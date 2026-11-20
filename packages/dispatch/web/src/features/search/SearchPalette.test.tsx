@@ -6,7 +6,7 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -206,7 +206,8 @@ test("renders grouped results with marked snippets and dims a done issue", async
     // The owner rows name their groups and are `aria-hidden`, so a reader hears each owner
     // once; they are found by their label attribute rather than by role.
     const doneGroup = document.querySelector('[aria-label="LEGION-2: Navigation instruments"]');
-    expect(screen.getAllByRole("group")).toHaveLength(2);
+    // Counted in the list: the level control under the box is a group of its own.
+    expect(within(screen.getByRole("listbox")).getAllByRole("group")).toHaveLength(2);
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
     expect(doneGroup).toHaveAttribute("data-status", "done");
@@ -1346,10 +1347,8 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 test("the page's project is the search's context, not a chip narrowing it", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
-  // The bar opened over an issue reads that issue, to offer the words as a message to an agent
-  // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // The bar opened over an issue page may read that issue. LEGION-2 is the page's issue and the
+  // document hit's own, and the chips below the box are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],

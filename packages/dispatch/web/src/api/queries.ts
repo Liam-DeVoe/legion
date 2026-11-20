@@ -343,6 +343,23 @@ export const goingPlanQuery = (run: string) =>
     queryFn: () => api.goingPlan(run),
   });
 
+/** History (`GET /api/v1/me/going-runs`): the person's conversations of the last 7 days, each
+ *  with its runs, the newest first. A change of what waits for the person moves it
+ *  (`going_plan.updated`), and so does each run the bar starts. */
+export const goingConversationsQuery = () =>
+  queryOptions({
+    queryKey: ["going-conversations"],
+    queryFn: () => api.myGoingRuns(),
+  });
+
+/** The person's runs whose plan waits for them (`GET /api/v1/me/going-plans`), which the Inbox
+ *  lists with Approve; read again on each `going_plan.updated` that names the person. */
+export const goingWaitingPlansQuery = () =>
+  queryOptions({
+    queryKey: ["going-waiting-plans"],
+    queryFn: () => api.myGoingPlans(),
+  });
+
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a

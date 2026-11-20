@@ -37,6 +37,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { PlannedChanges } from "../going/PlannedChanges";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -690,6 +691,13 @@ export function IssueBoard({
       <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
         {announcement}
       </p>
+      {/* The open conversation's planned changes of the cards this board shows, and the new
+          issues of this project, drawn on the board itself. */}
+      <div className="mb-4 empty:hidden">
+        <PlannedChanges
+          surface={{ issues: issues.data.map((issue) => issue.key), kind: "issues", project }}
+        />
+      </div>
       {issues.data.length === 0 ? (
         // The active query is the label-filtered list, so an empty answer under a label filter
         // means "nothing matches", not "empty project" - the same copy the List shows.

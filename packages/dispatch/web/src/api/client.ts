@@ -192,6 +192,22 @@ const GOING_STREAM_REOPENS = 3;
 /** The wait before the answer stream is opened again. */
 const GOING_STREAM_REOPEN_MS = 500;
 
+/** The frame a run's stream writes before the server closes it for being idle, which names no
+ *  sequence: the run waits, and its stream is opened again after the last frame in hand. */
+const GOING_RUN_KEEPALIVE = "keepalive";
+/** The frame that ends a turn of a run: `{state, reason, offers}`. */
+const GOING_RUN_END = "end";
+
+/** Whether an `end` frame's data ends the run itself (done, stopped or failed), after which its
+ *  stream holds nothing more, rather than a turn that waits for the person's plan. */
+function goingRunEndedFrame(data: unknown): boolean {
+  if (typeof data !== "object" || data === null || !("state" in data)) {
+    return false;
+  }
+  const { state } = data;
+  return state === "done" || state === "stopped" || state === "failed";
+}
+
 /** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
  *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
  *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
@@ -654,6 +670,30 @@ export function goingPlanApproveRequest(
   input: Body<"/api/v1/going/runs/{id}/plan/approve", "post">
 ) {
   return writeRequest("post", "/api/v1/going/runs/{id}/plan/approve", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/plan/reject`: the person rejects the run's waiting plan, and the
+ *  run ends with nothing of it made. */
+export function goingPlanRejectRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/reject", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/reject", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/plan/revise`: the person says in words what to change of the run's
+ *  waiting plan, and the run proposes another in its place. */
+export function goingPlanReviseRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/revise", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/revise", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/undo`: the person undoes what one run of theirs changed, newest
+ *  first, while its conversation is in History. */
+export function goingRunUndoRequest(id: string) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/undo", { id });
 }
 
 /** `PUT /api/v1/me/going/settings`: the person's own command-bar setting, its `mode`: `ask`, where
@@ -1284,9 +1324,116 @@ export class DispatchApiClient {
     return this.read("/api/v1/going/capability", {});
   }
 
-  /** `GET /api/v1/me/going-runs`: the caller's own runs of the bar, newest first. */
+  /** `GET /api/v1/me/going-runs`: History, the caller's own conversations of the last 7 days,
+   *  the newest first, each with its runs, the newest first. */
   myGoingRuns(query: Query<"/api/v1/me/going-runs", "get"> = {}) {
     return this.read("/api/v1/me/going-runs", {}, query);
+  }
+
+  /** `GET /api/v1/me/going-plans`: the caller's own runs whose plan waits for them, the newest
+   *  first, which the Inbox lists. */
+  myGoingPlans(query: Query<"/api/v1/me/going-plans", "get"> = {}) {
+    return this.read("/api/v1/me/going-plans", {}, query);
+  }
+
+  /**
+   * `POST /api/v1/going/runs`: starts a run of the agent on the person's words, with the page's
+   * context, the level and the run it follows up (the conversation's newest run, once that run has
+   * ended). It goes by the one keyed path every write of the page takes, under a key of its own
+   * and the person's login, but as no write of the page's store: the run answers at once, its
+   * stream says the rest, and a reload starts nothing again.
+   */
+  createGoingRun(input: Body<"/api/v1/going/runs", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/going/runs", {}, input, bounds);
+  }
+
+  /** `GET /api/v1/going/runs/{id}`: one of the caller's own runs, as its record holds it now. */
+  goingRun(id: string) {
+    return this.read("/api/v1/going/runs/{id}", { id });
+  }
+
+  /** `POST /api/v1/going/runs/{id}/stop`: stops one of the caller's runs at once; what it did
+   *  stays. */
+  stopGoingRun(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/going/runs/{id}/stop", { id }, undefined, bounds);
+  }
+
+  /**
+   * `GET /api/v1/going/runs/{id}/events`: one run's frames as server-sent events, each handed to
+   * `onFrame` by its name and its decoded data, from the run's first frame until the `end` frame
+   * of a run that has ended (done, stopped or failed). A run that waits for its person keeps its
+   * stream open; the server closes an idle one after a `keepalive` frame, and this opens it again
+   * after the last frame `onFrame` took (`Last-Event-ID`), so nothing is lost or repeated. A
+   * connection that fails, or that ends with nothing new and no `keepalive`, is opened again too,
+   * and one that keeps doing so is given up (`GOING_STREAM_REOPENS`); a refusal of the route
+   * itself (`ApiError`: the run is gone, or too many readers) is the answer, and is not asked
+   * again. `signal` ends it sooner.
+   */
+  async streamGoingRunEvents(
+    id: string,
+    onFrame: (name: string, data: unknown) => void,
+    signal: AbortSignal
+  ): Promise<void> {
+    const path = routeUrl("/api/v1/going/runs/{id}/events", { id });
+    let after = 0;
+    let fruitless = 0;
+    for (;;) {
+      const before = after;
+      let ended = false;
+      let idle = false;
+      let failed: unknown;
+      try {
+        const response = await this.response(
+          path,
+          { headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) }, signal },
+          null
+        );
+        if (response.body !== null) {
+          ended = await readEventStream(response.body, (event) => {
+            if (event.name === GOING_RUN_KEEPALIVE) {
+              idle = true;
+              return false;
+            }
+            const data: unknown = JSON.parse(event.data);
+            onFrame(event.name, data);
+            // In hand only once handed on: a frame whose parse or handing threw is read again.
+            const sequence = Number(event.id);
+            if (Number.isInteger(sequence)) {
+              after = sequence;
+            }
+            return event.name === GOING_RUN_END && goingRunEndedFrame(data);
+          });
+        }
+      } catch (error) {
+        if (signal.aborted || error instanceof ApiError) {
+          throw error;
+        }
+        failed = error;
+      }
+      if (ended) {
+        return;
+      }
+      // A stream the server closed for being idle is a run that waits, and is read again as often
+      // as it closes; one that failed, or closed with nothing new, counts towards giving it up.
+      fruitless = idle || after !== before ? 0 : fruitless + 1;
+      if (fruitless >= GOING_STREAM_REOPENS) {
+        throw new NetworkError(
+          path,
+          failed ?? new Error("the run's stream kept ending before its run did")
+        );
+      }
+      signal.throwIfAborted();
+      const reopen = Promise.withResolvers<void>();
+      const timer = setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
+      const aborted = () => {
+        clearTimeout(timer);
+        reopen.resolve();
+      };
+      signal.addEventListener("abort", aborted, { once: true });
+      await reopen.promise;
+      signal.removeEventListener("abort", aborted);
+      signal.throwIfAborted();
+    }
   }
 
   /** `GET /api/v1/going/runs/{id}/plan`: the latest plan of one of the caller's runs of the bar,
