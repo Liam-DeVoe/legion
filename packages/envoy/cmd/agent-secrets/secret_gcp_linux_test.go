@@ -288,6 +288,13 @@ const (
 	// "free" to the file "start-lock" beside its pid file. The step returns once the signal is
 	// sent, so the start goes on.
 	raiseAtStart gcloudRaise = "start"
+	// raiseAtRelease is the first gcloudReleased step after gcloudStarted: the start has given
+	// runningGcloud up, and runRecorded has done nothing since. The helper writes whether gcloud's
+	// pid is recorded there, "recorded" or "unrecorded", to the file "release-record" beside its pid
+	// file, sends the signal, and holds runRecorded at that step for good. So a lock given up before
+	// the pid is recorded, to be taken again to record it, is not taken again before the signal's
+	// kill (killRunningGcloud), which takes the free lock and finds no gcloud to kill.
+	raiseAtRelease gcloudRaise = "release"
 	// raiseAtLastKill is the kill of what is left of gcloud's group once gcloud has been waited for
 	// (killGroupLeft): the first signal sent to a group (signalGroup), which is never sent, so only
 	// the end the interrupt makes can kill the group.
@@ -343,6 +350,26 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 			}
 			raise(at)
 		}
+	case raiseAtRelease:
+		started := false
+		atGcloudStep = func(step gcloudStep) {
+			switch {
+			case step == gcloudStarted:
+				started = true
+			case step == gcloudReleased && started:
+				runningGcloud.Mutex.Lock()
+				record := "unrecorded"
+				if len(runningGcloud.pids) > 0 {
+					record = "recorded"
+				}
+				runningGcloud.Mutex.Unlock()
+				if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "release-record"), []byte(record), 0o600); err != nil {
+					fmt.Println("RAISE", err)
+				}
+				raise(at)
+				select {}
+			}
+		}
 	case raiseAtLastKill:
 		// The kill that is held is the first of the call; the end the interrupt makes sends its
 		// own (killRunningGcloud), from the watch's goroutine, through the second.
@@ -377,16 +404,22 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // a shell's status 130 - and the child that held gcloud's output is gone with it. That holds
 // wherever the interrupt comes in runRecorded: while the call waits on gcloud; the moment gcloud
 // has started, while the start still holds runningGcloud and before gcloud's pid is recorded
-// (raiseAtStart); and once a gcloud that exited leaving its child has been waited for, at the kill
-// of what is left of its group, before that kill is sent (raiseAtLastKill).
+// (raiseAtStart); the moment the start gives runningGcloud up (raiseAtRelease); and once a gcloud
+// that exited leaving its child has been waited for, at the kill of what is left of its group,
+// before that kill is sent (raiseAtLastKill).
 //
-// The last two rows have the helper send itself the interrupt at that place, rather than this test
-// from outside, so it comes there and at no other moment: a watch not yet armed at that step, or
-// stopped before that kill, meets it unarmed, the interrupt's default action ends agent-secrets
+// The last three rows have the helper send itself the interrupt at that place, rather than this
+// test from outside, so it comes there and at no other moment: a watch not yet armed at that step,
+// or stopped before that kill, meets it unarmed, the interrupt's default action ends agent-secrets
 // with gcloud's group running, and the row fails every time. At the start the row also requires
 // what that signal's kill finds there (killRunningGcloud): runningGcloud still held by the start,
 // so the kill waits for gcloud's pid to be recorded and then kills its group. A lock taken only
 // once the start has returned would be free there, and the kill would find no gcloud recorded.
+// At the release the row requires gcloud's pid recorded there, and the helper holds runRecorded at
+// that step, so the signal's kill takes the free lock with nothing more done: a lock given up
+// before the record, to be taken again for it, leaves the kill no gcloud to find. Without that
+// hold a row would see such a retake only by chance: the goroutine that gives a sync.Mutex up
+// almost always takes it again before one parked on it runs.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	for _, row := range []struct {
 		name, last string
@@ -394,6 +427,7 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	}{
 		{name: "while the call waits on gcloud", last: "wait"},
 		{name: "the moment gcloud starts", last: "wait", at: raiseAtStart},
+		{name: "the moment the start gives runningGcloud up", last: "wait", at: raiseAtRelease},
 		{name: "at the last kill of a gcloud that left its child", last: "exit 0", at: raiseAtLastKill},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -462,6 +496,11 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 			if row.at == raiseAtStart {
 				if lock, err := os.ReadFile(filepath.Join(dir, "start-lock")); err != nil || string(lock) != "held" {
 					t.Fatalf("runningGcloud was %q the moment gcloud had started (%v); want it held by the start, so a signal then waits for gcloud's pid to be recorded rather than finding no gcloud to kill: %q", lock, err, out.String())
+				}
+			}
+			if row.at == raiseAtRelease {
+				if record, err := os.ReadFile(filepath.Join(dir, "release-record")); err != nil || string(record) != "recorded" {
+					t.Errorf("gcloud's pid was %q the moment the start gave runningGcloud up (%v); want it recorded before the lock is first given up, so a signal then finds gcloud to kill: %q", record, err, out.String())
 				}
 			}
 			status := helper.ProcessState.Sys().(syscall.WaitStatus)

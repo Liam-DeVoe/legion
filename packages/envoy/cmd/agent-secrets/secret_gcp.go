@@ -425,11 +425,22 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 	return stdout.Bytes(), nil
 }
 
-// runningGcloud holds the pid of each gcloud runRecorded has started and not yet waited for.
-var runningGcloud = struct {
+// gcloudRecord holds the pid of each gcloud runRecorded has started and not yet waited for, under
+// its lock. Each time its lock is given up, it reaches the gcloudReleased step (Unlock).
+type gcloudRecord struct {
 	sync.Mutex
 	pids map[int]bool
-}{pids: map[int]bool{}}
+}
+
+// Unlock gives the record's lock up, then reaches the gcloudReleased step, so a test can act at
+// each place runRecorded gives the lock up, wherever that is.
+func (r *gcloudRecord) Unlock() {
+	r.Mutex.Unlock()
+	reachedGcloudStep(gcloudReleased)
+}
+
+// runningGcloud is the record of the gcloud runRecorded runs.
+var runningGcloud = gcloudRecord{pids: map[int]bool{}}
 
 // formWatchesSignals counts the form watches of createSignals running now (watchCreateSignals),
 // each of which ends the form by a signal through exitBySignal itself.
@@ -450,7 +461,8 @@ var formWatchesSignals atomic.Int32
 // other group.
 //
 // TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary: the moment
-// gcloud has started (startGcloud), and at that last kill.
+// gcloud has started (startGcloud), the moment the start gives runningGcloud up, and at that last
+// kill.
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
@@ -486,6 +498,10 @@ type gcloudStep string
 
 // gcloudStarted: gcloud runs, and its pid is not yet recorded (startGcloud).
 const gcloudStarted gcloudStep = "started"
+
+// gcloudReleased: runningGcloud's lock has just been given up, and the goroutine that gave it up
+// has done nothing since (gcloudRecord.Unlock).
+const gcloudReleased gcloudStep = "released"
 
 // atGcloudStep, where a test sets it, runs at each step runRecorded reaches (gcloudStep), so the
 // test can see what a signal at exactly that step would find, and send one there
