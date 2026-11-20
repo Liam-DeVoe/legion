@@ -191,8 +191,8 @@ func askRun(t *testing.T, rig goingRoutesRig, login string, body map[string]any)
 // schemas, which it could only have been told once the decision was in hand. Its arguments come
 // back as the proposal, the last frame before the ending: each offered action's list of
 // invocations as the answer wrote them, one per item, and nothing for an action the decision
-// did not offer, which is never attempted. The run's record keeps the decision and the proposal
-// the stream carried, and reads finished, with no write.
+// did not offer, which is never attempted. The pause writes nothing: no landing, and no run of
+// the bar's agent (going_runs).
 func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.T) {
 	threshold, _ := measuredThresholds(t)
 	standIn := newDecisionStandIn(t)
@@ -267,22 +267,12 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 		t.Fatalf("the proposal is %+v, want %+v", proposal, want)
 	}
 
-	run, err := rig.server.readGoingRun(context.Background(), id, model.CanonicalLogin("alice"))
-	if err != nil {
-		t.Fatalf("read the run's record: %v", err)
-	}
-	if !run.Finished || run.StructuredOutput == nil || *run.StructuredOutput != going.StructuredOutputAccepted {
-		t.Errorf("the record reads finished=%v structured_output=%v, want finished, accepted", run.Finished, run.StructuredOutput)
-	}
-	var landed int
+	var landed, runs int
 	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_landings where run_id = $1::uuid`, id).Scan(&landed); err != nil || landed != 0 {
 		t.Errorf("the pause landed %d requests (%v), want none: it makes no write", landed, err)
 	}
-	if run.Decision == nil || !reflect.DeepEqual(*run.Decision, decision) {
-		t.Errorf("the record keeps the decision %+v, want the frame's %+v", run.Decision, decision)
-	}
-	if run.Proposal == nil || !reflect.DeepEqual(*run.Proposal, proposal) {
-		t.Errorf("the record keeps the proposal %+v, want the frame's %+v", run.Proposal, proposal)
+	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_runs where id = $1::uuid`, id).Scan(&runs); err != nil || runs != 0 {
+		t.Errorf("the pause wrote %d runs (%v), want none: a pause is no run of the bar's agent", runs, err)
 	}
 }
 
@@ -541,10 +531,9 @@ func TestGoingRunWithNoDecisionModelOrAnUnreachableOneAnswersWithNoDecision(t *t
 
 // A cancelled run stops at its next frame, wherever its answer is being written: the model, which
 // streams slowly, sees its reply abandoned; nothing the answer writes after the cancel is stored;
-// a frame appended after it is refused; and the run's record keeps what it reached and reads
-// unfinished. "this process" cancels through the route, which ends the run here at once; "another
-// process" marks the record alone, as a cancel landing on another pod does, and the run's next
-// frame write is what stops it.
+// a frame appended after it is refused. "this process" cancels through the route, which ends the
+// run here at once; "another process" marks the record alone, as a cancel landing on another pod
+// does, and the run's next frame write is what stops it.
 func TestGoingCancelStopsARunAtItsNextFrame(t *testing.T) {
 	for _, where := range []string{"this process", "another process"} {
 		t.Run(where, func(t *testing.T) {
@@ -594,13 +583,6 @@ func TestGoingCancelStopsARunAtItsNextFrame(t *testing.T) {
 			}
 			if _, err := rig.server.appendGoingEvent(context.Background(), id, going.Text("late")); !errors.Is(err, pgx.ErrNoRows) {
 				t.Errorf("a frame appended after the cancel: %v, want it refused (pgx.ErrNoRows)", err)
-			}
-			run, err := rig.server.readGoingRun(context.Background(), id, model.CanonicalLogin("alice"))
-			if err != nil {
-				t.Fatalf("read the run's record: %v", err)
-			}
-			if run.Finished {
-				t.Errorf("the cancelled run's record reads finished, want unfinished")
 			}
 		})
 	}

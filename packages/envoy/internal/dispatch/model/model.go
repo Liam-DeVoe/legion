@@ -3310,6 +3310,16 @@ type UserThreadStateEventPayload struct {
 	ThreadID string `json:"thread_id,omitempty"`
 }
 
+// GoingPlanEventPayload is `going_plan.updated`: what one person's command-bar plans wait on
+// changed - a run's plan began to wait for them, or a waiting plan was answered, stopped or made
+// to wait again. It names the person alone, so their open pages read their Inbox and History again,
+// and nothing of the plan, which a page reads at GET /api/v1/going/runs/{id}/plan as the person. A
+// run belongs to no issue, document or project, so the event names no owner, and it never
+// notifies.
+type GoingPlanEventPayload struct {
+	Login string `json:"login"`
+}
+
 // MessageDeliveryEventPayload is the user-visible result of one target delivery attempt.
 type MessageDeliveryEventPayload struct {
 	MessageID string `json:"message_id"`

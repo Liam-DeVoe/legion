@@ -195,6 +195,9 @@ type AppContextOptions struct {
 	// GoingRuns wakes the command-bar agent's waiting claims and renews; cmd/dispatch registers it
 	// on its listener hub for api.GoingRunsChannel. See api.Deps.GoingRuns.
 	GoingRuns *api.GoingRunSignal
+	// GoingRunEvents wakes the streams of a command-bar run's events; cmd/dispatch registers it on
+	// its listener hub for api.GoingRunEventsChannel. See api.Deps.GoingRunEvents.
+	GoingRunEvents *api.GoingRunEventSignal
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -261,6 +264,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 		GoingRuns:              opts.GoingRuns,
+		GoingRunEvents:         opts.GoingRunEvents,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

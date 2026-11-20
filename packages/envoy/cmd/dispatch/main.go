@@ -607,6 +607,9 @@ func main() {
 	// The command bar's agent waits for a ready run, and for its person's Stop, on the NOTIFYs of
 	// api.GoingRunsChannel, which the listener hub below delivers to this signal.
 	goingRuns := api.NewGoingRunSignal()
+	// A stream of a run's events waits for the run's next frames on the NOTIFYs of
+	// api.GoingRunEventsChannel, which the listener hub below delivers to this signal.
+	goingRunEvents := api.NewGoingRunEventSignal()
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -629,6 +632,7 @@ func main() {
 		Files:          fileStore,
 		Lifetime:       ctx,
 		GoingRuns:      goingRuns,
+		GoingRunEvents: goingRunEvents,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -914,6 +918,8 @@ func main() {
 	}
 	listenerHub.Handle(api.GoingRunsChannel, goingRuns.Notify)
 	listenerHub.OnConnected(goingRuns.Wake)
+	listenerHub.Handle(api.GoingRunEventsChannel, goingRunEvents.Notify)
+	listenerHub.OnConnected(goingRunEvents.Wake)
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the

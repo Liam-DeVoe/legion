@@ -5109,6 +5109,152 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/going/runs": {
+      "post": {
+        "description": "Start a command-bar run {words, context?, level?, mode?, continues?}: the agent works it in the background, as the caller, until it ends, stops at a bound of its level, or waits for its person to answer a plan. words is required (400 GOING_INPUT when blank) and at most 2000 characters (400 CAP_EXCEEDED); context is the bar's chip {path, project, issue, block}; level is fast, standard (the default) or deep, which set its budgets of model calls, working time and output tokens; mode is ask or auto_review, the caller's own setting (GET /api/v1/me/going/settings) where it is absent; continues names the run it follows up, which must be the caller's own and listed in History (404 GOING_RUN_NOT_FOUND), the newest run of its conversation (409 GOING_RUN_NOT_LATEST) and ended (409 GOING_RUN_NOT_ENDED), and the new run joins its conversation. The run acts with this request's own credential, which must be a person's own sign-in or personal agent token: a broker-issued token, the deployment's shared token and a service-account token are refused 403 RUN_NEEDS_PERSON_CREDENTIAL, with nothing written. One person may have at most 20 runs queued (429 GOING_RUN_QUEUE_FULL). Answers 201 with the run, queued, as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "postApiV1GoingRuns",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}": {
+      "get": {
+        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
+        "operationId": "getApiV1GoingRunsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/going/runs/{id}/events": {
+      "get": {
+        "description": "The caller's own command-bar run's frames as server-sent events: each frame is `id:` its sequence, `event:` its name (the agent's frames, plan for each plan made or answered, and end, the run's end {state, reason, offers}) and `data:` its JSON, written as the run stores it. Last-Event-ID resumes after that sequence. The stream ends once the run has ended and every frame it stored is written; a stream with no frame to write for 5m0s writes keepalive and ends, and the reader opens it again from its last sequence. One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next 429 GOING_RUN_READERS_FULL. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "getApiV1GoingRunsByIdEvents",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/going/runs/{id}/plan": {
       "get": {
         "description": "The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message}}]}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan.",
@@ -5331,6 +5477,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GoingPlanAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/stop": {
+      "post": {
+        "description": "Stop the caller's own command-bar run at once: a run that is queued, works or waits is set stopped with the reason \"STOPPED: its person stopped it\", its end frame names it, the agent cancels its model call in flight, and what the run did stays. Answers the run as it then stands; a run that had ended is answered as it ended, unchanged. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "postApiV1GoingRunsByIdStop",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
                 }
               }
             }
@@ -9052,9 +9249,65 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/going-plans": {
+      "get": {
+        "description": "The caller's own command-bar runs whose latest plan waits for them, while History lists their conversation, newest plan first, and nobody else's, which the Inbox shows: each row is {run, conversation, words, plan, summary, waiting (how many of its rows wait), created_at}; the plan itself is GET /api/v1/going/runs/{id}/plan, where the person answers it. Each change of what it lists appends going_plan.updated {login}, which wakes nobody. Pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "operationId": "getApiV1MeGoingPlans",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingWaitingPlansPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/going-runs": {
       "get": {
-        "description": "The caller's own command-bar runs of the last seven days, newest first, and nobody else's: each row is one run with every part stored - the words, the context chip, the hits, the decision and the proposal (each the data of its stream frame, null where the run wrote none), the issues its hits and landed requests touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue and ?q= the runs whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "description": "History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
         "operationId": "getApiV1MeGoingRuns",
         "parameters": [
           {
@@ -9110,7 +9363,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GoingRunsPage"
+                  "$ref": "#/components/schemas/GoingConversationsPage"
                 }
               }
             }
@@ -21561,6 +21814,61 @@
         },
         "type": "object"
       },
+      "GoingConversation": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "newest_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRun"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "newest_at",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "GoingConversationsPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingConversation"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "GoingDecisionCapability": {
         "properties": {
           "configured": {
@@ -21912,9 +22220,6 @@
       },
       "GoingRun": {
         "properties": {
-          "author_login": {
-            "type": "string"
-          },
           "context": {
             "anyOf": [
               {
@@ -21925,37 +22230,24 @@
               }
             ]
           },
+          "continues": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "conversation": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
-          },
-          "decision": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GoingRunDecision"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "finished": {
-            "type": "boolean"
           },
           "finished_at": {
             "format": "date-time",
             "type": [
               "null",
               "string"
-            ]
-          },
-          "hits": {
-            "items": {
-              "$ref": "#/components/schemas/GoingRunHit"
-            },
-            "type": [
-              "array",
-              "null"
             ]
           },
           "id": {
@@ -21970,21 +22262,40 @@
               "null"
             ]
           },
-          "proposal": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GoingRunProposal"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "level": {
+            "enum": [
+              "fast",
+              "standard",
+              "deep"
+            ],
+            "type": "string"
           },
-          "structured_output": {
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "working",
+              "waiting",
+              "done",
+              "stopped",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "stop_reason": {
             "type": [
               "null",
               "string"
             ]
+          },
+          "used": {
+            "$ref": "#/components/schemas/GoingRunUsed"
           },
           "words": {
             "type": "string"
@@ -21992,264 +22303,77 @@
         },
         "required": [
           "id",
-          "author_login",
+          "conversation",
+          "continues",
           "words",
           "context",
-          "hits",
-          "decision",
-          "proposal",
+          "level",
+          "mode",
+          "state",
+          "stop_reason",
           "issues",
-          "structured_output",
-          "finished",
+          "used",
           "created_at",
           "finished_at"
         ],
         "type": "object"
       },
-      "GoingRunDecidedAction": {
+      "GoingRunInput": {
         "properties": {
-          "action": {
-            "type": "string"
-          },
-          "confidence": {
-            "type": [
-              "null",
-              "number"
-            ]
-          },
-          "probability": {
-            "type": [
-              "null",
-              "number"
-            ]
-          }
-        },
-        "required": [
-          "action",
-          "confidence",
-          "probability"
-        ],
-        "type": "object"
-      },
-      "GoingRunDecidedDisplay": {
-        "properties": {
-          "chart": {
-            "type": "boolean"
-          },
-          "choice": {
-            "enum": [
-              "chart",
-              "prose"
-            ],
-            "type": "string"
-          },
-          "confidence": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "choice",
-          "confidence",
-          "chart"
-        ],
-        "type": "object"
-      },
-      "GoingRunDecision": {
-        "properties": {
-          "act": {
-            "type": "boolean"
-          },
-          "actions": {
-            "items": {
-              "$ref": "#/components/schemas/GoingRunDecidedAction"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
           "context": {
-            "enum": [
-              "page",
-              "named",
-              "none"
-            ],
-            "type": "string"
-          },
-          "display": {
-            "$ref": "#/components/schemas/GoingRunDecidedDisplay"
-          }
-        },
-        "required": [
-          "actions",
-          "act",
-          "context",
-          "display"
-        ],
-        "type": "object"
-      },
-      "GoingRunHit": {
-        "properties": {
-          "href": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "id",
-          "title",
-          "href"
-        ],
-        "type": "object"
-      },
-      "GoingRunInvocation": {
-        "properties": {
-          "arguments": {
-            "additionalProperties": {},
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "automatic": {
-            "type": "boolean"
-          },
-          "missing": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/GoingRunMissingArgument"
+                "$ref": "#/components/schemas/GoingContextInput"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "target_argument": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "arguments",
-          "missing",
-          "automatic",
-          "target_argument"
-        ],
-        "type": "object"
-      },
-      "GoingRunMissingArgument": {
-        "properties": {
-          "choices": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "field": {
+          "continues": {
             "type": "string"
           },
-          "item": {
-            "type": "string"
-          },
-          "kind": {
+          "level": {
             "enum": [
-              "text",
-              "number",
-              "enum",
-              "item"
+              "fast",
+              "standard",
+              "deep"
             ],
             "type": "string"
-          }
-        },
-        "required": [
-          "field",
-          "kind"
-        ],
-        "type": "object"
-      },
-      "GoingRunOffer": {
-        "properties": {
-          "action": {
+          },
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
             "type": "string"
           },
-          "invocations": {
-            "items": {
-              "$ref": "#/components/schemas/GoingRunInvocation"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "offered": {
-            "type": "boolean"
-          },
-          "withheld": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "words": {
+            "type": "string"
           }
         },
         "required": [
-          "action",
-          "invocations",
-          "offered"
+          "words"
         ],
         "type": "object"
       },
-      "GoingRunProposal": {
+      "GoingRunUsed": {
         "properties": {
-          "offers": {
-            "items": {
-              "$ref": "#/components/schemas/GoingRunOffer"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "offers"
-        ],
-        "type": "object"
-      },
-      "GoingRunsPage": {
-        "properties": {
-          "limit": {
+          "calls": {
             "type": "integer"
           },
-          "offset": {
+          "tokens": {
             "type": "integer"
           },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/GoingRun"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "total": {
+          "working_ms": {
+            "format": "int64",
             "type": "integer"
           }
         },
         "required": [
-          "rows",
-          "total",
-          "limit",
-          "offset"
+          "calls",
+          "working_ms",
+          "tokens"
         ],
         "type": "object"
       },
@@ -22401,6 +22525,71 @@
           "undo",
           "outcome",
           "fields"
+        ],
+        "type": "object"
+      },
+      "GoingWaitingPlan": {
+        "properties": {
+          "conversation": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "plan": {
+            "type": "integer"
+          },
+          "run": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "waiting": {
+            "type": "integer"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "conversation",
+          "words",
+          "plan",
+          "summary",
+          "waiting",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "GoingWaitingPlansPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingWaitingPlan"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
         ],
         "type": "object"
       },

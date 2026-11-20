@@ -1728,6 +1728,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     block_id: "b-1",
     changed_version: 2,
   }),
+  "going_plan.updated": event(
+    "going_plan.updated",
+    { login: "alice" },
+    { issue_key: null, project: undefined }
+  ),
   "handoff.recorded": event("handoff.recorded", {
     handoff_id: "handoff-1",
     phase: "implement",

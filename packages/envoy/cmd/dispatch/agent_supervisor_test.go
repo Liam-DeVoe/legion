@@ -7,6 +7,7 @@ package main
 // claims failed with agent.ReasonNoModel.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -773,12 +774,8 @@ var sectionFiveRows = []string{
 
 // TestEachBoundOfABackgroundRun: each limit of section 5 of the background-runs design is crossed
 // once, and the run waits or stops with the reason the section names (check c22). It fails on a
-// row of the section with no subtest. The readers of a run's events are the run stream's (t14),
-// which is skipped until its task lands.
+// row of the section with no subtest.
 func TestEachBoundOfABackgroundRun(t *testing.T) {
-	skip := func(owner, why string) func(*testing.T) {
-		return func(t *testing.T) { t.Skip(owner + ": " + why) }
-	}
 	subtests := map[string]func(*testing.T){
 		"Runs working at once, in the agent":               requireTheAgentsSlots,
 		"Runs working at once, and queued, for one person": requireOnePersonsRuns,
@@ -790,7 +787,7 @@ func TestEachBoundOfABackgroundRun(t *testing.T) {
 		"Memory of the agent":                              requireTheAgentsMemoryBound,
 		"A run that kills the agent":                       requireARunThatKillsTheAgentThreeTimesFails,
 		"Kills for memory that no run alone causes":        requireUnexplainedKillsHalveTheSlots,
-		"Readers of a run's events":                        skip("t14", "the run stream's readers are the stream route's"),
+		"Readers of a run's events":                        requireTheRunsReaders,
 		"calls that the API runs for its agents at once":   requireTheServersCallSlots,
 		"One call in the API":                              requireOneCallsTime,
 		"A second try of one idempotency key":              requireASecondTryWaitsForTheFirst,
@@ -810,6 +807,96 @@ func TestEachBoundOfABackgroundRun(t *testing.T) {
 	}
 	for row := range subtests {
 		t.Errorf("a subtest for %q, which section 5 does not list", row)
+	}
+}
+
+// requireTheRunsReaders: a server serves at most 4 streams of one run's events and 20 of one
+// person's runs; the next of either is refused 429 GOING_RUN_READERS_FULL with its reason. The
+// open streams are woken by the run's NOTIFY: the person's Stop reaches each stream of the run as
+// its end frame within a second, and ends it.
+func requireTheRunsReaders(t *testing.T) {
+	server := startAgentServer(t, nil)
+	// Queued at a shape no build reads, so no agent takes one while it is read.
+	runs := make([]string, 6)
+	for index := range runs {
+		runs[index] = server.recordRun(t, "alice", "queued", unreadShape)
+	}
+	type stream struct {
+		frames <-chan string
+		cancel func()
+	}
+	open := func(t *testing.T, run string) (int, string, stream) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.url("/api/v1/going/runs/"+run+"/events"), nil)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		request.Header.Set("X-Dispatch-User", "alice")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			cancel()
+			t.Fatalf("open a stream of %s: %v", run, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			cancel()
+			return response.StatusCode, string(body), stream{}
+		}
+		lines := make(chan string, 16)
+		go func() {
+			defer close(lines)
+			defer response.Body.Close()
+			scanner := bufio.NewScanner(response.Body)
+			for scanner.Scan() {
+				lines <- scanner.Text()
+			}
+		}()
+		t.Cleanup(cancel)
+		return http.StatusOK, "", stream{frames: lines, cancel: cancel}
+	}
+	var first []stream
+	for reader := 1; reader <= 4; reader++ {
+		status, body, opened := open(t, runs[0])
+		if status != http.StatusOK {
+			t.Fatalf("reader %d of the run answered %d %s, want 200", reader, status, body)
+		}
+		first = append(first, opened)
+	}
+	if status, body, _ := open(t, runs[0]); status != http.StatusTooManyRequests ||
+		!strings.Contains(body, "GOING_RUN_READERS_FULL") || !strings.Contains(body, "4 streams open") {
+		t.Errorf("the fifth reader of the run answered %d %s, want 429 GOING_RUN_READERS_FULL naming the run's 4 streams", status, body)
+	}
+	for _, run := range runs[1:5] {
+		for reader := 1; reader <= 4; reader++ {
+			if status, body, _ := open(t, run); status != http.StatusOK {
+				t.Fatalf("reader %d of run %s answered %d %s, want 200", reader, run, status, body)
+			}
+		}
+	}
+	if status, body, _ := open(t, runs[5]); status != http.StatusTooManyRequests ||
+		!strings.Contains(body, "GOING_RUN_READERS_FULL") || !strings.Contains(body, "20 streams of your runs") {
+		t.Errorf("the 21st reader of alice's runs answered %d %s, want 429 GOING_RUN_READERS_FULL naming her 20 streams", status, body)
+	}
+	stopped := time.Now()
+	if answer := server.send(t, http.MethodPost, "/api/v1/going/runs/"+runs[0]+"/stop", "", asUser("alice")); answer.status != http.StatusOK {
+		t.Fatalf("stop the run answered %s", answer)
+	}
+	for index, opened := range first {
+		ended := false
+		for line := range opened.frames {
+			if line == "event: end" {
+				if waited := time.Since(stopped); waited > time.Second {
+					t.Errorf("reader %d was written the end frame %s after the stop, want within 1 s", index+1, waited)
+				}
+				ended = true
+			}
+		}
+		if !ended {
+			t.Errorf("reader %d's stream ended with no end frame", index+1)
+		}
 	}
 }
 

@@ -157,13 +157,15 @@ func (rig goingGrantRig) exec(t *testing.T, statement string, arguments ...any) 
 	}
 }
 
-// run records a run of login's and answers its id.
+// run records a queued run of login's, as the route that starts a run writes one, and answers its
+// id.
 func (rig goingGrantRig) run(t *testing.T, login string) string {
 	t.Helper()
 	id := uuid.NewString()
-	if err := rig.cookies.recordGoingRun(context.Background(), id, login, "the words of a run", nil); err != nil {
-		t.Fatalf("record a run of %s's: %v", login, err)
-	}
+	rig.exec(t, `
+		insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape)
+		values ($1::uuid, $2, 'the words of a run', $1::uuid, 'standard', 'ask', 'queued', $3)
+	`, id, login, goingRunShape)
 	return id
 }
 

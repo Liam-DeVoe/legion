@@ -233,6 +233,11 @@ type Deps struct {
 	// no announcement reaches, which register gives a signal of its own, so its claims and renews
 	// wait out their bounds.
 	GoingRuns *GoingRunSignal
+	// GoingRunEvents wakes the streams of a run's events at each announcement of that run on
+	// GoingRunEventsChannel, which cmd/dispatch registers it for on its listener hub; nil is a
+	// server no announcement reaches, which register gives a signal of its own, so its streams
+	// read again every goingRunStreamCheck.
+	GoingRunEvents *GoingRunEventSignal
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -334,6 +339,8 @@ type DepsInput struct {
 	BuildCommit string
 	// GoingRuns is the signal of GoingRunsChannel; see Deps.GoingRuns.
 	GoingRuns *GoingRunSignal
+	// GoingRunEvents is the signal of GoingRunEventsChannel; see Deps.GoingRunEvents.
+	GoingRunEvents *GoingRunEventSignal
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -429,6 +436,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 		GoingRuns:              input.GoingRuns,
+		GoingRunEvents:         input.GoingRunEvents,
 	}, nil
 }
 
@@ -501,7 +509,12 @@ type server struct {
 	inProcess http.Handler
 	// goingRuns wakes the agent's waiting claims and renews (going_agent.go): Deps.GoingRuns, or a
 	// signal of the server's own where it is nil.
-	goingRuns       *GoingRunSignal
+	goingRuns *GoingRunSignal
+	// goingRunEvents wakes the streams of a run's events (going_run_stream.go):
+	// Deps.GoingRunEvents, or a signal of the server's own where it is nil.
+	goingRunEvents *GoingRunEventSignal
+	// goingReaders counts the streams of runs' events this process serves, by run and by person.
+	goingReaders    goingRunReaders
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -917,6 +930,10 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.goingRuns = deps.GoingRuns
 	if s.goingRuns == nil {
 		s.goingRuns = NewGoingRunSignal()
+	}
+	s.goingRunEvents = deps.GoingRunEvents
+	if s.goingRunEvents == nil {
+		s.goingRunEvents = NewGoingRunEventSignal()
 	}
 	goingReads, err := goingReadRoutesOf(routes)
 	if err != nil {

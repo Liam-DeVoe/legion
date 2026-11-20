@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -247,7 +246,6 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	start := goingRunStart{
 		words:     words,
 		chip:      chip,
-		login:     goingRunLogin(caller),
 		actions:   s.going.runnableBy(credential),
 		session:   credential.session(),
 		reads:     s.goingReadsFor(credential, scoped),
@@ -317,21 +315,6 @@ func goingContextFrom(input *goingContextInput) (*goingContext, error) {
 	return &chip, nil
 }
 
-// goingRunLogin is the login a caller's run is kept under in going_runs: the person the
-// credential acts as, read as actingPerson reads it, so the run is one GET /api/v1/me/going-runs
-// answers that same caller. A credential that does not act as a person - a session's own token,
-// a workload's - reads no such route, so its run keeps no record ("").
-func goingRunLogin(caller model.Actor) string {
-	if !caller.Credential.Holds(model.ScopePerson) {
-		return ""
-	}
-	person := caller.ID
-	if caller.Owner != nil {
-		person = *caller.Owner
-	}
-	return model.CanonicalLogin(person)
-}
-
 // startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
 // window the record gave it (goingRequest.EndsAt), which is what every reader of the run reads
 // too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
@@ -346,8 +329,8 @@ func goingRunLogin(caller model.Actor) string {
 // A run with a decider decides first and stores the decision frame before the answer is asked
 // anything, so the answer is told the actions the decision offered; once the answer
 // has written, the proposal frame carries their arguments, before the frame that ends the stream.
-// The run's record (going_runs) is written as the run starts and filled as it goes: a run its
-// author cancels keeps what it reached and reads unfinished.
+// A pause's answer is no run of the bar's agent: it writes no going_runs row, so History, the
+// claim and the sweep of runs never read it (going_runs.go).
 func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart, turn *goingQuickTurn) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
@@ -375,12 +358,11 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 	})
 	defer superseded()
 
-	run := s.beginGoingRun(storing, running, request, start)
+	run := &goingRunning{s: s, request: request, start: start, storing: storing, running: running}
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
-		run.fill(goingRunParts{Finished: true})
 		return
 	}
 	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
@@ -408,46 +390,14 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 	goingRunStopped(request.ID, run.answer(answering, decision))
 }
 
-// goingRunning is one run as it answers: its request and start, the context its frames and its
-// record are stored on and the one a cancel ends, whether its record is kept, every hit its
-// searches found, and whether it reached its outcome.
+// goingRunning is one run as it answers: its request and start, and the context its frames are
+// stored on and the one a cancel ends.
 type goingRunning struct {
-	s        *server
-	request  goingRequest
-	start    goingRunStart
-	storing  context.Context
-	running  context.Context
-	recorded bool
-	ended    bool
-	// found is every hit the answer's searches found, for the record: the search tool runs on
-	// agentloop's goroutines, and the record is written from the answer's own.
-	found struct {
-		sync.Mutex
-		hits []going.Hit
-	}
-}
-
-// beginGoingRun writes the run's record where its caller is a person (goingRunStart.login), and
-// answers the run that fills it.
-func (s *server) beginGoingRun(storing, running context.Context, request goingRequest, start goingRunStart) *goingRunning {
-	run := &goingRunning{s: s, request: request, start: start, storing: storing, running: running, recorded: start.login != ""}
-	if run.recorded {
-		if err := s.recordGoingRun(storing, request.ID, start.login, request.Words, start.chip); err != nil {
-			slog.Warn("dispatch going: record the run", "request", request.ID, "error", err)
-			run.recorded = false
-		}
-	}
-	return run
-}
-
-// fill writes parts onto the run's record, where it keeps one.
-func (g *goingRunning) fill(parts goingRunParts) {
-	if !g.recorded {
-		return
-	}
-	if err := g.s.fillGoingRun(g.storing, g.request.ID, parts); err != nil {
-		slog.Warn("dispatch going: fill the run's record", "request", g.request.ID, "error", err)
-	}
+	s       *server
+	request goingRequest
+	start   goingRunStart
+	storing context.Context
+	running context.Context
 }
 
 // emit stores one frame of the run, ending it with a terminal frame.
@@ -460,15 +410,8 @@ func (g *goingRunning) emit(event going.Event) error {
 	return err
 }
 
-// hits is every hit the run's searches found so far.
-func (g *goingRunning) hits() []going.Hit {
-	g.found.Lock()
-	defer g.found.Unlock()
-	return append([]going.Hit{}, g.found.hits...)
-}
-
-// decide makes the run's decision, and stores its frame and its record: nil with no decision,
-// which the answer runs without, and an error where its frame could not be stored.
+// decide makes the run's decision and stores its frame: nil with no decision, which the answer
+// runs without, and an error where its frame could not be stored.
 func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
 	decision, decided := g.s.goingDecide(ctx, g.request.Words, g.start)
 	if !decided || g.running.Err() != nil {
@@ -477,30 +420,21 @@ func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
 	if err := g.emit(going.Event{Name: contracts.GoingEventDecision, Data: decision}); err != nil {
 		return nil, err
 	}
-	g.fill(goingRunParts{Decision: &decision})
 	return &decision, nil
 }
 
 // answer asks the answer of the run, told the actions decision offered (none for no decision),
 // with every read tool its caller may call, each made as the run's author: the block's fill makes
-// its read through the same functions, and the roster read is what the roster frame reports. A
-// run that never reached its outcome keeps what it found and reads unfinished.
+// its read through the same functions, and the roster read is what the roster frame reports.
 func (g *goingRunning) answer(ctx context.Context, decision *goingDecision) error {
 	var offer going.Offer
 	if decision != nil {
 		offer = decision.offer(g.start)
 	}
-	search := g.s.goingSearch(g.request.Project)
 	reads := g.s.goingRunReads(g.request, g.start)
-	err := g.s.deps.Answerer.Run(ctx, going.Request{
-		Words: g.request.Words,
-		Search: func(ctx context.Context, q string) ([]going.Hit, error) {
-			result, err := search(ctx, q)
-			g.found.Lock()
-			g.found.hits = append(g.found.hits, result...)
-			g.found.Unlock()
-			return result, err
-		},
+	return g.s.deps.Answerer.Run(ctx, going.Request{
+		Words:  g.request.Words,
+		Search: g.s.goingSearch(g.request.Project),
 		Bodies: g.s.goingBodies,
 		Offer:  offer,
 		Reads:  reads.funcs,
@@ -508,27 +442,17 @@ func (g *goingRunning) answer(ctx context.Context, decision *goingDecision) erro
 			return g.finish(ctx, reads, decision, outcome)
 		},
 	}, g.emit)
-	if !g.ended {
-		// Cancelled, ended under the answer, or failed before it was told anything: the record
-		// keeps what the run found and reads unfinished.
-		g.fill(goingRunParts{Hits: g.hits()})
-	}
-	return err
 }
 
 // finish is the run's outcome, once the answer has written its last text frame: the block the
-// structured reply wrote and the roster frame, the proposal of the decision, and the record,
-// finished.
+// structured reply wrote and the roster frame, and the proposal of the decision.
 func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision *goingDecision, outcome going.Outcome) error {
 	if g.running.Err() != nil {
 		// Cancelled under the answer on this process: the answer's ending is the cancel's, so the
-		// run stores no ending and no proposal and its record reads unfinished, as a cancel
-		// landing on another process leaves it.
+		// run stores no ending and no proposal, as a cancel landing on another process leaves it.
 		return g.running.Err()
 	}
-	parts := goingRunParts{Hits: g.hits(), Finished: true}
 	if outcome.StructuredOutput != "" {
-		parts.StructuredOutput = &outcome.StructuredOutput
 		// After every text frame and before the proposal and the ending (R2): the block the
 		// structured reply wrote, filled from its read, and how fresh the roster the run read
 		// was. Neither counts against the answer's word cut.
@@ -550,11 +474,8 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision
 			if err := g.emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
 				return err
 			}
-			parts.Proposal = &proposal
 		}
 	}
-	g.fill(parts)
-	g.ended = true
 	return nil
 }
 

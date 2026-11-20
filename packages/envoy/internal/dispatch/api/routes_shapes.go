@@ -339,11 +339,11 @@ type myAnswersQuery struct {
 }
 
 // myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
-// runs by, and the offset page GET /api/v1/me/answers answers.
+// conversations by, and the offset page GET /api/v1/me/answers answers.
 type myGoingRunsQuery struct {
-	// Issue keeps the runs whose hits or landed requests touched that issue key.
+	// Issue keeps the conversations with a run whose landed requests touched that issue key.
 	Issue string `query:"issue"`
-	// Q keeps the runs whose words hold that text, in any case.
+	// Q keeps the conversations with a run whose words hold that text, in any case.
 	Q string `query:"q"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -814,7 +814,8 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
-	"GET /api/v1/me/going-runs":        {Status: http.StatusOK, Response: goingRunsPage{}, Params: myGoingRunsQuery{}},
+	"GET /api/v1/me/going-runs":        {Status: http.StatusOK, Response: goingConversationsPage{}, Params: myGoingRunsQuery{}},
+	"GET /api/v1/me/going-plans":       {Status: http.StatusOK, Response: goingWaitingPlansPage{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -855,6 +856,16 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanRejectInput{},
 	},
 	"POST /api/v1/going/runs/{id}/undo": {Status: http.StatusOK, Response: goingUndoAnswer{}},
+	"POST /api/v1/going/runs": {
+		Status: http.StatusCreated, Response: goingRun{}, Request: goingRunInput{},
+	},
+	"GET /api/v1/going/runs/{id}": {Status: http.StatusOK, Response: goingRun{}},
+	"GET /api/v1/going/runs/{id}/events": {
+		Status:             http.StatusOK,
+		Opaque:             "the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
+		OpaqueContentTypes: []string{"text/event-stream"},
+	},
+	"POST /api/v1/going/runs/{id}/stop": {Status: http.StatusOK, Response: goingRun{}},
 	"GET /api/v1/me/going/settings":     {Status: http.StatusOK, Response: goingSettings{}},
 	"PUT /api/v1/me/going/settings": {
 		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},

@@ -1323,6 +1323,57 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/going/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Start a command-bar run {words, context?, level?, mode?, continues?}: the agent works it in the background, as the caller, until it ends, stops at a bound of its level, or waits for its person to answer a plan. words is required (400 GOING_INPUT when blank) and at most 2000 characters (400 CAP_EXCEEDED); context is the bar's chip {path, project, issue, block}; level is fast, standard (the default) or deep, which set its budgets of model calls, working time and output tokens; mode is ask or auto_review, the caller's own setting (GET /api/v1/me/going/settings) where it is absent; continues names the run it follows up, which must be the caller's own and listed in History (404 GOING_RUN_NOT_FOUND), the newest run of its conversation (409 GOING_RUN_NOT_LATEST) and ended (409 GOING_RUN_NOT_ENDED), and the new run joins its conversation. The run acts with this request's own credential, which must be a person's own sign-in or personal agent token: a broker-issued token, the deployment's shared token and a service-account token are refused 403 RUN_NEEDS_PERSON_CREDENTIAL, with nothing written. One person may have at most 20 runs queued (429 GOING_RUN_QUEUE_FULL). Answers 201 with the run, queued, as GET /api/v1/going/runs/{id} answers it. */
+    post: operations["postApiV1GoingRuns"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
+    get: operations["getApiV1GoingRunsById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar run's frames as server-sent events: each frame is `id:` its sequence, `event:` its name (the agent's frames, plan for each plan made or answered, and end, the run's end {state, reason, offers}) and `data:` its JSON, written as the run stores it. Last-Event-ID resumes after that sequence. The stream ends once the run has ended and every frame it stored is written; a stream with no frame to write for 5m0s writes keepalive and ends, and the reader opens it again from its last sequence. One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next 429 GOING_RUN_READERS_FULL. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it. */
+    get: operations["getApiV1GoingRunsByIdEvents"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/going/runs/{id}/plan": {
     parameters: {
       query?: never;
@@ -1385,6 +1436,23 @@ export interface paths {
     put?: never;
     /** @description Ask, in words, for another plan in place of the caller's own run's waiting plan {plan, words}: the plan is rejected and nothing of it runs, and the words, at most 4000 characters (400 GOING_PLAN_INPUT), are saved as a step of the run beside the plan's rows, which the run's model reads when it proposes the next plan. Like an approval it moves the run's grant to the caller's credential, and makes the run ready. Answers the rejected plan. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait. */
     post: operations["postApiV1GoingRunsByIdPlanRevise"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/stop": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Stop the caller's own command-bar run at once: a run that is queued, works or waits is set stopped with the reason "STOPPED: its person stopped it", its end frame names it, the agent cancels its model call in flight, and what the run did stays. Answers the run as it then stands; a run that had ended is answered as it ended, unchanged. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it. */
+    post: operations["postApiV1GoingRunsByIdStop"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2254,6 +2322,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/going-plans": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar runs whose latest plan waits for them, while History lists their conversation, newest plan first, and nobody else's, which the Inbox shows: each row is {run, conversation, words, plan, summary, waiting (how many of its rows wait), created_at}; the plan itself is GET /api/v1/going/runs/{id}/plan, where the person answers it. Each change of what it lists appends going_plan.updated {login}, which wakes nobody. Pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    get: operations["getApiV1MeGoingPlans"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/going-runs": {
     parameters: {
       query?: never;
@@ -2261,7 +2346,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar runs of the last seven days, newest first, and nobody else's: each row is one run with every part stored - the words, the context chip, the hits, the decision and the proposal (each the data of its stream frame, null where the run wrote none), the issues its hits and landed requests touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue and ?q= the runs whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingRuns"];
     put?: never;
     post?: never;
@@ -5225,6 +5310,18 @@ export interface components {
       path?: string;
       project?: string;
     };
+    GoingConversation: {
+      id: string;
+      /** Format: date-time */
+      newest_at: string;
+      runs: components["schemas"]["GoingRun"][] | null;
+    };
+    GoingConversationsPage: {
+      limit: number;
+      offset: number;
+      rows: components["schemas"]["GoingConversation"][] | null;
+      total: number;
+    };
     GoingDecisionCapability: {
       configured: boolean;
       model: string;
@@ -5306,75 +5403,39 @@ export interface components {
       status: number;
     };
     GoingRun: {
-      author_login: string;
       context: components["schemas"]["GoingContext"] | null;
+      continues: null | string;
+      conversation: string;
       /** Format: date-time */
       created_at: string;
-      decision: components["schemas"]["GoingRunDecision"] | null;
-      finished: boolean;
       /** Format: date-time */
       finished_at: null | string;
-      hits: components["schemas"]["GoingRunHit"][] | null;
       id: string;
       issues: string[] | null;
-      proposal: components["schemas"]["GoingRunProposal"] | null;
-      structured_output: null | string;
+      /** @enum {string} */
+      level: "fast" | "standard" | "deep";
+      /** @enum {string} */
+      mode: "ask" | "auto_review";
+      /** @enum {string} */
+      state: "queued" | "working" | "waiting" | "done" | "stopped" | "failed";
+      stop_reason: null | string;
+      used: components["schemas"]["GoingRunUsed"];
       words: string;
     };
-    GoingRunDecidedAction: {
-      action: string;
-      confidence: null | number;
-      probability: null | number;
-    };
-    GoingRunDecidedDisplay: {
-      chart: boolean;
+    GoingRunInput: {
+      context?: components["schemas"]["GoingContextInput"] | null;
+      continues?: string;
       /** @enum {string} */
-      choice: "chart" | "prose";
-      /** Format: double */
-      confidence: number;
-    };
-    GoingRunDecision: {
-      act: boolean;
-      actions: components["schemas"]["GoingRunDecidedAction"][] | null;
+      level?: "fast" | "standard" | "deep";
       /** @enum {string} */
-      context: "page" | "named" | "none";
-      display: components["schemas"]["GoingRunDecidedDisplay"];
+      mode?: "ask" | "auto_review";
+      words: string;
     };
-    GoingRunHit: {
-      href: string;
-      id: string;
-      kind: string;
-      title: string;
-    };
-    GoingRunInvocation: {
-      arguments: {
-        [key: string]: unknown;
-      } | null;
-      automatic: boolean;
-      missing: components["schemas"]["GoingRunMissingArgument"] | null;
-      target_argument: string;
-    };
-    GoingRunMissingArgument: {
-      choices?: string[];
-      field: string;
-      item?: string;
-      /** @enum {string} */
-      kind: "text" | "number" | "enum" | "item";
-    };
-    GoingRunOffer: {
-      action: string;
-      invocations: components["schemas"]["GoingRunInvocation"][] | null;
-      offered: boolean;
-      withheld?: string[];
-    };
-    GoingRunProposal: {
-      offers: components["schemas"]["GoingRunOffer"][] | null;
-    };
-    GoingRunsPage: {
-      limit: number;
-      offset: number;
-      rows: components["schemas"]["GoingRun"][] | null;
-      total: number;
+    GoingRunUsed: {
+      calls: number;
+      tokens: number;
+      /** Format: int64 */
+      working_ms: number;
     };
     GoingSettingCapability: {
       configured: boolean;
@@ -5409,6 +5470,22 @@ export interface components {
       tool: string;
       /** @enum {string} */
       undo: "reverse" | "write_back" | "close_created" | "not_undone";
+    };
+    GoingWaitingPlan: {
+      conversation: string;
+      /** Format: date-time */
+      created_at: string;
+      plan: number;
+      run: string;
+      summary: string;
+      waiting: number;
+      words: string;
+    };
+    GoingWaitingPlansPage: {
+      limit: number;
+      offset: number;
+      rows: components["schemas"]["GoingWaitingPlan"][] | null;
+      total: number;
     };
     GoingWriteOutcome: {
       code: string;
@@ -10566,6 +10643,110 @@ export interface operations {
       };
     };
   };
+  postApiV1GoingRuns: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingRunInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingRun"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1GoingRunsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingRun"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1GoingRunsByIdEvents: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": unknown;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1GoingRunsByIdPlan: {
     parameters: {
       query?: {
@@ -10701,6 +10882,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GoingPlanAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1GoingRunsByIdStop: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingRun"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13054,6 +13269,40 @@ export interface operations {
       };
     };
   };
+  getApiV1MeGoingPlans: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingWaitingPlansPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1MeGoingRuns: {
     parameters: {
       query?: {
@@ -13076,7 +13325,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["GoingRunsPage"];
+          "application/json": components["schemas"]["GoingConversationsPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15934,6 +16183,8 @@ export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingContext = components["schemas"]["GoingContext"];
 export type GoingContextInput = components["schemas"]["GoingContextInput"];
+export type GoingConversation = components["schemas"]["GoingConversation"];
+export type GoingConversationsPage = components["schemas"]["GoingConversationsPage"];
 export type GoingDecisionCapability = components["schemas"]["GoingDecisionCapability"];
 export type GoingDisplayFit = components["schemas"]["GoingDisplayFit"];
 export type GoingDisplayFitInput = components["schemas"]["GoingDisplayFitInput"];
@@ -15948,15 +16199,8 @@ export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GoingRowResult = components["schemas"]["GoingRowResult"];
 export type GoingRun = components["schemas"]["GoingRun"];
-export type GoingRunDecidedAction = components["schemas"]["GoingRunDecidedAction"];
-export type GoingRunDecidedDisplay = components["schemas"]["GoingRunDecidedDisplay"];
-export type GoingRunDecision = components["schemas"]["GoingRunDecision"];
-export type GoingRunHit = components["schemas"]["GoingRunHit"];
-export type GoingRunInvocation = components["schemas"]["GoingRunInvocation"];
-export type GoingRunMissingArgument = components["schemas"]["GoingRunMissingArgument"];
-export type GoingRunOffer = components["schemas"]["GoingRunOffer"];
-export type GoingRunProposal = components["schemas"]["GoingRunProposal"];
-export type GoingRunsPage = components["schemas"]["GoingRunsPage"];
+export type GoingRunInput = components["schemas"]["GoingRunInput"];
+export type GoingRunUsed = components["schemas"]["GoingRunUsed"];
 export type GoingSettingCapability = components["schemas"]["GoingSettingCapability"];
 export type GoingSettings = components["schemas"]["GoingSettings"];
 export type GoingSettingsInput = components["schemas"]["GoingSettingsInput"];
@@ -15964,6 +16208,8 @@ export type GoingUndo = components["schemas"]["GoingUndo"];
 export type GoingUndoAnswer = components["schemas"]["GoingUndoAnswer"];
 export type GoingUndoField = components["schemas"]["GoingUndoField"];
 export type GoingUndoLine = components["schemas"]["GoingUndoLine"];
+export type GoingWaitingPlan = components["schemas"]["GoingWaitingPlan"];
+export type GoingWaitingPlansPage = components["schemas"]["GoingWaitingPlansPage"];
 export type GoingWriteOutcome = components["schemas"]["GoingWriteOutcome"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];

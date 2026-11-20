@@ -898,16 +898,17 @@ var errGoingPlanMoved = errorf(http.StatusConflict, codeGoingPlanNotWaiting, "th
 // answerGoingPlan answers plan of run in one transaction: it holds the run's row, which must still
 // wait with plan its latest, waiting plan, runs write, sets the plan's state from its rows, and
 // makes the run ready again where write reports that the person's answer asks the run for more -
-// a row to run, a plan to propose - with a plan frame on its events. A run made ready is
-// announced on GoingRunsChannel.
+// a row to run, a plan to propose - with a plan frame on its events and going_plan.updated naming
+// the run's person, whose Inbox shows the plan while it waits. A run made ready is announced on
+// GoingRunsChannel.
 func (s *server) answerGoingPlan(ctx context.Context, run string, plan int, write func(context.Context, pgx.Tx) (bool, error)) error {
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var state string
-	if err := tx.QueryRow(ctx, `select state from going_runs where id = $1::uuid for update`, run).Scan(&state); err != nil {
+	var state, login string
+	if err := tx.QueryRow(ctx, `select state, author_login from going_runs where id = $1::uuid for update`, run).Scan(&state, &login); err != nil {
 		return fmt.Errorf("hold the run: %w", err)
 	}
 	var latest int
@@ -936,9 +937,14 @@ func (s *server) answerGoingPlan(ctx context.Context, run string, plan int, writ
 	if err := appendGoingPlanFrame(ctx, tx, run, plan, planState); err != nil {
 		return err
 	}
+	event, err := s.appendGoingPlanEvent(ctx, tx, login, run)
+	if err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	s.publish(ctx, event)
 	if ready {
 		if err := s.notifyGoingRuns(ctx, "ready"); err != nil {
 			return fmt.Errorf("announce the run: %w", err)

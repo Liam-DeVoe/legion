@@ -115,15 +115,13 @@ func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 	return runnable
 }
 
-// goingRunStart is what a run is started with beyond its request row: the person's typed words,
-// the context chip, the login its record is kept under ("" for a caller that is no person, whose
-// run keeps no record), the actions its caller may be offered, the session its caller's
+// goingRunStart is what a pause's answer is started with beyond its request row: the person's
+// typed words, the context chip, the actions its caller may be offered, the session its caller's
 // credential proved, the read tools its caller may call (goingReadsFor), and the server's own URL,
 // against which the words' dashboard addresses are read (goingNamedBy).
 type goingRunStart struct {
 	words     string
 	chip      *goingContext
-	login     string
 	actions   []GoingAction
 	session   string
 	reads     []string

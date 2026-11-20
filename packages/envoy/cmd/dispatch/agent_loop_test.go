@@ -7,10 +7,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +27,8 @@ import (
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -363,8 +369,10 @@ func TestStopCancelsAStreamInFlight(t *testing.T) {
 // its 30 days stops the run with SIGN_IN_EXPIRED; an approval under a token without the approve
 // scope is refused, and nothing of the plan runs; a membership the sign-in pool ended stops it with
 // MEMBERSHIP_ENDED; a membership read the pool answers 503 waits, and the call runs once the pool
-// answers; and an approval under token B moves the grant to it, so revoking token A, which started
-// the run, stops nothing. The rows of a run's start are the start route's (t14).
+// answers; an approval under token B moves the grant to it, so revoking token A, which started
+// the run, stops nothing; a run started by a sign-in or a personal token stores a grant that names
+// the person and holds no cookie, token or hash of one; and a broker-issued token, the shared token
+// and a service-account token are refused the start with RUN_NEEDS_PERSON_CREDENTIAL.
 func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
@@ -578,7 +586,58 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 	})
 
 	t.Run("the stored grant holds no cookie, assertion, token or hash", func(t *testing.T) {
-		t.Skip("t14: the route that starts a run records its grant")
+		session, login, _ := signIn(t, month)
+		plaintext, tokenID := token(t, session, "person")
+		start := func(t *testing.T, bearer string) string {
+			t.Helper()
+			started := asPerson(t, session, bearer, http.MethodPost, "/api/v1/going/runs", `{"words":"a run whose grant is read"}`)
+			var run struct {
+				ID string `json:"id"`
+			}
+			if started.status != http.StatusCreated || json.Unmarshal(started.body, &run) != nil || run.ID == "" {
+				t.Fatalf("POST /api/v1/going/runs answered %s", started)
+			}
+			return run.ID
+		}
+		byCookie, byToken := start(t, ""), start(t, plaintext)
+		var generation int64
+		if err := server.database.Pool.QueryRow(context.Background(), `select generation from user_sessions where login = $1`, login).Scan(&generation); err != nil {
+			t.Fatalf("read the sign-in's generation: %v", err)
+		}
+		hash := sha256.Sum256([]byte(plaintext))
+		parts := strings.Split(session.Value, ".")
+		secrets := []string{session.Value, parts[len(parts)-1], plaintext, strings.TrimPrefix(plaintext, "dsp_"), hex.EncodeToString(hash[:])}
+		type stored struct {
+			kind, login, token, row string
+			generation              *int64
+			expires                 *time.Time
+		}
+		read := func(t *testing.T, run string) stored {
+			t.Helper()
+			var got stored
+			var token *string
+			if err := server.database.Pool.QueryRow(context.Background(), `
+				select kind, login, generation, expires_at, token_id::text, row_to_json(g)::text from going_run_grants g where run_id = $1::uuid
+			`, run).Scan(&got.kind, &got.login, &got.generation, &got.expires, &token, &got.row); err != nil {
+				t.Fatalf("read the grant of %s: %v", run, err)
+			}
+			if token != nil {
+				got.token = *token
+			}
+			for _, secret := range secrets {
+				if strings.Contains(got.row, secret) {
+					t.Errorf("the grant %s holds a credential the request presented: %q", got.row, secret)
+				}
+			}
+			return got
+		}
+		if got := read(t, byCookie); got.kind != "sign_in" || got.login != login || got.generation == nil || *got.generation != generation ||
+			got.expires == nil || got.expires.Before(time.Now().Add(29*24*time.Hour)) || got.expires.After(time.Now().Add(31*24*time.Hour)) || got.token != "" {
+			t.Errorf("the sign-in's grant holds %s, want sign_in naming %s, the generation %d and the cookie's expiry 30 days ahead", got.row, login, generation)
+		}
+		if got := read(t, byToken); got.kind != "token" || got.login != login || got.token != tokenID || got.generation != nil || got.expires != nil {
+			t.Errorf("the token's grant holds %s, want token naming %s and the token's row %s", got.row, login, tokenID)
+		}
 	})
 	t.Run("an approval by token B moves the grant, and revoking token A stops nothing", func(t *testing.T) {
 		const words = "comment, approved by another token"
@@ -609,7 +668,55 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 		}
 	})
 	t.Run("a broker token, the shared token and a service token are refused at the start with RUN_NEEDS_PERSON_CREDENTIAL", func(t *testing.T) {
-		t.Skip("t14: the route that starts a run refuses them")
+		// A deployment that admits all three: a broker, whose proofs name the deployment's own
+		// origin, and a service-account token issuer.
+		const origin = "http://dispatch.test"
+		broker := brokertokentest.NewStubBroker(t)
+		accountToken := filepath.Join(t.TempDir(), "account-token")
+		if err := os.WriteFile(accountToken, []byte("an-account-token-of-dispatch"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		services := oidctest.New(t)
+		serviceKey := services.PublishKey(t, "service-token-key")
+		other := startAgentServer(t, map[string]string{
+			"DISPATCH_SERVER_URL":                       origin,
+			"DISPATCH_AGENT_SECRETS_URL":                broker.Server.URL,
+			"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountToken,
+			"DISPATCH_OIDC_ISSUER":                      services.URL(),
+			"DISPATCH_OIDC_AUDIENCE":                    "dispatch",
+		})
+		other.send(t, http.MethodGet, "/api/v1/me/going/settings", "", asUser("alice"))
+		caller := brokertokentest.NewCaller(t)
+		const brokerToken = "a-person-scoped-broker-token"
+		broker.Says(brokerToken, brokertoken.Introspection{
+			Active: true, Session: "ses_b1c2d3e4f5a6", Person: "alice", ProjectScope: brokertoken.ProjectScopePerson,
+			Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: caller.JKT(),
+		})
+		for _, refused := range []struct {
+			name   string
+			header func() http.Header
+		}{
+			{"a broker-issued token", func() http.Header {
+				signed := caller.Signed(t, http.MethodPost, origin+"/api/v1/going/runs", brokerToken)
+				return http.Header{"Authorization": {signed.Header.Get("Authorization")}, "DPoP": {signed.Header.Get("DPoP")}}
+			}},
+			{"the shared token", func() http.Header { return http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}} }},
+			{"a service-account token", func() http.Header {
+				minted := services.Mint(t, serviceKey, services.Claims("system:serviceaccount:legion:legion-worker", "dispatch"))
+				return http.Header{"Authorization": {"Bearer " + minted}}
+			}},
+		} {
+			t.Run(refused.name, func(t *testing.T) {
+				answer := other.send(t, http.MethodPost, "/api/v1/going/runs", `{"words":"start a run"}`, refused.header())
+				if answer.status != http.StatusForbidden || answer.code() != "RUN_NEEDS_PERSON_CREDENTIAL" {
+					t.Errorf("the start under %s answered %s, want 403 RUN_NEEDS_PERSON_CREDENTIAL", refused.name, answer)
+				}
+			})
+		}
+		var runs int
+		if err := other.database.Pool.QueryRow(context.Background(), `select count(*) from going_runs`).Scan(&runs); err != nil || runs != 0 {
+			t.Errorf("the refused starts left %d runs (%v), want none", runs, err)
+		}
 	})
 }
 
@@ -867,7 +974,8 @@ func requireTheAgentsSlots(t *testing.T) {
 // requireOnePersonsRuns: two server processes and two agents share one database, and one person
 // works at most 3 runs at once across them. Each agent works 2 runs at once, so of the person's
 // first 3 runs each agent holds some; the person's next 2, queued once those 3 work, stay queued
-// for longer than a claim waits, whichever agent asks, as the runs' lease owners show.
+// for longer than a claim waits, whichever agent asks, as the runs' lease owners show. And with 20
+// of one person's runs queued, the start of a 21st is refused with its reason and writes nothing.
 func requireOnePersonsRuns(t *testing.T) {
 	t.Run("at most 3 of one person's runs work under two servers and their agents", func(t *testing.T) {
 		database := storetest.Open(t)
@@ -946,7 +1054,18 @@ func requireOnePersonsRuns(t *testing.T) {
 		}
 	})
 	t.Run("the 21st queued run is refused with its reason", func(t *testing.T) {
-		t.Skip("t14: the route that starts a run refuses it")
+		server := startAgentServer(t, nil)
+		// Twenty queued at a shape no build reads, so no agent takes one while the 21st is asked for.
+		for range 20 {
+			server.recordRun(t, "alice", "queued", unreadShape)
+		}
+		answer := server.send(t, http.MethodPost, "/api/v1/going/runs", `{"words":"one run more"}`, asUser("alice"))
+		if answer.status != http.StatusTooManyRequests || answer.code() != "GOING_RUN_QUEUE_FULL" || !strings.Contains(string(answer.body), "20 of your runs") {
+			t.Errorf("the 21st start answered %s, want 429 GOING_RUN_QUEUE_FULL naming the 20 runs queued", answer)
+		}
+		if queued := server.runs(t, "queued"); queued != 20 {
+			t.Errorf("%d runs are queued after the refused start, want the 20", queued)
+		}
 	})
 }
 

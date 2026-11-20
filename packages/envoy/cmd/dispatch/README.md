@@ -3608,8 +3608,15 @@ An undo sends one request at the most, which lands in `going_landings` under the
 A refused field says what became of it without naming the field, which the line holds beside it; the line's own outcome message names each field it speaks for.
 Undo is offered while History lists the run's conversation: until the conversation's newest run is seven days old, and a run past that answers `404 GOING_RUN_NOT_FOUND`.
 
-A run keeps a record in `going_runs`, under the run's id: the words, the context chip, and the hits, decision and proposal of a pause, beside the run's own columns; what it changed is its landings.
-`GET /api/v1/me/going-runs` answers the caller's own runs of the last seven days, newest first, with `?issue=` and `?q=`; the maintenance sweep deletes a record past seven days.
+A run is a row of `going_runs` (`api/going_runs.go`, `api/going_run_stream.go`): its words and context chip, its level and mode, its state, what it spent, its conversation (the id of the conversation's first run) and the run it follows up; what it changed is its landings.
+The short answer of a pause in typing writes no run: it is a going request with its events.
+`POST /api/v1/going/runs` starts a run as the request's own credential, a person's sign-in or personal agent token, and records its grant; a broker-issued token, the shared token and a service-account token are refused `403 RUN_NEEDS_PERSON_CREDENTIAL`, and a person with 20 runs queued `429 GOING_RUN_QUEUE_FULL`.
+A follow-up names the run it continues, which must be the caller's own, the newest of its conversation (`409 GOING_RUN_NOT_LATEST`) and ended (`409 GOING_RUN_NOT_ENDED`).
+`GET /api/v1/going/runs/{id}` reads a run and `POST .../stop` stops it, its person alone; every other caller is answered `404 GOING_RUN_NOT_FOUND`.
+`GET /api/v1/going/runs/{id}/events` streams the run's frames as server-sent events from the reader's `Last-Event-ID`, woken by `NOTIFY dispatch_going_run_events`, and ends once the run has ended and every frame is written; a stream with nothing to write for 5 minutes writes `keepalive` and ends.
+One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next `429 GOING_RUN_READERS_FULL`.
+`GET /api/v1/me/going-runs`, History, answers the caller's own conversations, each with its runs newest first, while the conversation's newest run is younger than seven days, with `?issue=` and `?q=`; the maintenance sweep deletes a conversation whole once its newest run is seven days old, and stops a run that works under no live lease longer than its working budget allows (`TIME_BUDGET`).
+`GET /api/v1/me/going-plans` answers the caller's runs whose plan waits for them, which the Inbox shows; each change of what it lists appends `going_plan.updated` `{login}`, which names no owner and wakes nobody.
 
 A run's agent process (`envoy-dispatch agent`) makes every read and write of a run as a call to this server over a Unix socket (`going/agentwire`, `api/going_agent.go`): `agent.sock` in `$XDG_RUNTIME_DIR/dispatch-agent`, or in a directory of the process's own under the system's temporary directory where that is unset, each of mode 0700.
 Each call carries the 32-byte secret the server made when it started, compared in constant time; a call without it, or with another one, is refused `UNAUTHORIZED`.
@@ -5223,6 +5230,8 @@ every signed-in caller's event feed on the live socket replays it, so it names n
 a mark-all (`POST /api/v1/me/inbox/read`) and a dismissal (`POST /api/v1/me/inbox/dismiss`) each name none, since one event per project stands for every thread they changed there.
 `priority.updated` is each priority write's (`POST /api/v1/priorities`, `PATCH` and `DELETE /api/v1/priorities/{id}`), and carries exactly `{id, change}`, `change` being `created`, `updated` or `deleted`:
 a priority belongs to no project, so the event names no owner (`issue_key` null, `project` empty, `seq` 0), wakes nobody, and is published on no NATS subject; a reader refetches its priorities on every write, and on a delete also the work under that priority, the work under none and every issue read or listing whose rows advance it.
+`going_plan.updated` carries exactly `{login}`: what that person's command-bar plans wait on changed - a run's plan began to wait for them, or a waiting plan was answered or stopped.
+A run belongs to no project, so the event names no owner (`issue_key` null, `project` empty, `seq` 0), wakes nobody, and is published on no NATS subject; the person's pages read their Inbox's plans and History again.
 `references_changed` names the targets whose inbound edges the write moved that a reader refreshes by name: an issue (`{kind:
 "issue", id}`), an ask (`{kind: "ask", id, issue_key?, artifact_id?}`, with the issue or document whose ask list holds its row) and a document or file (`{kind: "artifact", id, ref}`:
 its uuid, the node id `GET /api/v1/references` reports for it, and the `dispatch://` address its Referenced by panel is opened on, `ref` absent when its owner names no address), and a block of a document (`{kind: "block", id, ref, artifact_id}`:

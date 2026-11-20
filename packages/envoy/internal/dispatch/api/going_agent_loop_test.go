@@ -123,6 +123,19 @@ func (rig goingAgentRig) begin(t *testing.T, run goingLoopRun) string {
 	return id
 }
 
+// doneRun records an ended run of login's, the first of a conversation of its own, started and
+// ended age ago, as its agent leaves one, and answers its id.
+func (rig goingAgentRig) doneRun(t *testing.T, login, words string, age time.Duration) string {
+	t.Helper()
+	id := uuid.NewString()
+	rig.exec(t, `
+		insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at, finished_at)
+		values ($1::uuid, $2, $3, $1::uuid, 'standard', 'ask', 'done', $4, now() - $5::interval, now() - $5::interval)
+	`, id, login, words, goingRunShape, age.String())
+	rig.exec(t, `insert into going_run_grants (run_id, kind, login) values ($1::uuid, 'header', $2)`, id, login)
+	return id
+}
+
 // goingRunRecord is what a test reads of a run's row.
 type goingRunRecord struct {
 	state, reason string
@@ -277,10 +290,13 @@ func TestTheAgentActsAsThePerson(t *testing.T) {
 // survives a restart (check c11). A Fast run whose model never ends stops after 6 calls, says the
 // call budget stopped it, and offers Continue; a plan that waits 10 minutes for its person uses
 // none of a Fast run's 90 s; a Standard run lasts past 30 s; a run cut by a restart in its model
-// loop resumes from its last stored turn; a run cut by a restart between two writes of its plan
-// resumes, and each change runs once; a follow-up's request holds the turns before it; Continue
-// starts a follow-up with a budget of its own; and a run whose token is revoked stops at its next
-// call, naming the revoked token. The rows of History and Stop are the routes' of t14.
+// loop resumes from its last stored turn; a run whose bar closed goes on, and History shows its
+// result; History shows a run 2 hours old and not one 8 days old; a run cut by a restart between
+// two writes of its plan resumes, and each change runs once; a second person reads no
+// conversation of the first; a plan that waits shows in its person's Inbox; a short answer adds no
+// run to History; a follow-up's request holds the turns before it; Continue starts a follow-up
+// with a budget of its own; and a run whose token is revoked stops at its next call, naming the
+// revoked token.
 func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
@@ -389,11 +405,73 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 		}
 	})
 
+	history := func(t *testing.T, login string) goingConversationsPage {
+		t.Helper()
+		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-runs", nil, login)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/me/going-runs as %s answered %d %s", login, response.Code, response.Body.String())
+		}
+		return decodeBody[goingConversationsPage](t, response)
+	}
+	listed := func(page goingConversationsPage, run string) (goingRun, bool) {
+		for _, conversation := range page.Rows {
+			for _, listed := range conversation.Runs {
+				if listed.ID == run {
+					return listed, true
+				}
+			}
+		}
+		return goingRun{}, false
+	}
+	start := func(t *testing.T, login string, body map[string]any) goingRun {
+		t.Helper()
+		response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs", body, login)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/going/runs as %s answered %d %s", login, response.Code, response.Body.String())
+		}
+		return decodeBody[goingRun](t, response)
+	}
+
 	t.Run("a run whose bar closed goes on, and its result shows in History", func(t *testing.T) {
-		t.Skip("t14: History is the conversations route's")
+		const words = "look it up while the bar is closed"
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("find_tools", map[string]any{"need": "an issue"})
+			}
+			return answered("Looked it up.")
+		})
+		// Started by the route the bar sends, and read by nobody after it answers: the bar closed.
+		run := start(t, "alice", map[string]any{"words": words, "level": "fast"})
+		if run.State != "queued" || run.Conversation != run.ID || run.Level != "fast" || run.Mode != goingModeAsk {
+			t.Fatalf("the start answered %+v, want a queued fast run in ask, its own conversation", run)
+		}
+		if record := rig.ended(t, run.ID, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+		}
+		got, ok := listed(history(t, "alice"), run.ID)
+		if !ok || got.State != "done" || got.Words != words || got.Used.Calls != 2 || got.FinishedAt == nil {
+			t.Errorf("History holds the run as %+v (listed %v), want it done after its 2 model calls", got, ok)
+		}
 	})
 	t.Run("a run 2 hours old shows in History, and a run 8 days old does not", func(t *testing.T) {
-		t.Skip("t14: History and its sweep are the conversations route's")
+		recent := rig.doneRun(t, "alice", "asked two hours ago", 2*time.Hour)
+		old := rig.doneRun(t, "alice", "asked eight days ago", 8*24*time.Hour)
+		if err := sweepGoingRuns(context.Background(), rig.database.Pool); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		page := history(t, "alice")
+		if _, ok := listed(page, recent); !ok {
+			t.Errorf("History misses the run 2 hours old")
+		}
+		if _, ok := listed(page, old); ok {
+			t.Errorf("History lists the run 8 days old")
+		}
+		if response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+recent, nil, "alice"); response.Code != http.StatusOK {
+			t.Errorf("GET the run 2 hours old answered %d %s, want 200", response.Code, response.Body.String())
+		}
+		if response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+old, nil, "alice"); response.Code != http.StatusNotFound {
+			t.Errorf("GET the run 8 days old answered %d %s, want 404", response.Code, response.Body.String())
+		}
 	})
 	t.Run("a run stopped by a restart between two writes of its plan resumes, and each change runs once", func(t *testing.T) {
 		const words = "comment twice, across a restart"
@@ -426,10 +504,98 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 		}
 	})
 	t.Run("a second person reads no conversation of the first (404)", func(t *testing.T) {
-		t.Skip("t14: the conversation's read is the conversations route's")
+		run := rig.doneRun(t, "alice", "alice's own question", time.Minute)
+		for _, read := range []struct{ method, path string }{
+			{http.MethodGet, "/api/v1/going/runs/" + run},
+			{http.MethodGet, "/api/v1/going/runs/" + run + "/events"},
+			{http.MethodPost, "/api/v1/going/runs/" + run + "/stop"},
+		} {
+			response := dispatchRequest(t, rig.mux, read.method, read.path, nil, "bob")
+			if response.Code != http.StatusNotFound || decodeBody[refusalAnswer](t, response).Code != codeGoingRunNotFound {
+				t.Errorf("%s %s as bob answered %d %s, want 404 %s", read.method, read.path, response.Code, response.Body.String(), codeGoingRunNotFound)
+			}
+		}
+		if response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs", map[string]any{"words": "and then?", "continues": run}, "bob"); response.Code != http.StatusNotFound {
+			t.Errorf("bob's follow-up of alice's run answered %d %s, want 404", response.Code, response.Body.String())
+		}
+		if _, ok := listed(history(t, "bob"), run); ok {
+			t.Error("bob's History lists alice's run")
+		}
+		if record := rig.record(t, run); record.state != "done" {
+			t.Errorf("after bob's stop alice's run is %s, want it done as it was", record.state)
+		}
+		if response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"); response.Code != http.StatusOK {
+			t.Errorf("GET the run as alice answered %d %s, want 200", response.Code, response.Body.String())
+		}
 	})
 	t.Run("a plan that waits shows in the person's Inbox", func(t *testing.T) {
-		t.Skip("t14: the Inbox's plans are the conversations route's")
+		const words = "comment, and wait in my Inbox"
+		issue := rig.issue(t, "Planned from the Inbox")
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("propose_plan", map[string]any{"summary": "A comment from the Inbox.", "changes": []map[string]any{commentOn(issue)}})
+			}
+			return answered("Commented.")
+		})
+		inbox := func(t *testing.T, login string) []goingWaitingPlan {
+			t.Helper()
+			response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-plans", nil, login)
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET /api/v1/me/going-plans as %s answered %d %s", login, response.Code, response.Body.String())
+			}
+			return decodeBody[goingWaitingPlansPage](t, response).Rows
+		}
+		events := func() int {
+			return rig.count(t, `select count(*) from events where type = 'going_plan.updated' and payload->>'login' = 'alice'`)
+		}
+		before := events()
+		run := start(t, "alice", map[string]any{"words": words})
+		if record := rig.ended(t, run.ID, time.Minute); record.state != "waiting" {
+			t.Fatalf("the run ended %s with %q, want its plan waiting", record.state, record.reason)
+		}
+		waiting := inbox(t, "alice")
+		if len(waiting) != 1 || waiting[0].Run != run.ID || waiting[0].Plan != 1 || waiting[0].Waiting != 1 ||
+			waiting[0].Summary != "A comment from the Inbox." || waiting[0].Words != words {
+			t.Fatalf("alice's Inbox holds the plans %+v, want the run's one waiting plan", waiting)
+		}
+		if others := inbox(t, "bob"); len(others) != 0 {
+			t.Errorf("bob's Inbox holds the plans %+v, want none of alice's", others)
+		}
+		if after := events(); after <= before {
+			t.Errorf("the plan that began to wait appended %d going_plan.updated naming alice, want one", after-before)
+		}
+		approved := events()
+		approve(t, run.ID)
+		if record := rig.ended(t, run.ID, time.Minute); record.state != "done" || comments(t, issue) != 1 {
+			t.Fatalf("after the approval the run ended %s with %q and %d comments, want done with the comment", record.state, record.reason, comments(t, issue))
+		}
+		if left := inbox(t, "alice"); len(left) != 0 {
+			t.Errorf("after the approval alice's Inbox holds the plans %+v, want none", left)
+		}
+		if after := events(); after <= approved {
+			t.Error("the approval appended no going_plan.updated naming alice")
+		}
+	})
+	t.Run("a short answer adds no run to History", func(t *testing.T) {
+		const words = "what is open right now?"
+		asked := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/requests", map[string]any{"words": words}, "alice")
+		if asked.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/going/requests answered %d %s", asked.Code, asked.Body.String())
+		}
+		id := decodeBody[goingRequest](t, asked).ID
+		goingEventually(t, "the short answer's ending", func() bool {
+			return rig.count(t, `select count(*) from going_events where request_id = $1::uuid and name = any($2::text[])`, id, goingTerminalNames) == 1
+		})
+		if runs := rig.count(t, `select count(*) from going_runs where id = $1::uuid`, id); runs != 0 {
+			t.Errorf("the short answer wrote %d runs, want none", runs)
+		}
+		for _, conversation := range history(t, "alice").Rows {
+			for _, run := range conversation.Runs {
+				if run.Words == words {
+					t.Errorf("History lists the short answer as the run %+v", run)
+				}
+			}
+		}
 	})
 
 	t.Run("a follow-up's request holds the turns before it", func(t *testing.T) {

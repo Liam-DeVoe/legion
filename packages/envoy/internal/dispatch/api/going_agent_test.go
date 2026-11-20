@@ -81,7 +81,7 @@ func newGoingAgentRig(t *testing.T, adjust func(*AgentListener)) goingAgentRig {
 	createInteractionIssue(t, rig.mux, "DEMO", "The project's first issue", "Context\n")
 	hooks := &goingAgentHooks{hooks: map[string]goingAgentHook{}}
 	rig.served.inProcess = hooks.wrap(rig.served.inProcess)
-	listenGoingRuns(t, rig.database, rig.served.goingRuns)
+	listenGoingRuns(t, rig.database, rig.served)
 	agent, err := rig.served.newAgentListener(testtmp.Dir(t, "agent.sock"), false)
 	if err != nil {
 		t.Fatalf("listen for the agent: %v", err)
@@ -96,17 +96,20 @@ func newGoingAgentRig(t *testing.T, adjust func(*AgentListener)) goingAgentRig {
 		client: agentwire.Client{Path: agent.Path(), Secret: agent.Secret()}, rows: &sync.Map{}}
 }
 
-// listenGoingRuns runs a listener hub on database that delivers GoingRunsChannel to signal, as
-// cmd/dispatch's does, and waits for its first LISTEN.
-func listenGoingRuns(t *testing.T, database *store.Store, signal *GoingRunSignal) {
+// listenGoingRuns runs a listener hub on database that delivers GoingRunsChannel and
+// GoingRunEventsChannel to served's signals, as cmd/dispatch's does, and waits for its first
+// LISTEN.
+func listenGoingRuns(t *testing.T, database *store.Store, served *server) {
 	t.Helper()
 	listening := make(chan struct{}, 1)
 	hub := &pglisten.Hub{Owner: "going-agent-test", Dial: func(ctx context.Context) (*pgx.Conn, error) {
 		return database.Pool.Dedicated(ctx, "going-agent-test")
 	}}
-	hub.Handle(GoingRunsChannel, signal.Notify)
+	hub.Handle(GoingRunsChannel, served.goingRuns.Notify)
+	hub.Handle(GoingRunEventsChannel, served.goingRunEvents.Notify)
 	hub.OnConnected(func() {
-		signal.Wake()
+		served.goingRuns.Wake()
+		served.goingRunEvents.Wake()
 		select {
 		case listening <- struct{}{}:
 		default:
