@@ -318,6 +318,61 @@ func TestChargeTheSecondWaitOnATakeAReportGaveItsTurnBack(t *testing.T) {
 	}
 }
 
+// A daemon restarted under a live process does not know that process's count of turns, but every
+// report after the restart names its turn's sequence, so a process that went on running and
+// reporting tasks after the restart is one the daemon can count again. A take accepted then is in
+// R5's second wait as it is in the daemon that never restarted: when the run the daemon gave the
+// take is reported as no task's, the take awaits its turn again, and a worker that then starts no
+// turn is charged one second bound after the report. The process ran a task before the restart
+// and one after it, as a live worker does across a daemon deploy, and a run of its own (a
+// background job's end, an Envoy turn) starts between the accepted take and the take's own turn.
+// The seventh testing round of dispatch://INFRA-2811 saw this on the real stack (the tester's
+// adversarial drive, step a10, after the daemon restart of step a9 and two tasks run and reported
+// since): no charge came, and the take held a turn that had ended.
+//
+// The negative control is the head this test was written at (2a1a0831), where a restart builds
+// the machine with its count not known for the rest of the process's launch generation, whatever
+// the reports say, and notTheTakesTurn then gives no take its turn back.
+func TestChargeTheSecondWaitOnATakeAReportGaveItsTurnBackAfterADaemonRestart(t *testing.T) {
+	h := waitsHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	for _, task := range []string{"the task before the restart", "the task after the restart"} {
+		h.must(RequestDeliver{Claim: h.token, Task: task})
+		h.mustTake()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.must(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after %s's turn was reported, want it finished", p, task)
+		}
+		if task == "the task before the restart" {
+			h.restart()
+			h.connect()
+		}
+	}
+
+	h.must(RequestDeliver{Claim: h.token, Task: "the take a run of the host's own meets"})
+	text := h.mustTake()
+	h.must(StreamTurnStart{Claim: h.token})
+	if p := h.pending(); !p.turnStarted() || p.TakenText != text {
+		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if err := h.reportTurn(0, nil); err != nil {
+		t.Fatalf("report the run as no task's: %v", err)
+	}
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Errorf("after the report the task is %+v, want its take awaiting its turn again", p)
+	}
+
+	h.advance(turnStartBound)
+
+	h.wantCharges(WaitTurnStart)
+	if p := h.pending(); p.taken() {
+		t.Fatalf("pending %+v after the second bound, want the take taken back", p)
+	}
+}
+
 // A take of the number the claim holds as its accepted, unfinished take is a take whose answer
 // was lost, whether or not the turn the daemon gave the take has started: a run that started while
 // the worker waited on its answer is given to the take, and a worker refused in-turn then would
