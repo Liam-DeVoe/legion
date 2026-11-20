@@ -191,12 +191,14 @@ const backOffDue = 10 * time.Second
 
 // The words of the log lines heldScans reads: a renewal of a hold the database left unanswered
 // (duty.Hold's renew), a Postgres listener whose connection is gone and that dials again
-// (pglisten.Listener's Run), the outbox taking the publisher hold (publish), and the prefix of
-// every line the outbox writes itself, whose errors are a statement that failed.
+// (pglisten.Listener's Run), the outbox taking the publisher hold (publish), a batch that sent
+// something (scan), and the prefix of every line the outbox writes itself, whose errors are a
+// statement that failed.
 const (
 	renewFailedLine = "renew hold failed"
 	redialLine      = "a Postgres listener has no connection; redialing"
 	tookHoldLine    = "dispatch outbox: took the publisher hold"
+	sentBatchLine   = "dispatch outbox: sent batch"
 	outboxLine      = "dispatch outbox: "
 )
 
@@ -739,6 +741,42 @@ func TestProcessStallDoesNotExplainADeadlineReleasedAfterRenewal(t *testing.T) {
 	}
 }
 
+// stalledTake is a hold taken back after a lapse that a stall of the test process explains, as the
+// idle row records it, with the evidence that explains it.
+func stalledTake(claims, published int64) (heldScan, evidence) {
+	deadline := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
+	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
+	stall := processStall{from: deadline.Add(-window), to: deadline.Add(witnessBound / 2), deadline: deadline}
+	scan := heldScan{claims: claims, published: published,
+		cause: cause{what: "the take of a hold that lapsed", lapsed: deadline}}
+	return scan, evidence{stalls: []processStall{stall}}
+}
+
+// A take that a stall explains, and that read only its own catch-up, is left out whole.
+func TestATakeAStallExplainsIsLeftOutWithItsOwnCatchUp(t *testing.T) {
+	scan, saw := stalledTake(1, 0)
+	if judged := scan.judge(saw); judged.plain() {
+		t.Fatalf("the take's own catch-up was counted: %d by %s", judged.claims, judged.woken)
+	}
+	scan, saw = stalledTake(3, 2)
+	if judged := scan.judge(saw); judged.plain() {
+		t.Fatalf("a catch-up whose two batches published, and so read two more, was counted: %d by %s", judged.claims, judged.woken)
+	}
+}
+
+// A wake queued as the hold was lost or taken back is taken by the take's catch-up, which reads a
+// batch more than the take explains. That batch is counted, by name.
+func TestAWakeTheTakesCatchUpTookIsCounted(t *testing.T) {
+	scan, saw := stalledTake(2, 0)
+	judged := scan.judge(saw)
+	if !judged.plain() || judged.claims != 1 {
+		t.Fatalf("a take that read 2 batches and published none was judged %+v, want 1 claim counted", judged)
+	}
+	if !strings.Contains(judged.woken, "a wake the take's catch-up took") {
+		t.Fatalf("the counted claim was named %q, want the wake the catch-up took", judged.woken)
+	}
+}
+
 // armedWait is one wait serve armed its retry timer for, and the moment it was armed.
 type armedWait struct {
 	wait time.Duration
@@ -764,6 +802,10 @@ type cause struct {
 type heldScan struct {
 	// claims is how many batches the scan read, and upTo the outbox's claims after them.
 	claims, upTo int64
+	// published is how many of its batches published an event. A batch that published makes the
+	// scan read one batch more (scan), so a scan no wake reached reads one batch plus one for each
+	// batch that published.
+	published int64
 	// armed is the wait the scan armed the retry timer for, when it armed one.
 	armed []armedWait
 	// failed is the first error the outbox logged during the scan, when a statement of it failed,
@@ -804,10 +846,28 @@ func (e evidence) deadlineAt(at time.Time) (time.Time, bool) {
 	return deadline, !deadline.IsZero()
 }
 
-// judge leaves s out when its cause is a reason and the row saw what gave it: for a hold taken back
-// after it ended, a stall of the test process that explains its lapse (processStall.explains), and
-// otherwise the failure of the database behind it, in windows of the witness's.
+// judge leaves s out when its cause is a reason and the row saw what gave it (judgeCause). A hold
+// taken back explains only its own catch-up: one batch, and one more for each batch that published.
+// A wake queued as the hold was lost or taken back is taken by that catch-up and reads another
+// batch in the same scan, so the claims beyond what the take explains are counted, by name.
 func (s heldScan) judge(saw evidence) judgedScan {
+	judged := s.judgeCause(saw)
+	if judged.fault == "" || s.cause.lapsed.IsZero() {
+		return judged
+	}
+	if beyond := s.claims - 1 - s.published; beyond > 0 {
+		judged.claims = beyond
+		judged.woken = fmt.Sprintf("a wake the take's catch-up took, beyond the one claim and %d published batches the take explains (%s)",
+			s.published, judged.fault)
+		judged.fault = ""
+	}
+	return judged
+}
+
+// judgeCause leaves s out when its cause is a reason and the row saw what gave it: for a hold taken
+// back after it ended, a stall of the test process that explains its lapse (processStall.explains),
+// and otherwise the failure of the database behind it, in windows of the witness's.
+func (s heldScan) judgeCause(saw evidence) judgedScan {
 	judged := judgedScan{heldScan: s, woken: s.cause.what}
 	if !s.cause.lapsed.IsZero() {
 		deadline := s.cause.lapsed
@@ -1158,6 +1218,10 @@ func (h *heldScans) logged(record slog.Record) {
 		// before it is no failure of a scan.
 		h.starts = append(h.starts, start{claims: h.outbox.claims.Load(), hold: h.outbox.hold.Load()})
 		h.open.failed = ""
+	case strings.HasPrefix(record.Message, sentBatchLine):
+		if published := attrs["published"]; published.Kind() == slog.KindInt64 && published.Int64() > 0 {
+			h.open.published++
+		}
 	case record.Level >= slog.LevelError && strings.HasPrefix(record.Message, outboxLine) && h.open.failed == "":
 		h.open.failed, h.open.failedAt = strings.TrimPrefix(record.Message, outboxLine)+": "+text("error"), record.Time
 	}
