@@ -2470,8 +2470,10 @@ package api
 // GRANT_EXPIRED, GRANT_UNAVAILABLE or GRANT_REVOKED for a grant that is expired, unknown or no
 // longer held by its claim, 409 STALE_PLUGIN_CONTRACT for a worker grant whose claim speaks another
 // contract, and 403 CONTROLLER_REQUIRED for every other worker grant; 409 CLAIM_IS_CONTROLLER for
-// the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; an
-// uncoded 503 once the daemon's stop has begun; 409 CLAIM_REACHABLE, CLAIM_UNSETTLED,
+// the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; 409
+// PROJECT_PAUSED, naming the pause that stands, for any other claim while the project is paused,
+// which stops nothing and spends no relaunch; an uncoded 503 once the daemon's stop has begun; 409
+// CLAIM_REACHABLE, CLAIM_UNSETTLED,
 // RELAUNCH_GUARD, RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED,
 // RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the tree itself refuses the
 // claim's launch: its cleanup is reserved or confirmed, its lifecycle is absent, or its bound

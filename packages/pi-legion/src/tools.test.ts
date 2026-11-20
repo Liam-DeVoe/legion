@@ -314,8 +314,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
   "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-  "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-  "since each would start a turn. " +
+  "the project is paused it refuses fresh_session, compact and relaunch (PROJECT_PAUSED, naming the pause that " +
+  "stands), since each would start a turn. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,

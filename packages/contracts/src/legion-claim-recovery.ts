@@ -126,7 +126,8 @@ export const LegionCompactResponse = z.object({
  * `TREE_CHECK_FAILED`: nothing was stopped, and the relaunch may be asked for again. It refuses
  * with nothing more done a claim whose process outlived its stop (`PROCESS_OUTLIVED_STOP`).
  * `RELAUNCH_FAILED` (500) is a relaunch that failed, or whose record the daemon could not write,
- * and the claim may already be stopped.
+ * and the claim may already be stopped. While the project is paused it refuses every relaunch
+ * with `PROJECT_PAUSED` (409, naming the pause that stands), before it stops anything.
  * `RELAUNCHED_RECENTLY`, `POD_UNREACHABLE`, `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD` and
  * `PROCESS_OUTLIVED_STOP` are cases for a person. */
 export const LegionRelaunchRequest = z.strictObject({

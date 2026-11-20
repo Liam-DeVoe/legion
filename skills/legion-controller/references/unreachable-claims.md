@@ -28,6 +28,7 @@ It refuses, and leaves the claim as it found it:
 - `CLAIM_IS_CONTROLLER`: your own claim. Only the daemon relaunches it, and only under `controller: daemon`; an operator's controller is a person's to start again.
 - `TREE_REFUSES_LAUNCH`: the tree allows the claim no launch: its cleanup is reserved or confirmed, its lifecycle is absent, or the claim's epoch is stale or unbound (the tree was opened again since). That tree's close or its next start decides the claim, not a relaunch: do nothing.
 - `TREE_CHECK_FAILED`: the daemon's store did not answer the tree check before the stop, or the request ran out of time waiting on it, and nothing was stopped: relaunch again.
+- `PROJECT_PAUSED`: the project is paused, and nothing was stopped. Relaunch after the resume, if the claim is still unreachable then.
 - Five refusals end `This is a case for a person.`: `LAUNCHER_NOT_CONNECTED`; `RELAUNCH_REPLACES_POD`, a launch that would end every other role of the pod; `PROCESS_OUTLIVED_STOP`; `POD_UNREACHABLE`, every claim of a pod of two or more claims unreachable; and `RELAUNCHED_RECENTLY`, a relaunch in the last 6 hours.
 
 ## A case for a person

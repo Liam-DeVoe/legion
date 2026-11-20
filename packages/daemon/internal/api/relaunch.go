@@ -71,6 +71,11 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return
 	}
+	// A relaunch stops the claim's process and spends its 6-hour allowance, and its launch is a
+	// turn the pause holds for every claim but the controller's, so it waits for the resume.
+	if s.refusedWhilePaused(w, r, "relaunch", m.View().Claim) {
+		return
+	}
 	if s.relaunch == nil {
 		writeFailure(w, http.StatusInternalServerError, "RELAUNCH_FAILED", "this daemon has no relaunch of an unreachable claim")
 		return
