@@ -1508,9 +1508,12 @@ const closeSourceGate int64 = 0x434C4F5345474154
 // the answer there, in the lease's statement, and takes the copy lock only once the answer has
 // committed. One that took its lease before the answer began - armed by a write's timer shortly
 // before, say - meets the answer at the copy lock itself ("answer first with the settlement under
-// way").
+// way"). Left unordered under the production settle delay, the copy's settlement that waited in
+// its lease races the settlement the answer arms for the copy as it commits, and where the newer
+// arming supersedes it, that settlement settles the copy ("answer first, left to the answer's own
+// settlement").
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
-	for _, order := range []string{"answer first", "answer first with the settlement under way", "settlement first"} {
+	for _, order := range []string{"answer first", "answer first with the settlement under way", "answer first, left to the answer's own settlement", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
@@ -1564,6 +1567,48 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				}
 				answered()
 				awaitDone(t, ctx, "the copy's settlement", settled)
+			case "answer first, left to the answer's own settlement":
+				// Nothing orders the copy's settlement, which waits in its lease's statement behind
+				// the answer, against the settlement the answer arms for the copy once it has
+				// committed (SettleCopiesOf, Ledger.Commit), which moves the room's generation: a
+				// pass of the copy's settlement that read the generation before that arming and
+				// reaches its stamp after it ends superseded (applyStamp) and writes nothing, and the
+				// newer arming, a settle delay later, settles the copy. Either way the copy ends
+				// settled under the generation the answer left, showing the answer and owing nothing.
+				// The delay is production's (New), written once, before the answer arms it.
+				service.settle = 2 * time.Second
+				var warmed atomic.Int32
+				service.afterSettleWarm = func(room string) {
+					if room == copied {
+						warmed.Add(1)
+					}
+				}
+				if err := answerSource(ctx, service, original, source, func() {
+					go settle()
+					waitForLockWait(t, ctx, service.store, settlementLeaseWait, settled)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				newer := roomGeneration(t, service, copied)
+				if newer == generation {
+					t.Fatalf("the answer armed no settlement of the copy: the copy's room is still at generation %d", generation)
+				}
+				awaitDone(t, ctx, "the copy's settlement", settled)
+				superseded := copyOwed(t, service, copied) == 1
+				// The settlement the answer armed: past its generation check and its lease it counts
+				// itself running (settling) and warms (afterSettleWarm), the copy's own settlement
+				// having warmed once before it, and it has ended once nothing counts itself running.
+				state := service.room(copied)
+				waitFor(t, roomWait(t), "the settlement the answer armed to settle the copy", func() bool {
+					state.mu.Lock()
+					running := state.settling
+					state.mu.Unlock()
+					return warmed.Load() >= 2 && running == 0 && copyOwed(t, service, copied) == 0
+				})
+				if now := roomGeneration(t, service, copied); now != newer {
+					t.Fatalf("the copy's room moved to generation %d after the answer left it at %d", now, newer)
+				}
+				t.Logf("the copy's own settlement ended with the copy still owed, superseded by the answer's arming: %v", superseded)
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
