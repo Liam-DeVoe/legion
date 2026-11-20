@@ -726,10 +726,11 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 //
 // Before that read, the tester sends the activity report a turn's end sends, naming nothing of
 // its own that runs, and does not answer: the round's early end also waits for a claim with a
-// process in the round's pod that has sent no report since its last turn started
-// (roundEnd.holding), and a tester with no report would hold the round by that wait alone. So
-// the read decides on the tester's answer and nothing else, and a round that took a claim with no
-// answer for one that answered (answered, waitingClaims) replaces the pod there and fails it.
+// process in the round's pod that has sent no report since its last turn started, but a failed
+// one and one that has left the round's pod (backgroundClaims), and a tester with no report would
+// hold the round by that wait alone. So the read decides on the tester's answer and nothing else,
+// and a round that took a claim with no answer for one that answered (answered, waitingClaims)
+// replaces the pod there and fails it.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
 	replacesThePodOnceEveryBlockingClaimHasAnswered(t, nil)
 }
