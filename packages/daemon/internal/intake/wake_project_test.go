@@ -112,7 +112,7 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 			return Result{}, nil
 		})
 		delivery := &wakeDelivery{data: envelopeJSON(t, "wake-bet", "envoy", payload)}
-		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}, &issueNames{}) {
+		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}, &issueNames{}, newDroppedSettlements()) {
 			t.Fatal("consumeMessage = false, want the report handled")
 		}
 		acks, delays, others := delivery.answers()
