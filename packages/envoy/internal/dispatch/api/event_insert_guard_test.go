@@ -121,12 +121,32 @@ const seedSequenceReset = "cmd/dispatch-seed/write_events.go"
 // seedTool is the one place allowed to copy rows into events: it fills an empty database offline.
 const seedTool = "cmd/dispatch-seed/"
 
-// eventIDOffences reads a complete SQL string with the PostgreSQL parser. It returns each draw or
-// unsafe construct outside the broker's insert path and the number of event inserts with columns.
+// The limit of this scan, stated: it reads a SQL value from string literals, package-level
+// constants, a local bound once to either, a fmt.Sprintf format and `+` chains of those, and it
+// splices the literals inside a run-time fragment into what it reads. A value it reads only in
+// part, or that PostgreSQL's parser refuses, is held to knownUnreadableEventIDSQL when what it
+// did read holds a word a draw needs (eventIDRiskWords). A fragment that spells none of those
+// words can name no sequence and run no SQL text of its own, so the rest are read as far as
+// they go and no further.
+
+// eventIDOffences reads a SQL string with the PostgreSQL parser and reports each draw or unsafe
+// construct outside the broker's insert path. A string the parser refuses is one offence of its
+// own, so a row of this test states a parse failure as the guard's own reading of it.
 func eventIDOffences(path, statement string) (offences []string, lists int) {
+	offences, lists, parsed := eventIDScan(path, statement)
+	if !parsed {
+		return []string{path + ": cannot parse SQL (sha256=" + sqlDigest(statement) + "): " + statement}, 0
+	}
+	return offences, lists
+}
+
+// eventIDScan is eventIDOffences with the parser's verdict beside its findings: parsed is false
+// where PostgreSQL's parser refused the text, which the module scan accounts for separately from
+// a statement it could read.
+func eventIDScan(path, statement string) (offences []string, lists int, parsed bool) {
 	analysis, err := eventidtest.Analyze(statement)
 	if err != nil {
-		return []string{path + ": cannot parse SQL (sha256=" + sqlDigest(statement) + "): " + statement}, 0
+		return nil, 0, false
 	}
 	for _, finding := range analysis.Findings {
 		switch finding.Kind {
@@ -134,7 +154,7 @@ func eventIDOffences(path, statement string) (offences []string, lists int) {
 			if finding.Name == "setval" && strings.Contains(path, seedSequenceReset) {
 				continue
 			}
-			if finding.Name == "currval" && strings.Contains(strings.ToLower(statement), "pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))") {
+			if finding.Name == "currval" && finding.Safe {
 				continue
 			}
 			offences = append(offences, path+": calls "+finding.Name+" outside the broker's event insert path: "+statement)
@@ -148,7 +168,28 @@ func eventIDOffences(path, statement string) (offences []string, lists int) {
 			offences = append(offences, path+": makes a table from events, which takes its id default or holds its rows: "+statement)
 		}
 	}
-	return offences, analysis.EventInsertColumnLists
+	return offences, analysis.EventInsertColumnLists, true
+}
+
+// eventIDRiskWords are the words a statement must hold for a run-time fragment in it to reach the
+// event log: the sequence functions, the sequence's own name, the readers that run SQL text, and
+// the three ways a table takes events' id default. A statement the parser could not read, or one
+// a fragment completes, is held to the checked-in list only when it holds one of these, since a
+// fragment that spells none of them cannot name the sequence or run SQL of its own
+// (literalsWithin splices each fragment's literals into the text this reads).
+var eventIDRiskWords = []string{
+	"nextval", "setval", "currval", "events_id_seq", "query_to_xml", "cursor_to_xml",
+	"insert into events", "inherits (events)", "partition of events", "like events", "execute",
+}
+
+func eventIDRiskWord(statement string) string {
+	lower := strings.ToLower(statement)
+	for _, word := range eventIDRiskWords {
+		if strings.Contains(lower, word) {
+			return word
+		}
+	}
+	return ""
 }
 
 // eventCopies counts the pgx.Identifier literals in file whose table is events, as a CopyFrom into
@@ -216,36 +257,19 @@ func sqlLooking(statement string) bool {
 	return false
 }
 
-// eventIDSQLLooking narrows the parsed source strings to this guard's risk: a sequence or dynamic
-// SQL function, or a fmt.Sprintf query. The latter is always unreadable at compile time, even if
-// the format contains no sequence name, and so must be recorded or refused.
-func eventIDSQLLooking(statement string, complete bool) bool {
-	lower := strings.ToLower(statement)
-	for _, name := range []string{"nextval", "setval", "currval", "query_to_xml", "cursor_to_xml"} {
-		if strings.Contains(lower, name) {
-			return true
-		}
-	}
-	return strings.Contains(lower, "insert into events") || (!complete && strings.Contains(statement, "%"))
-}
-
-// unreadableEventIDSQL is the checked-in account of SQL-looking strings a static reader cannot
-// parse. A string assembled from run-time values is unreadable to a static check; it must stay here
-// with its file, function and review reason. The test fails both for an unlisted parse error and
-// for a stale entry.
+// unreadableEventIDSQL is the checked-in account of the SQL values a static reader cannot read
+// whole and that hold a word a draw needs (eventIDRiskWords). Each carries its file, the
+// function it stands in, the sha256 of the text the scan read — the literals of its run-time
+// fragments spliced in, so an edit to a fragment moves the digest and the entry goes stale — and
+// the reason a reviewer gave for it. An unlisted one of them reds this guard, and so does a
+// listed one the module no longer holds.
 type unreadableEventIDSQL struct {
 	file, function, digest, reason string
 }
 
 var knownUnreadableEventIDSQL = []unreadableEventIDSQL{
-	{"../../../internal/dispatch/api/comment_queries.go", "loadOwnerComments", "f9cc6c9af72d4cd418a4d0569f0001b0f3f050c4018aad2bcacdff5096e6e69e", "ownerColumn comes only from the closed issue_key/artifact_id switch"},
-	{"../../../internal/dispatch/api/comment_queries.go", "loadReplyChain", "2cf132bbeff0915d8bc5b319c9c3bed1b0ce69b8198b0a18c07d03e7dd934549", "the reply owner column comes only from the closed reply-chain selector"},
-	{"../../../internal/dispatch/api/duplicates.go", "readDuplicateCandidates", "296514f180e5344466c912468f1abe88fbae6fa9eb49201d6fc81fe78286620d", "the timeout format is an integer millisecond value"},
-	{"../../../internal/dispatch/docs/anchor_blocks.go", "anchorBlockCandidates", "f76465317b0ad434e9dfe1c910c53ccf53863951a0009760f2b35db17bd19742", "table comes from the closed anchor target set"},
-	{"../../../internal/dispatch/docs/anchor_blocks.go", "backfillAnchorBlock", "26e1d2ef880961709520fc7890e8bd858b68ee156c14500b5741807f957b4283", "table comes from the closed anchor target set"},
-	{"../../../internal/dispatch/docs/anchor_blocks.go", "backfillAnchorBlock", "fd2688abb569be5d3d1e8bf1bb0c1a9ced2a342da1568946ffb50ef595c2f30c", "table comes from the closed anchor target set"},
-	{"../../../internal/dispatch/docs/anchor_refresh.go", "refreshAnchors", "1b6941263ffee2016536d24837d4879585ce54f5b10c59ff6ccc469033032861", "table and predicates come from each closed anchor target"},
-	{"../../../internal/dispatch/events/broker.go", "QueueAppendWithLogins", "13f336feaef55cb2a2f23a01bcaa79c98e1818c3822eb700becd8b594ac9e63e", "stored payload and logins are built only by the broker's fixed write paths"},
+	{"../../../internal/dispatch/events/broker.go", "QueueAppendWithLogins", "13f336feaef55cb2a2f23a01bcaa79c98e1818c3822eb700becd8b594ac9e63e", "the broker's own event insert: its two gaps are the stored payload and the thread logins, built by this function alone, and its column list is read here (events/broker.go)"},
+	{"../../../internal/explaintest/explaintest.go", "GenericPlan", "56d3c30e1b875bd5afe8431e2bc9025bcd2f26acb74c4a651c0aec5372381ec9", "an EXPLAIN of a prepared statement a test prepared: SQL's EXECUTE of a PREPARE, which runs no SQL text of its own"},
 }
 
 func sqlDigest(statement string) string {
@@ -337,42 +361,47 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 		}
 	}
 	usedUnreadable := make([]bool, len(knownUnreadableEventIDSQL))
+	files := make([]*ast.File, 0, len(sources))
+	for _, source := range sources {
+		files = append(files, source.file)
+	}
+	forwarded := sqlSinkParameters(files)
 	lists, seedCopies := 0, 0
-	// The event-id proof applies to the Dispatch database. Other module packages keep separate
-	// stores; dispatch-seed is the one command that intentionally resets this database's sequence.
+	// Every non-test Go file of the module, as TestOnlyTheBrokerInsertsEvents reads them: a
+	// statement of any package can reach Dispatch's own database.
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
-		if !strings.Contains(path, "/internal/dispatch/") && !strings.HasSuffix(path, seedSequenceReset) {
+		// eventidtest is this guard's own reader: the SQL in it is the text it wraps a routine
+		// body in before it parses it, and it opens no database.
+		if strings.Contains(path, "/internal/dispatch/eventidtest/") {
 			continue
 		}
-		for _, located := range sqlTemplatesByFunction(source.file, constants) {
-			if !sqlLooking(located.statement) || !eventIDSQLLooking(located.statement, located.complete) {
-				continue
-			}
+		for _, located := range sqlTemplatesReaching(source.file, constants, forwarded) {
 			function := located.function
-			if function == "" {
-				function = located.value
-			}
 			if function == "" {
 				function = "<package>"
 			}
-			index, unreadable := unreadableSQLTemplate(path, function, located)
-			if unreadable != "" {
-				offend(unreadable)
-			} else if index >= 0 {
-				usedUnreadable[index] = true
+			if !sqlLooking(located.statement) {
+				continue
 			}
-			found, held := eventIDOffences(path+":"+function, located.statement)
-			if len(found) == 1 && strings.Contains(found[0], "cannot parse SQL") {
-				if index >= 0 {
+			found, held, parsed := eventIDScan(path+":"+function, located.statement)
+			lists += held
+			if !parsed || !located.complete {
+				read := strings.TrimSpace(located.statement + " " + located.fragments)
+				if index := unreadableEventIDSQLIndex(path, function, read); index >= 0 {
 					usedUnreadable[index] = true
-					continue
+				} else if word := eventIDRiskWord(read); word != "" {
+					reason := "the parser cannot read it"
+					if parsed {
+						reason = "a run-time fragment completes it"
+					}
+					offend(path + ":" + function + ": " + reason + " and it holds " + word +
+						" (sha256=" + sqlDigest(read) + "): " + located.statement)
 				}
 			}
 			for _, offence := range found {
 				offend(offence)
 			}
-			lists += held
 		}
 		if copies := eventCopies(source.file, constants); copies > 0 {
 			if strings.Contains(path, seedTool) {
@@ -424,16 +453,23 @@ func testEventIDGuardReadsWrappedDynamicSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	templates := sqlTemplatesByFunction(source, map[string]string{})
-	if len(templates) != 1 {
-		t.Fatalf("the local SQL source held %d query templates, want one", len(templates))
+	refused := false
+	for _, template := range templates {
+		if offences, _ := eventIDOffences("scratch.go:planted", template.statement); len(offences) > 0 {
+			refused = true
+		}
 	}
-	if offences, _ := eventIDOffences("scratch.go:planted", templates[0].statement); len(offences) == 0 {
-		t.Fatal("the guard did not read a SQL string held in a local query variable")
+	if !refused {
+		t.Fatalf("the guard did not read a SQL string held in a local query variable: %#v", templates)
 	}
 }
 
+// testEventIDGuardRefusesAnUnlistedFormattedQuery plants a query a fmt.Sprintf builds around a
+// draw. The scan reads its format and the literals of its arguments, the parser cannot read the
+// whole, and nothing lists it, so the guard refuses it.
 func testEventIDGuardRefusesAnUnlistedFormattedQuery(t *testing.T) {
-	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go", "package scratch\nfunc planted() { database.Query(ctx, fmt.Sprintf(`select %s`, column)) }\n", 0)
+	source, err := parser.ParseFile(token.NewFileSet(), "scratch.go",
+		"package scratch\nfunc planted() { database.Query(ctx, fmt.Sprintf(`select %s from t`, \"nextval('events_id_seq')\")) }\n", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,11 +477,15 @@ func testEventIDGuardRefusesAnUnlistedFormattedQuery(t *testing.T) {
 	if len(templates) != 1 {
 		t.Fatalf("the scratch source held %d query templates, want one", len(templates))
 	}
-	if !sqlLooking(templates[0].statement) || !eventIDSQLLooking(templates[0].statement, templates[0].complete) {
-		t.Fatalf("the Sprintf query did not read as SQL-looking: %#v", templates[0])
+	if templates[0].complete || !sqlLooking(templates[0].statement) {
+		t.Fatalf("the Sprintf query did not read as an incomplete SQL value: %#v", templates[0])
 	}
-	if _, offence := unreadableSQLTemplate("scratch.go", "planted", templates[0]); offence == "" {
-		t.Fatal("the unlisted Sprintf query passed the fail-closed reader")
+	read := strings.TrimSpace(templates[0].statement + " " + templates[0].fragments)
+	if word := eventIDRiskWord(read); word == "" {
+		t.Fatalf("the Sprintf query read as holding no word a draw needs: %q", read)
+	}
+	if index := unreadableEventIDSQLIndex("scratch.go", "planted", read); index >= 0 {
+		t.Fatal("the planted Sprintf query is on the checked-in list, so this control proves nothing")
 	}
 }
 
