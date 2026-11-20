@@ -7,7 +7,7 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -19,8 +19,9 @@ const session = {
 test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "WR", name: "Writes" });
-  const issue = await createIssue({ project: "WR", title: "Pin me" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
+  const issue = await createIssue({ project: wr, title: "Pin me" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -86,9 +87,10 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
 
 // @pr: An idempotent repeat: a double-clicked Submit posts exactly one comment.
 test("double-clicking Submit posts exactly one comment @pr", async ({ browser }) => {
-  await createProject({ key: "WR", name: "Writes" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({
-    project: "WR",
+    project: wr,
     spec: "The quick brown fox",
     title: "Double submit",
   });
@@ -117,9 +119,10 @@ test("double-clicking Submit posts exactly one comment @pr", async ({ browser })
 });
 
 test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ browser }) => {
-  await createProject({ key: "WR", name: "Writes" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({
-    project: "WR",
+    project: wr,
     spec: "The quick brown fox",
     title: "Resolve pending",
   });

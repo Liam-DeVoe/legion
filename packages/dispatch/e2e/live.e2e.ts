@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { expect, type Locator, test, type WebSocket } from "./test";
+import { expect, type Locator, rowKey, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -74,9 +74,10 @@ async function renameUntilShown(
 test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const readingIssue = await createIssue({ project: "CORE", title: "Reading" });
-  const targetIssue = await createIssue({ project: "CORE", title: "Needs an answer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const readingIssue = await createIssue({ project: core, title: "Reading" });
+  const targetIssue = await createIssue({ project: core, title: "Needs an answer" });
 
   const alice = await asUser(browser, "alice");
   const inboxPage = await alice.newPage();
@@ -91,7 +92,7 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   // The sidebar now provides project navigation; an open ask updates its Inbox and
   // project badges without changing the issue route in the other tab.
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
-  await expect(navigation.locator('a[href="/projects/CORE"]')).toBeVisible();
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toBeVisible();
 
   const ask = await createAsk(
     targetIssue.key,
@@ -101,7 +102,7 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   await issuePage.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
   expect(issuePage.url()).toContain(readingIssue.key);
 
   // The question arrives as a row of the list, carrying its first line; from 1280 px the
@@ -125,9 +126,10 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
 test("live: answering an ask updates the Inbox and project badges immediately", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const readingIssue = await createIssue({ project: "CORE", title: "Reading" });
-  const targetIssue = await createIssue({ project: "CORE", title: "Needs an answer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const readingIssue = await createIssue({ project: core, title: "Reading" });
+  const targetIssue = await createIssue({ project: core, title: "Needs an answer" });
   const ask = await createAsk(
     targetIssue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it?" },
@@ -143,7 +145,7 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   await issuePage.goto(`/issues/${readingIssue.key}`);
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
 
   await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("radio", { name: "Yes" }).check();
   await inboxPage
@@ -157,7 +159,7 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   // sidebar (issuePage), so both badges changing proves the update came from the
   // stream rather than from the mutation's optimistic cache update.
   await expect(navigation.getByRole("link", { name: "Inbox" })).toHaveText("Inbox");
-  await expect(navigation.locator('a[href="/projects/CORE"]')).not.toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).not.toContainText("1");
   expect(issuePage.url()).toContain(readingIssue.key);
 
   await issuePage.screenshot({
@@ -171,9 +173,10 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
 test("live: a message on another issue reads neither the Inbox nor the pinned list", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const viewedIssue = await createIssue({ project: "CORE", title: "Viewed issue" });
-  const otherIssue = await createIssue({ project: "CORE", title: "Unviewed issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const viewedIssue = await createIssue({ project: core, title: "Viewed issue" });
+  const otherIssue = await createIssue({ project: core, title: "Unviewed issue" });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -194,7 +197,7 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     await page.clock.install();
     await page.goto(`/issues/${viewedIssue.key}`);
     await expect(
-      page.getByRole("navigation", { name: "Navigation" }).locator('a[href="/projects/CORE"]')
+      page.getByRole("navigation", { name: "Navigation" }).locator(`a[href="/projects/${core}"]`)
     ).toBeVisible();
     const viewedHeader = page.getByTestId("issue-header").getByRole("heading", { level: 1 });
     // The first rename proves the feed is subscribed, so the message below reaches this page.
@@ -232,14 +235,15 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
 test("live: an agent message makes a read issue appear in the project's Unread filter", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Unread after agent message" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Unread after agent message" });
   await putIssueState(issue.key, { last_read_seq: (await getIssue(issue.key)).last_seq });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   try {
-    await page.goto("/projects/CORE?unread=1");
+    await page.goto(`/projects/${core}?unread=1`);
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
     await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expect(page.getByText("Unread after agent message")).toHaveCount(0);
@@ -255,10 +259,11 @@ test("live: an agent message makes a read issue appear in the project's Unread f
 test("live: closing a grandchild updates every loaded ancestor's Children rollup", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const root = await createIssue({ project: "CORE", title: "Root" });
-  const child = await createIssue({ parent: root.key, project: "CORE", title: "Child" });
-  const grandchild = await createIssue({ parent: child.key, project: "CORE", title: "Grandchild" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const root = await createIssue({ project: core, title: "Root" });
+  const child = await createIssue({ parent: root.key, project: core, title: "Child" });
+  const grandchild = await createIssue({ parent: child.key, project: core, title: "Grandchild" });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -279,8 +284,9 @@ test("live: closing a grandchild updates every loaded ancestor's Children rollup
 });
 
 test("live: resolving an ask updates its pinned issue's open-ask count", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pinned ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pinned ask" });
   const ask = await createAsk(issue.key, { question: "Still open?" }, bob);
   await putIssueState(issue.key, { pinned: true });
 
@@ -321,7 +327,8 @@ test("live: resolving an ask updates its pinned issue's open-ask count", async (
 test("live: another request's source update refreshes Settings without reload", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({ "legion/arch": { contents: "read", installation_id: 101 } });
 
   const alice = await asUser(browser, "alice");
@@ -330,7 +337,7 @@ test("live: another request's source update refreshes Settings without reload", 
     await page.goto("/settings");
     await expect(page.getByText("No architecture sources yet.")).toBeVisible();
 
-    await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
+    await putArchitectureSource(core, { branch: "main", repo: "legion/arch" });
 
     await expect(page.getByRole("cell", { exact: true, name: "legion/arch" })).toBeVisible();
   } finally {
@@ -341,8 +348,9 @@ test("live: another request's source update refreshes Settings without reload", 
 test("live: new events on the open issue appear in Conversation and mark it read as they are viewed", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Conversation target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Conversation target" });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -378,8 +386,9 @@ test("live: new events on the open issue appear in Conversation and mark it read
 
 // @pr: The live socket: the stream has to recover after the connection drops.
 test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reconnect target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reconnect target" });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -430,8 +439,9 @@ test("live: the stream recovers after the connection drops @pr", async ({ browse
 // written across the forced disconnect between them.
 // @pr: The live socket: after a forced server disconnect the page resumes from the last event id, so nothing written across it is lost.
 test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Disconnect target" });
   await createMessage(issue.key, { body: "Before disconnect" }, bob);
 
   const alice = await asUser(browser, "alice");
@@ -517,8 +527,9 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
 test("live: a change committed while the first live socket fails to open is shown without a reload", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Before the failed handshake" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Before the failed handshake" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -598,8 +609,9 @@ test("live: a change committed while the first live socket fails to open is show
 test("live: a fresh page load opens the socket at the current head and stays within a bounded request budget", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Budget target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Budget target" });
   for (let index = 0; index < 5; index += 1) {
     await createMessage(issue.key, { body: `Backlog message ${index}` }, bob);
   }
@@ -673,7 +685,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // its picker only when the project has one. The component tree itself,
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
     // load, which is why it is absent from this set.
-    "/api/v1/projects/CORE/architecture-sources",
+    `/api/v1/projects/${core}/architecture-sources`,
     // The header's read of the repository mappings: an issue that resolves to no repository,
     // as this one does, shows the `Repository:` item only when its project maps one.
     "/api/v1/settings/repo-projects",
@@ -701,10 +713,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
   // issue is open, so the toggle only exists on an issue page.
-  const issue = await createIssue({ project: "CORE", title: "Margin toggle target" });
+  const issue = await createIssue({ project: core, title: "Margin toggle target" });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -744,8 +757,9 @@ test("live: the Reconnecting pill never covers the phone margin sheet toggle @ph
 test("live: an event during a project list's first load fetches it again once that load lands, never beside it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "OLDTITLE" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "OLDTITLE" });
   // Pinned, so the sidebar's pinned row shows each rename: the one sign on this page that the
   // event was handled while the list's first load is still held.
   await putIssueState(issue.key, { pinned: true });
@@ -755,7 +769,7 @@ test("live: an event during a project list's first load fetches it again once th
   try {
     const page = await alice.newPage();
     const { promise: inFlight, resolve: reachedServer } = Promise.withResolvers<void>();
-    const listUrl = /\/api\/v1\/issues\?project=CORE/;
+    const listUrl = new RegExp(`/api/v1/issues\\?project=${core}`);
     let listRequests = 0;
     let listsInFlight = 0;
     let mostInFlight = 0;
@@ -784,7 +798,7 @@ test("live: an event during a project list's first load fetches it again once th
     });
 
     await page.clock.install();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     const pinnedRow = page
       .getByRole("navigation", { name: "Navigation" })
       .getByRole("link", { name: issue.key });

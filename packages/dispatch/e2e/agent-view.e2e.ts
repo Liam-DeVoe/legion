@@ -30,7 +30,7 @@ import { connect, watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -1259,13 +1259,14 @@ async function attemptOf(
 test("a session whose capabilities hold no delivery mode is warned of in its live view, the Inbox, the Agents page and a mention, and a send to it fails", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const unknown = listedSession("01a0e0c1-0000-7000-8000-0000000043b1", "Newer plugin", [
     "future-capability",
   ]);
   const none = listedSession("01a0e0c1-0000-7000-8000-0000000043b2", "Unreachable", []);
   const taking = listedSession("01a0e0c1-0000-7000-8000-0000000043b3", "Fluent");
   await setLiveSessions([planner, unknown, none, taking]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -1283,7 +1284,7 @@ test("a session whose capabilities hold no delivery mode is warned of in its liv
         replies: [`${session.title}: all green.`],
         session,
       });
-      const issue = await createIssue({ project: "CORE", title: `Mentions of ${session.title}` });
+      const issue = await createIssue({ project: core, title: `Mentions of ${session.title}` });
 
       // Its live view warns, and a message sent from it records a failed attempt.
       await page.goto(`/agents/${session.session_id}/live`);
@@ -1580,9 +1581,10 @@ test("at desktop width the live view fills the main column beside the navigation
 test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Scrolls the document.",
     title: "Doc route",
   });

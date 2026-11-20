@@ -11,7 +11,7 @@ import {
   listIssueArtifacts,
   patchIssue,
 } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 /** The control's open form: the Title the person types and the Create that writes it. */
 function newDocumentForm(page: Page): Locator {
@@ -29,9 +29,10 @@ function postAsPage(page: Page, path: string, data: object) {
 test("a title the issue already holds is refused by the control, by its name and by its slug", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch\n\nThe spec itself.\n",
     title: "A title already held",
   });
@@ -77,9 +78,10 @@ test("a title the issue already holds is refused by the control, by its name and
 test("a title whose slug is a role slug is refused, and the real plan.md is still uploaded", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch\n\nThe spec itself.\n",
     title: "A title Dispatch keeps for itself",
   });
@@ -127,9 +129,10 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
 // SLOW(>=2s): the issue closed under the open page, which reaches it on the live feed, and the
 // strip read again after it.
 test("a closed issue refuses both ways to add a document, in one sentence", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch\n\nThe spec itself.\n",
     title: "A closed issue takes no document",
   });
@@ -162,13 +165,14 @@ test("a closed issue refuses both ways to add a document, in one sentence", asyn
 test("a project refuses a title it already holds and takes one whose slug is a role slug", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: "# Launch notes\n\nWritten already.\n",
     name: "Launch notes",
   });
 
-  await page.goto("/projects/CORE/documents");
+  await page.goto(`/projects/${core}/documents`);
   await page.getByRole("button", { name: "New document" }).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill("Launch notes");
@@ -181,6 +185,6 @@ test("a project refuses a title it already holds and takes one whose slug is a r
   // document of its own here.
   await form.getByRole("textbox", { name: "Title" }).fill("Plan.md");
   await form.getByRole("button", { name: "Create" }).click();
-  await expect(page).toHaveURL("/projects/CORE/documents/plan-md");
-  expect((await getProjectArtifact("CORE", "plan-md")).name).toBe("Plan.md");
+  await expect(page).toHaveURL(`/projects/${core}/documents/plan-md`);
+  expect((await getProjectArtifact(core, "plan-md")).name).toBe("Plan.md");
 });

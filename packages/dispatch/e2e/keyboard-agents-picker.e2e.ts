@@ -3,7 +3,7 @@ import { createAgentMessage, createMessage, listComments, patchIssue } from "./a
 import { openFromSidebar } from "./editor";
 import { keyedWrite } from "./keyed-writes";
 import { holdPosts, MESSAGE_REFUSED, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The issue picker's keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`) holds only
@@ -42,7 +42,8 @@ test.describe("agents page", () => {
   test("the arrows move the issue selection and Enter commits it @webkit @firefox", async ({
     browser,
   }) => {
-    await seedAgents();
+    const core = rowKey("CORE");
+    await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -61,7 +62,7 @@ test.describe("agents page", () => {
       await expect(picker).toBeFocused();
 
       await page.keyboard.press("Enter");
-      await expect(toggle).toContainText("CORE-2");
+      await expect(toggle).toContainText(`${core}-2`);
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("@Planner");
 
@@ -75,7 +76,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowUp");
       await page.keyboard.press("Escape");
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
-      await expect(toggle).toContainText("CORE-2");
+      await expect(toggle).toContainText(`${core}-2`);
       await expect(row).toBeFocused();
     } finally {
       await context.close();
@@ -95,7 +96,7 @@ test.describe("agents page", () => {
     test(`a step left by ${way} is dropped, so the select, the toggle and the send name one issue @webkit @firefox`, async ({
       browser,
     }) => {
-      const issueKey = await seedAgents();
+      const issueKey = await seedAgents(rowKey("CORE"));
       const context = await asUser(browser, "alice");
       try {
         const page = await context.newPage();
@@ -136,7 +137,7 @@ test.describe("agents page", () => {
   test("a step from No issue left by Tab is dropped, and the message goes to the agent directly @webkit @firefox", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -169,7 +170,8 @@ test.describe("agents page", () => {
   test("type-ahead from the keyboard moves the issue selection and Enter commits it @webkit @firefox", async ({
     browser,
   }) => {
-    await seedAgents();
+    const core = rowKey("CORE");
+    await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -183,12 +185,12 @@ test.describe("agents page", () => {
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
       await page.keyboard.press("c");
-      await expect(picker).toHaveValue("CORE-1");
+      await expect(picker).toHaveValue(`${core}-1`);
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
       await expect(picker).toBeFocused();
 
       await page.keyboard.press("Enter");
-      await expect(toggle).toContainText("CORE-1");
+      await expect(toggle).toContainText(`${core}-1`);
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("@Planner");
     } finally {
@@ -203,7 +205,8 @@ test.describe("agents page", () => {
   test("a send in flight holds the picker, and the sent text never comes back @pr", async ({
     browser,
   }) => {
-    await seedAgents();
+    const core = rowKey("CORE");
+    await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -241,8 +244,8 @@ test.describe("agents page", () => {
       await expect(picker).toBeEnabled();
 
       // The pick the reader could not make mid-send takes nothing from the message already sent.
-      await picker.selectOption("CORE-1");
-      await expect(toggle).toContainText("CORE-1");
+      await picker.selectOption(`${core}-1`);
+      await expect(toggle).toContainText(`${core}-1`);
       await expect(field).toHaveValue("@Planner");
       expect(send.posts()).toBe(1);
     } finally {
@@ -253,7 +256,7 @@ test.describe("agents page", () => {
   // A reply to a message on an issue is written on that issue, and the send ends the reply, which
   // takes the composer back to the direct channel: it must come back empty.
   test("a reply sent on an issue leaves the direct composer empty", async ({ browser }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",
@@ -296,7 +299,7 @@ test.describe("agents page", () => {
   test("Cancel reply holds while a reply is out, and the sent text never comes back", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",
@@ -337,7 +340,7 @@ test.describe("agents page", () => {
   test("a reply refused and then cancelled retries on the issue, mentioning the agent", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createAgentMessage(plannerSession.session_id, {
       body: "Are you free?",
       delivery: "btw",
@@ -394,7 +397,7 @@ test.describe("agents page", () => {
   test("Reply holds while a send is out, and a refusal's Retry posts exactly what was refused", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",
@@ -451,7 +454,7 @@ test.describe("agents page", () => {
   // A direct send owns its address in the same task that begins it. A Reply click before React
   // re-renders must not move that in-flight request onto this issue's message route.
   test("a same-task Reply cannot re-address a direct send", async ({ browser }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",
@@ -498,7 +501,8 @@ test.describe("agents page", () => {
   // An already-open picker can commit an issue in the same task as Send. Its commit must not
   // turn the direct send into an issue message before the request takes its owner.
   test("a same-task issue pick cannot re-address a direct send", async ({ browser }) => {
-    await seedAgents();
+    const core = rowKey("CORE");
+    await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -521,15 +525,15 @@ test.describe("agents page", () => {
       await toggle.click();
       await expect(picker).toBeVisible();
       await field.fill("Status please");
-      await row.evaluate((node) => {
+      await row.evaluate((node, issueKey) => {
         const send = node.querySelector<HTMLButtonElement>('button[type="submit"]');
         const picker = node.querySelector<HTMLSelectElement>('select[aria-label="Issue"]');
         if (send === null || picker === null)
           throw new Error("expected send and issue picker controls");
         send.click();
-        picker.value = "CORE-1";
+        picker.value = issueKey;
         picker.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      }, `${core}-1`);
 
       expect(new URL((await sent).url()).pathname).toBe(
         `/api/v1/agents/${plannerSession.session_id}/messages`
@@ -547,7 +551,8 @@ test.describe("agents page", () => {
   // pick in the paste's own task, before React re-renders, moves where the next message goes but
   // not where this file goes, and the reference the upload adds names the issue that holds it.
   test("a same-task issue pick cannot move an upload", async ({ browser }) => {
-    await seedAgents();
+    const core = rowKey("CORE");
+    await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -566,11 +571,11 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await picker.selectOption("CORE-1");
+      await picker.selectOption(`${core}-1`);
       await expect(field).toHaveValue("@Planner");
       await toggle.click();
       await expect(picker).toBeVisible();
-      await row.evaluate((node) => {
+      await row.evaluate((node, issueKey) => {
         const textarea = node.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]');
         const select = node.querySelector<HTMLSelectElement>('select[aria-label="Issue"]');
         if (textarea === null || select === null)
@@ -580,13 +585,13 @@ test.describe("agents page", () => {
         const paste = new Event("paste", { bubbles: true, cancelable: true });
         Object.defineProperty(paste, "clipboardData", { value: data });
         textarea.dispatchEvent(paste);
-        select.value = "CORE-2";
+        select.value = issueKey;
         select.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      }, `${core}-2`);
 
-      expect(new URL((await uploaded).url()).pathname).toBe("/api/v1/issues/CORE-1/artifacts");
-      await expect(field).toHaveValue("@Planner dispatch://CORE-1/artifact/notes-md");
-      await expect(toggle).toContainText("CORE-2");
+      expect(new URL((await uploaded).url()).pathname).toBe(`/api/v1/issues/${core}-1/artifacts`);
+      await expect(field).toHaveValue(`@Planner dispatch://${core}-1/artifact/notes-md`);
+      await expect(toggle).toContainText(`${core}-2`);
     } finally {
       await context.close();
     }
@@ -595,7 +600,7 @@ test.describe("agents page", () => {
   // Cancel reply is the same address mutation in reverse. The send retains its direct reply
   // target until its refusal arrives, even when the click shares Send's task.
   test("a same-task Cancel reply keeps the direct reply it sent", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     await createAgentMessage(plannerSession.session_id, {
       body: "Are you free?",
       delivery: "btw",
@@ -643,7 +648,7 @@ test.describe("agents page", () => {
   test("Retry asks what Send asks, and Discard takes a refusal's notice with the draft", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -693,7 +698,7 @@ test.describe("agents page", () => {
   test("a send takes the Discard prompt with it, and a refusal hands back the draft with its notice", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -733,7 +738,8 @@ test.describe("agents page", () => {
   test("an issue closed after the pick stays named in the select and the toggle, marked closed, and takes the message", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const core = rowKey("CORE");
+    const issueKey = await seedAgents(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -782,8 +788,8 @@ test.describe("agents page", () => {
       ).toBe(true);
 
       // Picking another issue ends it: the closed one is no longer offered at all.
-      await picker.selectOption("CORE-2");
-      await expect(toggle).toContainText("CORE-2");
+      await picker.selectOption(`${core}-2`);
+      await expect(toggle).toContainText(`${core}-2`);
       await toggle.click();
       await expect(picker.locator("option", { hasText: issueKey })).toHaveCount(0);
     } finally {
@@ -797,7 +803,7 @@ test.describe("agents page", () => {
   test("every message sent on an issue mentions the agent, and a direct one carries none", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -877,7 +883,7 @@ test.describe("agents page", () => {
   // `i` opens the picker; it never shuts one. A row keeps its picker open when it collapses, so on
   // that row `i` goes back into the select rather than clicking the toggle closed.
   test("i on a collapsed row goes back into the picker it left open", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -920,7 +926,7 @@ test.describe("agents page", () => {
   test("a row back after the reader left mid-send holds the send it left, which then lands there @webkit", async ({
     browser,
   }) => {
-    const issueKey = await seedAgents();
+    const issueKey = await seedAgents(rowKey("CORE"));
     await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",

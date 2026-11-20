@@ -30,7 +30,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -113,8 +113,9 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
 test("a comment whose answer is lost lands once, under one key @webkit @firefox @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A comment once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A comment once" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -165,8 +166,9 @@ test("a comment whose answer is lost lands once, under one key @webkit @firefox 
 test("a comment whose answer the browser cannot read is written once @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A comment the browser cannot read" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A comment the browser cannot read" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -222,8 +224,9 @@ test("a comment whose answer the browser cannot read is written once @webkit @fi
 test("a write whose key has expired stops and offers a new write @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A key that runs out" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A key that runs out" });
   const before = (await getIssue(issue.key)).status;
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
@@ -290,8 +293,9 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
 test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A status once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A status once" });
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
@@ -340,8 +344,9 @@ test("a status change whose answer is lost survives a reload, lands once, and th
 test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "An answer once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "An answer once" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -390,8 +395,9 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
 test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "In flight" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "In flight" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -469,8 +475,9 @@ test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, a
 test("a comment Dispatch takes 20 s to make lands once from the page, every repeat waiting on the first @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A slow comment" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A slow comment" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   await slowWrites("POST", path, 4_000);
   const alice = await asUser(browser, "alice");
@@ -540,9 +547,10 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
   browser,
   browserName,
 }) => {
+  const kw = rowKey("KW");
   test.skip(browserName !== "chromium", "only Chromium's DevTools protocol paces a page's upload");
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A slow upload" });
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A slow upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 1024 * 1024;
   const alice = await asUser(browser, "alice");
@@ -629,9 +637,10 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   browser,
   browserName,
 }) => {
+  const kw = rowKey("KW");
   test.setTimeout(60_000);
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A repeated upload" });
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A repeated upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 20 * 1024 * 1024;
   await slowWrites("POST", path, 5_000);
@@ -725,8 +734,9 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 // reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
 // and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
 test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A retried upload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A retried upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const alice = await asUser(browser, "alice");
   try {
@@ -886,14 +896,15 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @pr", async ({
   browser,
 }, testInfo) => {
+  const kw = rowKey("KW");
   test.skip(
     testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
     plainHttpSkipReason
   );
-  await createProject({ key: "KW", name: "Keyed writes" });
+  await createProject({ key: kw, name: "Keyed writes" });
   const issues = [
-    await createIssue({ project: "KW", title: "Tab one's change" }),
-    await createIssue({ project: "KW", title: "Tab two's change" }),
+    await createIssue({ project: kw, title: "Tab one's change" }),
+    await createIssue({ project: kw, title: "Tab two's change" }),
   ];
   const before = await Promise.all(issues.map((issue) => getIssue(issue.key)));
   const alice = testInfo.project.name.startsWith("chromium-plain-http")
@@ -969,12 +980,13 @@ for (const landed of [false, true]) {
   test(`a sign-out ${landed ? "that landed" : "that never reached Dispatch"}, its tab closed before the answer, ${landed ? "discards" : "lets go on"} the write another tab held for it`, async ({
     browser,
   }, testInfo) => {
+    const kw = rowKey("KW");
     test.skip(
       testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
       plainHttpSkipReason
     );
-    await createProject({ key: "KW", name: "Keyed writes" });
-    const issue = await createIssue({ project: "KW", title: "Held for a sign-out" });
+    await createProject({ key: kw, name: "Keyed writes" });
+    const issue = await createIssue({ project: kw, title: "Held for a sign-out" });
     const before = await getIssue(issue.key);
     const path = `/api/v1/issues/${issue.key}`;
     const alice = testInfo.project.name.startsWith("chromium-plain-http")
@@ -1078,8 +1090,9 @@ for (const landed of [false, true]) {
 test("alice's write queued behind her held one sends nothing once bob signs in from another tab", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "Alice's line" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "Alice's line" });
   const before = await getIssue(issue.key);
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
@@ -1135,8 +1148,9 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A pin through a reload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A pin through a reload" });
   await createMessage(issue.key, { body: "Pinned through the outage" });
   const alice = await asUser(browser, "alice");
   try {
@@ -1175,8 +1189,9 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
 test("the issue header's pin pressed during an outage survives a reload and lands once the network is back @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A header pin through a reload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A header pin through a reload" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -1214,8 +1229,9 @@ test("the issue header's pin pressed during an outage survives a reload and land
 test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "Alice's change" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "Alice's change" });
   const before = (await getIssue(issue.key)).status;
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");

@@ -112,12 +112,17 @@ export interface SeededWorkspace {
  *  decision block (`awaitDecisionBlock`), and at the end for the Inbox rows it declares
  *  (`awaitSeededInbox`), which every caller reads next. Each wait gets the whole of `boundMs`, the
  *  bound its caller's own checks use, so a browser row's seed gives up before the row's own
- *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait. */
+ *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait.
+ *
+ *  `projects` are the keys of its two projects: a real-stack row passes its own (`rowKey`,
+ *  e2e/test.ts), and the review corpus and the local instance take `CORE` and `OPS`. */
 export async function seedWorkspace({
   boundMs,
+  projects = { core: "CORE", ops: "OPS" },
   signal,
 }: {
   readonly boundMs: number;
+  readonly projects?: { readonly core: string; readonly ops: string };
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
@@ -127,11 +132,12 @@ export async function seedWorkspace({
   };
   const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
   const alice = { login: "alice" };
+  const { core, ops } = projects;
 
   await setLiveSessions(workspaceSessions);
   await Promise.all([
-    createProject({ key: "CORE", name: "Core" }),
-    createProject({ key: "OPS", name: "Ops" }),
+    createProject({ key: core, name: "Core" }),
+    createProject({ key: ops, name: "Ops" }),
   ]);
 
   // A human's issue is assigned to its creator, so every issue here is alice's.
@@ -144,30 +150,30 @@ export async function seedWorkspace({
   // container runs of that layer differed on the Children tab, the project's issue list and
   // the Inbox, in the key's own digits and nowhere else.
   const workflow = await createIssue({
-    project: "CORE",
+    project: core,
     spec: workflowSpec,
     title: "Local testing workflow for Dispatch",
   });
   const child = await createIssue({
     parent: workflow.key,
-    project: "CORE",
+    project: core,
     title: "Seed the local corpus",
   });
   const broadcastOrder = await createIssue({
-    project: "CORE",
+    project: core,
     title: "Broadcast recipients keep their send order",
   });
   const snooze = await createIssue({
-    project: "CORE",
+    project: core,
     title: "Snooze an Inbox row until tomorrow",
   });
-  const folds = await createIssue({ project: "CORE", title: "Agents page freshness folds" });
-  const phone = await createIssue({ project: "CORE", title: "Phone layout of the review sheet" });
+  const folds = await createIssue({ project: core, title: "Agents page freshness folds" });
+  const phone = await createIssue({ project: core, title: "Phone layout of the review sheet" });
   const retracted = await createIssue({
-    project: "CORE",
+    project: core,
     title: "A retracted ask stays in history",
   });
-  const rotate = await createIssue({ project: "OPS", title: "Rotate the agent token" });
+  const rotate = await createIssue({ project: ops, title: "Rotate the agent token" });
   // Before the patch below, not after the whole seed: the ask the workflow issue's spec
   // declares is written by the document service on its own, some time after `createIssue`
   // answered, and the patch writes an event of its own against the same issue. Each lands with
@@ -220,7 +226,7 @@ export async function seedWorkspace({
     { question: "Rotate the token before or after the deploy?", urgency: "med" },
     as(sessionIds.reviewer)
   );
-  const runbook = await createProjectDocument("CORE", {
+  const runbook = await createProjectDocument(core, {
     content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
     name: "Runbook",
   });

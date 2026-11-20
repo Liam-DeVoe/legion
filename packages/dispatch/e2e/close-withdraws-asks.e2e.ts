@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { type Browser, expect, type Locator, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Closing an issue withdraws each of its open asks, naming the closer, and reopening it brings
@@ -162,7 +162,7 @@ async function expectWithdrawn(
 test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr", async ({
   browser,
 }) => {
-  const seeded = await seedIssue("CLOSE");
+  const seeded = await seedIssue(rowKey("CLOSE"));
   const opened = await openIssueAndInbox(browser, seeded, { clock: true });
   const { decision, inbox, page, sockets } = opened;
   try {
@@ -252,7 +252,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
 test("an agent session's close names the session on the withdrawn decision", async ({
   browser,
 }) => {
-  const seeded = await seedIssue("AGENT");
+  const seeded = await seedIssue(rowKey("AGENT"));
   const opened = await openIssueAndInbox(browser, seeded);
   try {
     await patchIssue(
@@ -271,7 +271,7 @@ test("an agent session's close names the session on the withdrawn decision", asy
 test("the Legion daemon's close names the daemon whole on the withdrawn decision", async ({
   browser,
 }) => {
-  const seeded = await seedIssue("DAEMON");
+  const seeded = await seedIssue(rowKey("DAEMON"));
   const opened = await openIssueAndInbox(browser, seeded);
   try {
     // The request the daemon's `SetStatus` sends: its bearer and its own session identity.
@@ -289,11 +289,12 @@ test("the Legion daemon's close names the daemon whole on the withdrawn decision
 test("a closed issue's document names no unsent edit to a person who typed nothing", async ({
   browser,
 }) => {
+  const read = rowKey("READ");
   // A closed issue whose spec an agent wrote, opened by a person who types nothing: the page must
   // not tell them an edit saved in their browser cannot be sent.
-  await createProject({ key: "READ", name: "READ" });
+  await createProject({ key: read, name: read });
   const issue = await createIssue(
-    { project: "READ", spec: "## Plan\n\nContext.\n", title: "Closed" },
+    { project: read, spec: "## Plan\n\nContext.\n", title: "Closed" },
     asker
   );
   await patchIssue(issue.key, { status: "done" }, asker);

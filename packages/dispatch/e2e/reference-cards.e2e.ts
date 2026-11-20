@@ -32,10 +32,11 @@ interface Form {
   href(world: ReferenceWorld): string;
   /** For a target that does not exist, the API path whose 404 says so: until that read answers
    *  every card shows what was written, so the cards are read once it has. */
-  readonly missing?: string;
+  missing?(world: ReferenceWorld): string;
 }
 
-const missingIssue = `${baseUrl}/issues/CORE-999999`;
+/** An issue of the world's own `CORE` project that does not exist. */
+const missingIssue = (world: ReferenceWorld) => `${world.projects.core}-999999`;
 
 // A card reads as its target's own title, which for an issue is its words alone: the key stands
 // beside a reference drawn inline, never on the card, whose own line already names the issue.
@@ -73,11 +74,11 @@ const FORMS: readonly Form[] = [
   },
   // A card whose target is missing shows the address as it was written.
   {
-    href: () => "/issues/CORE-999999",
-    missing: "/api/v1/issues/CORE-999999/summary",
+    href: (world) => `/issues/${missingIssue(world)}`,
+    missing: (world) => `/api/v1/issues/${missingIssue(world)}/summary`,
     name: "a dashboard address whose issue is missing",
-    reference: () => missingIssue,
-    title: () => missingIssue,
+    reference: (world) => `${baseUrl}/issues/${missingIssue(world)}`,
+    title: (world) => `${baseUrl}/issues/${missingIssue(world)}`,
   },
 ];
 
@@ -187,7 +188,7 @@ for (const form of FORMS) {
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
-      const { missing } = form;
+      const missing = form.missing?.(world);
       await readReplies(
         page,
         testInfo.project.name,

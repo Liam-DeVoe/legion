@@ -1,7 +1,7 @@
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The server admits a document socket read-only for a closed issue exactly as it does for a page
@@ -27,9 +27,10 @@ const reopener = {
 test("a reconnect admitted read-only before the issue read names the reload @webkit @firefox @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "DOC", name: "Doc reload" });
+  const doc = rowKey("DOC");
+  await createProject({ key: doc, name: "Doc reload" });
   const issue = await createIssue({
-    project: "DOC",
+    project: doc,
     spec: "## Plan\n\nContext.\n",
     title: "Reload to edit",
   });

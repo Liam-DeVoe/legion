@@ -24,7 +24,7 @@ import {
 } from "./editor";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -54,8 +54,9 @@ const longDocument = [
 ].join("\n\n");
 
 async function seedIssue() {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Astrolabe calibration" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Astrolabe calibration" });
   const secondary = await createIssueArtifact(issue.key, {
     content: secondaryBody,
     name: secondaryName,
@@ -78,9 +79,10 @@ async function leaveThreadOverlay(page: Page, project: string): Promise<void> {
 /** The long-document fixture every landing test shares: the quotation is thousands of pixels
  *  below the fold, and the comment anchored to it is what the link names. */
 async function seedLongDocument(quote = "Unique faraway quotation.") {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: longDocument,
     title: "Long document link",
   });
@@ -595,11 +597,12 @@ for (const state of crossDocumentLandingStates) {
   test(`a press while a comment link reached from another document is landing and ${state.name} does not end the hold`, async ({
     browser,
   }) => {
+    const core = rowKey("CORE");
     const { comment, issue, markId } = await seedLongDocument();
     // A document the reader is already on, whose own offsets the margin has. Following a link out
     // of it is a client-side navigation: the margin provider never unmounts, so offsets left
     // behind would tell the next landing it was already over.
-    const handbook = await createProjectDocument("CORE", {
+    const handbook = await createProjectDocument(core, {
       content: "The handbook explains the calibration.",
       name: "handbook.md",
     });
@@ -609,7 +612,7 @@ for (const state of crossDocumentLandingStates) {
     try {
       const page = await context.newPage();
       const transport = await documentTransport(page);
-      await page.goto(`/projects/CORE/documents/${handbook.artifact.slug}`);
+      await page.goto(`/projects/${core}/documents/${handbook.artifact.slug}`);
       await expect(
         page.getByRole("textbox", { name: "Document editor" }).getByText("The handbook explains")
       ).toBeVisible();
@@ -766,10 +769,11 @@ const MAX_SCROLL_FALL_PX = 64;
 test("a past version's comment link lands on its quote in a document with no diagram @webkit @firefox", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const filler = Array.from({ length: 50 }, (_, index) => `Filler paragraph ${index + 1}.`);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: `Plain document:\n\n${filler.join("\n\n")}\n\nTarget paragraph holds the quoted words.\n`,
     title: "Highlighted mark in a plain document",
   });
@@ -821,7 +825,7 @@ test("a past version's comment link lands on its quote in a document with no dia
 test("a resolving reference above a linked card does not end the hold", async ({ browser }) => {
   const { comment, issue } = await seedLongDocument();
   const target = await createIssue({
-    project: "CORE",
+    project: rowKey("CORE"),
     title: "The calibration needs a much longer title after the reference resolves",
   });
   for (const index of [1, 2]) {
@@ -1031,9 +1035,10 @@ test("an iPhone document item link brings its far-away mark above the closed rev
 test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Primary\n\nnavmatrix primary quote\n\n# primary-decision",
     title: "Secondary document link",
   });
@@ -1082,8 +1087,9 @@ test("an iPhone secondary-document link scrolls its selected card after opening 
 test("an unanchored project-document comment is selected in its only discussion surface", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const document = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const document = await createProjectDocument(core, {
     content: "The astrolabe handbook is a project document.",
     name: "handbook.md",
   });
@@ -1094,9 +1100,9 @@ test("an unanchored project-document comment is selected in its only discussion 
 
   try {
     const page = await context.newPage();
-    await page.goto(`/projects/CORE/documents/${document.artifact.slug}?comment=${comment.id}`);
+    await page.goto(`/projects/${core}/documents/${document.artifact.slug}?comment=${comment.id}`);
     await expect(page).toHaveURL(
-      `/projects/CORE/documents/${document.artifact.slug}?comment=${comment.id}`
+      `/projects/${core}/documents/${document.artifact.slug}?comment=${comment.id}`
     );
     await expectSelectedMarginItem(page, comment.id);
     await expect(
@@ -1193,7 +1199,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";
   const { issue } = await seedIssue();
-  const otherIssue = await createIssue({ project: "CORE", title: "Another issue" });
+  const otherIssue = await createIssue({ project: rowKey("CORE"), title: "Another issue" });
 
   const ask = await createAsk(
     issue.key,
@@ -1292,9 +1298,10 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 test("a past version's comment link marks its quote where the answer carried no reading", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Plain document:\n\nTarget paragraph holds the quoted words.\n",
     title: "Highlighted mark with no reading",
   });

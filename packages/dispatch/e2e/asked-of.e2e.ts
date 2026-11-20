@@ -18,7 +18,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -99,20 +99,21 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 test("a person hands an ask to another person and it moves between the two Inboxes", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   test.setTimeout(240_000);
   await setLiveSessions([{ session_id: asker.actor.id, title: "Planner" }]);
   // CORE names carol, a third person: every project names a default assignee, and making it
   // somebody other than these two readers keeps the two questions below out of both counts.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
 
   // A human's issue is assigned to its creator, so these two are alice's and bob's own. Two
   // questions sit on alice's and one on bob's, so every count below moves by one rather than
   // appearing and disappearing.
-  const hers = await createIssue({ project: "CORE", title: "Alice's rollout" }, { login: "alice" });
+  const hers = await createIssue({ project: core, title: "Alice's rollout" }, { login: "alice" });
   expect(hers.assignee).toBe("alice");
   const moved = await createAsk(hers.key, { question: "Which rollout flag?" }, asker);
   await createAsk(hers.key, { question: "Which region goes first?" }, asker);
-  const his = await createIssue({ project: "CORE", title: "Bob's migration" }, { login: "bob" });
+  const his = await createIssue({ project: core, title: "Bob's migration" }, { login: "bob" });
   expect(his.assignee).toBe("bob");
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
 
@@ -121,7 +122,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   // card's control is read on a document's margin and in a document's ask block without either
   // moving a count above.
   const runbook = await createProjectDocument(
-    "CORE",
+    core,
     { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
     asker
   );
@@ -132,7 +133,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   );
   const blocked = await createIssue(
     {
-      project: "CORE",
+      project: core,
       spec: ':::ask{#rollout-decision urgency="med" multiple="false"}\nShip on Friday?\n\n- Ship\n- Hold\n:::\n',
       title: "Blocked decision",
     },
@@ -247,7 +248,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
 
     const docPage = await alice.newPage();
-    await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
+    await docPage.goto(`/projects/${core}/documents/${runbook.artifact.slug}`);
     const marginCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
     await expect(marginCard).toBeVisible();
     await expect(handOnControl(marginCard, docAsk.id)).toHaveCount(1);
@@ -333,16 +334,17 @@ test("a person hands an ask to another person and it moves between the two Inbox
 // SLOW(>=2s): four cold `bun` starts of the real `dispatch` command, each its own process,
 // against a page that must follow every one of them.
 test("an agent sets and clears the issue assignee from the command", async ({ browser }) => {
+  const core = rowKey("CORE");
   test.setTimeout(240_000);
   // CORE names carol, so neither reader below holds anything of it to start with.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
   // The shared token holds nobody and names nobody, so this issue starts on CORE's default and
   // no Inbox of the two readers lists its question: the command is the only thing that can put
   // either on one of them.
-  const issue = await createIssue({ project: "CORE", title: "Rotate the agent token" }, asker);
+  const issue = await createIssue({ project: core, title: "Rotate the agent token" }, asker);
   expect(issue.assignee).toBe("carol");
   const ask = await createAsk(issue.key, { question: "Rotate before the deploy?" }, asker);
-  const closed = await createIssue({ project: "CORE", title: "Already finished" }, asker);
+  const closed = await createIssue({ project: core, title: "Already finished" }, asker);
   await patchIssue(closed.key, { status: "done" }, asker);
 
   const home = mkdtempSync(join(tmpdir(), "dispatch-asked-of-cli-"));

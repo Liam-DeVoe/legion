@@ -11,7 +11,7 @@ import {
 } from "./agents";
 import { createAgentMessage, createMessage, replyToMessageDelivery } from "./api";
 import { holdPosts, MESSAGE_REFUSED, pasteFile, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The reader's dwell on a row before its read mark is written: `DWELL_MS`,
@@ -29,7 +29,7 @@ const DWELL_MS = 1_000;
  *  page lists under `Idle` - the rows a pin moves within - and any `others` a row needs beside
  *  them. */
 async function seedWithFold(others: readonly FakeSession[] = []): Promise<void> {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const folded = (id: string, title: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/srv/${id}`,
@@ -184,6 +184,7 @@ test.describe("agents page pins", () => {
   test("Shift+P carries the row's open state, its draft and its issue across the move", async ({
     browser,
   }) => {
+    const core = rowKey("CORE");
     await seedWithFold();
     const context = await asUser(browser, "alice");
     try {
@@ -198,7 +199,7 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption(`${core}-1`);
       await field.click();
       await page.keyboard.press("End");
       await page.keyboard.type(" can you take this");
@@ -208,7 +209,7 @@ test.describe("agents page pins", () => {
       await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await expect(opener).toHaveAttribute("aria-expanded", "true");
-      await expect(toggle).toContainText("CORE-1");
+      await expect(toggle).toContainText(`${core}-1`);
       await expect(field).toHaveValue("@Silent can you take this");
 
       // The mention travelled as a record, not just as text: it is on the wire.
@@ -219,7 +220,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/comments");
+      expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${core}-1/comments`);
       expect(request.postDataJSON()).toMatchObject({
         body: "@Silent can you take this",
         mentions: [{ target: "session:silent-session" }],
@@ -283,8 +284,9 @@ test.describe("agents page pins", () => {
   test("a reply on an issue keeps exactly its text across a pin and a collapse", async ({
     browser,
   }) => {
+    const core = rowKey("CORE");
     await seedWithFold();
-    const root = await createMessage("CORE-1", {
+    const root = await createMessage(`${core}-1`, {
       body: "Can this ship?",
       delivery: "btw",
       target: "session:silent-session",
@@ -317,7 +319,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/messages");
+      expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${core}-1/messages`);
       expect(request.postDataJSON()).toMatchObject({
         body: "Yes, go ahead",
         in_reply_to: root.id,
@@ -384,7 +386,7 @@ test.describe("agents page pins", () => {
 
       await page.keyboard.press("Enter");
       await silentRow.getByRole("button", { name: "Choose issue" }).click();
-      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption(`${rowKey("CORE")}-1`);
       await expect(field).toHaveValue("@Silent");
       await pasteFile(field, "notes.md", "# Notes\n");
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });
@@ -406,7 +408,7 @@ test.describe("agents page pins", () => {
   // reader reads it, however long that takes. A pin that took the row's unread set with it
   // would fold those exchanges away behind `Show N older` in front of the reader.
   test("Shift+P keeps the exchanges the row opened unread on screen", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const stale: FakeSession = {
       // Steer, so the message the row sends is delivered and the list holds only what is read.
       capabilities: ["aside", "btw", "steer"],
@@ -473,7 +475,7 @@ test.describe("agents page pins", () => {
   test("a row hidden in a closed group marks nothing read, and reopening the group shows the reply", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
@@ -569,7 +571,7 @@ test.describe("agents page pins", () => {
   // filter, then on screen - and each arrival waits out the page's own refresh of the agents
   // list, which is the path the read mark is written on.
   test("an open row a filter hides marks nothing read there", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
@@ -637,7 +639,7 @@ test.describe("agents page pins", () => {
   test("a row a filter hides mid-send keeps its send, and the refusal comes back with it", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();

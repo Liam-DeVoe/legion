@@ -19,7 +19,7 @@ import {
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
+import { expect, type Locator, type Page, type Request, rowKey, type TestInfo, test } from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -74,10 +74,11 @@ function postAsPage(page: Page, path: string, data?: object) {
 test("artifacts upload, version, references, and phone layout @phone @pr", async ({
   page,
 }, testInfo) => {
+  const core = rowKey("CORE");
   const sockets = countDocumentSockets(page);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Initial spec\n\nThe original document.",
     title: "Artifact review",
   });
@@ -232,8 +233,9 @@ function uploadedBase(request: Request): unknown {
 test("an upload over a document carries the token the page read, and says what a change under it means", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Upload over a document" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Upload over a document" });
   const notes = await createIssueArtifact(issue.key, {
     content: "# Review notes\n\nThe ledger keeps three leases.\n",
     name: "notes.md",
@@ -310,9 +312,10 @@ test("an upload over a document carries the token the page read, and says what a
 test("the version history compares two versions of a document with the change view", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Lease handover\n\nThe spec itself is the primary document.\n",
     title: "Version compare",
   });
@@ -347,8 +350,9 @@ test("the version history compares two versions of a document with the change vi
 });
 
 test("the artifacts tab filter narrows rows by name and kind", async ({ page }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Artifact filtering" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Artifact filtering" });
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);
 
@@ -380,8 +384,9 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "OPS", name: "Ops" });
-  const issue = await createIssue({ project: "OPS", title: "Customer update" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
+  const issue = await createIssue({ project: opsKey, title: "Customer update" });
   await page.goto(`/issues/${issue.key}/conversation`);
   // Every issue has its own document, so the tab opens counting one.
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toBeVisible();
@@ -538,8 +543,9 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
 test("the issue's tab strip rests where its last layout puts the selected tab, whatever narrower layout came first", async ({
   page,
 }) => {
-  await createProject({ key: "OPS", name: "Ops" });
-  const issue = await createIssue({ project: "OPS", title: "A strip that settles" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
+  const issue = await createIssue({ project: opsKey, title: "A strip that settles" });
   await page.goto(`/issues/${issue.key}/artifacts`);
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toHaveAttribute(
@@ -587,9 +593,10 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
   page,
 }) => {
-  await createProject({ key: "OPS", name: "Ops" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
   const issue = await createIssue({
-    project: "OPS",
+    project: opsKey,
     spec: "# Spec\n\nThe issue's own document.\n",
     title: "Counted tab",
   });
@@ -616,8 +623,9 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
 test("an out-of-schema document names its repair and uploads replacement markdown", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Repair an unreadable document" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Repair an unreadable document" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "repair.md",
@@ -645,8 +653,9 @@ test("an out-of-schema document names its repair and uploads replacement markdow
 // repair; connecting on the cached text would open a socket into a tree outside the schema. The
 // count is this document's sockets alone: the issue's own spec holds a socket of its own.
 test("an out-of-schema document does not reconnect from cached text", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Do not reconnect from stale text" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Do not reconnect from stale text" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "cached-repair.md",
@@ -685,11 +694,12 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
 test("a mounted editor does not reconnect into a document made unreadable while its socket was down", async ({
   page,
 }) => {
+  const core = rowKey("CORE");
   const sockets = countDocumentSockets(page);
   const transport = await documentTransport(page);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     title: "No reconnect into an unreadable room",
   });
   const upload = await createIssueArtifact(issue.key, {
@@ -732,9 +742,10 @@ test("a mounted editor does not reconnect into a document made unreadable while 
 test("an edit typed while the socket was down survives a text refetch the server answers 503", async ({
   page,
 }) => {
+  const core = rowKey("CORE");
   const transport = await documentTransport(page);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Keep an offline edit" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Keep an offline edit" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "offline-edit.md",
@@ -800,8 +811,9 @@ test("an edit typed while the socket was down survives a text refetch the server
 });
 
 test("a live document refuses a rebuild", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refuse live rebuild" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refuse live rebuild" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "live-rebuild.md",

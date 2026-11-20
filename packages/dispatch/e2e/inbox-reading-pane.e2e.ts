@@ -36,7 +36,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -51,7 +51,7 @@ import { asUser } from "./users";
 test("the Inbox shows a decision block in the reading pane and answers it in two taps", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -121,7 +121,7 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
 test("the reading pane approves a version and marks what changed since the last approval", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -208,7 +208,7 @@ function paneHoldsText(page: Page, text: string): Promise<boolean> {
 test("a question the server withdraws leaves the list at once and the next row is selected", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -244,7 +244,7 @@ test("a question the server withdraws leaves the list at once and the next row i
 test("a withdrawn question the reader was answering keeps its text in the column, closed", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   const typed = "Only on a cold start, and only back to the last lease.";
   try {
@@ -287,7 +287,7 @@ test("a withdrawn question the reader was answering keeps its text in the column
 test("an options-only answer the server refuses keeps its question in the column, with a Retry @pr", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -339,7 +339,7 @@ test("an options-only answer the server refuses keeps its question in the column
 test("Enter opens the selected decision block's note field and puts the focus in it", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
+  const seed = await seedInbox(rowKey("PANE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -382,8 +382,9 @@ test("Enter opens the selected decision block's note field and puts the focus in
 test("picker keeps a pick on screen: the priority on an Inbox row, over a read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
   await patchIssue(issue.key, { priority: 3 });
   await createAsk(
     issue.key,

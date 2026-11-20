@@ -10,7 +10,7 @@ import {
 import { needsYouCards } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -51,7 +51,7 @@ async function nameDefaultFromSettings(settings: Page, from: string, login: stri
   await settings.goto("/settings");
   const control = settings.getByRole("combobox", {
     exact: true,
-    name: "Default assignee of CORE",
+    name: `Default assignee of ${rowKey("CORE")}`,
   });
   await expect(control).toBeEnabled();
   await expect(control).toHaveValue(from);
@@ -74,14 +74,15 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 test("a question on an issue nobody holds follows its project's default assignee between two open Inboxes", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // CORE names alice: a project created by a person names that person when the call names
   // nobody, which is the step the server took here.
-  const project = await createProject({ key: "CORE", name: "Core" });
+  const project = await createProject({ key: core, name: "Core" });
   expect(project.default_assignee).toBe("alice");
   // The issue holds nobody, so its question reaches the project's default and no earlier step of
   // the chain can answer for it. A create always lands on a person, so it is created and then
   // cleared.
-  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const created = await createIssue({ project: core, title: "Nobody holds this" }, asker);
   const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const ask = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
@@ -142,17 +143,18 @@ test("a question on an issue nobody holds follows its project's default assignee
 test("issue and document pages follow a default move: a question's Asked-of badge names the new default on the issue page and on the document page", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // CORE names alice, as the row above has it.
-  const project = await createProject({ key: "CORE", name: "Core" });
+  const project = await createProject({ key: core, name: "Core" });
   expect(project.default_assignee).toBe("alice");
   // A question on an issue nobody holds, and one on a project document: no step of the chain
   // above the project's default answers for either.
-  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const created = await createIssue({ project: core, title: "Nobody holds this" }, asker);
   const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const issueAsk = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
   const runbook = await createProjectDocument(
-    "CORE",
+    core,
     { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
     asker
   );
@@ -172,7 +174,7 @@ test("issue and document pages follow a default move: a question's Asked-of badg
     const issuePage = await alice.newPage();
     const issueCard = await conversationCard(issuePage, issue.key, issueAsk.id);
     const docPage = await alice.newPage();
-    await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
+    await docPage.goto(`/projects/${core}/documents/${runbook.artifact.slug}`);
     const docCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
     await expect(issueCard).toContainText("Asked of alice");
     await expect(docCard).toContainText("Asked of alice");

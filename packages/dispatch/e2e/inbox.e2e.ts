@@ -34,7 +34,7 @@ import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -49,8 +49,9 @@ const session = {
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Urgency accents" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Urgency accents" });
   const tmuxSession = {
     ...session,
     actor: { ...session.actor, origin: { session_title: "e2e-session-title", tmux: "dev:4.7" } },
@@ -128,8 +129,9 @@ test("ask cards show urgency accents and copy their session ID, title, and tmux 
 test("an ask thread shows its newest two replies, expands the earlier ones, and puts a fresh reply last", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Newest replies" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Newest replies" });
   const ask = await createAsk(issue.key, { question: "Which reply should lead?" }, session);
   const replies = await Promise.all(
     ["Oldest reply", "Older reply", "Middle reply", "Newer reply", "Newest reply"].map((body) =>
@@ -196,8 +198,9 @@ test("an ask thread shows its newest two replies, expands the earlier ones, and 
 test("a reply on the live event feed refreshes a thread hydrated by the Inbox response", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Live Inbox thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Live Inbox thread" });
   const ask = await createAsk(issue.key, { question: "Which thread should refresh?" }, session);
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -233,8 +236,9 @@ test("a reply on the live event feed refreshes a thread hydrated by the Inbox re
 test("an event before a delayed Inbox response refreshes that ask's thread", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Delayed Inbox thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Delayed Inbox thread" });
   const ask = await createAsk(
     issue.key,
     { question: "Which delayed thread should refresh?" },
@@ -288,9 +292,10 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
 });
 
 test("a later Inbox response clears a hidden ask's pending refresh", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const visibleIssue = await createIssue({ project: "CORE", title: "Visible Inbox ask" });
-  const hiddenIssue = await createIssue({ project: "CORE", title: "Hidden Inbox ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const visibleIssue = await createIssue({ project: core, title: "Visible Inbox ask" });
+  const hiddenIssue = await createIssue({ project: core, title: "Hidden Inbox ask" });
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
@@ -397,9 +402,10 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
 });
 
 test("a quote-anchored inbox ask names and opens its document", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "A quoted passage.",
     title: "Anchored decision",
   });
@@ -440,9 +446,10 @@ test("a quote-anchored inbox ask names and opens its document", async ({ browser
 test("inbox shows current asks and answers issue asks in the margin @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const firstIssue = await createIssue({ project: "CORE", title: "First decision" });
-  const secondIssue = await createIssue({ project: "CORE", title: "Second decision" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const firstIssue = await createIssue({ project: core, title: "First decision" });
+  const secondIssue = await createIssue({ project: core, title: "Second decision" });
   await createAsk(
     firstIssue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "First ask" },
@@ -509,7 +516,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await expect(inboxRows).toHaveCount(2);
   const navigation = alicePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("2");
-  await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("2");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("2");
 
   const textOnlyAsk = await createAsk(
     secondIssue.key,
@@ -538,7 +545,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
       },
     });
 
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: "# Design notes\n",
     name: "Design notes",
   });
@@ -555,7 +562,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await expect(documentCard).toContainText("Does this design need review?");
   // The document a question belongs to names the row it is listed on.
   await expect(
-    inboxRow(alicePage, documentAsk.id).getByText("CORE · Design notes", { exact: true })
+    inboxRow(alicePage, documentAsk.id).getByText(`${core} · Design notes`, { exact: true })
   ).toBeVisible();
   // And nobody is left holding it: the filter for what no person was resolved for lists nothing.
   await navigateInApp(alicePage, "/?assignee=unassigned");
@@ -569,8 +576,9 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
 test("a clarification moves an ask under Waiting on agents until the asker hands the turn back @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "spec", title: "Turns" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "spec", title: "Turns" });
   const untouched = await createAsk(issue.key, { question: "Untouched ask" }, session);
   const clarifying = await createAsk(
     issue.key,
@@ -680,11 +688,12 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
 test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarified after it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const p2Issue = await createIssue({ project: "CORE", title: "Earlier P2 issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const p2Issue = await createIssue({ project: core, title: "Earlier P2 issue" });
   await patchIssue(p2Issue.key, { priority: 2 });
   const p2Ask = await createAsk(p2Issue.key, { question: "Earlier P2 ask" }, session);
-  const p0Issue = await createIssue({ project: "CORE", title: "Later P0 issue" });
+  const p0Issue = await createIssue({ project: core, title: "Later P0 issue" });
   const p0Ask = await createAsk(p0Issue.key, { question: "Later P0 ask" }, session);
 
   const alice = await asUser(browser, "alice");
@@ -719,8 +728,9 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
 });
 
 test("the Inbox sets its question's issue priority in place", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Needs a priority" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Needs a priority" });
   await patchIssue(issue.key, { priority: 2 });
   const ask = await createAsk(issue.key, { question: "How urgent is this?" }, session);
 
@@ -766,8 +776,9 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
 test("a snoozed row leaves Later, the banner and the Inbox count alone until un-snoozed", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Deal with it later" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Deal with it later" });
   const ask = await createAsk(issue.key, { question: "Which approach?" }, session);
 
   const alice = await asUser(browser, "alice");
@@ -1231,8 +1242,9 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
 test("an unanchored issue-level comment reaches Conversation, not document review", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Untouched issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Untouched issue" });
   await createComment(issue.key, { body: "No selection needed to comment." }, session);
 
   const alice = await asUser(browser, "alice");
@@ -1267,19 +1279,20 @@ test("an unanchored issue-level comment reaches Conversation, not document revie
 test("the Inbox opens on the reader's own questions, every visit, and ?assignee= names whose it lists", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // CORE names carol, a third person: creating it as her is how the server takes a default, and
   // it keeps every question nobody was handed out of the two lists this row reads.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
   // Nothing here is Alice's: Bob's own issue (a human's issue is assigned to its creator), an
   // issue the shared token created (which falls to CORE's default), and a project-document ask
   // (a document has no assignee, so its question falls to the same person).
-  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+  const theirs = await createIssue({ project: core, title: "Bob's issue" }, { login: "bob" });
   expect(theirs.assignee).toBe("bob");
   const theirsAsk = await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   expect(carols.assignee).toBe("carol");
   const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: "# Design notes\n",
     name: "Design notes",
   });
@@ -1343,19 +1356,21 @@ test("the Inbox opens on the reader's own questions, every visit, and ?assignee=
 test("an agent's issue reaches the Inbox of the person its own project names, and no other", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
   // Two projects, each naming a different person: every project names one, so there is no
   // project whose issue reaches nobody and the other project's person is the control.
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await putProjectDefaultAssignee("CORE", { assignee: "alice" }, { as: "user", login: "alice" });
-  await putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "bob" });
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: ops, name: "Ops" }, { login: "bob" });
+  await putProjectDefaultAssignee(core, { assignee: "alice" }, { as: "user", login: "alice" });
+  await putProjectDefaultAssignee(ops, { assignee: "bob" }, { as: "user", login: "bob" });
 
   // The shared token holds nothing and names nobody: only each project's default can assign
   // these, and the two defaults are two different people.
-  const hers = await createIssue({ project: "CORE", title: "Core issue" }, session);
+  const hers = await createIssue({ project: core, title: "Core issue" }, session);
   expect(hers.assignee).toBe("alice");
   const hersAsk = await createAsk(hers.key, { question: "Core decision" }, session);
-  const his = await createIssue({ project: "OPS", title: "Ops issue" }, session);
+  const his = await createIssue({ project: ops, title: "Ops issue" }, session);
   expect(his.assignee).toBe("bob");
   const hisAsk = await createAsk(his.key, { question: "Ops decision" }, session);
 
@@ -1384,16 +1399,17 @@ test("an agent's issue reaches the Inbox of the person its own project names, an
 test("the assignee filter takes several people and Unassigned, narrows its rows, and lives in the address", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // CORE names carol: the question on an issue nobody holds and the document's both reach her,
   // as the server's last step resolves them, so each of the three people here holds one row.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
-  const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
+  const hers = await createIssue({ project: core, title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
-  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+  const theirs = await createIssue({ project: core, title: "Bob's issue" }, { login: "bob" });
   const theirsAsk = await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: "# Design notes\n",
     name: "Design notes",
   });
@@ -1472,15 +1488,16 @@ test("the assignee filter takes several people and Unassigned, narrows its rows,
 test("clearing the filter lists every question, and the Unassigned filter lists none of them", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // CORE names carol, so the question on the issue nobody holds and the document's both reach
   // her rather than the reader.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
-  const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
+  const hers = await createIssue({ project: core, title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
-  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
   // Named for the page's own `document`, which this test's blur below needs unshadowed.
-  const notes = await createProjectDocument("CORE", {
+  const notes = await createProjectDocument(core, {
     content: "# Design notes\n",
     name: "Design notes",
   });
@@ -1538,17 +1555,18 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
 test("the Inbox count, the banner and an Agents card count the reader's own work, whatever the filter lists", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);
   // CORE names carol: a person's own new issue is still theirs, and the agent's falls to her,
   // so neither of the two counts below is moved by a question the reader does not hold.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
-  const first = await createIssue({ project: "CORE", title: "Alice's first" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
+  const first = await createIssue({ project: core, title: "Alice's first" });
   await createAsk(first.key, { question: "First decision" }, session);
-  const second = await createIssue({ project: "CORE", title: "Alice's second" });
+  const second = await createIssue({ project: core, title: "Alice's second" });
   await createAsk(second.key, { question: "Second decision" }, session);
-  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+  const theirs = await createIssue({ project: core, title: "Bob's issue" }, { login: "bob" });
   await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   await createAsk(carols.key, { question: "Anyone's decision" }, session);
 
   const alice = await asUser(browser, "alice");
@@ -1591,9 +1609,10 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
 });
 
 test("a mentioned session's callback reply reaches the open ask card", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([{ capabilities: ["btw", "steer"], session_id: "planner", title: "P" }]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Callback ask thread" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Callback ask thread" });
   const ask = await createAsk(issue.key, { question: "Which approach?" }, session);
   // A clarification in the ask's thread that pulls in a session; the session answers through
   // the delivery it was handed, not through POST .../comments.
@@ -1634,9 +1653,10 @@ test("a mentioned session's callback reply reaches the open ask card", async ({ 
 test("a stale Inbox body landing inside the debounce seeds a later card's thread", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const visibleIssue = await createIssue({ project: "CORE", title: "Visible Inbox ask" });
-  const hiddenIssue = await createIssue({ project: "CORE", title: "Hidden Inbox ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const visibleIssue = await createIssue({ project: core, title: "Visible Inbox ask" });
+  const hiddenIssue = await createIssue({ project: core, title: "Hidden Inbox ask" });
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
@@ -1725,8 +1745,9 @@ for (const refusal of [
   test(`a refused snooze wraps beside its own control and never widens the page: ${refusal.label} @phone`, async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Deal with it later" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "Deal with it later" });
     const ask = await createAsk(issue.key, { question: "Which approach?" }, session);
 
     const alice = await asUser(browser, "alice");
@@ -1782,8 +1803,9 @@ for (const refusal of [
 test("an ask card's time stays with its author, never opening a line of its own @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Provenance line" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Provenance line" });
   // A live session names itself in a sentence, so the author fills the line and the time is what
   // the wrap lands on.
   const author = {

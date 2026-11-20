@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { createIssue, createProject, createProjectDocument, getAsk } from "./api";
 import { runDispatch } from "./dispatch-cli";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -59,17 +59,18 @@ function askedId(stdout: string): string {
 test("open-asks names the person each ask waits on, before and after a hand-on", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   test.setTimeout(240_000);
   // carol creates the project, so she is its default assignee and the person a question on its
   // document waits on: a project document has no assignee of its own.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  await createProject({ key: core, name: "Core" }, { login: "carol" });
   // A human's issue is assigned to its creator, so this one is alice's.
   const issue = await createIssue(
-    { project: "CORE", title: "Ship the rollout flag" },
+    { project: core, title: "Ship the rollout flag" },
     { login: "alice" }
   );
   expect(issue.assignee).toBe("alice");
-  const runbook = await createProjectDocument("CORE", {
+  const runbook = await createProjectDocument(core, {
     content: "# Runbook\n\nRestart, reseed, reopen.\n",
     name: "Runbook",
   });
@@ -94,7 +95,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
       [
         "ask",
         "--project",
-        "CORE",
+        core,
         "--artifact",
         runbook.artifact.slug,
         "--question",
@@ -116,7 +117,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
 
     // 2. The project-wide listing, which is every open ask in the project whoever authored it,
     // names the same two people and carries the same three numbers.
-    const project = await runDispatch(["open-asks", "--project", "CORE"], home);
+    const project = await runDispatch(["open-asks", "--project", core], home);
     expect(project.code, `${project.stdout}${project.stderr}`).toBe(0);
     expect(rowFor(project.stdout, issueAsk)).toContain(" · asked of alice · ");
     expect(rowFor(project.stdout, documentAsk)).toContain(" · asked of carol · ");

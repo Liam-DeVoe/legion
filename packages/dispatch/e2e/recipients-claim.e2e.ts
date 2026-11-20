@@ -13,7 +13,7 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A person's answer and replies on an ask reach the ask's followers, the session holding the
@@ -31,8 +31,9 @@ const ROSTER = { intervals: [50, 50, 100, 200, 500], timeout: 15_000 };
 test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who else hears the answer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Who else hears the answer" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -107,8 +108,9 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
 test("a follower that holds the claim is listed once, and unfollowing it says the claim still reaches it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The asker works the issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The asker works the issue" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -123,7 +125,7 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
   // (routeRosterTTL), so an issue routed to the role is read until that roster holds the reviewer:
   // the single refresh the card makes on the route change below must not read an older one.
   const probe = await createIssue({
-    project: "CORE",
+    project: core,
     title: "A roster probe for the reviewer role",
   });
   await patchIssue(probe.key, { route: "role:reviewer" });
@@ -175,8 +177,9 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
 test("a role route held by the claimant is counted once, under the claim that names its holder", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The claimant holds the route" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The claimant holds the route" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -222,8 +225,9 @@ test("a role route held by the claimant is counted once, under the claim that na
 test("unfollowing a follower while a role route's holder is unknown says the route may still reach it, under the issue page's marker", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The listener did not answer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The listener did not answer" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -312,9 +316,10 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
 test("a route change in a status write moves the open card's route row without a reload, and a close that also moves the route withdraws the card the reader is answering in place", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const moved = "e2e-reach-routed-next";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The route moves, then it closes" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The route moves, then it closes" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -384,9 +389,10 @@ test("a route change in a status write moves the open card's route row without a
 test("a claim that lands while the Inbox is loading reaches the card that mounts from the earlier list", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Claimed mid-load" });
-  const other = await createIssue({ project: "CORE", title: "An unrelated rename target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Claimed mid-load" });
+  const other = await createIssue({ project: core, title: "An unrelated rename target" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },

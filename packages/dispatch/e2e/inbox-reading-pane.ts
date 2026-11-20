@@ -165,9 +165,12 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * decision block of a spec, the request to approve version 4 of a spec approved at version 3, a
  * first request to approve another document, an anchored question, a question in no document, and
  * the decision block of a project document, which no issue priority orders.
+ *
+ * `project` is the key of the project they are made in: `inbox-reading-pane.e2e.ts` passes its
+ * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `PANE`.
  */
-export async function seedInbox(): Promise<Seed> {
-  await createProject({ key: "PANE", name: "Pane rollout" });
+export async function seedInbox(project = "PANE"): Promise<Seed> {
+  await createProject({ key: project, name: "Pane rollout" });
 
   // Every question is its own issue or document, and the Inbox orders them by the priorities set
   // here rather than by the order they were made, so each chain goes out beside the others
@@ -177,7 +180,7 @@ export async function seedInbox(): Promise<Seed> {
     await Promise.all([
       (async () => {
         const issue = await createIssue({
-          project: "PANE",
+          project,
           spec: decisionSpec,
           title: "Rollout order",
         });
@@ -187,7 +190,7 @@ export async function seedInbox(): Promise<Seed> {
       })(),
       (async () => {
         const issue = await createIssue({
-          project: "PANE",
+          project,
           spec: `# ${APPROVAL_HEADING}\n\n${PLACEHOLDER}\n`,
           title: "Ledger rollout",
         });
@@ -238,7 +241,7 @@ export async function seedInbox(): Promise<Seed> {
       })(),
       (async () => {
         const issue = await createIssue({
-          project: "PANE",
+          project,
           spec: "# Lease handover\n\nThe lease moves with the ledger, never with the mirror.\n",
           title: "Lease handover",
         });
@@ -253,7 +256,7 @@ export async function seedInbox(): Promise<Seed> {
       })(),
       (async () => {
         const anchoredIssue = await createIssue({
-          project: "PANE",
+          project,
           spec: "The mirror replays the ledger on a cold start.\n",
           title: "Cold start",
         });
@@ -263,7 +266,7 @@ export async function seedInbox(): Promise<Seed> {
           { anchor: { artifact: "spec", quote: ANCHOR_QUOTE }, question: ANCHORED_QUESTION },
           session
         );
-        const plainIssue = await createIssue({ project: "PANE", title: "Retry budget" });
+        const plainIssue = await createIssue({ project, title: "Retry budget" });
         await patchIssue(plainIssue.key, { priority: 3 });
         const plain = await createAsk(
           plainIssue.key,
@@ -273,7 +276,7 @@ export async function seedInbox(): Promise<Seed> {
         return { anchored, plain };
       })(),
       (async () => {
-        await createProjectDocument("PANE", {
+        await createProjectDocument(project, {
           content: documentContent,
           name: "mirror-runbook.md",
         });

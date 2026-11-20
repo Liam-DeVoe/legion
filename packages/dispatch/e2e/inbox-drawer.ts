@@ -11,9 +11,14 @@ export const session = {
   as: "agent" as const,
 };
 
-export async function seedAsk(question: string): Promise<{ askId: string; issueKey: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Drawer issue" });
+/** `project` is the key of the project the issue is made in: `inbox-drawer.e2e.ts` passes its
+ *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
+export async function seedAsk(
+  question: string,
+  project = "CORE"
+): Promise<{ askId: string; issueKey: string }> {
+  await createProject({ key: project, name: "Core" });
+  const issue = await createIssue({ project, title: "Drawer issue" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question },

@@ -16,18 +16,20 @@ import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
 import { settledState } from "./settled";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 
 // @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
 test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const target = await createIssue({ project: "CORE", title: "Target issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const target = await createIssue({ project: core, title: "Target issue" });
   const decision = await createAsk(target.key, { question: "Should the target issue ship?" });
-  const child = await createIssue({ parent: target.key, project: "CORE", title: "Child issue" });
-  const source = await createIssue({ project: "OPS", title: "Source issue" });
+  const child = await createIssue({ parent: target.key, project: core, title: "Child issue" });
+  const source = await createIssue({ project: opsKey, title: "Source issue" });
   await createMessage(source.key, {
     body: `Depends on dispatch://${target.key} and dispatch://${target.key}/ask/${decision.id}.`,
   });
@@ -106,10 +108,12 @@ test("an issue and its ask show a cross-project message and structural backlinks
 test("an open backlink panel follows a mention added, replied to, and removed", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const target = await createIssue({ project: "CORE", title: "Target issue" });
-  const source = await createIssue({ project: "OPS", title: "Source issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const target = await createIssue({ project: core, title: "Target issue" });
+  const source = await createIssue({ project: opsKey, title: "Source issue" });
 
   // Each citation reaches the open panel through the event feed, whose refetch the page holds to
   // one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
@@ -146,12 +150,14 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
 test("Inbox cards gain and move their backlink control as writes elsewhere cite their asks", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const target = await createIssue({ project: "CORE", title: "Target issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const target = await createIssue({ project: core, title: "Target issue" });
   const uncited = await createAsk(target.key, { question: "Nothing cites this yet?" });
   const cited = await createAsk(target.key, { question: "Should the target issue ship?" });
-  const source = await createIssue({ project: "OPS", title: "Source issue" });
+  const source = await createIssue({ project: opsKey, title: "Source issue" });
   await createMessage(source.key, {
     body: `Waiting on dispatch://${target.key}/ask/${cited.id}.`,
   });
@@ -210,10 +216,12 @@ test("Inbox cards gain and move their backlink control as writes elsewhere cite 
 test("an answered decision keeps its backlink control and still moves with a later citation", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
   const target = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext\n",
     title: "Answered decision",
   });
@@ -240,7 +248,7 @@ test("an answered decision keeps its backlink control and still moves with a lat
     .not.toBeUndefined()
     .then(async () => ((await getIssue(target.key)).open_asks ?? [])[0]);
 
-  const source = await createIssue({ project: "OPS", title: "Citing source" });
+  const source = await createIssue({ project: opsKey, title: "Citing source" });
   await createMessage(source.key, {
     body: `Waiting on dispatch://${target.key}/ask/${decision.id}.`,
   });
@@ -283,8 +291,9 @@ test("an answered decision keeps its backlink control and still moves with a lat
 // An ask's clarification thread is rendered on the card itself; counting those replies as
 // backlinks would advertise a panel that only repeats it.
 test("an ask's own clarification replies are not backlinks", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply-counted" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply-counted" });
   const decision = await createAsk(issue.key, { question: "Reply-counted?" });
   await createComment(issue.key, { ask_id: decision.id, body: "First clarification." });
   await createComment(issue.key, { ask_id: decision.id, body: "Second clarification." });
@@ -298,8 +307,9 @@ test("an ask's own clarification replies are not backlinks", async ({ page }) =>
 // A project document's body cites the same nodes a message does, and its version event carries
 // the same targets: an ask a document cites gains its control on an open Inbox.
 test("an Inbox card gains its count when a project document cites the ask", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Document-cited" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Document-cited" });
   const decision = await createAsk(issue.key, { question: "Should the document decide this?" });
 
   await page.goto("/");
@@ -307,7 +317,7 @@ test("an Inbox card gains its count when a project document cites the ask", asyn
   await expect(askCard).toContainText("Should the document decide this?");
   await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
 
-  await createProjectDocument("CORE", {
+  await createProjectDocument(core, {
     content: `# Decision record\n\nWaiting on dispatch://${issue.key}/ask/${decision.id}.\n`,
     name: "Decision record",
   });
@@ -319,10 +329,11 @@ test("an Inbox card gains its count when a project document cites the ask", asyn
 // `dispatch doc-edit` writes through `POST /api/v1/artifacts/{id}/edits`, which records its own
 // version and appends its own event: the path agents actually use has to name what it cited.
 test("an Inbox card gains its count when a document edit cites the ask", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Edit-cited" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Edit-cited" });
   const decision = await createAsk(issue.key, { question: "Should the edit decide this?" });
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: "# Decision record\n\nPending.\n",
     name: "Decision record",
   });
@@ -349,10 +360,12 @@ test("an Inbox card gains its count when a document edit cites the ask", async (
 // An ask's question is indexed like any other body, so opening one that cites an issue moves
 // that issue's own header count on the page already showing it.
 test("an issue header's count follows an ask whose question cites it", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const target = await createIssue({ project: "CORE", title: "Cited by a question" });
-  const source = await createIssue({ project: "OPS", title: "Asking issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const target = await createIssue({ project: core, title: "Cited by a question" });
+  const source = await createIssue({ project: opsKey, title: "Asking issue" });
 
   // Both counts arrive over the event feed, whose refetch is held to one per second
   // (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
@@ -383,10 +396,12 @@ test("an issue header's count follows an ask whose question cites it", async ({ 
 test("an issue's backlinks skip an edge of a node kind this build does not know", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const target = await createIssue({ project: "CORE", title: "Cited by two builds" });
-  const source = await createIssue({ project: "OPS", title: "Citing issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const target = await createIssue({ project: core, title: "Cited by two builds" });
+  const source = await createIssue({ project: opsKey, title: "Citing issue" });
   await createMessage(source.key, { body: `Waiting on dispatch://${target.key} to land.` });
   await sql(
     `insert into refs (from_kind, from_id, to_kind, to_id) values ('future', 'x#y', 'issue', '${target.key}')`
@@ -403,10 +418,12 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
 });
 
 test("an Inbox of twenty asks reads no backlinks until a card is opened", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
-  const issue = await createIssue({ project: "CORE", title: "Twenty decisions" });
-  const source = await createIssue({ project: "OPS", title: "Citing issue" });
+  const core = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: opsKey, name: "Operations" });
+  const issue = await createIssue({ project: core, title: "Twenty decisions" });
+  const source = await createIssue({ project: opsKey, title: "Citing issue" });
   // Twenty asks, not twenty round trips: the row needs the cards, never their creation order.
   const asks = await Promise.all(
     Array.from({ length: 20 }, (_, index) =>

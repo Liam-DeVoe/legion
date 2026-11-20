@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -47,14 +47,15 @@ async function expectFocusedAskTurn(page: Page, id: string): Promise<void> {
 test("the answers page lists a person's answers and replies, opens each ask, and changes an answer @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const anchoredIssue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Ship the release tonight.\n",
     title: "Release train",
   });
-  const changedIssue = await createIssue({ project: "CORE", title: "Billing freeze" });
-  const repliedIssue = await createIssue({ project: "CORE", title: "Build question" });
+  const changedIssue = await createIssue({ project: core, title: "Billing freeze" });
+  const repliedIssue = await createIssue({ project: core, title: "Build question" });
   const anchored = await createAsk(
     anchoredIssue.key,
     { anchor: { artifact: "spec", quote: "release" }, options: shipOrHold, question: "Ship it?" },
@@ -203,8 +204,9 @@ test("the answers page lists a person's answers and replies, opens each ask, and
 test("an issue page's decided ask offers Change answer to its answerer alone, and lists the earlier answer after a change", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Release train" });
   const ask = await createAsk(issue.key, { options: shipOrHold, question: "Ship it?" }, session);
   await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
 
@@ -244,9 +246,10 @@ test("an issue page's decided ask offers Change answer to its answerer alone, an
 test("changing a decision block's answer rewrites the block in the document", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext\n",
     title: "Ask block",
   });

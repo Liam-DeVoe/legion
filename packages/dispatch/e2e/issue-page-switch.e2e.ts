@@ -1,7 +1,7 @@
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
 
@@ -25,12 +25,12 @@ declare global {
 }
 
 const desktop = { height: 900, width: 1440 };
-const project = "CORE";
 const note = "Shows an issue as the new page, which is not finished. Kept in this browser.";
 
 type Seeded = { readonly key: string; readonly title: string };
 
 async function seedIssue(): Promise<Seeded> {
+  const project = rowKey("CORE");
   await createProject({ key: project, name: "Core" });
   return createIssue({ project, title: "Ship the release notes" });
 }
@@ -68,7 +68,7 @@ async function openSettings(page: Page): Promise<void> {
  *  on the project's page. */
 async function openIssue(page: Page, key: string): Promise<void> {
   const links = await navigation(page);
-  await links.locator(`a[href="/projects/${project}"]`).click();
+  await links.locator(`a[href="/projects/${rowKey("CORE")}"]`).click();
   await page.locator(`a[data-issue-link][href="/issues/${key}"]`).click();
   await expect(page).toHaveURL(`/issues/${key}`);
 }
@@ -333,7 +333,7 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   await failure.getByRole("button", { name: "Retry" }).click();
   await expect(heading).toHaveText(issue.title);
 
-  const missing = `${project}-999`;
+  const missing = `${rowKey("CORE")}-999`;
   await page.goto(`/issues/${missing}`);
   await expect(heading).toHaveText("Issue not found");
   await expect(

@@ -9,7 +9,7 @@ import {
 import { documentEditor } from "./editor";
 import { watchWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 /** The control's open form: the Title the person types and the Create that writes it. */
 function newDocumentForm(page: Page): Locator {
@@ -38,9 +38,10 @@ async function issueDocument(issue: string, slug: string) {
 test("a title typed on an issue's Documents tab makes an empty document and opens it to write in", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch\n\nThe spec itself.\n",
     title: "A document from a title",
   });
@@ -93,8 +94,9 @@ test("a title typed on an issue's Documents tab makes an empty document and open
 // SLOW(>=2s): the document the two presses make, its editor mounted on the live document, and
 // the list read again in the page after it.
 test("two presses of Create in one go make one document", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "One document from two presses" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "One document from two presses" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const posts = watchWrites(page, "POST", path);
 
@@ -129,18 +131,19 @@ test("two presses of Create in one go make one document", async ({ page }) => {
 test("the project document list makes a document the same way, holding nothing", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
 
-  await page.goto("/projects/CORE/documents");
+  await page.goto(`/projects/${core}/documents`);
   await createDocument(page, "Launch notes");
-  await expect(page).toHaveURL("/projects/CORE/documents/launch-notes");
+  await expect(page).toHaveURL(`/projects/${core}/documents/launch-notes`);
   await expect(page.getByRole("heading", { name: "Launch notes" })).toBeVisible();
   await expect(documentEditor(page)).toBeAttached();
   await expect(documentEditor(page)).toHaveText("");
 
   // The list sends the title alone now: the document's first version is empty rather than the
   // `# Launch notes` heading the list used to write into it.
-  const document = await getProjectArtifact("CORE", "launch-notes");
+  const document = await getProjectArtifact(core, "launch-notes");
   expect(document.name).toBe("Launch notes");
   expect(document.versions ?? []).toHaveLength(1);
   expect((await getArtifactVersion(document.id, 1)).markdown).toBe("");

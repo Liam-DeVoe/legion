@@ -14,7 +14,7 @@ import {
   storedValues,
   watchShown,
 } from "./pick-writes";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -27,7 +27,7 @@ import { asUser } from "./users";
 test("a half-typed message in a live conversation survives opening the drawer, answering an ask in it and closing it", async ({
   browser,
 }, testInfo) => {
-  const { askId } = await seedAsk("Ship the drawer behind a flag?");
+  const { askId } = await seedAsk("Ship the drawer behind a flag?", rowKey("CORE"));
   const sessionID = "01a0e0c1-0000-7000-8000-0000000d4a3e";
   await setAgentStreamResponder(sessionID, true);
   const context = await asUser(browser, "alice");
@@ -76,7 +76,7 @@ test("a half-typed message in a live conversation survives opening the drawer, a
 /** A project, and an issue of it at P3 that `assignee` holds, with a question open on it that
  *  nobody has handed on (`seedAsk`), so it has a row in the Inbox of whoever holds the issue. */
 async function issueWithQuestion(assignee: string): Promise<{ askId: string; key: string }> {
-  const { askId, issueKey } = await seedAsk("Ship it behind a flag?");
+  const { askId, issueKey } = await seedAsk("Ship it behind a flag?", rowKey("CORE"));
   await patchIssue(issueKey, { assignee, priority: 3 });
   return { askId, key: issueKey };
 }

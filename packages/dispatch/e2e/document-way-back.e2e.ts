@@ -1,7 +1,7 @@
 import { createIssue, createProject, getArtifact, listIssueArtifacts } from "./api";
 import { documentEditor } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 
 /** The whole press a person makes on the Documents tab: `New document`, the title, `Create`. */
 async function createDocument(page: Page, title: string): Promise<void> {
@@ -26,9 +26,10 @@ async function issueDocument(issue: string, slug: string) {
 test("a document's title is corrected and a document made by mistake is removed, from its row and from its own page", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch\n\nThe spec itself.\n",
     title: "The two ways back",
   });

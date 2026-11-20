@@ -19,11 +19,13 @@ export const session = {
   as: "agent" as const,
 };
 
-/** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name. */
-export async function seedInbox(): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
+/** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name.
+ *  `project` is the key of the project the issues are made in: `keyboard-inbox.e2e.ts` passes its
+ *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
+export async function seedInbox(project = "CORE"): Promise<void> {
+  await createProject({ key: project, name: "Core" });
   for (const title of ["First", "Second", "Third"]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project, title });
     await createAsk(issue.key, { question: `${title} decision` }, session);
   }
 }
@@ -91,11 +93,12 @@ export interface PaneSeed {
 }
 
 /** Two questions, in the order the Inbox lists them (the issue's priority first): a request to
- *  approve a long document, and a question in no document. */
-export async function seedPane(): Promise<PaneSeed> {
-  await createProject({ key: "PANE", name: "Pane keyboard" });
+ *  approve a long document, and a question in no document. `project` is the key of the project
+ *  they are made in, as `seedInbox` takes it; the stubbed rows' recording was made under `PANE`. */
+export async function seedPane(project = "PANE"): Promise<PaneSeed> {
+  await createProject({ key: project, name: "Pane keyboard" });
   const handover = await createIssue({
-    project: "PANE",
+    project,
     spec: handoverSpec,
     title: "Ledger handover",
   });
@@ -103,7 +106,7 @@ export async function seedPane(): Promise<PaneSeed> {
   const approval = withOpenedAsk(
     await requestApproval(handover.primary_artifact_id, { summary: "The handover draft." }, session)
   );
-  const retry = await createIssue({ project: "PANE", title: "Retry budget" });
+  const retry = await createIssue({ project, title: "Retry budget" });
   await patchIssue(retry.key, { priority: 1 });
   const card = await createAsk(
     retry.key,

@@ -7,8 +7,8 @@
 // DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
 // specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
-import { LEGION_PROJECT, seedLegionDaemon, seedLegionProject } from "./legion-seed";
-import { expect, test } from "./test";
+import { seedLegionDaemon, seedLegionProject } from "./legion-seed";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
@@ -17,7 +17,8 @@ const DAEMON_URL = "http://legion.acme.internal:9731";
 // view exists for it to bring, so the row is the naming itself: a project that named no daemon is
 // given one, and the section lists it once the page is read again from the server.
 test("the Settings page names a project's Legion daemon @legion", async ({ browser }) => {
-  await seedLegionProject();
+  const acme = rowKey("ACME");
+  await seedLegionProject(acme);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -25,13 +26,11 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Legion" })).toBeVisible();
     await page.getByLabel("Legion daemon state URL").fill(DAEMON_URL);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await page.getByRole("combobox", { exact: true, name: "Legion project" }).selectOption(acme);
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
+        response.url().endsWith(`/api/v1/projects/${acme}/legion/daemon`)
     );
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
@@ -52,21 +51,19 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
 test("the Settings page refuses a state URL that is not a daemon's, and its Remove stops the reading @legion", async ({
   browser,
 }) => {
-  await seedLegionDaemon(DAEMON_URL);
+  const acme = rowKey("ACME");
+  await seedLegionDaemon(acme, DAEMON_URL);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const bad = `${DAEMON_URL}/legion/v1/state`;
 
   try {
     // What the server says about this URL, so the page can be held to its wording.
-    const refusal = await fetch(
-      new URL(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`, baseUrl),
-      {
-        body: JSON.stringify({ state_url: bad }),
-        headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-        method: "PUT",
-      }
-    );
+    const refusal = await fetch(new URL(`/api/v1/projects/${acme}/legion/daemon`, baseUrl), {
+      body: JSON.stringify({ state_url: bad }),
+      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+      method: "PUT",
+    });
     expect(refusal.status).toBe(400);
     const refused = (await refusal.json()) as { code: string; error: string };
     expect(refused.code).toBe("LEGION_SETTING_INPUT");
@@ -80,15 +77,13 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     page.on("request", (request) => {
       if (
         request.method() === "PUT" &&
-        request.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
+        request.url().endsWith(`/api/v1/projects/${acme}/legion/daemon`)
       ) {
         wrote = true;
       }
     });
     await page.getByLabel("Legion daemon state URL").fill(bad);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await page.getByRole("combobox", { exact: true, name: "Legion project" }).selectOption(acme);
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     await expect(page.getByRole("alert")).toHaveText(refused.error);
     expect(wrote).toBe(false);
@@ -99,11 +94,9 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
-        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
+        response.url().endsWith(`/api/v1/projects/${acme}/legion/daemon`)
     );
-    await page
-      .getByRole("button", { name: `Remove the Legion daemon of ${LEGION_PROJECT}` })
-      .click();
+    await page.getByRole("button", { name: `Remove the Legion daemon of ${acme}` }).click();
     expect((await removed).status()).toBeLessThan(300);
     await expect(section.locator("[data-legion-daemons-empty]")).toBeVisible();
   } finally {

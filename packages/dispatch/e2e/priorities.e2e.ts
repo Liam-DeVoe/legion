@@ -21,7 +21,7 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const PRIORITIES_PATH = "/priorities";
@@ -87,10 +87,13 @@ const FIRST_DESCRIPTION =
   "It is finished when no machine is left on the old build and nothing is waiting on one.";
 
 async function seedPriorities(): Promise<Seeded> {
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  const web = rowKey("WEB");
   await Promise.all([
-    createProject({ key: "CORE", name: "Core" }),
-    createProject({ key: "OPS", name: "Ops" }),
-    createProject({ key: "WEB", name: "Web" }),
+    createProject({ key: core, name: "Core" }),
+    createProject({ key: ops, name: "Ops" }),
+    createProject({ key: web, name: "Web" }),
   ]);
 
   // Created one after another, because a priority takes the last place of the one order as it
@@ -103,24 +106,24 @@ async function seedPriorities(): Promise<Seeded> {
   const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
   const third = await createPriority({ owner: "alice", title: "Retire the old ledger" });
 
-  const rollout = await createIssue({ project: "CORE", title: "Daemon rollout to the fleet" });
-  const smoke = await createIssue({ project: "CORE", title: "Daemon smoke suite" });
-  const queue = await createIssue({ project: "OPS", title: "Review queue triage" });
-  const ledger = await createIssue({ project: "WEB", title: "Ledger read path" });
-  const cutover = await createIssue({ project: "WEB", title: "Ledger cut-over" });
+  const rollout = await createIssue({ project: core, title: "Daemon rollout to the fleet" });
+  const smoke = await createIssue({ project: core, title: "Daemon smoke suite" });
+  const queue = await createIssue({ project: ops, title: "Review queue triage" });
+  const ledger = await createIssue({ project: web, title: "Ledger read path" });
+  const cutover = await createIssue({ project: web, title: "Ledger cut-over" });
   // The child states nothing of its own: it advances `P3` because the issue above it does
   // (INFRA-2947, R4), which is what the parked list's row and the rail's second count read.
   const child = await createIssue({
     parent: cutover.key,
-    project: "WEB",
+    project: web,
     title: "Ledger client migration",
   });
   // One issue in each of the four statuses the first fault is about, spread over the three
   // projects, so the count line under its rule names more than one board.
-  const clock = await createIssue({ project: "CORE", title: "Audit the clock" });
-  const lease = await createIssue({ project: "CORE", title: "Lease handover" });
-  const mirror = await createIssue({ project: "OPS", title: "Mirror retries" });
-  const sweep = await createIssue({ project: "WEB", title: "Phone layout sweep" });
+  const clock = await createIssue({ project: core, title: "Audit the clock" });
+  const lease = await createIssue({ project: core, title: "Lease handover" });
+  const mirror = await createIssue({ project: ops, title: "Mirror retries" });
+  const sweep = await createIssue({ project: web, title: "Phone layout sweep" });
 
   // One write per issue: a status, and the one relation it states. A write naming no revision
   // asserts one relation at a time, which is what each of these is (`api/issue_advances.go`).
@@ -234,6 +237,8 @@ const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Prio
 test("the priorities page draws the order first and the two fault lists under it", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  const web = rowKey("WEB");
   const seed = await seedPriorities();
   const context = await asUser(browser, "alice");
   try {
@@ -271,7 +276,9 @@ test("the priorities page draws the order first and the two fault lists under it
 
     // Each fault says what it is and how big it is, and neither is a judgement.
     await expect(unplaced.getByText(NO_PRIORITY_RULE)).toBeVisible();
-    await expect(unplaced.getByText(/^4 issues · CORE 2 · OPS 1 · WEB 1$/)).toBeVisible();
+    await expect(
+      unplaced.getByText(new RegExp(`^4 issues · ${core} 2 · ${rowKey("OPS")} 1 · ${web} 1$`))
+    ).toBeVisible();
     await expect(parked.getByText(PARKED_RULE)).toBeVisible();
     await expect(parked.getByText(/^1 issue · /)).toBeVisible();
 
@@ -304,7 +311,7 @@ test("the priorities page draws the order first and the two fault lists under it
       })
     ).toHaveText("Audit the clock");
     await expect(await clockCell("Status")).toHaveText("In progress");
-    await expect(await clockCell("Project")).toHaveText("CORE");
+    await expect(await clockCell("Project")).toHaveText(core);
     // Who holds it is who claimed it: alice claimed this one in the seed, and the cell is the
     // claim's chip naming her.
     await expect((await clockCell("Claimed by")).getByTestId("issue-claim")).toContainText("alice");
@@ -327,7 +334,7 @@ test("the priorities page draws the order first and the two fault lists under it
     });
     const childCell = (header: string) => cellUnder(parkedTable, childRow, header);
     await expect((await childCell("Key")).getByRole("link")).toHaveText(seed.child);
-    await expect(await childCell("Project")).toHaveText("WEB");
+    await expect(await childCell("Project")).toHaveText(web);
     await expect(await childCell("Status")).toHaveText("Backlog");
     // Nobody claimed this one, though it is assigned to alice as the row above is: an assignee
     // is who the work is meant for, and this column says who holds it, so it is empty here, as

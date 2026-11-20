@@ -11,7 +11,7 @@ import {
   setNewIssueSettings,
 } from "./api";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Check k16 of dispatch://INFRA-1042/artifact/verification-md, serving R14: words that match
@@ -56,7 +56,7 @@ function offer(page: Page): Locator {
 
 /** Opens the bar over the project's issue list and types the words. */
 async function typeWords(page: Page): Promise<void> {
-  await page.goto("/projects/CORE/issues");
+  await page.goto(`/projects/${rowKey("CORE")}/issues`);
   await expect(page.getByRole("link", { name: /Hull plating/ })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("/");
@@ -75,9 +75,10 @@ function keyOnPage(page: Page): string {
 }
 
 test.beforeEach(async () => {
+  const core = rowKey("CORE");
   await resetFakeEnvoy();
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Hull plating survey" });
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Hull plating survey" });
 });
 
 // SLOW(>=2s): the bar makes an issue, writes its criterion, routes it and sends its first
@@ -85,6 +86,7 @@ test.beforeEach(async () => {
 test("the bar offers unmatched words as a new issue, and accepting makes it and starts the conversation @phone", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([plannerSession]);
   await configure({ label, session });
   const context = await asUser(browser, "alice");
@@ -95,10 +97,10 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
 
     // Offering is not making.
     await expect(offer(page)).toBeVisible();
-    expect(await listIssues("CORE")).toHaveLength(1);
+    expect(await listIssues(core)).toHaveLength(1);
 
     await offer(page).click();
-    await expect(page).toHaveURL(/\/issues\/CORE-\d+$/);
+    await expect(page).toHaveURL(new RegExp(`/issues/${core}-\\d+$`));
     const key = keyOnPage(page);
     await expect(page.getByRole("heading", { name: words })).toBeVisible();
 
@@ -154,7 +156,7 @@ test("with the session cleared the issue is still made and the bar says no conve
     await expect(bar(page).getByTestId("search-new-issue-said")).toContainText(
       "No conversation was started"
     );
-    const made = (await listIssues("CORE")).filter((issue) => issue.title === words);
+    const made = (await listIssues(rowKey("CORE"))).filter((issue) => issue.title === words);
     expect(made).toHaveLength(1);
     const key = made[0]?.key ?? "";
     expect((await getIssue(key)).labels).toEqual([label]);

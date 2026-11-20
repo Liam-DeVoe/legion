@@ -10,7 +10,7 @@ import {
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -31,8 +31,6 @@ const session = {
   actor: { id: "e2e-approval-message", kind: "session" as const },
   as: "agent" as const,
 };
-
-const PROJECT = "MSG";
 
 /** The list every row reads: the cleared assignee filter, so a question nobody holds is listed. */
 const INBOX = "/?assignee=everyone";
@@ -112,8 +110,9 @@ interface Seed {
 
 /** One issue, one spec at version 1, and one open request to approve it with `summary`. */
 async function seedApproval(summary: string): Promise<Seed> {
-  await createProject({ key: PROJECT, name: "Mirror rollout" });
-  const issue = await createIssue({ project: PROJECT, spec: SPEC, title: "Mirror rollout" });
+  const project = rowKey("MSG");
+  await createProject({ key: project, name: "Mirror rollout" });
+  const issue = await createIssue({ project, spec: SPEC, title: "Mirror rollout" });
   const artifactId = issue.primary_artifact_id;
   const opened = withOpenedAsk(await requestApproval(artifactId, { summary }, session));
   expect(opened.version).toBe(1);
@@ -133,8 +132,9 @@ async function seedApproval(summary: string): Promise<Seed> {
  * spec and version 1 of the Verification document together.
  */
 async function seedTwoDocuments(): Promise<Seed> {
-  await createProject({ key: PROJECT, name: "Mirror rollout" });
-  const issue = await createIssue({ project: PROJECT, spec: SPEC, title: "Mirror rollout" });
+  const project = rowKey("MSG");
+  await createProject({ key: project, name: "Mirror rollout" });
+  const issue = await createIssue({ project, spec: SPEC, title: "Mirror rollout" });
   const artifactId = issue.primary_artifact_id;
 
   // An approval of version 1 is what the request below is marked against, so the document the

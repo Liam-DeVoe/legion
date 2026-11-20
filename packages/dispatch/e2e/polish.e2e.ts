@@ -1,6 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -16,14 +16,15 @@ import { asUser } from "./users";
 test("the project board's columns stay inside the screen @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Polish the queue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Polish the queue" });
   await patchIssue(issue.key, { status: "todo" });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     const boardCard = page.getByRole("article", { name: `${issue.key} Polish the queue` });
@@ -51,10 +52,11 @@ test("the project board's columns stay inside the screen @phone @phone-only", as
 test("an untitled session reads the same on the Agents page, the ask card, its followers, and the Conversation", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const sessionId = "e2e-label-session";
   const label = `session:${sessionId.slice(0, 8)}…`;
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "One label" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "One label" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }], question: "Same name everywhere?" },

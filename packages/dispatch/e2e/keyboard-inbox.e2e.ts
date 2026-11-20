@@ -28,7 +28,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -54,7 +54,8 @@ test.describe("inbox selection", () => {
   test("x marks rows, h snoozes every marked ask into Later, and Escape clears the selection", async ({
     browser,
   }, testInfo) => {
-    await seedInbox();
+    const core = rowKey("CORE");
+    await seedInbox(core);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -70,7 +71,7 @@ test.describe("inbox selection", () => {
       await expect(rows.nth(2).getByRole("checkbox")).not.toBeChecked();
       await expect(rows.nth(0).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        /^Select CORE-\d: \w+ decision$/
+        new RegExp(`^Select ${core}-\\d: \\w+ decision$`)
       );
 
       const bar = page.getByRole("group", { name: "Selected rows" });
@@ -122,7 +123,7 @@ test.describe("inbox selection", () => {
   test("a refused bulk snooze names the count and keeps the refused rows marked @pr", async ({
     browser,
   }) => {
-    await seedInbox();
+    await seedInbox(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -166,7 +167,7 @@ test.describe("inbox selection", () => {
   test("a late bulk-snooze refusal re-marks only its refused row after Clear", async ({
     browser,
   }) => {
-    await seedInbox();
+    await seedInbox(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -216,12 +217,13 @@ test.describe("inbox selection", () => {
   test("Escape during a pending bulk snooze clears every mark, and a late refusal re-marks only its own", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const mine = await createIssue({ project: "CORE", title: "Mine to answer" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const mine = await createIssue({ project: core, title: "Mine to answer" });
     await patchIssue(mine.key, { assignee: "alice" });
     const refusedAsk = await createAsk(mine.key, { question: "Ship it?" }, session);
     const takenAsk = await createAsk(mine.key, { question: "Hold it?" }, session);
-    const theirs = await createIssue({ project: "CORE", title: "Bob answers this" });
+    const theirs = await createIssue({ project: core, title: "Bob answers this" });
     await patchIssue(theirs.key, { assignee: "bob" });
     const hidden = await createAsk(theirs.key, { question: "Wait on it?" }, session);
     const context = await asUser(browser, "alice");
@@ -293,8 +295,9 @@ test.describe("inbox selection", () => {
   test("a refusal reaches the reader even when the optimistic snooze empties the view", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Needs you" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "Needs you" });
     const refusedAsk = await createAsk(issue.key, { question: "First decision" }, session);
     await createAsk(issue.key, { question: "Second decision" }, session);
     const context = await asUser(browser, "alice");
@@ -365,8 +368,9 @@ test.describe("inbox selection", () => {
   test("a folded mark stops counting, comes back with its band, and leaves Escape a way out", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "The only ask" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "The only ask" });
     await createAsk(issue.key, { question: "Ship it?" }, session);
     const context = await asUser(browser, "alice");
     try {
@@ -426,10 +430,11 @@ test.describe("inbox selection", () => {
   // A folded band is off the page: the reader has no checkbox to untick there, and may well have
   // set that row's moment by hand since marking it. A pick must not write it.
   test("a bulk pick leaves a folded row's own snooze alone", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const first = await createIssue({ project: "CORE", title: "Deferred by hand" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const first = await createIssue({ project: core, title: "Deferred by hand" });
     const deferred = await createAsk(first.key, { question: "Which release?" }, session);
-    const second = await createIssue({ project: "CORE", title: "Still open" });
+    const second = await createIssue({ project: core, title: "Still open" });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
     const moment = async (askId: string) =>
       (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
@@ -474,7 +479,7 @@ test.describe("inbox selection", () => {
   // One pick at a time: a second while the first is in the air re-sends every id and lets the
   // stale answer overwrite the live one's.
   test("the bulk picker is inert while its pick is in flight", async ({ browser }) => {
-    await seedInbox();
+    await seedInbox(rowKey("CORE"));
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -523,8 +528,9 @@ test.describe("inbox selection", () => {
   test("ask positions follow the order the bands show them, not the server's", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Two asks, two bands" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "Two asks, two bands" });
     const deferred = await createAsk(issue.key, { question: "Alpha decision" }, session);
     const handedBack = await createAsk(issue.key, { question: "Beta decision" }, session);
     // A human reply hands Beta's turn to the agents, so the server lists Alpha - still the
@@ -549,11 +555,11 @@ test.describe("inbox selection", () => {
 
       await expect(rows.nth(0).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        "Select CORE-1, ask 1 of 2: Beta decision"
+        `Select ${core}-1, ask 1 of 2: Beta decision`
       );
       await expect(rows.nth(1).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        "Select CORE-1, ask 2 of 2: Alpha decision"
+        `Select ${core}-1, ask 2 of 2: Alpha decision`
       );
     } finally {
       await context.close();
@@ -571,11 +577,12 @@ test.describe("inbox selection", () => {
 test("j, k and the arrows step through thread rows, o opens them, y copies only what has a reference, x selects them and e dismisses them", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const asked = await createIssue({ project: "CORE", title: "Lease handover" });
+  await createProject({ key: core, name: "Core" });
+  const asked = await createIssue({ project: core, title: "Lease handover" });
   const ask = await createAsk(asked.key, { question: "Ship the lease handover?" }, session);
-  const threadIssue = await createIssue({ project: "CORE", title: "Replay budget" });
+  const threadIssue = await createIssue({ project: core, title: "Replay budget" });
   const thread = await seedCommentThread(
     threadIssue.key,
     "How far back does a replay go?",
@@ -691,7 +698,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
 test("l moves the focus into the reading pane, the keyboard scrolls the document there, and Escape returns to the row l was pressed on", async ({
   browser,
 }) => {
-  const seed = await seedPane();
+  const seed = await seedPane(rowKey("PANE"));
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();

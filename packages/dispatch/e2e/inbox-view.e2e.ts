@@ -1,7 +1,7 @@
 import { createIssue, createProject, listMyReplies, patchIssue } from "./api";
 import { holdReadMarks, replyRowId, seedBulkReplyThreads, unreadThreadRows } from "./inbox-threads";
 import { drawnIds, openField } from "./inbox-view";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,10 +21,11 @@ import { asUser } from "./users";
 test("a hundred and twenty threads sort by priority, count up, and follow their issue's priority live", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const urgent = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const urgent = await createIssue({ project: core, title: "Ledger rollout" });
   await patchIssue(urgent.key, { priority: 0 });
-  const later = await createIssue({ project: "CORE", title: "Mirror retries" });
+  const later = await createIssue({ project: core, title: "Mirror retries" });
   await patchIssue(later.key, { priority: 2 });
   // A hundred and twenty threads across the two priorities, in one statement apiece. The P0
   // issue's one thread is seeded wholly behind the rest, so its last message is the oldest of

@@ -37,7 +37,7 @@ import {
   settledScrollTop,
   withoutScrollAnchoring,
 } from "./mermaid-helpers";
-import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -235,8 +235,9 @@ async function expectNothingHostile(
 test("a mermaid source a reader opened is open again when the comment is edited, and an edited diagram draws closed", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reopened source" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reopened source" });
   const drawn = await createComment(issue.key, {
     body: flowchart("Reading this:", "Opened", "Kept"),
   });
@@ -291,8 +292,9 @@ test("a mermaid source a reader opened is open again when the comment is edited,
 test("a diagram too large to draw in time shows the reason, and the page keeps responding", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Large diagram" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Large diagram" });
   const comment = await createComment(issue.key, { body: flowchart("Large:", "Start", "Finish") });
 
   const alice = await asUser(browser, "alice");
@@ -329,9 +331,10 @@ test("a diagram too large to draw in time shows the reason, and the page keeps r
 test("a document's mermaid diagram draws, styles nothing outside it, and fetches no Google font @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: flowchart("Doc diagram:", "Start", "Finish"),
     title: "Document diagram",
   });
@@ -419,8 +422,9 @@ test("a document's mermaid diagram draws, styles nothing outside it, and fetches
 test("hostile diagram markup in a comment runs nothing and fetches nothing", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Hostile comment diagram" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Hostile comment diagram" });
   const comment = await createComment(issue.key, {
     body: `Hostile:\n\n\`\`\`mermaid\n${hostileSource}\n\`\`\`\n`,
   });
@@ -444,9 +448,10 @@ test("hostile diagram markup in a comment runs nothing and fetches nothing", asy
 test("an edited document diagram redraws once typing pauses, its last drawing stays until then, and a click on it changes nothing", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: flowchart("Typed diagram:", "Start", "Finish"),
     title: "Typed document diagram",
   });
@@ -511,9 +516,10 @@ test("an edited document diagram redraws once typing pauses, its last drawing st
 test("a block link below a diagram lands on its block once the diagram draws", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: tallDocument("Linked document:", "Target paragraph"),
     title: "Block link below a diagram",
   });
@@ -548,9 +554,10 @@ const PULL_BACK_MARGIN_MS = 250;
 test("a reader who scrolls after a block link lands is not pulled back once the diagram draws", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: tallDocument("Scrolled document:", "Target paragraph"),
     title: "Reader scrolls after a block link",
   });
@@ -607,9 +614,10 @@ test("a reader who scrolls after a block link lands is not pulled back once the 
 test("a past version's highlighted mark lands on its block once a diagram above it draws", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: tallDocument("Versioned document:", "Target paragraph holds the quoted words."),
     title: "Highlighted mark below a diagram",
   });
@@ -648,9 +656,10 @@ test("a past version's highlighted mark lands on its block once a diagram above 
 test("a document diagram whose worker fails after its first drawing shows its source", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: flowchart("Failing diagram:", "Start", "Finish"),
     title: "Failing document diagram",
   });

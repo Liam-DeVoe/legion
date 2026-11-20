@@ -18,16 +18,18 @@ export interface SearchFixture {
   readonly firstIssueKey: string;
 }
 
-export async function seedSearchFixture(): Promise<SearchFixture> {
-  await createProject({ key: "CORE", name: "Core" });
+/** `project` is the key of the project the fixture is made in: `search.e2e.ts` passes its row's
+ *  own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
+export async function seedSearchFixture(project = "CORE"): Promise<SearchFixture> {
+  await createProject({ key: project, name: "Core" });
   const firstIssue = await createIssue({
-    project: "CORE",
+    project,
     spec: searchSpec,
     title: "Navigation instruments",
   });
-  const secondIssue = await createIssue({ project: "CORE", title: "Other work" });
+  const secondIssue = await createIssue({ project, title: "Other work" });
   const comment = await createComment(secondIssue.key, { body: "Move the astrolabe diagram." });
-  const thirdIssue = await createIssue({ project: "CORE", title: "Unrelated" });
+  const thirdIssue = await createIssue({ project, title: "Unrelated" });
   await createMessage(thirdIssue.key, { body: "No instruments here." }, searchSession);
 
   return {

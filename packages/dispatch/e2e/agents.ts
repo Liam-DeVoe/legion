@@ -367,11 +367,13 @@ export const reviewerSession: FakeSession = {
 };
 
 /** Both sessions live, both with Dispatch activity, and two open issues for the picker to offer:
- *  a keyboard reader has to be able to pass the first to reach the second. Returns the first. */
-export async function seedAgents(): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Keyboard issue" });
-  await createIssue({ project: "CORE", title: "Rollout plan" });
+ *  a keyboard reader has to be able to pass the first to reach the second. Returns the first.
+ *  `project` is the key of the project the issues are made in, the row's own (`rowKey`): it is
+ *  passed in rather than made here because e2e/test.ts imports this module through e2e/seed.ts. */
+export async function seedAgents(project: string): Promise<string> {
+  await createProject({ key: project, name: "Core" });
+  const issue = await createIssue({ project, title: "Keyboard issue" });
+  await createIssue({ project, title: "Rollout plan" });
   await createAsk(
     issue.key,
     { question: "Which release?" },

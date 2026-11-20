@@ -19,7 +19,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
@@ -56,10 +56,11 @@ interface Fixture {
 }
 
 async function seedClosedIssue(): Promise<Fixture> {
+  const e2e = rowKey("E2E");
   await setLiveSessions([planner, tester]);
   await setSessionSendStatus(tester.session_id, 503);
-  await createProject({ key: "E2E", name: "Closed issues" });
-  const issue = await createIssue({ project: "E2E", spec, title: "Asked after it closed" });
+  await createProject({ key: e2e, name: "Closed issues" });
+  const issue = await createIssue({ project: e2e, spec, title: "Asked after it closed" });
   const question = await createMessage(issue.key, { body: "Bob's question" }, { login: "bob" });
   const toPlanner = await createMessage(
     issue.key,
@@ -279,8 +280,9 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
 test("a margin comment on a spec whose issue closed while the page was open posts with its quote @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "E2E", name: "Closed issues" });
-  const issue = await createIssue({ project: "E2E", spec, title: "Closes while it is open" });
+  const e2e = rowKey("E2E");
+  await createProject({ key: e2e, name: "Closed issues" });
+  const issue = await createIssue({ project: e2e, spec, title: "Closes while it is open" });
   const alice = await asUser(browser, "alice");
 
   try {

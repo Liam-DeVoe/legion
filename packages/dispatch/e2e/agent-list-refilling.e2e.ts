@@ -10,7 +10,7 @@ import {
   userHeaders,
 } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The Envoy listener refuses its two list reads while its copy of a bucket cannot be served: 503,
@@ -67,16 +67,17 @@ interface RefillFixture {
  *  follows it), one project document, and the watcher subscribed to both. `sessions` is what the
  *  listener's list names while it answers. */
 async function seedRefillFixture(sessions: FakeSession[]): Promise<RefillFixture> {
+  const core = rowKey("CORE");
   await setLiveSessions(sessions);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refilling route" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refilling route" });
   await patchIssue(issue.key, { route: `role:${PLANNER_ROLE}` });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the refill?" },
     { actor: { id: planner.session_id, kind: "session" }, as: "agent" }
   );
-  await createProjectDocument("CORE", {
+  await createProjectDocument(core, {
     content: "# Refill notes\n\nWho is listening.\n",
     name: "Refill notes",
   });
@@ -85,7 +86,7 @@ async function seedRefillFixture(sessions: FakeSession[]): Promise<RefillFixture
       session_id: watcher.session_id,
       topics: [
         `notifications.dispatch.issue.${issue.key}.>`,
-        `notifications.dispatch.document.CORE.${DOCUMENT_SLUG}.>`,
+        `notifications.dispatch.document.${core}.${DOCUMENT_SLUG}.>`,
       ],
     },
   ]);
@@ -93,7 +94,10 @@ async function seedRefillFixture(sessions: FakeSession[]): Promise<RefillFixture
 }
 
 const livePath = `/agents/${planner.session_id}/live`;
-const documentPath = `/projects/CORE/documents/${DOCUMENT_SLUG}`;
+/** The fixture's project document, under the running row's own project. */
+function documentPath(): string {
+  return `/projects/${rowKey("CORE")}/documents/${DOCUMENT_SLUG}`;
+}
 
 function refillingNotice(scope: Page | Locator): Locator {
   return scope.getByTestId("agent-list-refilling");
@@ -175,7 +179,7 @@ function askRecipients(page: Page, askId: string): Locator {
 }
 
 async function openProjectList(page: Page, issueKey: string): Promise<void> {
-  await page.goto("/projects/CORE/issues");
+  await page.goto(`/projects/${rowKey("CORE")}/issues`);
   await expect(
     page
       .getByRole("table", { name: "Project issues table" })
@@ -206,7 +210,7 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await expectNoAbsenceClaim(page);
   await expectNoUnreachableWording(page);
 
-  await page.goto(documentPath);
+  await page.goto(documentPath());
   await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
   await expect(page.getByRole("region", { name: "Subscribed agents" })).toHaveCount(0);
   await expectNoAbsenceClaim(page);
@@ -259,7 +263,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expectNoRefillingWording(issuePage);
 
     const page = await alice.newPage();
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     const subscribed = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribed.getByText(watcher.title, { exact: true })).toBeVisible();
     await expect(subscribed.getByRole("img", { exact: true, name: "Running" })).toHaveCount(1);
@@ -316,7 +320,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(refilled.getByRole("button", { name: "Reaches 2" })).toBeVisible();
     await expectNoRefillingWording(page);
 
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("region", { name: "Subscribed agents" })
@@ -356,7 +360,7 @@ test("an empty list that starts refilling never says nobody is connected", async
     await expect(before.getByText("No live agents match.")).toBeVisible();
 
     const page = await alice.newPage();
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("region", { name: "Subscribed agents" })
@@ -478,7 +482,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("alert")

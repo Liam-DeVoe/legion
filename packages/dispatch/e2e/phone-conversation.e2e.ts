@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { expectUncovered } from "./layout";
 import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The phone layout on every project: on a phone a comment's thread opens full-screen over the
@@ -125,8 +125,9 @@ async function scrollToOldest(page: Page): Promise<void> {
 test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread round trip" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread round trip" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -161,8 +162,9 @@ test("on a phone, a docked send keeps its composer through a thread and back, wh
 test("on a phone, Expand thread while a send is out keeps the draft and its refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread refusal" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -202,8 +204,9 @@ test("on a phone, Expand thread while a send is out keeps the draft and its refu
 test("on a phone, a thread reply keeps its composer through Back, and reopening the thread finds it @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -244,8 +247,9 @@ test("on a phone, a thread reply keeps its composer through Back, and reopening 
 test("on a phone, a thread reply leaves the docked composer's own reply and draft where they were @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread and docked replies" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread and docked replies" });
   await createMessage(issue.key, { body: "Agent status" }, session);
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
@@ -294,8 +298,9 @@ test("on a phone, a thread reply leaves the docked composer's own reply and draf
 test("on a phone, a thread's own reply holds the thread's Reply while it is out @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread inline reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread inline reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -337,8 +342,9 @@ test("on a phone, a thread's own reply holds the thread's Reply while it is out 
 test("on a phone, a thread's own reply holds Back and Escape while it is out, and its refusal stays in the thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread inline refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone thread inline refusal" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -384,8 +390,9 @@ test("on a phone, a thread's own reply holds Back and Escape while it is out, an
 test("on a phone, a thread's Reply over its card's refused reply keeps that draft and refusal for after @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply over a refused reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply over a refused reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -423,8 +430,9 @@ test("on a phone, a thread's Reply over its card's refused reply keeps that draf
 test("on a phone, Back and Escape from a thread reply's refusal keep its draft and refusal for the thread's return @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Leaving a refused thread reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Leaving a refused thread reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -479,8 +487,9 @@ test("on a phone, Back and Escape from a thread reply's refusal keep its draft a
 test("on a phone, the reader's own Resolve keeps a thread reply's refusal and its comment @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved over a refused reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Resolved over a refused reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -517,8 +526,9 @@ test("on a phone, the reader's own Resolve keeps a thread reply's refusal and it
 test("on a phone, a thread reply refused after Back comes back in its own thread on another Reply @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refused after Back" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refused after Back" });
   const first = await createComment(issue.key, { body: "First comment" });
   const second = await createComment(issue.key, { body: "Second comment" });
   const alice = await asUser(browser, "alice");
@@ -561,8 +571,9 @@ test("on a phone, a thread reply refused after Back comes back in its own thread
 test("on a phone, a thread's own reply out when the viewport widens keeps its thread, draft and refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Widened under a reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Widened under a reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -600,8 +611,9 @@ test("on a phone, a thread's own reply out when the viewport widens keeps its th
 test("on a phone, a thread resolved while its own reply is out stays open with the reply and its refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved under a phone reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Resolved under a phone reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -639,8 +651,9 @@ test("on a phone, a thread resolved while its own reply is out stays open with t
 test("on a phone, a thread reply the server never answers lets Back go at the deadline @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Hung thread reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Hung thread reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -691,8 +704,9 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
 test("on a phone, Jump to latest covers none of the docked composer's Retry @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pill over a refusal" });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
@@ -753,8 +767,9 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
 test("on a phone, the shell's status corner covers none of Jump to latest @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Status corner over the pill" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Status corner over the pill" });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
@@ -810,8 +825,9 @@ test("on a phone, the shell's status corner covers none of Jump to latest @phone
 test("on a phone, Jump to latest covers none of the docked composer while the status corner shows @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over the composer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pill over the composer" });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
@@ -862,8 +878,9 @@ test("on a phone, Jump to latest covers none of the docked composer while the st
 test("on a phone, the connection pill covers none of the docked composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Connection pill over a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Connection pill over a refusal" });
   const alice = await asUser(browser, "alice");
   const narrow = { height: 568, width: 320 };
 
@@ -902,8 +919,9 @@ test("on a phone, the connection pill covers none of the docked composer @phone"
 test("on a phone, the stuck live-updates pill covers none of the docked composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stuck pill over a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stuck pill over a refusal" });
   const alice = await asUser(browser, "alice");
   const narrow = { height: 568, width: 320 };
 
@@ -950,8 +968,9 @@ test("on a phone, the stuck live-updates pill covers none of the docked composer
 test("on a phone, the connection pill covers none of a thread's composers @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Connection pill over a thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Connection pill over a thread" });
   const root = await createComment(issue.key, { body: "Thread root" });
   const alice = await asUser(browser, "alice");
   const narrow = { height: 568, width: 320 };
@@ -1008,8 +1027,9 @@ test("on a phone, the connection pill covers none of a thread's composers @phone
 test("on a phone, Jump to latest stays off a thread opened over the Conversation @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over a thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pill over a thread" });
   const oldest = await createComment(issue.key, { body: "Oldest comment" });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Newer turn ${index}` }, session);
@@ -1046,8 +1066,9 @@ test("on a phone, Jump to latest stays off a thread opened over the Conversation
 test("on a phone, a thread over an older conversation holds the issue's read mark until Back @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark under a thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Read mark under a thread" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   await createMessage(issue.key, { body: "Newest turn" }, session);
   // Nothing here has been read, so both cards carry `New` and a dwell on the newest one - the
@@ -1114,8 +1135,9 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
 test("on a phone, a comment link to the newest conversation marks the issue read from its thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark from the thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Read mark from the thread" });
   await createMessage(issue.key, { body: "Older turn" }, session);
   // The link's own comment, made last, so it is the newest conversation: the one card the mark
   // is written from, and the card the thread shows.
@@ -1144,7 +1166,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     });
     // Where the reader comes from, so the back below leaves the issue rather than landing on
     // the Conversation, whose own dwell would write the mark whatever the thread did.
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const issueLink = page
       .getByRole("table", { name: "Project issues table" })
       .getByRole("link", { name: issue.key, exact: true });
@@ -1174,7 +1196,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     await written;
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues$`));
     expect(await mark()).toBe(head);
   } finally {
     await alice.close();
@@ -1194,8 +1216,9 @@ test("on a phone, a comment link to the newest conversation marks the issue read
 test("on a phone, the newest conversation's read mark moves nothing under a press in its thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark under a press" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Read mark under a press" });
   // The one conversation, so the thread the reader opens is the newest one.
   const root = await createComment(issue.key, { body: "Thread root" });
   const alice = await asUser(browser, "alice");
@@ -1353,9 +1376,10 @@ async function tapsLostAcrossBand(
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The quick brown fox",
     title: "Pill over the tabs",
   });
@@ -1437,8 +1461,9 @@ function fieldsHolding(page: Page, text: string): Promise<string[]> {
 test("on a phone, a thread reply Dispatch refused keeps its typed text through Cancel reply @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone cancel after a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone cancel after a refusal" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const typed = "Refused thread reply, typed by hand";
   const alice = await asUser(browser, "alice");

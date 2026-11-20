@@ -1,6 +1,6 @@
 import { answerAsk, createComment, createIssue, createProject } from "./api";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { centerOf } from "./touch";
 import { withAlice } from "./users";
 
@@ -216,8 +216,9 @@ async function expectTickedFilledUntickedEmpty(
 
 /** Seeds an issue with an agent comment holding a ticked and an unticked task item. */
 async function seedChecklist(): Promise<{ commentId: string; issueKey: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release checklist" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Release checklist" });
   const comment = await createComment(
     issue.key,
     { body: "Release checklist:\n\n- [x] Tag the build\n- [ ] Publish the notes\n" },
@@ -298,9 +299,10 @@ for (const colorScheme of ["light", "dark"] as const) {
 test("a reply under a decision inside a document shows the checkboxes with no bullet @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: 'Intro.\n\n:::ask{#naming urgency="med" multiple="false"}\nWhich alias?\n\n- short\n- long\n:::\n\nAfter.\n',
     title: "Alias decision",
   });

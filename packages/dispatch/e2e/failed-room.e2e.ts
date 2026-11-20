@@ -24,7 +24,7 @@ import {
 import { documentEditor } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** Holds the room's next durable append inside its `doc_updates` insert for this long, which is
@@ -132,6 +132,7 @@ async function anchoredComment(issueKey: string, body: string, quote: string): P
 test("a writer inside the docs layer when its room fails is told, and the room recovers", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   test.skip(
     process.env.DISPATCH_FAILED_ROOM_PROBE !== "1",
     "the failed-room probe is opt-in: it holds a durable append for 20 s and cancels a backend"
@@ -143,9 +144,9 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   // that comparison needs: a row whose 40 s are spent on one append cannot be read against
   // another tree's run without it.
   await resetDatabase();
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Plan\n\nShip the migration.",
     title: "Failed room probe",
   });

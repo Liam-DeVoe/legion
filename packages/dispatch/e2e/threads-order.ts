@@ -63,13 +63,19 @@ export interface Seeded {
  * Three threads of a root and six replies: a comment thread the reader wrote in, an answered
  * ask's thread, and the thread of an answered decision block in an issue's spec. Each comment
  * thread is read through its fourth reply, so replies 5 and 6 are the unread ones.
+ *
+ * `project` is the key of the project the issues are made in: `threads-order.e2e.ts` passes its
+ * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
  */
-export async function seedThreads(replies: readonly string[] = REPLIES): Promise<Seeded> {
+export async function seedThreads(
+  project = "CORE",
+  replies: readonly string[] = REPLIES
+): Promise<Seeded> {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: project, name: "Core" });
 
   const commentIssue = await createIssue({
-    project: "CORE",
+    project,
     spec: "# Replay budget\n\nThe mirror replays the ledger on a cold start.\n",
     title: "Replay budget",
   });
@@ -82,7 +88,7 @@ export async function seedThreads(replies: readonly string[] = REPLIES): Promise
     await createComment(commentIssue.key, { body, reply_to: comment.id }, asSession());
   }
 
-  const askIssue = await createIssue({ project: "CORE", title: "Lease handover" });
+  const askIssue = await createIssue({ project, title: "Lease handover" });
   const ask = await createAsk(
     askIssue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the lease handover?" },
@@ -100,7 +106,7 @@ export async function seedThreads(replies: readonly string[] = REPLIES): Promise
   // create goes in forced rather than the two texts being pulled apart.
   const blockIssue = await createIssue({
     force: true,
-    project: "CORE",
+    project,
     spec: decisionSpec,
     title: "Replay window",
   });

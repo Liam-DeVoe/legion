@@ -26,6 +26,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { replyRowId } from "./inbox-threads";
+import { rowKey } from "./test";
 
 /** The session that writes as somebody else: the author of every reply these rows read and of
  *  every edit a drive makes. */
@@ -34,8 +35,11 @@ export const session = {
   as: "agent" as const,
 };
 
-/** The one project every row of this file seeds into. */
-const PROJECT = { key: "SCROLL", name: "Scroll rollout" };
+/** The one project every row of this file seeds into, under the running row's own key (`rowKey`,
+ *  e2e/test.ts). */
+function scrollProject(): { key: string; name: string } {
+  return { key: rowKey("SCROLL"), name: "Scroll rollout" };
+}
 
 /** The address the Inbox writes for a selected row: the item, then the assignee filter cleared,
  *  so a project document's question - which nobody holds - is listed beside the rest. A thread
@@ -129,7 +133,11 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
 
 /** The issue every row commits its own events on, which no row of this file opens. */
 async function otherIssue(): Promise<string> {
-  const issue = await createIssue({ force: true, project: PROJECT.key, title: "Lease handover" });
+  const issue = await createIssue({
+    force: true,
+    project: scrollProject().key,
+    title: "Lease handover",
+  });
   await patchIssue(issue.key, { priority: 3 });
   return issue.key;
 }
@@ -153,10 +161,10 @@ export interface ApprovalPlaceSeed {
 /** One approval request, on a document far longer than the column that shows it, with nothing
  *  approved before it: the column marks nothing and reads no baseline. */
 export async function seedApprovalPlace(): Promise<ApprovalPlaceSeed> {
-  await createProject(PROJECT);
+  await createProject(scrollProject());
   const issue = await createIssue({
     force: true,
-    project: PROJECT.key,
+    project: scrollProject().key,
     spec: approvalSpec,
     title: APPROVAL_NAME,
   });
@@ -251,11 +259,11 @@ export interface QuestionColumnSeed {
 /** The document one run of the question rows opens, with the question or the thread it is
  *  opened at. */
 export async function seedQuestionColumn(run: QuestionRun): Promise<QuestionColumnSeed> {
-  await createProject(PROJECT);
+  await createProject(scrollProject());
   const other = await otherIssue();
 
   if (run === "thread") {
-    const created = await createProjectDocument(PROJECT.key, {
+    const created = await createProjectDocument(scrollProject().key, {
       content: threadDocument,
       name: "cold-start-runbook.md",
     });
@@ -285,7 +293,7 @@ export async function seedQuestionColumn(run: QuestionRun): Promise<QuestionColu
   }
 
   const underHeading = run === "heading";
-  const created = await createProjectDocument(PROJECT.key, {
+  const created = await createProjectDocument(scrollProject().key, {
     content: underHeading ? headingDocument : plainDocument,
     name: underHeading ? "mirror-runbook.md" : "lease-runbook.md",
   });
@@ -338,8 +346,8 @@ export interface QuestionsSeed {
 }
 
 export async function seedQuestions(): Promise<QuestionsSeed> {
-  await createProject(PROJECT);
-  await createProjectDocument(PROJECT.key, {
+  await createProject(scrollProject());
+  await createProjectDocument(scrollProject().key, {
     content: questionsDocument,
     name: "mirror-runbook.md",
   });
@@ -380,8 +388,8 @@ export interface TwoThreadsSeed {
 
 /** Two comment threads anchored to two quotes of one paragraph, so both carry one block id. */
 export async function seedTwoThreads(): Promise<TwoThreadsSeed> {
-  await createProject(PROJECT);
-  const created = await createProjectDocument(PROJECT.key, {
+  await createProject(scrollProject());
+  const created = await createProjectDocument(scrollProject().key, {
     content: twoThreadsDocument,
     name: "mirror-runbook.md",
   });
@@ -439,10 +447,10 @@ export interface ApprovalMarksSeed {
 
 /** A document approved at version 1, whose version 2 changed six paragraphs far down it. */
 export async function seedApprovalWithMarks(): Promise<ApprovalMarksSeed> {
-  await createProject(PROJECT);
+  await createProject(scrollProject());
   const issue = await createIssue({
     force: true,
-    project: PROJECT.key,
+    project: scrollProject().key,
     spec: baselineSpec,
     title: "Ledger rollout",
   });
@@ -481,7 +489,11 @@ const ADDED_QUESTION = "Which service hands the lease over first?";
 /** A question on a new issue at the top priority, which the Inbox bands above every row these
  *  rows open. Answers the row's own id. */
 export async function addRowAbove(): Promise<string> {
-  const issue = await createIssue({ force: true, project: PROJECT.key, title: "Refused lease" });
+  const issue = await createIssue({
+    force: true,
+    project: scrollProject().key,
+    title: "Refused lease",
+  });
   await patchIssue(issue.key, { priority: 0 });
   const ask = await createAsk(
     issue.key,

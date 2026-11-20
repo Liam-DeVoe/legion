@@ -13,7 +13,7 @@ import {
 import { connectedDot, documentEditor } from "./editor";
 import { ONE_PIXEL_PNG } from "./sends";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 // Every "Download version N" link goes to the download address,
 // `/api/v1/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
@@ -86,8 +86,9 @@ async function openArtifactsTab(page: Page, issueKey: string): Promise<void> {
 test("each Download version link names the download address and each picture the version address @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Download addresses" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Download addresses" });
   const picture = {
     buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
     mimeType: "image/png",
@@ -136,8 +137,9 @@ test("each Download version link names the download address and each picture the
 test("a file saves under its own name, and its older version under its number once a newer one exists @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Report downloads" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Report downloads" });
   await openArtifactsTab(page, issue.key);
   const row = page.getByTestId("artifact-report-pdf");
 
@@ -172,8 +174,9 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
   page,
   browserName,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Accented downloads" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Accented downloads" });
   await openArtifactsTab(page, issue.key);
 
   const name = "Q3 final résumé.pdf";
@@ -192,9 +195,10 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
 // and the row reads back from disk.
 // @webkit @firefox: the name the engine saves a document's Markdown under, and the bytes it writes.
 test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch plan\n\nEvery download keeps its own name.\n",
     title: "Spec download",
   });
@@ -215,8 +219,9 @@ test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({
 test("an older version of a document saves with its number and its own Markdown @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Notes download" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Notes download" });
   // A document that is not the issue's spec: the issue page draws no Versions list on its spec's
   // route, only on another document's (`ArtifactRoutePanel`).
   const notes = await createIssueArtifact(issue.key, {
@@ -263,9 +268,10 @@ test("an older version of a document saves with its number and its own Markdown 
 test("a project's file and a conversation's file save under their own names, an older version with its number @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const brief = await upload(page, "/api/v1/projects/CORE/artifacts", pdf("brief.pdf", "brief"));
-  await page.goto(`/projects/CORE/documents/${brief.slug}`);
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const brief = await upload(page, `/api/v1/projects/${core}/artifacts`, pdf("brief.pdf", "brief"));
+  await page.goto(`/projects/${core}/documents/${brief.slug}`);
   const projectFile = await saveFrom(page, page.getByRole("link", { name: "Download version 1" }));
   expect(projectFile.suggestedFilename()).toBe("brief.pdf");
 

@@ -2,7 +2,7 @@ import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies } from "./api";
 import { hasReadingPane, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,9 +32,10 @@ const LONG_REPLY = Array.from(
 test("a reply taller than the reading pane is marked read by reading it, and its row stays @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
   const thread = await seedCommentThread(issue.key, "Why does it give up?", LONG_REPLY);
   // A second thread, so the selection has somewhere to move once the long one has been read.
   const other = await seedCommentThread(

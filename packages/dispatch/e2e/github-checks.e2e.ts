@@ -1,6 +1,6 @@
 import { createIssue, createProject, patchIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { type Browser, expect, test } from "./test";
+import { type Browser, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The repository is used by no other spec: the server remembers which installation covers a
@@ -22,6 +22,7 @@ async function expectChecksPill(
   workflowRuns: { check_suite_id: number; event: string; id: number; name: string }[],
   checks: string
 ): Promise<void> {
+  const core = rowKey("CORE");
   await seedFakeGithub({
     [repository]: {
       check_runs: { [headSHA]: checkRuns },
@@ -32,8 +33,8 @@ async function expectChecksPill(
       workflow_runs: { [headSHA]: workflowRuns },
     },
   });
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Checks pill" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Checks pill" });
   await patchIssue(issue.key, {
     external_links: [{ kind: "github_pr", url: `https://github.com/${repository}/pull/7` }],
   });

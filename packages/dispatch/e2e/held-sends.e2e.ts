@@ -10,7 +10,7 @@ import {
   WRITE_REFUSED_TEXT,
 } from "./sends";
 import { expandedState } from "./settled";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A composer holds its draft and its refusal while its send is out, whatever unmounts it. These
@@ -23,8 +23,9 @@ const refusedText = WRITE_REFUSED_TEXT;
 test("a docked Conversation send refused while the reader is on the Inbox is there on the return @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Left the issue mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Left the issue mid-send" });
   await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
   try {
@@ -64,7 +65,7 @@ test("a docked Conversation send refused while the reader is on the Inbox is the
 test("an Agents row send refused while the reader is on the Inbox is there on the return", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -113,8 +114,9 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
 test("a docked Reply on a different comment redirects onto the one whose refusal it holds", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Two comments, one docked composer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Two comments, one docked composer" });
   const a = await createComment(issue.key, { body: "Comment A" });
   const b = await createComment(issue.key, { body: "Comment B" });
   const alice = await asUser(browser, "alice");
@@ -159,8 +161,9 @@ test("a docked Reply on a different comment redirects onto the one whose refusal
 test("a thread's own reply refused after the reader left it past the deadline is there when the thread opens again", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Left a thread past the deadline" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Left a thread past the deadline" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
   try {

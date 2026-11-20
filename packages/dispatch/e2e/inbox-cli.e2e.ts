@@ -24,7 +24,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -213,22 +213,23 @@ interface SeededInbox {
  * one-off message to a session that has been answered.
  */
 async function seedInbox(): Promise<SeededInbox> {
+  const core = rowKey("CORE");
   await setLiveSessions([worker]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
 
   // A human's issue is assigned to its creator, so each of these is alice's own.
-  const ordinary = await createIssue({ project: "CORE", title: "Ship the inbox command" });
-  const flag = await createIssue({ project: "CORE", title: "Name the rollout flag" });
-  const running = await createIssue({ project: "CORE", title: "Migrate the ask snoozes" });
-  const deferred = await createIssue({ project: "CORE", title: "Rotate the agent token" });
-  const gate = await createIssue({ project: "CORE", spec: "The plan.", title: "Design gate" });
+  const ordinary = await createIssue({ project: core, title: "Ship the inbox command" });
+  const flag = await createIssue({ project: core, title: "Name the rollout flag" });
+  const running = await createIssue({ project: core, title: "Migrate the ask snoozes" });
+  const deferred = await createIssue({ project: core, title: "Rotate the agent token" });
+  const gate = await createIssue({ project: core, spec: "The plan.", title: "Design gate" });
   const reviewed = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The rollout note.",
     title: "Write the rollout note",
   });
   const elsewhere = await createIssue(
-    { project: "CORE", title: "Bob's own issue" },
+    { project: core, title: "Bob's own issue" },
     { login: "bob" }
   );
 
@@ -259,7 +260,7 @@ async function seedInbox(): Promise<SeededInbox> {
 
   // A document has no assignee, so its question waits on CORE's default assignee: alice, who
   // created CORE naming nobody else. It is her own, and both lists hold it.
-  const runbook = await createProjectDocument("CORE", {
+  const runbook = await createProjectDocument(core, {
     content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
     name: "Runbook",
   });

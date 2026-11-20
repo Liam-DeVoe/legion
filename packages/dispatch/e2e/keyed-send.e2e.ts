@@ -17,7 +17,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A message to one session goes under an `Idempotency-Key`, and the page tries it again under
@@ -67,7 +67,7 @@ async function plannerAttempts(
 test("a send whose answer is lost is tried again under its key, and delivered once @pr", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -110,7 +110,7 @@ test("a send whose answer is lost is tried again under its key, and delivered on
 test("a send a server that is down answers 503 is tried again, not refused, and delivered once", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -165,7 +165,7 @@ test("a send a server that is down answers 503 is tried again, not refused, and 
 test("a send held through a reload is resumed under its key, and delivered once @webkit @firefox", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -213,7 +213,7 @@ test("a send held through a reload is resumed under its key, and delivered once 
 test("a broadcast whose answer is lost is tried again under its key, and each agent hears it once @pr", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -261,7 +261,7 @@ test("a broadcast whose answer is lost is tried again under its key, and each ag
 test("a broadcast held through a reload is resumed under its key, and each agent hears it once", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -316,7 +316,7 @@ test("a broadcast held through a reload is resumed under its key, and each agent
 test("two live-view sends pressed during an outage go out in press order, each once, with Send pressable throughout @webkit @firefox", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"));
   await publishAgentStreamFrame(
     plannerSession.session_id,
     {
@@ -402,7 +402,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
   browser,
 }) => {
   test.setTimeout(120_000);
-  const issueKey = await seedAgents();
+  const issueKey = await seedAgents(rowKey("CORE"));
   const path = `/api/v1/issues/${issueKey}/comments`;
   await slowWrites("POST", path, 18_000);
   const alice = await asUser(browser, "alice");
@@ -463,7 +463,7 @@ test("a comment whose @-mention's send is slow is answered before the send, with
   browser,
 }) => {
   test.setTimeout(120_000);
-  const issueKey = await seedAgents();
+  const issueKey = await seedAgents(rowKey("CORE"));
   const path = `/api/v1/issues/${issueKey}/comments`;
   await setSessionSendDelay(plannerSession.session_id, 4_000);
   const alice = await asUser(browser, "alice");

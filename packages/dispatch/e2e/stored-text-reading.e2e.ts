@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 
 import { createComment, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -34,8 +34,9 @@ const body = readFileSync(
 test("Conversation draws Go's reading of a comment whose markdown the browser's own parser refuses", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "HTML block" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "HTML block" });
   const comment = await createComment(issue.key, { body }, agent);
   // The server stores the text as written: the reading is what differs, not the bytes.
   expect(comment.body).toBe(body);

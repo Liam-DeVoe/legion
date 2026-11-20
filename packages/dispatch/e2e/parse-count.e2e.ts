@@ -32,7 +32,7 @@ import {
   rewrittenParseCallSites,
 } from "./parse-counting";
 import { serveWithoutDisplayTrees } from "./strip-trees";
-import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -74,21 +74,22 @@ interface Seeded {
 }
 
 async function seedStoredTexts(): Promise<Seeded> {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({
     "legion/arch": { contents: "read", files: architecture, installation_id: 101 },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
-  const source = await syncArchitectureSource("CORE", "legion/arch");
+  await putArchitectureSource(core, { branch: "main", repo: "legion/arch" });
+  const source = await syncArchitectureSource(core, "legion/arch");
   expect(source.last_error).toBeNull();
 
   const target = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The **target** issue, which a reference previews.\n",
     title: "Reference target",
   });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Plan\n\nThe **spec** of the issue page.\n",
     title: "Stored texts",
   });
@@ -144,7 +145,7 @@ async function seedStoredTexts(): Promise<Seeded> {
   });
 
   // Two versions of a document, so version 1 is a past one, and the word the palette searches.
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: `# Instruments\n\nThe ${searchTerm} measures altitude.\n`,
     name: "instruments.md",
   });
@@ -167,7 +168,7 @@ async function seedStoredTexts(): Promise<Seeded> {
   // answer, and the issue around the ask shares no word with the draft, so the item the check
   // offers is the ask itself.
   const mast = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The mast is repainted each spring, before the sailing season.\n",
     title: "Mooring mast paint rota",
   });
@@ -207,6 +208,7 @@ function bold(page: Page, word: string): Locator {
 }
 
 function surfaces(seeded: Seeded): Surface[] {
+  const core = rowKey("CORE");
   return [
     {
       name: "the issue page",
@@ -253,7 +255,7 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "a past version",
       show: async (page) => {
-        await page.goto(`/projects/CORE/documents/${seeded.documentSlug}?version=1`);
+        await page.goto(`/projects/${core}/documents/${seeded.documentSlug}?version=1`);
         // The version's own section, not the document around it: the view that draws a past
         // version is what this row counts.
         await expect(
@@ -328,14 +330,14 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "a component's page",
       show: async (page) => {
-        await page.goto("/projects/CORE/architecture?component=web");
+        await page.goto(`/projects/${core}/architecture?component=web`);
         await expect(bold(page, "SPA")).toBeVisible();
       },
     },
     {
       name: "the architecture page, into a component",
       show: async (page) => {
-        await page.goto("/projects/CORE/architecture");
+        await page.goto(`/projects/${core}/architecture`);
         // The tree read carries every component's `prose_tree`, and `ComponentDetails` is its
         // one reader, so the row walks the tree into a component the way a person does: the
         // rows themselves draw titles and bars, and the page's stored text is the prose below

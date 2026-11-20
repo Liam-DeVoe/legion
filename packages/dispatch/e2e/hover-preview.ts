@@ -10,15 +10,18 @@ const agent = {
   as: "agent" as const,
 };
 
-export async function seedReference(): Promise<{ source: string; target: string }> {
-  await createProject({ key: "CORE", name: "Core" });
+/** `project` is the key of the project both issues are made in: `hover-preview.e2e.ts` passes
+ *  its row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under
+ *  `CORE`. */
+export async function seedReference(project = "CORE"): Promise<{ source: string; target: string }> {
+  await createProject({ key: project, name: "Core" });
   const target = await createIssue({
-    project: "CORE",
+    project,
     spec: "The target's spec explains what hovering should reveal about it.",
     title: "Hover target",
   });
   await patchIssue(target.key, { labels: ["ui"], priority: 1, status: "todo" });
-  const source = await createIssue({ project: "CORE", title: "Hover source" });
+  const source = await createIssue({ project, title: "Hover source" });
   await createComment(source.key, { body: `See dispatch://${target.key} for context.` }, agent);
   return { source: source.key, target: target.key };
 }

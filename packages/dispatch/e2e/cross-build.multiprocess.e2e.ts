@@ -29,7 +29,15 @@ import {
 } from "./harness-processes";
 import { sql } from "./psql";
 import type { ProxiedRequest, ProxiedSocket } from "./round-robin-proxy";
-import { type Browser, type BrowserContext, expect, type Page, test, type WebSocket } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Page,
+  rowKey,
+  test,
+  type WebSocket,
+} from "./test";
 import { signIn } from "./users";
 
 /**
@@ -250,6 +258,7 @@ for (const pageProcess of dispatchProcesses) {
   test(`a page of ${builds[pageProcess]} works against the server of ${builds[server]}`, async ({
     browser,
   }) => {
+    const xb = rowKey("XB");
     test.setTimeout(120_000);
     // The first-rollout run holds B to its commit and to a registry that reads version 0 while B
     // is live. The harness starts both servers before any row, so both serve and both register
@@ -261,9 +270,9 @@ for (const pageProcess of dispatchProcesses) {
       }
     }
     const on = { process: server };
-    await createProject({ key: "XB", name: "Cross build" }, on);
+    await createProject({ key: xb, name: "Cross build" }, on);
     const issue = await createIssue(
-      { project: "XB", spec: "# Cross build\n\nWritten before the edit.\n", title: "Two builds" },
+      { project: xb, spec: "# Cross build\n\nWritten before the edit.\n", title: "Two builds" },
       on
     );
     const ask = await createAsk(
@@ -273,7 +282,7 @@ for (const pageProcess of dispatchProcesses) {
     );
     // The Delivery page's timeline, written in Postgres: the live socket answers its timeline
     // subscription with a snapshot only once delivery is configured.
-    await seedDeliveryFixture();
+    await seedDeliveryFixture(rowKey("ACME"));
 
     const context = await splitContext(browser, pageProcess, server);
     try {
@@ -285,7 +294,7 @@ for (const pageProcess of dispatchProcesses) {
       // build before #2988 is itself that link, and the table of a build from #2988 on gives it
       // the title cell beside a second link holding the key alone, which a name read of the key
       // would match as well.
-      await page.goto("/projects/XB/issues");
+      await page.goto(`/projects/${xb}/issues`);
       await page.locator(`a[data-issue-link][href="/issues/${issue.key}"]`).click();
       await expect(documentEditor(page)).toContainText("Written before the edit.");
 
@@ -428,13 +437,14 @@ for (const pageProcess of dispatchProcesses) {
 test("a document holding newer content shows that state and no replace drop zone", async ({
   browser,
 }) => {
+  const newKey = rowKey("NEW");
   test.skip(
     binaryB !== undefined,
     "the newer-content hook is this tree's; Dispatch B runs the previous build (DISPATCH_E2E_BINARY_B)"
   );
-  await createProject({ key: "NEW", name: "Newer content" }, { process: "a" });
+  await createProject({ key: newKey, name: "Newer content" }, { process: "a" });
   const issue = await createIssue(
-    { project: "NEW", spec: "Written before the newer element.\n", title: "Newer content" },
+    { project: newKey, spec: "Written before the newer element.\n", title: "Newer content" },
     { process: "a" }
   );
   // A /_test/ route goes to both processes (e2e/round-robin-proxy.ts).

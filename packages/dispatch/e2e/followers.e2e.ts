@@ -10,7 +10,7 @@ import {
   getIssueEvents,
   listAskFollowers,
 } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Two sessions write to one ask over the API with the agent bearer token: the asker and a
@@ -23,8 +23,9 @@ const replier = { kind: "session" as const, id: "e2e-follow-replier" };
 test("the ask card lists every session that wrote to the ask and a human can unfollow one @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who hears the answer" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Who hears the answer" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -109,9 +110,10 @@ test("the ask card lists every session that wrote to the ask and a human can unf
 test("the ask card lists the issue's subscribers and removing one cuts the issue subscription", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const watcher = "e2e-issue-watcher";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who else hears the answer" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Who else hears the answer" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },

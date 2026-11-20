@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RELATED_DEBOUNCE_MS } from "../web/src/features/issue/related-timing";
 import { createIssue, createProject } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
@@ -32,14 +32,15 @@ async function pauseClock(page: Page): Promise<void> {
 }
 
 async function seedProject(): Promise<{ astrolabe: string; zeppelin: string }> {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const astrolabe = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The astrolabe drifts while the mooring mast is calibrated.",
     title: astrolabeTitle,
   });
   const zeppelin = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The zeppelin's ballast valve sticks below freezing.",
     title: zeppelinTitle,
   });
@@ -63,8 +64,9 @@ async function openCreateDialog(
 test("a title checked before an issue was filed is checked again, not answered from before @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Quadrant bezel polishing rota" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Quadrant bezel polishing rota" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -86,7 +88,7 @@ test("a title checked before an issue was filed is checked again, not answered f
     // what exists now, so the second draft of the same title must be checked again rather than
     // answered from what the dialog already held for it.
     const filed = await createIssue({
-      project: "CORE",
+      project: core,
       spec: "The astrolabe drifts while the mooring mast is calibrated.",
       title: draft,
     });
@@ -107,11 +109,12 @@ const phone = { height: 667, width: 375 };
 /** Four long-titled issues on one subject, so the check fills the section with its three items
  *  and the title typed in the dialog is a possible duplicate of them. */
 async function seedCrowdedProject(): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   for (let index = 0; index < 4; index += 1) {
     await createIssue({
       force: true,
-      project: "CORE",
+      project: core,
       spec: `Astrolabe drift ${index} spoils the mooring calibration of the quadrant bezel and the sextant mirror, read against the chronometer every watch.`,
       title: `Astrolabe drift ${index} spoils the mooring calibration of the quadrant bezel and the sextant mirror assembly`,
     });

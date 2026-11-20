@@ -14,7 +14,7 @@ import {
 } from "./agents";
 import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -60,8 +60,9 @@ async function sentTo(): Promise<unknown[]> {
 
 /** An issue of its own, so one row's conversation is never another's. */
 async function issueFor(title: string): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  return (await createIssue({ project: "CORE", title })).key;
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  return (await createIssue({ project: core, title })).key;
 }
 
 test("a person's message to a stopped but known session is queued for it, and the listener takes it", async ({

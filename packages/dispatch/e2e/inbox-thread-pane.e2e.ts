@@ -27,7 +27,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -75,8 +75,9 @@ const documentContent = [
 test("the pane opens an anchored thread's document at its section, quote lit, thread under its block", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const document = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const document = await createProjectDocument(core, {
     content: documentContent,
     name: "mirror-runbook.md",
   });
@@ -174,8 +175,9 @@ test("the pane opens an anchored thread's document at its section, quote lit, th
 test("a thread of six read replies folds the oldest four and ends in its reply box", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
   const root = await createComment(issue.key, { body: "How far back does a replay go?" });
   for (let index = 1; index <= 6; index += 1) {
     await createComment(
@@ -236,9 +238,10 @@ async function seedThreeShapes(): Promise<{
   comment: string;
   message: string;
 }> {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
 
   const comment = await createComment(issue.key, { body: "How far back does a replay go?" });
   for (let index = 1; index <= 5; index += 1) {
@@ -321,9 +324,10 @@ test("a comment thread, a message conversation and an Agent thread are drawn ali
 test("a reply sent from the pane reaches the thread, and an Agent reply goes in the Agents page's mode @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
   const root = await createComment(issue.key, { body: "How far back does a replay go?" });
   await createComment(
     issue.key,

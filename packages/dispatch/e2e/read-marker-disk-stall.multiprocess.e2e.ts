@@ -11,7 +11,7 @@ import {
 import { connectedDot, documentEditor, holdFirstRequest } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -78,6 +78,7 @@ test.afterEach(() => {
 test("a read marker whose page closed while the database's disk did not answer holds nothing the next reset empties", async ({
   browser,
 }) => {
+  const stall = rowKey("STALL");
   if (stallDir === undefined && process.env.GITHUB_ACTIONS === "true") {
     throw new Error(
       `${diskStallVariable} is unset on GitHub Actions: CI runs this row against a Postgres it ` +
@@ -91,9 +92,9 @@ test("a read marker whose page closed while the database's disk did not answer h
   if (stallDir === undefined) return;
   test.setTimeout(120_000);
 
-  await createProject({ key: "STALL", name: "Disk stall" });
+  await createProject({ key: stall, name: "Disk stall" });
   const issue = await createIssue({
-    project: "STALL",
+    project: stall,
     spec: "# Disk stall\n\nRead while the disk is silent.\n",
     title: "A document read as the disk stops answering",
   });

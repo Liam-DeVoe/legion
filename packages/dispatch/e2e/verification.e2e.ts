@@ -11,7 +11,7 @@ import {
 import { connectedDot, documentEditor, paste, placeCaret } from "./editor";
 import { fakeGithubCheckRunReads, seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A result is compared with the head of the pull request Dispatch holds for the check's
@@ -40,9 +40,10 @@ A check says whether a pass of it stands.
  *  the results are measured against, whose head is `head` and whose title attributes it to the
  *  issue. */
 async function seedIssue(title: string, head: string) {
-  await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
-  const issue = await createIssue({ project: "VER", spec, title });
+  const ver = rowKey("VER");
+  await createProject({ key: ver, name: "Verification" });
+  await putRepoProject(repository, { default: true, project: ver });
+  const issue = await createIssue({ project: ver, spec, title });
   await seedFakeGithub({
     [repository]: {
       commit_pulls: { [head]: [7] },
@@ -349,9 +350,10 @@ async function seedCICheck(
   title: string,
   run: { conclusion: string; output: { title: string; summary: string } }
 ) {
-  await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
-  const issue = await createIssue({ project: "VER", spec, title });
+  const ver = rowKey("VER");
+  await createProject({ key: ver, name: "Verification" });
+  await putRepoProject(repository, { default: true, project: ver });
+  const issue = await createIssue({ project: ver, spec, title });
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
 

@@ -2,7 +2,7 @@ import { shownAgentRows } from "./agents";
 import { expectTimeout } from "./expect-timeout";
 import { askCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
 
@@ -16,7 +16,10 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
 }, testInfo) => {
   // The seed waits for the Inbox rows this row reads first, and gives up at the bound the row's
   // own assertions use, well before the row's clock would end it and hide the seed's message.
-  const seeded = await seedWorkspace({ boundMs: expectTimeout });
+  const seeded = await seedWorkspace({
+    boundMs: expectTimeout,
+    projects: { core: rowKey("CORE"), ops: rowKey("OPS") },
+  });
 
   const alice = await asUser(browser, "alice");
   try {

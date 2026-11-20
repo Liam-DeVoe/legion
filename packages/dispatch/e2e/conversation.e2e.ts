@@ -32,7 +32,7 @@ import {
 } from "./api";
 import { conversationFilter } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -74,8 +74,9 @@ const planner: FakeSession = {
 test("Conversation owns the route, lists one card per message newest first, and resolves live agent names @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Conversation route" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Conversation route" });
   await createMessage(issue.key, { body: "First **bold** line" }, agent);
   await createMessage(issue.key, { body: "```ts\nconst x = 1;\n```" }, agent);
   await createMessage(issue.key, { body: "From bob" }, bob);
@@ -185,8 +186,9 @@ test("Conversation owns the route, lists one card per message newest first, and 
 test("Conversation updates an open ask in place after an agent edit and preserves its prior question", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Edited decision" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Edited decision" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "REST" }, { label: "gRPC" }], question: "Which implementation?" },
@@ -246,8 +248,9 @@ test("Conversation updates an open ask in place after an agent edit and preserve
 test("a deep link to an old unanchored comment scrolls its Conversation turn into view", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Old comment target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Old comment target" });
   const comment = await createComment(issue.key, { body: "Deep linked comment" }, agent);
   // Forty newer turns put the linked comment at the foot of a Conversation thousands of pixels
   // tall - 2,700 px at 1280x720, measured - which is the distance the landing has to cover. More
@@ -276,8 +279,9 @@ test("a deep link to an old unanchored comment scrolls its Conversation turn int
 test("a message reply nests under its parent with the quoted link, and deep links scroll to the parent turn", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Message reply thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Message reply thread" });
   const root = await createMessage(issue.key, { body: "Ship the build tonight" }, agent);
   await createMessage(issue.key, { body: "Sounds good, thanks!", in_reply_to: root.id }, bob);
 
@@ -309,9 +313,10 @@ test("a message reply nests under its parent with the quoted link, and deep link
 test("a reply in a session-authored comment thread pre-fills a deletable agent mention", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Threaded comment follow-up" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Threaded comment follow-up" });
   const parent = await createComment(
     issue.key,
     { body: "Can this ship?" },
@@ -368,15 +373,16 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
 test("an agent's answer on a failed attempt is accepted and shown as the answer", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` is `s1` - so
   // it cannot share their round: a PATCH that arrives first answers
   // `404 unknown fixture session s1` and fails the row. Only the project is independent.
-  await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
+  await Promise.all([setLiveSessions([planner]), createProject({ key: core, name: "Core" })]);
   // The listener answers every send 503, past the take-over window too, so the attempt fails. A
   // 404 would not do: Dispatch queues a targeted message for a session no store of the listener's
   // holds, and a queued attempt is no failure.
   await setSessionSendStatus("s1", 503);
-  const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
+  const issue = await createIssue({ project: core, title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
     body: question,
@@ -415,8 +421,9 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
 test("a compact answered ask's Write a reply opens its composer as the next keyboard stop", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply order" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply order" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }], question: "Ship it?" },
@@ -472,8 +479,9 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
 // The owner's case (INFRA-3677): a question its agent retracted still takes a reply in its
 // thread, and the reply is drawn under the ask.
 test("a retracted ask takes a reply in its thread, drawn under the ask", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply after a retraction" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply after a retraction" });
   const ask = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
   await resolveAsk(
     ask.id,
@@ -516,9 +524,10 @@ test("a retracted ask takes a reply in its thread, drawn under the ask", async (
 test("Conversation answers an ask in place, draws no event row, and keeps its cards mounted across the filter @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Review this specification.",
     title: "Activity",
   });
@@ -534,7 +543,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
     { anchor: { artifact: "spec", quote: "Review" }, body: "Review comment" },
     agent
   );
-  const child = await createIssue({ parent: issue.key, project: "CORE", title: "Child activity" });
+  const child = await createIssue({ parent: issue.key, project: core, title: "Child activity" });
   await patchIssue(child.key, { status: "in_progress" });
 
   const alice = await asUser(browser, "alice");
@@ -614,8 +623,9 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
 test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps to newer ones", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Unread and follow" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Unread and follow" });
   await createMessage(issue.key, { body: "First message" }, agent);
   await createMessage(issue.key, { body: "Second message" }, agent);
   await createMessage(issue.key, { body: "Third message" }, agent);
@@ -712,8 +722,9 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
 test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone conversation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone conversation" });
   for (let index = 0; index < 10; index += 1) {
     await createMessage(issue.key, { body: `Phone turn ${index}` }, agent);
   }
@@ -799,11 +810,12 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
 test("a long session title never widens the Activity list past its column @phone", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   const sessionId = "e2e-long-title-session";
   const longTitle =
     "Reviewing PR #1478 LEGION-67 conversation family visual polish pass at 390px and 1280px";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long author labels" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Long author labels" });
   // An upload is an Activity line - `<author> added <name>` - so the session's title is the
   // line's author column, which is the column under test.
   await createIssueArtifact(
@@ -853,8 +865,9 @@ test("a long session title never widens the Activity list past its column @phone
 test("the filter opens on All in a fresh context and ignores the settings an older build stored", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Filter buckets" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Filter buckets" });
   const answered = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }], question: "Ship the answered ask?" },
@@ -914,8 +927,9 @@ test("the filter opens on All in a fresh context and ignores the settings an old
 test("a closed ask older than 200 events is listed under Closed with no paging", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "No window" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "No window" });
   const oldest = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }], question: "The oldest conversation?" },
@@ -948,9 +962,10 @@ test("a closed ask older than 200 events is listed under Closed with no paging",
 // message thread make five cards however many status, claim and document events sit beside them.
 // `e2e/activity.e2e.ts` holds the other half - the rows the Conversation does not draw.
 test("the Conversation draws one card per conversation and no event row", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Review this specification.",
     title: "One card per conversation",
   });
@@ -1016,9 +1031,10 @@ async function commentReplyBlock(root: string, replyID: string) {
 // A reply that names one block of its parent quotes that block, not the parent's first line; an
 // edit that drops the block leaves the quote saying so.
 test("a reply quotes the passage it names", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([{ session_id: agent.actor.id, title: "Planner (e2e)" }]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Quoted passages" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Quoted passages" });
   const comment = await createComment(issue.key, { body: "Alpha first.\n\nBeta second." });
   const commentReply = await replyToCommentBlock(
     issue.key,
@@ -1104,9 +1120,10 @@ test("a reply quotes the passage it names", async ({ browser }) => {
 test("the editor keeps a cited passage's id through move, reword, split, delete and restore", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([{ session_id: agent.actor.id, title: "Planner (e2e)" }]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Edited passages" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Edited passages" });
   const body = "Alpha first.\n\nBeta second.\n\nGamma third.";
   const comment = await createComment(issue.key, { body });
   const reply = await replyToCommentBlock(
@@ -1280,9 +1297,10 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
 test("the editor keeps a cited passage's id when its whole text is typed over", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([{ session_id: agent.actor.id, title: "Planner (e2e)" }]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Retyped passage" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Retyped passage" });
   const body = "Alpha first.\n\nBeta second.\n\nGamma third.";
   const comment = await createComment(issue.key, { body });
   const reply = await replyToCommentBlock(

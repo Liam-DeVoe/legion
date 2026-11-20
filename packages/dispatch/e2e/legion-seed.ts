@@ -8,24 +8,22 @@ import { sql } from "./psql";
 
 const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
 
-/** The project the Settings section's daemon field names a daemon for. */
-export const LEGION_PROJECT = "ACME";
-
-/** The project and its person, which the Settings page's `Legion project` picker lists and the
- *  daemon routes write under. No daemon is named: the spec about naming one starts from here. */
-export async function seedLegionProject(): Promise<void> {
+/** The project, under the row's own key `project` (`rowKey("ACME")`, e2e/test.ts), and its
+ *  person, which the Settings page's `Legion project` picker lists and the daemon routes write
+ *  under. No daemon is named: the spec about naming one starts from here. */
+export async function seedLegionProject(project: string): Promise<void> {
   await sql(
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('${LEGION_PROJECT}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO people (email) VALUES ('alice') ON CONFLICT DO NOTHING`
   );
 }
 
 /** `seedLegionProject` with the project's daemon already named at `stateUrl`, so the Settings
  *  list shows it and its Remove has a row to take away. */
-export async function seedLegionDaemon(stateUrl: string): Promise<void> {
-  await seedLegionProject();
+export async function seedLegionDaemon(project: string, stateUrl: string): Promise<void> {
+  await seedLegionProject(project);
   await sql(
     `INSERT INTO legion_settings (project, state_url, created_by, updated_at)
-       VALUES ('${LEGION_PROJECT}', '${stateUrl}', ${SEED_ACTOR}, now())`
+       VALUES ('${project}', '${stateUrl}', ${SEED_ACTOR}, now())`
   );
 }

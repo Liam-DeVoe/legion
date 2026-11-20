@@ -18,7 +18,7 @@ import {
   unreadThreadRows,
 } from "./inbox-threads";
 import { holdPosts, refusePosts } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -48,13 +48,14 @@ interface Seeded {
 }
 
 async function seedMany(): Promise<Seeded> {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project: core, title });
     await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
   }
-  const threads = await createIssue({ project: "CORE", title: "Replay budget" });
+  const threads = await createIssue({ project: core, title: "Replay budget" });
   await seedBulkReplyThreads({ count: REPLY_THREADS, issueKey: threads.key, prefix: "Replay" });
   await seedBulkAgentThreads({ count: AGENT_THREADS, prefix: "Rollout" });
   // A Send the session took as a turn of its live conversation: no Inbox row, so one press

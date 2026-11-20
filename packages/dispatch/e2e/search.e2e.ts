@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -23,7 +23,8 @@ import { asUser } from "./users";
 test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
   browser,
 }) => {
-  const fixture = await seedSearchFixture();
+  const core = rowKey("CORE");
+  const fixture = await seedSearchFixture(core);
   const context = await asUser(browser, "alice");
 
   try {
@@ -52,10 +53,10 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     await expect(documentResult.locator("mark")).toHaveText([searchTerm, searchTerm]);
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(2);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-1: Navigation instruments"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-1: Navigation instruments"]`)
     ).toBeVisible();
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-2: Other work"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-2: Other work"]`)
     ).toBeVisible();
 
     const documentID = await documentResult.getAttribute("id");
@@ -101,8 +102,9 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
 test("a search term lists marked document, comment, ask, and issue-title results in issue groups", async ({
   browser,
 }) => {
-  await seedSearchFixture();
-  const titleIssue = await createIssue({ project: "CORE", title: "Astrolabe calibration" });
+  const core = rowKey("CORE");
+  await seedSearchFixture(core);
+  const titleIssue = await createIssue({ project: core, title: "Astrolabe calibration" });
   await createAsk(titleIssue.key, { question: "Who calibrates the astrolabe?" }, searchSession);
   const context = await asUser(browser, "alice");
 
@@ -129,7 +131,7 @@ test("a search term lists marked document, comment, ask, and issue-title results
     await expect(foundByItsSpec.locator("mark")).toHaveCount(0);
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(3);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-4: Astrolabe calibration"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-4: Astrolabe calibration"]`)
     ).toBeVisible();
   } finally {
     await context.close();
@@ -139,8 +141,9 @@ test("a search term lists marked document, comment, ask, and issue-title results
 test("an ask hit says whether it is answered, and an answered one shows its latest answer, who gave it and the options chosen", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Planetarium" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Planetarium" });
   const answered = await createAsk(
     issue.key,
     {
@@ -220,12 +223,13 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 test("a project-document hit is grouped under the document and opens it; a message hit opens its Conversation turn", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const document = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const document = await createProjectDocument(core, {
     content: "# Design notes\n\nThe sextant sights the horizon.\n",
     name: "Design notes",
   });
-  const issue = await createIssue({ project: "CORE", title: "Sextant work" });
+  const issue = await createIssue({ project: core, title: "Sextant work" });
   const message = await createMessage(
     issue.key,
     { body: "Sextant calibration done." },
@@ -242,10 +246,10 @@ test("a project-document hit is grouped under the document and opens it; a messa
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}: Design notes"]`)
     ).toBeVisible();
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}: Design notes"]`)
     ).not.toHaveAttribute("data-status");
     await expect(
       page.locator(`[role="presentation"][aria-label="${issue.key}: Sextant work"]`)
@@ -266,7 +270,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
     await page.getByRole("combobox", { name: "Search" }).fill("sextant");
     await dialog.getByRole("option", { name: /^doc / }).click();
     await expect(page).toHaveURL(
-      new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant$`)
+      new RegExp(`/projects/${core}/documents/${document.artifact.slug}\\?q=sextant$`)
     );
     await expect(documentEditor(page)).toContainText("sextant");
   } finally {
@@ -279,8 +283,9 @@ test("a project-document hit is grouped under the document and opens it; a messa
 test("the palette's keyboard hints show for a pointer and not for a touch reader @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Conversation view" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Conversation view" });
 
   const alice = await asUser(browser, "alice");
   try {

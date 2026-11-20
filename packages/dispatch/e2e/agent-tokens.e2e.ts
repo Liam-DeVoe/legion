@@ -1,5 +1,5 @@
 import { baseUrl, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
@@ -17,8 +17,9 @@ async function createAskWithToken(issue: string, token: string): Promise<Respons
 test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Agent token attribution" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Agent token attribution" });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   const alicePage = await alice.newPage();

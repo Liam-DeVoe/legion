@@ -39,7 +39,7 @@ import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -92,9 +92,10 @@ const archivist: FakeSession = {
 test("Agents puts who needs you first, groups the rest by what each is doing, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @pr", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner, reviewer, silent, archivist]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Agent page activity" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Agent page activity" });
   const asPlanner = {
     actor: { id: planner.session_id, kind: "session" as const },
     as: "agent" as const,
@@ -106,10 +107,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
   // The same two turns on an issue Bob holds: the card's first number is Alice's own work, so
   // neither of these is in it, while the second counts what waits on the Planner whoever holds
   // the issue.
-  const theirs = await createIssue(
-    { project: "CORE", title: "Bob's agent work" },
-    { login: "bob" }
-  );
+  const theirs = await createIssue({ project: core, title: "Bob's agent work" }, { login: "bob" });
   await createAsk(theirs.key, { question: "Third" }, asPlanner);
   const theirsAnswered = await createAsk(theirs.key, { question: "Fourth" }, asPlanner);
   await createComment(
@@ -533,9 +531,10 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
 });
 
 test("a session's untargeted reply lands in the open conversation", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Untargeted reply" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Untargeted reply" });
   // Dispatch activity of its own, so the card sits under `Active` at the top of the list.
   await createComment(
     issue.key,
@@ -573,9 +572,10 @@ test("a session's untargeted reply lands in the open conversation", async ({ bro
 // SLOW(>=2s): a seed, one page load and the live delivery the row observes; the disconnect hook
 // already stands in for every wait a reconnect would otherwise cost.
 test("a reconnect picks up a Clear made from another device", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Cleared elsewhere" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Cleared elsewhere" });
   await createComment(
     issue.key,
     { body: "Looking at it." },
@@ -811,6 +811,7 @@ test("the header checkbox selects and clears only the rows the filters match, by
 test("select-all ticks the rows in the order the page shows them, not the order the registry lists them", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const session = (id: string, title: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${id}`,
@@ -822,8 +823,8 @@ test("select-all ticks the rows in the order the page shows them, not the order 
   // Each speaks on an issue, oldest first, so the page lists them newest-activity-first - Alpha,
   // Mid, Zeta - while the registry is seeded in the opposite order, which is the order select-all
   // used to walk.
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Ordering" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Ordering" });
   for (const id of ["zeta", "mid", "alpha"]) {
     await createComment(
       issue.key,
@@ -1879,6 +1880,7 @@ test("the Agents page loads through one dropped request for its agents", async (
 test("an agent row is one line at 1440, and at 390 puts the age and the whole path under the name @phone", async ({
   browser,
 }, testInfo) => {
+  const rowProjectKey = rowKey("ROW");
   const isPhone = testInfo.project.name === "iphone";
   // The row the page drew before this change, measured with these same three sessions at the
   // commit this branch builds on (7567aeb6): 90 px at 1440 with the 64-character name wrapped
@@ -1919,8 +1921,8 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
 
   // Each session comments once, so all three are Active and none is grouped by an activity the
   // others lack.
-  await createProject({ key: "ROW", name: "Row" });
-  const issue = await createIssue({ project: "ROW", title: "Agent row widths" });
+  await createProject({ key: rowProjectKey, name: "Row" });
+  const issue = await createIssue({ project: rowProjectKey, title: "Agent row widths" });
   for (const session of [longName, unbrokenName, shortName]) {
     await createComment(
       issue.key,
@@ -2033,6 +2035,7 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
 test("an agent row's directory is still shown beside the longest name in use, so its path stays one hover away", async ({
   browser,
 }) => {
+  const dirKey = rowKey("DIR");
   // The name the spec sizes the row against: the longest in use on the Agents page today.
   const name64 = "Legion implementer · INFRA-92 — the whole name shows on this row";
   expect(name64).toHaveLength(64);
@@ -2055,8 +2058,8 @@ test("an agent row's directory is still shown beside the longest name in use, so
 
   // Dispatch activity of its own, so both rows sit under `Active`, at the top of the list where
   // the window draws them and their widths can be measured.
-  await createProject({ key: "DIR", name: "Directory" });
-  const issue = await createIssue({ project: "DIR", title: "Agent row directory" });
+  await createProject({ key: dirKey, name: "Directory" });
+  const issue = await createIssue({ project: dirKey, title: "Agent row directory" });
   for (const session of [longName, shortName]) {
     await createComment(
       issue.key,

@@ -16,21 +16,23 @@ const SETTINGS = `INSERT INTO delivery_settings (
    )`;
 
 /** The slice 1 timeline's fixture, in 2024-06-01: two population pull requests (#1 shipped by
- *  deploy run 500 and attributed to ACME-1, a P0 issue; #2 waiting, a rework, with no issue),
- *  the deploy run with its jobs, and a failed run (501). */
-export async function seedDeliveryFixture(): Promise<void> {
+ *  deploy run 500 and attributed to `<project>-1`, a P0 issue; #2 waiting, a rework, with no
+ *  issue), the deploy run with its jobs, and a failed run (501). `project` is the key of the
+ *  project the issue is in: a real-stack row passes its own (`rowKey("ACME")`, e2e/test.ts), and
+ *  the review corpus (e2e/review-seed.ts) takes `ACME`. */
+export async function seedDeliveryFixture(project = "ACME"): Promise<void> {
   await sql(
     SETTINGS,
     // Every project names a default assignee, so the column takes none of these rows without
     // one; alice is the person every row of this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
-     VALUES ('ACME-1', 'ACME', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
+     VALUES ('${project}-1', '${project}', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
        repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
      ) VALUES
        ('acme/widgets', 1, 'feat: a shipped widget', 'https://github.com/acme/widgets/pull/1', 'octocat',
-        '2024-06-01T00:00:00Z', '2024-06-01T01:00:00Z', 12, 3, false, 'ACME-1', ARRAY[]::text[], false),
+        '2024-06-01T00:00:00Z', '2024-06-01T01:00:00Z', 12, 3, false, '${project}-1', ARRAY[]::text[], false),
        ('acme/widgets', 2, 'fix: a waiting widget', 'https://github.com/acme/widgets/pull/2', 'octocat',
         '2024-06-01T02:00:00Z', '2024-06-01T03:00:00Z', 4, 1, true, null, ARRAY[]::text[], false)`,
     `INSERT INTO delivery_runs (
@@ -61,13 +63,14 @@ export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-
  *  population pull requests merged in the last seven days, first written by sessions
  *  `e2e-planner-1` and `e2e-planner-2`, and one merged 20 days ago, first written by
  *  `e2e-reviewer`. Each session carries the title Dispatch learns it by: an event the session
- *  wrote with its origin's `session_title` (delivery/agents.go's ResolveSessionTitles). */
-export async function seedSessionGroupsFixture(): Promise<void> {
+ *  wrote with its origin's `session_title` (delivery/agents.go's ResolveSessionTitles). The
+ *  events are on issue 7 of `project`, the row's own key (`rowKey("ACME")`, e2e/test.ts). */
+export async function seedSessionGroupsFixture(project: string): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
-     VALUES ('ACME-7', 'ACME', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
+     VALUES ('${project}-7', '${project}', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
        repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
      ) VALUES
@@ -78,11 +81,11 @@ export async function seedSessionGroupsFixture(): Promise<void> {
        ('acme/widgets', 13, 'feat: review the widgets', 'https://github.com/acme/widgets/pull/13', 'octocat',
         now() - interval '20 days 1 hour', now() - interval '20 days', 5, 5, false, null, ARRAY['e2e-reviewer'], false)`,
     `INSERT INTO events (issue_key, seq, type, actor, payload, notify, created_at) VALUES
-       ('ACME-7', 1, 'message.created',
+       ('${project}-7', 1, 'message.created',
         '{"kind":"session","id":"e2e-planner-1","origin":{"session_title":"Planner, first run"}}', '{}', false, now() - interval '4 days'),
-       ('ACME-7', 2, 'message.created',
+       ('${project}-7', 2, 'message.created',
         '{"kind":"session","id":"e2e-planner-2","origin":{"session_title":"Planner, second run"}}', '{}', false, now() - interval '4 days'),
-       ('ACME-7', 3, 'message.created',
+       ('${project}-7', 3, 'message.created',
         '{"kind":"session","id":"e2e-reviewer","origin":{"session_title":"Reviewer"}}', '{}', false, now() - interval '21 days')`
   );
 }
@@ -92,52 +95,53 @@ export async function seedSessionGroupsFixture(): Promise<void> {
 export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" } as const;
 
 /** The measures fixture: the prototype fixture's 14 population pull requests and 8 deploy runs,
- *  each run's production job (`widgets-release / widgets-release`) and failed jobs, and project
- *  ACME's four issues, ACME-103 the one open P0 with neither a claim nor a route. Every run is a
- *  push on main. Its expected measures are the prototype's own computeDora with each deploy derived
- *  by its own containment (LEGION-567 slice 2 plan, "How the expected values are produced"). */
-export async function seedMeasuresFixture(): Promise<void> {
+ *  each run's production job (`widgets-release / widgets-release`) and failed jobs, and the four
+ *  issues of `project` (the row's own key, `rowKey("ACME")`, e2e/test.ts), issue 103 the one open
+ *  P0 with neither a claim nor a route. Every run is a push on main. Its expected measures are
+ *  the prototype's own computeDora with each deploy derived by its own containment (LEGION-567
+ *  slice 2 plan, "How the expected values are produced"). */
+export async function seedMeasuresFixture(project: string): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
-       ('ACME-100', 'ACME', 100, 'Build timeline UI', 'in_progress', 1, null,
+       ('${project}-100', '${project}', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),
-       ('ACME-101', 'ACME', 101, 'DORA metrics module', 'in_progress', 2, 'role:e2e', null, null, ${SEED_ACTOR}, 'U101'),
-       ('ACME-102', 'ACME', 102, 'Collector schema', 'done', 1, null, null, null, ${SEED_ACTOR}, 'U102'),
-       ('ACME-103', 'ACME', 103, 'Production deploy gate flakes', 'triage', 0, null, null, null, ${SEED_ACTOR}, 'U103')`,
+       ('${project}-101', '${project}', 101, 'DORA metrics module', 'in_progress', 2, 'role:e2e', null, null, ${SEED_ACTOR}, 'U101'),
+       ('${project}-102', '${project}', 102, 'Collector schema', 'done', 1, null, null, null, ${SEED_ACTOR}, 'U102'),
+       ('${project}-103', '${project}', 103, 'Production deploy gate flakes', 'triage', 0, null, null, null, ${SEED_ACTOR}, 'U103')`,
     `INSERT INTO delivery_pull_requests (
        repo, number, title, url, author, created_at, merged_at, first_commit_at,
        additions, deletions, rework, issue_key, sessions, partial
      ) VALUES
        ('acme/widgets', 101, 'Add timeline zoom brush', 'https://github.com/acme/widgets/pull/101', 'octocat',
-        '2026-09-04T18:00:00Z', '2026-09-05T12:00:00Z', '2026-09-04T15:00:00Z', 210, 12, false, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-04T18:00:00Z', '2026-09-05T12:00:00Z', '2026-09-04T15:00:00Z', 210, 12, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 102, 'fix: timeline brush jumps on resize', 'https://github.com/acme/widgets/pull/102', 'octocat',
-        '2026-09-06T09:00:00Z', '2026-09-06T13:00:00Z', '2026-09-06T08:30:00Z', 18, 4, true, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-06T09:00:00Z', '2026-09-06T13:00:00Z', '2026-09-06T08:30:00Z', 18, 4, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 103, 'Add DORA lead-time calc', 'https://github.com/acme/widgets/pull/103', 'octocat',
-        '2026-09-07T10:00:00Z', '2026-09-07T16:00:00Z', '2026-09-07T08:00:00Z', 140, 6, false, 'ACME-101', ARRAY[]::text[], false),
+        '2026-09-07T10:00:00Z', '2026-09-07T16:00:00Z', '2026-09-07T08:00:00Z', 140, 6, false, '${project}-101', ARRAY[]::text[], false),
        ('acme/widgets', 104, 'Add facet filtering module', 'https://github.com/acme/widgets/pull/104', 'octocat',
-        '2026-09-08T09:00:00Z', '2026-09-08T15:00:00Z', '2026-09-08T07:00:00Z', 95, 3, false, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-08T09:00:00Z', '2026-09-08T15:00:00Z', '2026-09-08T07:00:00Z', 95, 3, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 105, 'revert: Add facet filtering module', 'https://github.com/acme/widgets/pull/105', 'octocat',
-        '2026-09-09T08:00:00Z', '2026-09-09T09:00:00Z', '2026-09-09T07:45:00Z', 3, 95, true, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-09T08:00:00Z', '2026-09-09T09:00:00Z', '2026-09-09T07:45:00Z', 3, 95, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 106, 'Add drill-down panel', 'https://github.com/acme/widgets/pull/106', 'octocat',
-        '2026-09-10T09:00:00Z', '2026-09-10T17:00:00Z', '2026-09-10T08:00:00Z', 180, 20, false, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-10T09:00:00Z', '2026-09-10T17:00:00Z', '2026-09-10T08:00:00Z', 180, 20, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 107, 'hotfix: drill-down panel crash on null issue', 'https://github.com/acme/widgets/pull/107', 'octocat',
-        '2026-09-11T10:00:00Z', '2026-09-11T11:00:00Z', '2026-09-11T09:45:00Z', 9, 2, true, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-11T10:00:00Z', '2026-09-11T11:00:00Z', '2026-09-11T09:45:00Z', 9, 2, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/gadgets', 20, 'Add dispatch API client', 'https://github.com/acme/gadgets/pull/20', 'octocat',
-        '2026-09-12T09:00:00Z', '2026-09-12T14:00:00Z', '2026-09-12T08:00:00Z', 60, 0, false, 'ACME-102', ARRAY[]::text[], false),
+        '2026-09-12T09:00:00Z', '2026-09-12T14:00:00Z', '2026-09-12T08:00:00Z', 60, 0, false, '${project}-102', ARRAY[]::text[], false),
        ('acme/widgets', 108, 'Wire SSE events endpoint', 'https://github.com/acme/widgets/pull/108', 'octocat',
-        '2026-09-13T07:00:00Z', '2026-09-13T08:00:00Z', '2026-09-13T06:00:00Z', 75, 5, false, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-13T07:00:00Z', '2026-09-13T08:00:00Z', '2026-09-13T06:00:00Z', 75, 5, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 109, 'Add priority facet counts', 'https://github.com/acme/widgets/pull/109', 'octocat',
-        '2026-09-13T08:00:00Z', '2026-09-13T08:30:00Z', '2026-09-13T07:00:00Z', 40, 2, false, 'ACME-101', ARRAY[]::text[], false),
+        '2026-09-13T08:00:00Z', '2026-09-13T08:30:00Z', '2026-09-13T07:00:00Z', 40, 2, false, '${project}-101', ARRAY[]::text[], false),
        ('acme/widgets', 110, 'Improve waiting-to-deploy step line', 'https://github.com/acme/widgets/pull/110', 'octocat',
-        '2026-09-15T09:00:00Z', '2026-09-15T15:00:00Z', '2026-09-15T08:00:00Z', 30, 8, false, 'ACME-100', ARRAY[]::text[], false),
+        '2026-09-15T09:00:00Z', '2026-09-15T15:00:00Z', '2026-09-15T08:00:00Z', 30, 8, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', 111, 'Add component hierarchy filter', 'https://github.com/acme/widgets/pull/111', 'octocat',
         '2026-09-16T09:00:00Z', '2026-09-16T16:00:00Z', '2026-09-16T08:00:00Z', 120, 10, false, null, ARRAY[]::text[], false),
        ('acme/widgets', 112, 'fix: component hierarchy includes grandchildren', 'https://github.com/acme/widgets/pull/112', 'octocat',
         '2026-09-17T07:00:00Z', '2026-09-17T07:30:00Z', '2026-09-17T06:45:00Z', 14, 3, true, null, ARRAY[]::text[], false),
        ('acme/widgets', 113, 'Add rework share metric', 'https://github.com/acme/widgets/pull/113', 'octocat',
-        '2026-09-18T09:00:00Z', '2026-09-18T15:00:00Z', '2026-09-18T08:00:00Z', 50, 4, false, 'ACME-101', ARRAY[]::text[], false)`,
+        '2026-09-18T09:00:00Z', '2026-09-18T15:00:00Z', '2026-09-18T08:00:00Z', 50, 4, false, '${project}-101', ARRAY[]::text[], false)`,
     `INSERT INTO delivery_runs (
        repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event
      ) VALUES

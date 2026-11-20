@@ -1,6 +1,14 @@
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
 import { boxesApart } from "./layout";
-import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
+import {
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+  rowKey,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
@@ -17,8 +25,9 @@ const session = {
  *  newer than every ask and comment: a held or failing asks read cannot change which
  *  conversation is newest, only whether the list is on the page yet. */
 async function seedConversation(title: string) {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title });
   await createAsk(issue.key, { question: "Which landing should the reader get?" }, session);
   await createComment(issue.key, { body: "A root comment under the ask" });
   for (let index = 0; index < 8; index += 1) {

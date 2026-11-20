@@ -1,6 +1,6 @@
 import { createIssue, createProject, search as searchByApi } from "./api";
 import { embeddedQueries, forgetEmbedCalls, setEmbedMarkers } from "./fake-embedder-helpers";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The bar's two tiers, read from the embeddings each costs (dispatch://INFRA-1042): a keystroke
@@ -27,10 +27,11 @@ interface TiersFixture {
 }
 
 async function seedTiersFixture(): Promise<TiersFixture> {
-  await createProject({ key: "CORE", name: "Core" });
-  const sightings = await createIssue({ project: "CORE", title: "Quasar sightings log" });
-  const brightness = await createIssue({ project: "CORE", title: "Quasar brightness notes" });
-  const octant = await createIssue({ project: "CORE", title: "Octant calibration" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const sightings = await createIssue({ project: core, title: "Quasar sightings log" });
+  const brightness = await createIssue({ project: core, title: "Quasar brightness notes" });
+  const octant = await createIssue({ project: core, title: "Octant calibration" });
   return { brightness: brightness.key, octant: octant.key, sightings: sightings.key };
 }
 

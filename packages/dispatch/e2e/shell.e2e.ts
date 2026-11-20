@@ -4,7 +4,7 @@ import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -151,8 +151,9 @@ test("signing out revokes the session on the server and returns to the sign-in p
 test("a chunk that fails after a Download link was followed reloads the page @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "Downloadable spec.", title: "Files" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "Downloadable spec.", title: "Files" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   // The spec's document transport is still downloading when the reader opens the Artifacts tab
@@ -400,9 +401,10 @@ for (const leaving of ["beforeunload", "pagehide"]) {
 test("the document editor renders headings and ordered lists with real typography", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Title\n\nSome body text.\n\n## Section\n\n### Detail\n\n1. First\n2. Second\n",
     title: "Spec typography",
   });

@@ -50,10 +50,61 @@
  *  visual review (e2e/visual.e2e.ts), whose rows seed outside Playwright.
  */
 
+import { createHash, randomBytes } from "node:crypto";
+
 import { test as base } from "@playwright/test";
 
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
+
+/** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
+ *  second run of the suite against the same database, or a retry in a new worker, draws others,
+ *  so it never meets a key the first one made. */
+const processNonce = randomBytes(16).toString("hex");
+
+/** How many keys the five-letter suffix of `rowKey` tells apart: 26 ** 5 (A-Z). */
+const SUFFIXES = 26 ** 5;
+
+/** The project key the running row makes and names for the key `logical` its spec writes, so
+ *  that no two rows share a project and a row reads none another row left.
+ *
+ *  It is the first five characters of `logical` (all of it when it is shorter) and five more,
+ *  the letters A-Z in base 26, from a SHA-256 of the row (`testId`, `repeatEachIndex`, `retry`),
+ *  of this process's nonce and of `logical` itself, so two logical keys of one row differ even
+ *  when their first five characters agree. A key is at most ten characters, and starts with A-Z,
+ *  as the server's ProjectKeyPattern requires (`^[A-Z][A-Z0-9]{1,9}$`,
+ *  packages/envoy/internal/contracts/generated.go).
+ *
+ *  The suffix is letters, never digits, so a key holds a digit only where its logical key does:
+ *  a count drawn beside a key (`toContainText("2")`), or a digit a row says is not there
+ *  (`not.toContainText("1")`), never meets a digit the key brought, and reads the same text it
+ *  read beside "CORE".
+ *
+ *  Within a row every call with the same `logical` answers the same key, so a row, its hooks and
+ *  the helpers it calls agree without passing the key around. Outside a running row it throws,
+ *  as `test.info()` does: a key held at module scope belongs to no row.
+ *
+ *      const core = rowKey("CORE");
+ *      await createProject({ key: core, name: "Core" });
+ *      await page.goto(`/projects/${core}`); */
+export function rowKey(logical: string): string {
+  if (!/^[A-Z][A-Z0-9]*$/.test(logical)) {
+    throw new Error(
+      `rowKey: the logical key ${JSON.stringify(logical)} must start with A-Z and hold only A-Z and 0-9`
+    );
+  }
+  const row = base.info();
+  const digest = createHash("sha256")
+    .update([row.testId, row.repeatEachIndex, row.retry, processNonce, logical].join("\n"))
+    .digest();
+  let rest = digest.readUIntBE(0, 6) % SUFFIXES;
+  let suffix = "";
+  for (let place = 0; place < 5; place += 1) {
+    suffix = String.fromCharCode(65 + (rest % 26)) + suffix;
+    rest = Math.floor(rest / 26);
+  }
+  return `${logical.slice(0, 5)}${suffix}`;
+}
 
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {

@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -18,8 +18,9 @@ import { asUser } from "./users";
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Palette actions" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Palette actions" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -129,8 +130,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
 });
 
 test("stop-word searches show empty results without Retry", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stop word search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stop word search" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -156,8 +158,9 @@ test("stop-word searches show empty results without Retry", async ({ browser }) 
 test("/ opens the same bar, and a query that is no action's start lists the hits above the actions", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Astrolabe issue calibration" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Astrolabe issue calibration" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -224,10 +227,11 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
 });
 
 test("a query that holds a card move further in moves no card on Enter", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Two cards in one column, so `Move card down` from the first one has somewhere to go.
-  const first = await createIssue({ project: "CORE", title: "Board query one" });
-  const second = await createIssue({ project: "CORE", title: "Board query two" });
+  const first = await createIssue({ project: core, title: "Board query one" });
+  const second = await createIssue({ project: core, title: "Board query two" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -239,7 +243,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       }
     });
     await page.setViewportSize({ height: 900, width: 1280 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.locator(`[data-board-card="${first.key}"]`)).toBeVisible();
     await expect(page.locator(`[data-board-card="${second.key}"]`)).toBeVisible();
@@ -312,8 +316,9 @@ test("a query that holds a card move further in moves no card on Enter", async (
 test("a header write in flight withdraws the rows whose buttons it disables", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "In-flight guard" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "In-flight guard" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -350,8 +355,9 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
 test("a Set priority row the server refuses is reported by the header, in the digit key's one failure", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refused palette priority" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refused palette priority" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -407,7 +413,8 @@ test("a Set priority row the server refuses is reported by the header, in the di
 test("the Agents page offers a row's picker, which then commits a keyboard pick on Enter", async ({
   browser,
 }) => {
-  await seedAgents();
+  const core = rowKey("CORE");
+  await seedAgents(core);
   const context = await asUser(browser, "alice");
 
   try {
@@ -446,7 +453,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await page.keyboard.press("ArrowDown");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(toggle).toContainText("CORE-2");
+    await expect(toggle).toContainText(`${core}-2`);
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
     await expect(field).toHaveValue("@Planner");
@@ -458,8 +465,9 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
 test("hits that arrive after the reader has arrowed keep the highlight on the row they chose", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Go held search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Go held search" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -505,7 +513,7 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     await expect(dialog.getByRole("option", { name: /Go held search/ })).toHaveCount(1);
     await expect(input).toHaveAttribute("aria-activedescendant", documentsId as string);
     await input.press("Enter");
-    await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/documents$`));
   } finally {
     await context.close();
   }
@@ -514,8 +522,9 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
 test("an arrow pressed before the search answers reaches no action the query finds mid-label", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Arrow before the issue search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Arrow before the issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
   const context = await asUser(browser, "alice");
 
@@ -572,8 +581,9 @@ test("an arrow pressed before the search answers reaches no action the query fin
 test("a stale answer refreshing for the same query keeps the arrows off the actions it finds mid-label", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stale answer for an issue search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stale answer for an issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
   const context = await asUser(browser, "alice");
 
@@ -632,8 +642,9 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
 });
 
 test("a row whose control has gone since the palette opened does nothing", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stale row" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stale row" });
   await patchIssue(issue.key, { status: "done" });
   const context = await asUser(browser, "alice");
 

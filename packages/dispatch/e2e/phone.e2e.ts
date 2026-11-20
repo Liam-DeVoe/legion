@@ -26,7 +26,7 @@ import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -70,10 +70,11 @@ async function assertTabTrapped(page: Page, selector: string): Promise<void> {
 test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone @pr", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   const isPhone = testInfo.project.name === "iphone";
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Cache invalidation issue with a long descriptive title",
   });
@@ -93,7 +94,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect(closeButton).toBeFocused();
       await assertTabTrapped(page, '[aria-label="Navigation"]');
 
-      const keySpan = page.getByText("CORE", { exact: true });
+      const keySpan = page.getByText(core, { exact: true });
       const [keyBox, lineHeight] = await Promise.all([
         keySpan.boundingBox(),
         keySpan.evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight)),
@@ -209,9 +210,10 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
 test("a phone thread trap skips a held composer's disabled controls @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Held composer focus trap",
   });
@@ -270,9 +272,10 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
 test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Held composer reverse focus trap",
   });
@@ -326,8 +329,9 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
 test("a project document has no horizontal overflow, 44px controls, and a Comments margin sheet @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: "# Design notes\\n\\nProject document body.",
     name: "Design notes",
   });
@@ -335,7 +339,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/design-notes");
+    await page.goto(`/projects/${core}/documents/design-notes`);
     await expect(documentEditor(page)).toContainText("Project document body.");
     expect(
       await page.evaluate(
@@ -370,6 +374,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
 test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone @phone-only", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([
     {
       capabilities: ["aside", "btw"],
@@ -380,8 +385,8 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
       title: "planner",
     },
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone inline mentions" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone inline mentions" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -422,11 +427,12 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
 test("an inline link keeps its line and grows its hit box without covering its neighbours @phone @phone-only", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // The settle proof below is bounded at 20 s and two trial clicks at 5 s each stand after it,
   // all of them failure budget: a passing run spends none of it.
   test.setTimeout(60_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Inline links" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Inline links" });
   const ask = await createAsk(
     issue.key,
     { question: "Which transport?" },
@@ -772,6 +778,7 @@ async function expectStacked(control: Locator): Promise<void> {
 test("a long name ends in an ellipsis wherever a link or control truncates it @phone", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // A passing run is seconds; the budget is for a failing one, where each `expect.soft` below
   // burns the 15 s expect timeout before the next is tried.
   test.setTimeout(60_000);
@@ -805,13 +812,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       title: longTitle,
     },
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stage 4b runbook" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stage 4b runbook" });
   await patchIssue(issue.key, { route: longRoute });
-  const labelled = await createIssue({ project: "CORE", title: "Labelled" });
+  const labelled = await createIssue({ project: core, title: "Labelled" });
   await patchIssue(labelled.key, { labels: [longLabel] });
   await createIssueArtifact(issue.key, { content: "# Runbook\n", name: longName });
-  const document = await createProjectDocument("CORE", { content: "# Runbook\n", name: longName });
+  const document = await createProjectDocument(core, { content: "# Runbook\n", name: longName });
   const documentAsk = await createArtifactAsk(
     document.artifact.id,
     { question: "Does this runbook cover it?" },
@@ -841,7 +848,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
   try {
     // The project's Documents list: the name ends in an ellipsis, and its kind (with the latest
     // version's size after it) and time share one line rather than stacking in a second column.
-    await page.goto("/projects/CORE/documents");
+    await page.goto(`/projects/${core}/documents`);
     const row = page.getByRole("listitem", { name: longName });
     await expectEllipsis(row.getByRole("link", { name: longName }));
     const details = await row.evaluate((node) => {

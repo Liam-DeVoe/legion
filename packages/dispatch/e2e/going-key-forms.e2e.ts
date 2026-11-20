@@ -1,6 +1,6 @@
 import { createIssue, createProject } from "./api";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Check k3 of dispatch://INFRA-1042/artifact/verification-md, serving R3: an issue key finds its
@@ -38,19 +38,20 @@ async function openSearch(page: Page): Promise<void> {
 test("every form of an issue key puts that issue first on a page of its project", async ({
   browser,
 }) => {
+  const infraKey = rowKey("INFRA");
   // Every check here carries the suite's own 15 s deadline, and a run where several of the
   // forms miss reports each of them, which takes longer than one row's default budget.
   test.setTimeout(120_000);
-  const key = await seedProject("INFRA");
+  const key = await seedProject(infraKey);
   // A second project holding the same decoy title: a search from INFRA's own page still
   // answers this project's rows, since the page narrows nothing.
-  await seedProject("LINUX");
+  await seedProject(rowKey("LINUX"));
   const number = key.slice(key.indexOf("-") + 1);
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await page.goto("/projects/INFRA");
+    await page.goto(`/projects/${infraKey}`);
     await openSearch(page);
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
@@ -85,8 +86,8 @@ test("on a page naming no project the bare number heads the list with every proj
   // Both leading rows are checked by themselves, and a run where neither is the issue reports
   // both, each against the suite's own 15 s deadline.
   test.setTimeout(60_000);
-  const infra = await seedProject("INFRA");
-  const linux = await seedProject("LINUX");
+  const infra = await seedProject(rowKey("INFRA"));
+  const linux = await seedProject(rowKey("LINUX"));
   const context = await asUser(browser, "alice");
 
   try {

@@ -14,7 +14,7 @@ import {
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 /**
  * A person declines to answer a question, and the agent that asked is told so
@@ -81,8 +81,9 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 test("a question declined from the Inbox with a note leaves the list and reads declined on the issue page", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Rollout order" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Rollout order" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Which service moves first?" },
@@ -119,8 +120,9 @@ test("a question declined from the Inbox with a note leaves the list and reads d
 // SLOW(>=2s): the reading column drawn at its own width, a decline written in it, and the issue
 // page loaded for the record it leaves.
 test("the Inbox's reading pane declines a question with no note at all", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Retry budget" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Retry budget" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Should the mirror keep retrying?" },
@@ -154,15 +156,16 @@ test("the Inbox's reading pane declines a question with no note at all", async (
 test("an approval request beside a question in one Inbox draws no Decline to answer", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const questionIssue = await createIssue({ project: "CORE", title: "Rollout order" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const questionIssue = await createIssue({ project: core, title: "Rollout order" });
   const question = await createAsk(
     questionIssue.key,
     { options: shipOrHold, question: "Which service moves first?" },
     session
   );
   const approvalIssue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Ledger rollout\n\nThe ledger moves first, and the mirror follows it.\n",
     title: "Ledger rollout",
   });
@@ -198,10 +201,11 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
 test("a document's decision block and the issue page both draw Decline to answer", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const block = "rollout-order";
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: [
       "# Rollout order",
       "",
@@ -235,8 +239,9 @@ test("a document's decision block and the issue page both draw Decline to answer
 // SLOW(>=2s): a seeded reply waited for until the server has moved the turn, then the Inbox and
 // the issue page.
 test("a question waiting on its agent is declined from the Inbox", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Cold start" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Cold start" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Does a cold start replay the whole ledger?" },
@@ -264,9 +269,10 @@ test("a question waiting on its agent is declined from the Inbox", async ({ page
 test("the margin folds a declined ask away with a retracted one and keeps the answered decision", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: [
       "# Mirror runbook",
       "",
@@ -320,8 +326,9 @@ test("the margin folds a declined ask away with a retracted one and keeps the an
 test("an answered ask and a declined ask draw no Decline to answer, which an open one draws", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Lease handover" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Lease handover" });
   const ask = (question: string) =>
     createAsk(issue.key, { options: shipOrHold, question }, session);
   const answered = await ask("Does the lease move with the ledger?");
@@ -351,8 +358,9 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
 test("the decline dialog counts what is left of the note's bound and takes a note of exactly it", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay window" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay window" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Which window does the mirror replay?" },

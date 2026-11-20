@@ -18,7 +18,7 @@ import {
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, type Response, test } from "./test";
+import { expect, type Locator, type Page, type Response, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -75,8 +75,9 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
 test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pictures in messages" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pictures in messages" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -122,8 +123,9 @@ test("a picture pasted into an issue message shows inline in the conversation @p
 });
 
 test("a picture pasted into an ask's answer shows inline in the answer", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pictures in answers" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pictures in answers" });
   const ask = await createAsk(
     issue.key,
     { question: "Which screen is wrong?" },
@@ -224,9 +226,10 @@ test("a picture pasted into a direct message on the Agents page shows inline and
 test("a picture written into a spec draws in the editor and in a past version, with or without a version, and its markdown is kept", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Pictures\n\nIntro.",
     title: "Pictures in specs",
   });
@@ -310,9 +313,10 @@ test("a picture written into a spec draws in the editor and in a past version, w
 test("a picture line the browser cannot draw, at a version or not, shows a link; a web picture stays an <img>", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Pictures\n\nIntro.",
     title: "Pictures that are links",
   });
@@ -408,8 +412,9 @@ test("a picture line the browser cannot draw, at a version or not, shows a link;
 test("a long-named picture in a comment draws, its link to a long-named document opens it, and the bare page URL stays a plain link", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long names" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Long names" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

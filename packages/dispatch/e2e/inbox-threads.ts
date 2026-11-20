@@ -421,22 +421,24 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * instead (`myRepliesOwner`, the server's replies.go).
  *
  * Shared by `inbox-threads.stub.e2e.ts` and `inbox-threads.e2e.ts`, whose rows read the same
- * list from two layers.
+ * list from two layers. `project` is the key of the project the issues are made in: the
+ * real-stack rows pass their own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording
+ * made under `CORE`.
  */
-export async function seedTwelve(): Promise<Twelve> {
+export async function seedTwelve(project = "CORE"): Promise<Twelve> {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: project, name: "Core" });
 
   for (const title of ["Lease handover", "Retry budget"]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project, title });
     await createAsk(issue.key, { question: `${title}: what is the rule?` }, asSession());
   }
-  await createIssue({ project: "CORE", spec: decisionSpec, title: "Rollout order" });
+  await createIssue({ project, spec: decisionSpec, title: "Rollout order" });
   await indexedRow((row) => row.block_id === DECISION_BLOCK);
 
   for (const title of ["Mirror runbook", "Clock drift"]) {
     const issue = await createIssue({
-      project: "CORE",
+      project,
       spec: `# ${title}\n\nThe mirror replays what the ledger wrote.\n`,
       title,
     });
@@ -452,14 +454,14 @@ export async function seedTwelve(): Promise<Twelve> {
     ["Audit clock", "Please fix the flaky clock test.", "Done: the clock test is green."],
     ["Lease renewal", "The lease renews twice an hour.", "It renews once an hour now."],
   ] as const) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project, title });
     replies.push(await seedCommentThread(issue.key, root, reply));
   }
-  const messageIssue = await createIssue({ project: "CORE", title: "Build status" });
+  const messageIssue = await createIssue({ project, title: "Build status" });
   replies.push(
     await seedMessageThread(messageIssue.key, "Where is the nightly build?", "On the mirror.")
   );
-  const askIssue = await createIssue({ project: "CORE", title: "Window size" });
+  const askIssue = await createIssue({ project, title: "Window size" });
   await patchIssue(askIssue.key, { assignee: "bob" });
   const askThread = await seedAskThread(
     askIssue.key,

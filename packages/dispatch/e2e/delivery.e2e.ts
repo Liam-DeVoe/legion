@@ -7,7 +7,7 @@ import {
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
 
@@ -113,7 +113,7 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
 }
 
 test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -134,7 +134,7 @@ test("the Delivery sidebar nav entry opens the delivery timeline", async ({ brow
 test("a facet lists each value with its count and narrows the PRs, kept in the URL", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -157,7 +157,7 @@ test("a facet lists each value with its count and narrows the PRs, kept in the U
 test("colour by priority with swimlanes splits the merges into one column per priority", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -178,7 +178,7 @@ test("colour by priority with swimlanes splits the merges into one column per pr
 test("hovering a deploy names its run, and clicking it lists what it shipped and every job", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -202,7 +202,7 @@ test("hovering a deploy names its run, and clicking it lists what it shipped and
 test("clicking a pipeline failure shows its failed job in red and every job's result", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -223,7 +223,7 @@ test("clicking a pipeline failure shows its failed job in red and every job's re
 test("dragging along the time axis sets a brush window, which the header clears", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -251,7 +251,7 @@ test("dragging along the time axis sets a brush window, which the header clears"
 });
 
 test("dragging the zoom slider zooms without setting a brush window", async ({ browser }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -280,7 +280,7 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
 test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone @phone-only", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   // The reconcile pass the server runs on its own five-minute tick (`ReconcileInterval`,
   // `delivery/reconcile.go`) can land anywhere inside this row: the fake GitHub holds no
   // installation for acme/widgets, so the pass fails its permission check and
@@ -355,7 +355,7 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 test("on a phone a reconcile error arriving under the finger widens nothing @phone @phone-only", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -387,7 +387,7 @@ test("on a phone a reconcile error arriving under the finger widens nothing @pho
 });
 
 test("the Repository facet narrows the list through the server", async ({ browser }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -412,7 +412,7 @@ test("the Repository facet narrows the list through the server", async ({ browse
 test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus back", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
@@ -442,7 +442,7 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
 test("the freshness row shows a named reconcile failure, distinct from mere staleness", async ({
   browser,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   // A reconcile pass that failed (a missing GitHub App permission here) still advances nothing
   // happy: last_reconcile_at is set (a prior pass did succeed once) but last_error names the most
   // recent failure, and the freshness row must show that failure by name, not the generic
@@ -482,7 +482,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
 });
 
 test("an unfetchable pull request shows on the freshness row by count", async ({ browser }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   // S3: a population pull request whose completing fetch answered a permanent 404/410 from
   // GitHub is marked unfetchable (store.go's MarkPullRequestUnfetchable) rather than retried
   // every reconcile pass forever -- the freshness row surfaces it by count.
@@ -592,7 +592,8 @@ const MEASURES_QUERY = `from=${encodeURIComponent(MEASURES_WINDOW.from)}&to=${en
 test("the measures panel shows the four measures for the window and follows a facet", async ({
   browser,
 }) => {
-  await seedMeasuresFixture();
+  const acme = rowKey("ACME");
+  await seedMeasuresFixture(acme);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
@@ -603,9 +604,9 @@ test("the measures panel shows the four measures for the window and follows a fa
   // The stored-path median: 510 minutes, each PR's deploy derived from the stored runs.
   await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("8.5h");
   const p0 = kpis.locator('[data-kpi="P0 issues with no owner"]').getByRole("link", {
-    name: "ACME-103",
+    name: `${acme}-103`,
   });
-  await expect(p0).toHaveAttribute("href", /\/issues\/ACME-103$/);
+  await expect(p0).toHaveAttribute("href", new RegExp(`/issues/${acme}-103$`));
   const strip = page.getByTestId("measures-strip");
   await expect(strip).toContainText("28.6%");
 
@@ -618,7 +619,7 @@ test("the measures panel shows the four measures for the window and follows a fa
 });
 
 test("the measures API gives an agent the numbers the panel shows", async ({ browser }) => {
-  await seedMeasuresFixture();
+  await seedMeasuresFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("measures-e2e", "alice");
@@ -633,7 +634,7 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
 });
 
 test("a brush window narrows the measures to it", async ({ browser }) => {
-  await seedMeasuresFixture();
+  await seedMeasuresFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   // The prototype's own computeDora over the brush window 2026-09-05..2026-09-12 (PRs #101-#107,
@@ -652,7 +653,7 @@ test("a brush window narrows the measures to it", async ({ browser }) => {
 });
 
 test("the definitions fold opens to the per-day table", async ({ browser }, testInfo) => {
-  await seedMeasuresFixture();
+  await seedMeasuresFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);

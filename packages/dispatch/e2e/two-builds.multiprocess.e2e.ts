@@ -33,7 +33,7 @@ import {
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
-import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
+import { type Browser, expect, type Locator, type Page, type Request, rowKey, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -206,8 +206,9 @@ interface Seeded {
  *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
  *  in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
+  const core = rowKey("CORE");
   await setLiveSessions([session]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({
     "acme/architecture": {
       contents: "read",
@@ -215,14 +216,14 @@ async function seedEveryRoute(): Promise<Seeded> {
       installation_id: 559,
     },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: "acme/architecture" });
-  expect((await syncArchitectureSource("CORE", "acme/architecture")).last_error).toBeNull();
+  await putArchitectureSource(core, { branch: "main", repo: "acme/architecture" });
+  expect((await syncArchitectureSource(core, "acme/architecture")).last_error).toBeNull();
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: `# Rollout\n\n${shown.spec}`,
     title: shown.issue,
   });
-  await createIssue({ parent: issue.key, project: "CORE", title: shown.child });
+  await createIssue({ parent: issue.key, project: core, title: shown.child });
   await createComment(issue.key, { body: shown.comment });
   await createMessage(
     issue.key,
@@ -233,7 +234,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Rollout notes\n\n${shown.issueArtifact}\n`,
     name: "rollout-notes.md",
   });
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
@@ -245,7 +246,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     owner: "alice",
     title: "Serve every page from both builds",
   });
-  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  const advancing = await createIssue({ project: core, title: "Pin assets to one process" });
   await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
@@ -287,7 +288,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id);
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(rowKey("ACME"));
   return {
     agentArtifact,
     broadcast: broadcast.id,
@@ -330,6 +331,7 @@ function openDocument(page: Page, text: string): readonly Locator[] {
 const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 function visits(seed: Seeded): readonly Visit[] {
+  const core = rowKey("CORE");
   const issue = `/issues/${seed.issue}`;
   const agent = `/agents/${session.session_id}`;
   return [
@@ -490,34 +492,34 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Core"),
         page.getByRole("tab", { name: "Architecture", selected: true }),
       ],
-      url: "/projects/CORE",
+      url: `/projects/${core}`,
     },
     {
       route: "/projects/:key/architecture",
       shows: (page) => [
         page.getByTestId("architecture-source").filter({ hasText: "acme/architecture/main" }),
       ],
-      url: "/projects/CORE/architecture",
+      url: `/projects/${core}/architecture`,
     },
     {
       route: "/projects/:key/issues",
       shows: (page) => [
         page.locator("#project-issues-panel").getByText(shown.issue, { exact: true }).first(),
       ],
-      url: "/projects/CORE/issues",
+      url: `/projects/${core}/issues`,
     },
     {
       route: "/projects/:key/documents",
       shows: (page) => [
         page.locator("#project-documents-panel").getByRole("listitem", { name: "handbook.md" }),
       ],
-      url: "/projects/CORE/documents",
+      url: `/projects/${core}/documents`,
     },
     {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",
       shows: (page) => openDocument(page, shown.document),
-      url: `/projects/CORE/documents/${seed.document}`,
+      url: `/projects/${core}/documents/${seed.document}`,
     },
     {
       route: "/credentials/*",

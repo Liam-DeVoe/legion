@@ -1,5 +1,5 @@
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** The Parent agent facet's option names, as the facet labels them (`<value>, <n> PR(s)`). */
@@ -21,7 +21,7 @@ function utcDaysAgo(daysAgo: number): string {
 
 // @pr: Live delivery: a session group is one Parent agent on the delivery page, which no other row reads.
 test("grouping two sessions makes them one Parent agent @pr", async ({ browser }) => {
-  await seedSessionGroupsFixture();
+  await seedSessionGroupsFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto("/delivery?mode=list");
@@ -62,7 +62,7 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
 });
 
 test("the window control changes what the page counts", async ({ browser }) => {
-  await seedSessionGroupsFixture();
+  await seedSessionGroupsFixture(rowKey("ACME"));
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto("/delivery?mode=list");
