@@ -82,6 +82,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
 			Reason: "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"},
+		// The move dropped a merge forward that had not landed, which the message names.
+		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
+			Reason:       "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)",
+			MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main"}},
 		SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Entry: 3},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
@@ -466,6 +470,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a phase-ended message into another phase than the wait", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "LEGION-209 is open"}, reason: "names the phase that ended and awaiting_children"},
 		{name: "a phase-ended message out of the wait itself", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.AwaitingChildren, To: phase.AwaitingChildren, Reason: "LEGION-209 is open"}, reason: "names the phase that ended and awaiting_children"},
 		{name: "a phase-ended message without a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren}, reason: "carries the open children"},
+		{name: "a phase-ended message whose dropped merge forward names no head", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Base: "main"}}, reason: droppedMergeForwardRefusal},
+		{name: "a phase-ended message whose dropped merge forward names no base", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de"}}, reason: droppedMergeForwardRefusal},
 		{name: "a task retirement that names no phase", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2}, reason: "names the role and the phase"},
 		{name: "a task retirement that carries a task", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Task: "implement"}, reason: "carries no task"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
@@ -686,6 +692,40 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// droppedMergeForwardRefusal is the validation's words for a phase-ended message that names a
+// dropped merge forward (PhaseEnded.MergeForward) with no head or no base: the message names both
+// to the worker it goes to.
+const droppedMergeForwardRefusal = "a phase-ended message that names a dropped merge forward names its head and its base"
+
+// A phase_ended row decodes strictly (DecodeOutboxPayload) whether or not it names a merge
+// forward the move into awaiting_children dropped before it landed: a row a release before this
+// one wrote, or one that dropped none, carries no `mergeForward`, and a row that dropped one
+// carries its head and its base under that name.
+func TestAPhaseEndedRowDecodesWithAndWithoutADroppedMergeForward(t *testing.T) {
+	const reason = "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"
+	ended := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: reason}
+	dropped := ended
+	dropped.MergeForward = &DroppedMergeForward{Head: "c0de", Base: "main"}
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    PhaseEnded
+	}{
+		{name: "a row that names no dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason + `"}`,
+			want: ended},
+		{name: "a row that names a dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason +
+			`","mergeForward":{"head":"c0de","base":"main"}}`, want: dropped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 70, Kind: OutboxKindPhaseEnded, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the row decodes as %#v, %v; want %#v", got, err, tc.want)
+			}
+		})
+	}
+}
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
@@ -1229,20 +1269,74 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 }
 
-// A phase-ended message gives R10's words (dispatch://INFRA-3320): the phase ended and no task
-// follows, a completion of it is refused, the worker commits and pushes what it has and does no
-// more work on it, the issue's next task comes once its children are finished, and the reason that
-// names the open children comes last.
+// A phase-ended message gives R10's words (dispatch://INFRA-3320 R10, with the pins its architect
+// set on R10 and INFRA-4728's architect relayed), in one of three forms, word for word. Each says
+// that the phase ended and no task follows, that a completion of it is refused, and that the
+// issue's next task comes once its children are finished, and ends with the reason that names
+// the open children.
+//
+//   - The plain form, where the move dropped no merge forward that had not landed: the worker
+//     commits and pushes what it has and does no more work on the phase. The implementer is told
+//     the same, so the role alone does not choose the form.
+//   - The implementer's form, where the move dropped one: the plain words, with the dropped merge
+//     forward named (the issue, the base and the head), the rule that an implementer that has
+//     begun the merge finishes it, pushes it and does nothing more and one that has not begun it
+//     begins none, and that the daemon does not ask for it again and the implementer merges the
+//     base forward only once GitHub reads the pull request CONFLICTING.
+//   - Any other worker's form, where the move dropped one: "Commit and push" gives way to writing
+//     and pushing nothing more, because the implementer may be merging in the workspace they
+//     share, and putting what it found on the Dispatch issue.
+//
+// The same words are asserted by internal/admit's and internal/daemon's
+// TestParentWaitsHoldsEveryPhaseStart.
 func TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords(t *testing.T) {
-	reason := "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo), LEGION-210 (backlog)"
-	got := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: reason}.Message("LEGION-208")
-	want := "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
-		" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
-		" Commit and push what you have to the issue's branch, and do no more work on testing." +
-		" The daemon gives the issue its next task once its children are finished." +
-		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
-		" Reason: " + reason + "."
-	if got != want {
-		t.Fatalf("the message = %q, want %q", got, want)
+	const reason = "the admission pass stopped the %s's %s phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo), LEGION-210 (backlog)"
+	tested, implemented := fmt.Sprintf(reason, "tester", "testing"), fmt.Sprintf(reason, "implementer", "implementing")
+	dropped := &DroppedMergeForward{Head: "c0de", Base: "main"}
+	for _, tc := range []struct {
+		name  string
+		ended PhaseEnded
+		want  string
+	}{
+		{name: "the plain form to the tester",
+			ended: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: tested},
+			want: "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on testing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + tested + "."},
+		{name: "the plain form to the implementer",
+			ended: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: implemented},
+			want: "LEGION-208: the daemon ended your implementing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of implementing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on implementing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + implemented + "."},
+		{name: "the implementer's form, under a merge forward the move dropped before it landed",
+			ended: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: implemented, MergeForward: dropped},
+			want: "LEGION-208: the daemon ended your implementing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of implementing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on implementing." +
+				" The daemon dropped the merge forward of main onto head c0de that it asked of you for LEGION-208: if you have begun that merge, finish it, push it and do nothing more; if you have not begun it, begin none." +
+				" The daemon does not ask for that merge forward again: in a later task of the issue, merge main forward only once GitHub reads its pull request CONFLICTING." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + implemented + "."},
+		{name: "another worker's form, under a merge forward the move dropped before it landed",
+			ended: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: tested, MergeForward: dropped},
+			want: "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Write and push nothing more, because the implementer may be merging in the workspace you share: put what you found on the Dispatch issue, and do no more work on testing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + tested + "."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ended.Message("LEGION-208"); got != tc.want {
+				t.Fatalf("the message = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

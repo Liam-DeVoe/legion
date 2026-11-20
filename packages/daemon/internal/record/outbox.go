@@ -1651,6 +1651,17 @@ type PhaseEnded struct {
 	From   phase.Phase `json:"from"`
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
+	// MergeForward is the merge forward the move into awaiting_children dropped before it landed
+	// (PullRequest.MergeForward with Landed empty), nil where it dropped none.
+	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
+}
+
+// DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
+// (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, and Base the base
+// branch it was to merge forward onto that head.
+type DroppedMergeForward struct {
+	Head string `json:"head"`
+	Base string `json:"base"`
 }
 
 func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
