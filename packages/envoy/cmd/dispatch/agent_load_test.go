@@ -495,17 +495,238 @@ const (
 	cpuLivez = time.Second
 )
 
-// readTimes is how long each of count reads of path, one after another as the test's login, took
-// to answer 200.
-func (s agentServer) readTimes(t *testing.T, path string, count int) []time.Duration {
+// cpuRead is one timed request: when it started and how long it took.
+type cpuRead struct {
+	at   time.Time
+	took time.Duration
+}
+
+// timedReads is each of count reads of path, one after another as the test's login, each answered
+// 200, with when it started and how long it took.
+func (s agentServer) timedReads(t *testing.T, path string, count int) []cpuRead {
 	t.Helper()
-	times := make([]time.Duration, 0, count)
+	reads := make([]cpuRead, 0, count)
 	for range count {
 		started := time.Now()
 		s.call(t, http.MethodGet, path, "", http.StatusOK)
-		times = append(times, time.Since(started))
+		reads = append(reads, cpuRead{at: started, took: time.Since(started)})
+	}
+	return reads
+}
+
+// tookOf is how long each of reads took.
+func tookOf(reads []cpuRead) []time.Duration {
+	times := make([]time.Duration, len(reads))
+	for index, read := range reads {
+		times[index] = read.took
 	}
 	return times
+}
+
+// procFigures is what /proc tells of a set of processes, their threads summed: the time they ran on
+// a CPU and the time they waited on a run queue for one (each thread's schedstat), the times the
+// kernel took a CPU from them (nonvoluntary_ctxt_switches), their minor page faults (each
+// process's stat) and their resident memory (VmRSS).
+type procFigures struct {
+	ran, waited time.Duration
+	preempted   int64
+	faults      int64
+	resident    int64
+}
+
+// readProcFigures reads the figures of processes pids now. A process or a thread gone between two
+// reads is left out.
+func readProcFigures(pids ...int) procFigures {
+	var figures procFigures
+	for _, pid := range pids {
+		tasks, _ := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+		for _, task := range tasks {
+			dir := fmt.Sprintf("/proc/%d/task/%s/", pid, task.Name())
+			if schedstat, err := os.ReadFile(dir + "schedstat"); err == nil {
+				if fields := strings.Fields(string(schedstat)); len(fields) >= 2 {
+					ran, _ := strconv.ParseInt(fields[0], 10, 64)
+					waited, _ := strconv.ParseInt(fields[1], 10, 64)
+					figures.ran += time.Duration(ran)
+					figures.waited += time.Duration(waited)
+				}
+			}
+			if status, err := os.ReadFile(dir + "status"); err == nil {
+				figures.preempted += statusValue(string(status), "nonvoluntary_ctxt_switches:")
+			}
+		}
+		// The fields of a stat after the command's closing parenthesis start at the state, the
+		// third, so the minor faults, the tenth, are the eighth of them.
+		if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			text := string(stat)
+			if fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:]); len(fields) > 7 {
+				faults, _ := strconv.ParseInt(fields[7], 10, 64)
+				figures.faults += faults
+			}
+		}
+		if status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+			figures.resident += statusValue(string(status), "VmRSS:") << 10
+		}
+	}
+	return figures
+}
+
+// statusValue is the first number of the line of a /proc status that starts with name, 0 where it
+// holds none.
+func statusValue(status, name string) int64 {
+	for line := range strings.Lines(status) {
+		if rest, found := strings.CutPrefix(line, name); found {
+			if fields := strings.Fields(rest); len(fields) > 0 {
+				value, _ := strconv.ParseInt(fields[0], 10, 64)
+				return value
+			}
+		}
+	}
+	return 0
+}
+
+// since is what the processes did from earlier to f, and their resident memory at f.
+func (f procFigures) since(earlier procFigures) procFigures {
+	return procFigures{ran: f.ran - earlier.ran, waited: f.waited - earlier.waited, preempted: f.preempted - earlier.preempted,
+		faults: f.faults - earlier.faults, resident: f.resident}
+}
+
+func (f procFigures) String() string {
+	return fmt.Sprintf("ran %v, waited %v to run, lost a CPU %d times, %d minor faults", f.ran.Round(time.Microsecond), f.waited.Round(time.Microsecond), f.preempted, f.faults)
+}
+
+// processesNamed is the id of each process whose command is name, as /proc/<pid>/comm writes it:
+// the database's processes where they run on this machine, none where they do not.
+func processesNamed(name string) []int {
+	entries, _ := os.ReadDir("/proc")
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil && strings.TrimSpace(string(comm)) == name {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// serverGC is the server's collections as its profiler's /debug/vars tells them (expvar's
+// memstats): how many it has made, and the end and the stop-the-world pause of each of its last
+// 256.
+type serverGC struct {
+	NumGC    uint32
+	PauseEnd [256]uint64
+	PauseNs  [256]uint64
+}
+
+// readServerGC reads the server's collections from its profiler at profiler.
+func readServerGC(t *testing.T, profiler string) serverGC {
+	t.Helper()
+	response, err := http.Get("http://" + profiler + "/debug/vars")
+	if err != nil {
+		t.Fatalf("GET /debug/vars on the server's profiler: %v", err)
+	}
+	defer response.Body.Close()
+	var vars struct {
+		Memstats serverGC `json:"memstats"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&vars); err != nil {
+		t.Fatalf("decode the server's /debug/vars: %v", err)
+	}
+	return vars.Memstats
+}
+
+// cpuPause is one stop-the-world pause of the server's collector: when it ended and how long it was.
+type cpuPause struct {
+	end  time.Time
+	took time.Duration
+}
+
+// since is the pause of each collection the server made after earlier, up to g.
+func (g serverGC) since(earlier serverGC) []cpuPause {
+	var pauses []cpuPause
+	first := earlier.NumGC + 1
+	if g.NumGC >= 256 {
+		// The ring holds the last 256 collections alone.
+		first = max(first, g.NumGC-255)
+	}
+	for number := first; number <= g.NumGC; number++ {
+		at := (number + 255) % 256
+		pauses = append(pauses, cpuPause{end: time.Unix(0, int64(g.PauseEnd[at])), took: time.Duration(g.PauseNs[at])})
+	}
+	return pauses
+}
+
+// cpuWindow is one window of timed reads and what went on in it: the reads, the server's
+// collections, the /livez requests in flight, and what the server's, the test's, the database's
+// and the agent's threads did, with the agent's resident memory at its start.
+type cpuWindow struct {
+	reads                         []cpuRead
+	pauses                        []cpuPause
+	livez                         []cpuRead
+	server, test, database, agent procFigures
+	databaseProcesses             int
+	agentResidentBefore           int64
+}
+
+// watchWindow times count reads of path and reads what went on around them.
+func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, path string, count int) cpuWindow {
+	t.Helper()
+	database := processesNamed("postgres")
+	gcBefore := readServerGC(t, profiler)
+	serverBefore, testBefore := readProcFigures(s.Cmd.Process.Pid), readProcFigures(os.Getpid())
+	databaseBefore, agentBefore := readProcFigures(database...), readProcFigures(agentPid)
+	reads := s.timedReads(t, path, count)
+	window := cpuWindow{
+		reads:               reads,
+		server:              readProcFigures(s.Cmd.Process.Pid).since(serverBefore),
+		test:                readProcFigures(os.Getpid()).since(testBefore),
+		database:            readProcFigures(database...).since(databaseBefore),
+		agent:               readProcFigures(agentPid).since(agentBefore),
+		databaseProcesses:   len(database),
+		agentResidentBefore: agentBefore.resident,
+	}
+	window.pauses = readServerGC(t, profiler).since(gcBefore)
+	return window
+}
+
+// describe writes the window for the test's log: its reads, how many took above slow, its 8
+// slowest - each by its start within the window, how long it took, and whether a pause of the
+// server's collector ended or a /livez request ran within it - and what the processes did.
+func (w cpuWindow) describe(slow time.Duration) string {
+	start, end := w.reads[0].at, w.reads[len(w.reads)-1].at.Add(w.reads[len(w.reads)-1].took)
+	slowest := slices.Clone(w.reads)
+	slices.SortFunc(slowest, func(a, b cpuRead) int { return cmp.Compare(b.took, a.took) })
+	above := 0
+	for _, read := range w.reads {
+		if read.took > slow {
+			above++
+		}
+	}
+	notes := make([]string, 0, 8)
+	for _, read := range slowest[:min(8, len(slowest))] {
+		note := fmt.Sprintf("+%v %v", read.at.Sub(start).Round(100*time.Microsecond), read.took.Round(10*time.Microsecond))
+		finished := read.at.Add(read.took)
+		for _, pause := range w.pauses {
+			if !pause.end.Before(read.at) && !pause.end.After(finished) {
+				note += fmt.Sprintf(" (a collector pause of %v ended in it)", pause.took)
+			}
+		}
+		for _, livez := range w.livez {
+			if livez.at.Before(finished) && livez.at.Add(livez.took).After(read.at) {
+				note += " (/livez in flight)"
+			}
+		}
+		notes = append(notes, note)
+	}
+	pauses := make([]time.Duration, len(w.pauses))
+	for index, pause := range w.pauses {
+		pauses[index] = pause.took
+	}
+	return fmt.Sprintf("%d reads in %v, %d of them above %v; the 8 slowest: %s; the server's collector paused %d times in it (%v); the server's threads %s; the test's %s; the database's %d processes %s; the agent's %s, its resident memory %d MiB at the start and %d MiB at the end",
+		len(w.reads), end.Sub(start).Round(time.Millisecond), above, slow, strings.Join(notes, ", "), len(w.pauses), pauses,
+		w.server, w.test, w.databaseProcesses, w.database, w.agent, w.agentResidentBefore>>20, w.agent.resident>>20)
 }
 
 // databaseTimes is how long each of count round trips of `select 1` from the test to the server's
@@ -591,24 +812,34 @@ const cpuAgentShare = 4
 // (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a container's 16: on a runner of 4
 // CPUs the 4 a server gives its agent would be every one. The test logs the CPUs it runs on, the
 // agent's GOMAXPROCS, and the spread of the read and of a round trip to the database, idle and at
-// the load, which says what a slower p99 is made of.
+// the load, which says what a slower p99 is made of; and of each window of reads, its 8 slowest
+// reads by their time within it, each beside the server's collector pauses and the /livez requests
+// it met, and what the server's, the test's, the database's and the agent's threads did in it
+// (cpuWindow.describe).
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	fake, model := newSoakModel(t)
 	env := modelEnv(t, fake)
 	env["DISPATCH_TEST_AGENT_GOMEMLIMIT"] = strconv.Itoa(cpuAgentLimit)
 	procs := min(agentMaxProcs, max(1, runtime.GOMAXPROCS(0)/cpuAgentShare))
 	env["DISPATCH_TEST_AGENT_PROCS"] = strconv.Itoa(procs)
+	// The server's profiler, on a port the kernel chooses, tells its collections (readServerGC).
+	env["DISPATCH_PPROF_PORT"] = "0"
 	server := startAgentServer(t, env)
 	server.waitForAgentRenewal(t)
 	pid := server.agentStarted(t, 1, 30*time.Second)
 	if got := processVariable(t, pid, "GOMAXPROCS"); got != strconv.Itoa(procs) {
 		t.Errorf("the agent runs with GOMAXPROCS=%q, want %d, a quarter of the runner's %d CPUs", got, procs, runtime.GOMAXPROCS(0))
 	}
+	listening := pprofListening.FindStringSubmatch(server.Output.String())
+	if listening == nil {
+		t.Fatalf("the server logged no line naming its profiler's address:\n%s", server.Output.String())
+	}
+	profiler := listening[1]
 	server.createProject(t, "CPU", "CPU")
 	key, _ := server.createIssueIn(t, "CPU", "The issue the fixed read reads", "Context.\n")
 	read := "/api/v1/issues/" + key
-	server.readTimes(t, read, 100)
-	idleReads := server.readTimes(t, read, cpuReads)
+	server.timedReads(t, read, 100)
+	idleWindow := server.watchWindow(t, profiler, pid, read, cpuReads)
 	idleDatabase := server.databaseTimes(t, cpuReads)
 	idleThreads := threadNices(t, pid)
 
@@ -625,7 +856,7 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	// a few of its cycles.
 	time.Sleep(5 * time.Second)
 
-	var livez []time.Duration
+	var livez []cpuRead
 	var livezFailures []string
 	asking := make(chan struct{})
 	var asked sync.WaitGroup
@@ -649,23 +880,29 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 			if response.StatusCode/100 != 2 {
 				livezFailures = append(livezFailures, response.Status)
 			}
-			livez = append(livez, took)
+			livez = append(livez, cpuRead{at: started, took: took})
 		}
 	})
-	busyReads := server.readTimes(t, read, cpuReads)
+	busyWindow := server.watchWindow(t, profiler, pid, read, cpuReads)
 	busyDatabase := server.databaseTimes(t, cpuReads)
 	close(asking)
 	asked.Wait()
+	busyWindow.livez = livez
 	busyThreads := threadNices(t, pid)
 	server.send(t, http.MethodPost, "/api/v1/going/runs/"+run+"/stop", "", asUser(dispatchTestLogin))
 	server.ended(t, run, time.Minute)
 
+	idleReads, busyReads := tookOf(idleWindow.reads), tookOf(busyWindow.reads)
 	idle, busy := percentile(idleReads, 0.99), percentile(busyReads, 0.99)
-	slowest := slices.Max(append(livez, 0))
-	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) and the agent with GOMAXPROCS=%s; the agent's threads by nice value, idle %v and at its soft limit %v",
-		runtime.NumCPU(), runtime.GOMAXPROCS(0), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads)
-	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
-		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
+	slowest := slices.Max(append(tookOf(livez), 0))
+	kernel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) under kernel %s and the agent with GOMAXPROCS=%s; the agent's threads by nice value, idle %v and at its soft limit %v",
+		runtime.NumCPU(), runtime.GOMAXPROCS(0), strings.TrimSpace(string(kernel)), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads)
+	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times, the p99 of %d reads being the %d-th slowest); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
+		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), cpuReads, cpuReads-int(math.Ceil(0.99*cpuReads))+1,
+		spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
+	t.Logf("the window with the agent idle: %s", idleWindow.describe(2*idle))
+	t.Logf("the window with the agent at its soft limit: %s", busyWindow.describe(2*idle))
 	for _, threads := range []map[int]int{idleThreads, busyThreads} {
 		for nice, count := range threads {
 			if nice != agentNice {
