@@ -11,8 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +115,33 @@ func machineLoginToken(jkt string) brokertoken.Introspection {
 		ClientID:   "agent-secrets-helper",
 		Thumbprint: jkt,
 	}
+}
+
+// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
+// that minted it, as the golden file internal/brokertoken/testdata/narrowed-answers.json holds
+// them: bound to jkt, naming session and expiring at exp, filled in as the file's comment says.
+// The broker's own test holds its minted answers to the same file.
+func narrowedAnswers(t *testing.T, jkt, session string, exp int64) map[string]brokertoken.Introspection {
+	t.Helper()
+	raw, err := os.ReadFile("../../brokertoken/testdata/narrowed-answers.json")
+	if err != nil {
+		t.Fatalf("read the narrowed answers: %v", err)
+	}
+	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
+		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
+	var golden struct {
+		Comment string                               `json:"_comment"`
+		Answers map[string]brokertoken.Introspection `json:"answers"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(filled))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&golden); err != nil {
+		t.Fatalf("decode the narrowed answers: %v", err)
+	}
+	if len(golden.Answers) == 0 {
+		t.Fatal("the narrowed answers file holds no answer")
+	}
+	return golden.Answers
 }
 
 // brokerCaller is an agent holding one key, producing the proofs its real client produces.
@@ -1047,5 +1078,84 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project="+brokerTestProject, nil)
 	if strings.Contains(issues.Body.String(), "Filed with no proof") {
 		t.Fatalf("the unproved write created an issue: %s", issues.Body.String())
+	}
+}
+
+// TestANarrowedTokenActsAsItsIdentityAndOnlyReads: a token narrowed to reading acts as the
+// identity the same trade without read would have, and holds less. For each answer of the golden
+// file the broker's own test holds its narrowed answers to, the actor is the session it names,
+// with the person or the service it names; a token narrowed from a named one names its one
+// project; a read-person token that names its person holds the person scope alone; every other
+// holds no scope. Each is marked read-only with the cut its answer names, and none holds approve
+// or carries the word read among its scopes. The control is the machine login's answer with the
+// project scope person and no read: the same identity, holding both scopes and not read-only, so
+// approve is withheld by the narrowing.
+func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	ada, fleet, reader, acme := "ada@example.com", "example-fleet", "example-reader", "ACME"
+	cut := time.Date(2026, 11, 18, 9, 30, 0, 123456000, time.UTC)
+	type identity struct {
+		owner, service, project *string
+		scopes                  []string
+		readOnly                bool
+		cut                     time.Time
+	}
+	personOnly := []string{model.ScopePerson}
+	want := map[string]identity{
+		"pod-entry":                     {owner: &ada, project: &acme, readOnly: true},
+		"read-entry":                    {service: &reader, readOnly: true},
+		"workflow-entry":                {owner: &ada, project: &acme, readOnly: true},
+		"google-identity-no-person":     {service: &fleet, readOnly: true},
+		"google-identity-with-a-person": {owner: &ada, project: &acme, readOnly: true},
+		"person-sign-in":                {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login":                 {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login-with-a-cut":      {owner: &ada, scopes: personOnly, readOnly: true, cut: cut},
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(want))) {
+		t.Fatalf("the golden file answers for %v, and this test names the actor of %v", kinds, slices.Sorted(maps.Keys(want)))
+	}
+	writer := answers["machine-login"]
+	writer.ProjectScope, writer.Scope = brokertoken.ProjectScopePerson, ""
+	rows := map[string]brokertoken.Introspection{"the machine login's token with no read": writer}
+	want["the machine login's token with no read"] = identity{owner: &ada, scopes: model.Scopes}
+	maps.Copy(rows, answers)
+
+	same := func(got, want *string) bool { return (got == nil) == (want == nil) && (got == nil || *got == *want) }
+	for _, name := range slices.Sorted(maps.Keys(rows)) {
+		t.Run(name, func(t *testing.T) {
+			token := "a-token-of-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, rows[name])
+			actor, human, err := rig.served.brokerTokenActor(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+			if err != nil || human {
+				t.Fatalf("brokerTokenActor = %+v, human %v, %v; want the session's actor", actor, human, err)
+			}
+			expected := want[name]
+			if actor.Kind != "session" || actor.ID != session || !actor.Proven {
+				t.Fatalf("actor = %s:%s (proven %v), want the proven session %s", actor.Kind, actor.ID, actor.Proven, session)
+			}
+			if !same(actor.Owner, expected.owner) || !same(actor.Service, expected.service) || !same(actor.Project, expected.project) {
+				t.Fatalf("actor owner, service, project = %v, %v, %v; want %v, %v, %v",
+					actor.Owner, actor.Service, actor.Project, expected.owner, expected.service, expected.project)
+			}
+			credential := actor.Credential
+			if credential == nil || credential.Session != session {
+				t.Fatalf("credential = %+v, want one naming the session %s", credential, session)
+			}
+			if !slices.Equal(credential.Scopes, expected.scopes) {
+				t.Fatalf("credential scopes = %v, want %v", credential.Scopes, expected.scopes)
+			}
+			if credential.ReadOnly != expected.readOnly {
+				t.Fatalf("credential read-only = %v, want %v", credential.ReadOnly, expected.readOnly)
+			}
+			if !credential.Cut.Equal(expected.cut) || credential.Cut.Location() != time.UTC {
+				t.Fatalf("credential cut = %v, want %v in UTC", credential.Cut, expected.cut)
+			}
+			if expected.readOnly && (credential.Holds(model.ScopeApprove) || slices.Contains(credential.Scopes, model.ScopeRead)) {
+				t.Fatalf("a narrowed token's credential holds %v, want neither approve nor read among them", credential.Scopes)
+			}
+		})
 	}
 }

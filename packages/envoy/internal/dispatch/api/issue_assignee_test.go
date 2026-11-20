@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -534,6 +537,97 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			}
 			if !slices.Equal(*got.Scopes, test.scopes) {
 				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
+			}
+		})
+	}
+}
+
+// GET /whoami names read among the scopes of every read-only credential, read off the
+// credential's read-only mark and never stored among the scopes it holds, and answers the cut it
+// reads at, null for none: the read entry's token, a token narrowed from each kind of trade the
+// broker narrows (the golden file the broker's own test holds its narrowed answers to), and among
+// them the machine login's narrowed token with a cut. A read-person token that names its person
+// is told person beside read, and no read-only token is told approve. The control is a token
+// that writes, told neither read nor a cut.
+//
+// The handler is called directly with each token, since the route itself answers a read-only
+// token 403 READ_ONLY_TOKEN before its handler: whoami is not a route Dispatch serves such a
+// token on yet (refuseReadOnlyToken).
+func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	const cut = "2026-11-18T09:30:00.123456Z"
+	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	read := []string{model.ScopeRead}
+	personAndRead := []string{model.ScopePerson, model.ScopeRead}
+	wantScopes := map[string][]string{
+		"pod-entry":                     read,
+		"read-entry":                    read,
+		"workflow-entry":                read,
+		"google-identity-no-person":     read,
+		"google-identity-with-a-person": read,
+		"person-sign-in":                personAndRead,
+		"machine-login":                 personAndRead,
+		"machine-login-with-a-cut":      personAndRead,
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(wantScopes))) {
+		t.Fatalf("the golden file answers for %v, and this test names the scopes of %v", kinds, slices.Sorted(maps.Keys(wantScopes)))
+	}
+	type row struct {
+		name   string
+		answer brokertoken.Introspection
+		scopes []string
+		// cut is the cut whoami answers, empty for null.
+		cut string
+	}
+	rows := []row{
+		{name: "the read entry's token", answer: readOnlyToken(caller.jkt), scopes: read},
+		{name: "a token that writes", answer: liveNamedToken(caller.jkt), scopes: []string{}},
+	}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		narrowed := row{name: "a token narrowed from a " + kind, answer: answers[kind], scopes: wantScopes[kind]}
+		if answers[kind].AsOf != "" {
+			narrowed.cut = cut
+		}
+		rows = append(rows, narrowed)
+	}
+	if !slices.ContainsFunc(rows, func(r row) bool { return r.cut != "" }) {
+		t.Fatal("no row names a cut, and one must")
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+			rig.broker.Says(token, row.answer)
+			response := httptest.NewRecorder()
+			rig.served.whoami(response, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &members); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			var got struct {
+				Kind   string    `json:"kind"`
+				Scopes *[]string `json:"scopes"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			if got.Kind != "agent" || got.Scopes == nil || !slices.Equal(*got.Scopes, row.scopes) {
+				t.Fatalf("whoami = %s, want kind agent and scopes %v", response.Body.String(), row.scopes)
+			}
+			if slices.Contains(*got.Scopes, model.ScopeApprove) {
+				t.Fatalf("whoami told a token approve: %s", response.Body.String())
+			}
+			wantCut := "null"
+			if row.cut != "" {
+				wantCut = `"` + row.cut + `"`
+			}
+			if answered, present := members["cut"]; !present || string(answered) != wantCut {
+				t.Fatalf("whoami cut = %s (present %v), want %s: %s", answered, present, wantCut, response.Body.String())
 			}
 		})
 	}

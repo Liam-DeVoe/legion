@@ -5,8 +5,13 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +87,27 @@ func introspector(sessions ...*session) func(context.Context, string) (oauthwire
 		}
 		return oauthwire.Introspection{}, nil
 	}
+}
+
+// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
+// that minted it, as the golden file internal/brokertoken/testdata/narrowed-answers.json holds
+// them: bound to jkt, naming session and expiring at exp, filled in as the file's comment says.
+// The broker's own test holds its minted answers to the same file.
+func narrowedAnswers(t testing.TB, jkt, session string, exp int64) map[string]oauthwire.Introspection {
+	t.Helper()
+	raw, err := os.ReadFile("../../brokertoken/testdata/narrowed-answers.json")
+	require.NoError(t, err)
+	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
+		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
+	var golden struct {
+		Comment string                             `json:"_comment"`
+		Answers map[string]oauthwire.Introspection `json:"answers"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(filled))
+	decoder.DisallowUnknownFields()
+	require.NoError(t, decoder.Decode(&golden))
+	require.NotEmpty(t, golden.Answers)
+	return golden.Answers
 }
 
 // platformToken is a service's platform identity token as the stub ServiceToken reads it: the
@@ -181,12 +207,24 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = brokertoken.ProjectScopeNone, brokertoken.ScopeRead
+	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
+	// answer of the golden file the broker's own test holds its narrowed answers to is no
+	// session's credential to the auth service either: each is a session of its own, presenting
+	// its token with a sound proof.
+	kinds := slices.Sorted(maps.Keys(narrowedAnswers(t, "", "", 0)))
+	narrowed := make([]*session, 0, len(kinds))
+	for _, kind := range kinds {
+		s := newSession(t, "ses_narrowed_"+strings.ReplaceAll(kind, "-", "_"), 15*time.Minute)
+		s.answer = narrowedAnswers(t, s.answer.Thumbprint, s.id, s.answer.ExpiresAt)[kind]
+		narrowed = append(narrowed, s)
+	}
 	tokens := map[string]platformToken{
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
@@ -203,14 +241,15 @@ func TestRefusals(t *testing.T) {
 	cancel()
 	badSig := a.request(t, "nonce")
 	badSig.Sig = "%%%"
-	for _, row := range []struct {
+	type refusalRow struct {
 		name   string
 		deps   Deps
 		ctx    context.Context
 		req    Request
 		label  string
 		reason string
-	}{
+	}
+	rows := []refusalRow{
 		{"no credential", deps, nil, Request{UserNkey: "UUSER", ServerID: "NSERVER"}, labelNoCredential, "no credential this hub admits"},
 		{"a user and no password", deps, nil, Request{UserNkey: "UUSER", User: natscred.ServiceUser}, labelNoCredential, "no credential this hub admits"},
 		{"a token and no proof", deps, nil, Request{UserNkey: "UUSER", Token: a.token}, labelNoCredential, "no credential this hub admits"},
@@ -228,7 +267,11 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
-	} {
+	}
+	for i, s := range narrowed {
+		rows = append(rows, refusalRow{"a token narrowed from a " + kinds[i], deps, nil, s.request(t, "nonce"), labelNotASession, "token is no session's credential"})
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx
 			if ctx == nil {

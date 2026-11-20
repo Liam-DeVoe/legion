@@ -29,6 +29,10 @@ const (
 	// decides it, never the request: the exchange client is registered for Scope alone, so the
 	// library refuses a request that names this one invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
+	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
+	// scope is "read person". No other token holds it.
+	ScopePerson = "person"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -72,6 +76,12 @@ const (
 	// entry's one project or none, and a trade that names no person names none. Absent or blank
 	// is no projects.
 	FormProjects = "projects"
+	// FormAsOf is the exchange request's fourth broker-defined form parameter: the cut, the past
+	// time a narrowed token reads at, as an RFC 3339 time with at most six fractional digits. Only
+	// a trade that asks for ScopeRead may carry one, and it may be no later than the trade itself;
+	// the broker refuses any other cut invalid_request, naming this parameter. The token keeps the
+	// cut, and its introspection answer names it (Introspection.AsOf).
+	FormAsOf = "as_of"
 	// SubjectTokenTypeKubernetes is the subject_token_type a pod presents its projected
 	// Kubernetes service-account token under. RFC 8693 registers no name for one, so the broker
 	// defines this one and the exchange client is the only client that may present it.
@@ -138,7 +148,40 @@ const (
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (brokertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopeReadNamed is a ProjectScopeNamed token narrowed to reading: its trade asked for
+	// ScopeRead, and it names the person and the projects the same trade would have named without
+	// it. It holds the OAuth scope ScopeRead alone. A resource server of a build that predates the
+	// three narrowed words refuses each of them, so no build reads a narrowed token as one that
+	// writes.
+	ProjectScopeReadNamed = "read-named"
+	// ProjectScopeReadPerson is a ProjectScopePerson token narrowed to reading the same way. It
+	// holds the OAuth scope ScopeRead, and the scope person beside it when it names a person
+	// ("read person"), since a person-scoped token that names its person is the one kind that acts
+	// for that person.
+	ProjectScopeReadPerson = "read-person"
+	// ProjectScopeReadNone is a ProjectScopeNone token whose trade asked for ScopeRead: a read
+	// entry's token, narrowed on request. It holds the OAuth scope ScopeRead alone, as the read
+	// entry's token does.
+	ProjectScopeReadNone = "read-none"
 )
+
+// BaseProjectScope is the word whose rules a project-scope word's projects are read under:
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
+// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
+// projects mean what its base word's do, so every reader that checks a token's projects reads
+// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
+// A word is narrowed exactly when this answers another word.
+func BaseProjectScope(word string) string {
+	switch word {
+	case ProjectScopeReadNamed:
+		return ProjectScopeNamed
+	case ProjectScopeReadPerson:
+		return ProjectScopePerson
+	case ProjectScopeReadNone:
+		return ProjectScopeNone
+	}
+	return word
+}
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
@@ -226,8 +269,10 @@ type Introspection struct {
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
 	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
-	// neither this nor Projects.
+	// ProjectScopeNone, or one of them narrowed to reading (ProjectScopeReadNamed,
+	// ProjectScopeReadPerson, ProjectScopeReadNone), whose Projects mean what its base word's do.
+	// A machine login's own token, which no exchange decided for, carries neither this nor
+	// Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
 	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
@@ -238,6 +283,10 @@ type Introspection struct {
 	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
 	// machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
+	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
+	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of
+	// the three narrowed project scopes carries one, and it is absent with no cut.
+	AsOf string `json:"as_of,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.
 	ExpiresAt int64 `json:"exp,omitempty"`
