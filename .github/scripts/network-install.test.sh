@@ -14,12 +14,16 @@
 #                seconds;
 #   ONCE (10 s)  a stand-in that hangs on its first attempt and ends at once on its second: its
 #                one bound must cut the first and leave the second room.
-# The last two cases unset the seam and observe the real defaults: a stand-in timeout(1) first on
-# PATH writes down the arguments the script hands it and runs the real one, and a stand-in sleep
-# writes down each wait. One case puts a stand-in date first on PATH that pauses 3 s on the
-# script's second reading of the clock in an attempt, after the command has ended: whether the
-# bound ended the attempt must come from the attempt, not from that reading. The stand-in commands
-# are small scripts in this harness's own temporary directory.
+# Two cases put a stand-in date first on PATH that pauses PAUSED (ENDS + 2 s, 32 s) on the script's
+# second reading of the clock in an attempt, after the command has ended by itself: the stand-in
+# ends by itself, so its bound is ENDS, and the pause is longer than that bound and its kill, so a
+# script that decided from that reading whether the bound ended the attempt would take the
+# command's own exit 124 or 137 for a timeout or a kill. One case puts a stand-in timeout(1) first
+# on PATH that sends its command SIGTERM alone at the bound, as BusyBox's does, so a command that
+# ignores it ends only by the attempt's own SIGKILL. The last two cases unset the seam and observe
+# the real defaults: a stand-in timeout(1) first on PATH writes down the arguments the script hands
+# it and runs the real one, and a stand-in sleep writes down each wait. The stand-in commands are
+# small scripts in this harness's own temporary directory.
 #
 # Each case waits for the script's own exit, under a deadline of its own (DEADLINE): a script that
 # never ends (a bound or a kill lost) fails that case by name when the deadline passes, rather than
@@ -59,11 +63,12 @@ source "$script_dir/test-lib.sh"
 ENDS=30
 HANGS=2
 ONCE=10
+PAUSED=$((ENDS + 2))
 # seam <bound> sets the test seam for the cases after it, seam_off unsets it.
 seam() { export NETWORK_INSTALL_BOUND_SECONDS=$1 NETWORK_INSTALL_KILL_AFTER_SECONDS=1 NETWORK_INSTALL_PAUSE_SECONDS=0; }
 seam_off() { unset NETWORK_INSTALL_BOUND_SECONDS NETWORK_INSTALL_KILL_AFTER_SECONDS NETWORK_INSTALL_PAUSE_SECONDS; }
-# The longest case, hang-once, takes one ONCE bound and its kill, 11 s; a case still running at the
-# deadline has lost a bound or a kill.
+# The longest case, a paused one, waits PAUSED (32 s) once; a case still running at the deadline
+# has lost a bound or a kill.
 DEADLINE=60
 
 # run_install <case> <argument…>: the script with these arguments, waited for under DEADLINE;
@@ -145,6 +150,33 @@ run_install "ignores SIGTERM" apt -- "$standin" "$work/stubborn.count" stubborn
 check "exits 1" "$(is "$status" 1)"
 check "says it was killed" "$(contains "$out" "attempt 1 was killed 1 s after its 2 s bound, since it ignored SIGTERM")"
 check "and tried it three times" "$(is "$(count "$work/stubborn.count")" 3)"
+
+# BusyBox's timeout(1), on the Alpine images a Dockerfile's RUN runs the script on, sends its
+# command SIGTERM at the bound and no SIGKILL after it, so the attempt sends the SIGKILL itself: a
+# stand-in timeout that does what BusyBox's does, first on PATH, leaves a command that ignores
+# SIGTERM to the attempt's own kill alone.
+stubs_term="$work/stubs-term"
+mkdir "$stubs_term"
+cat > "$stubs_term/timeout" <<SH
+#!/usr/bin/env bash
+while [ "\$#" -gt 0 ]; do case \$1 in -k | -s) shift 2 ;; *) break ;; esac; done
+bound=\$1
+shift
+"\$@" &
+child=\$!
+( "$real_sleep" "\$bound"; kill -TERM "\$child" 2> /dev/null ) < /dev/null > /dev/null 2>&1 &
+timer=\$!
+status=0
+wait "\$child" || status=\$?
+kill "\$timer" 2> /dev/null || :
+exit "\$status"
+SH
+chmod +x "$stubs_term/timeout"
+echo "case: an install that ignores SIGTERM is killed by the attempt itself under a timeout that sends SIGTERM alone"
+PATH="$stubs_term:$PATH" run_install "ignores SIGTERM, TERM alone" apt -- "$standin" "$work/stubborn-term.count" stubborn
+check "exits 1" "$(is "$status" 1)"
+check "says the attempt killed it" "$(contains "$out" "attempt 1 was killed 1 s after its 2 s bound, since it ignored SIGTERM")"
+check "and tried it three times" "$(is "$(count "$work/stubborn-term.count")" 3)"
 
 seam "$ONCE"
 echo "case: an install that hangs once and then passes"
@@ -240,22 +272,26 @@ check "exits 1" "$(is "$status" 1)"
 check "ran once" "$(is "$(count "$work/own137.count")" 1)"
 check "names exit 137 as the command's" "$(contains "$out" "attempt 1 exited 137 after [0-9]* s, and its 30 s bound did not end it")"
 
-# A stand-in date first on PATH: it pauses 3 s on every second reading, the one the script makes
-# after an attempt has ended, as a busy runner can pause the script there. The bound is 2 s, so a
-# script that read the end of its deadline off that clock would take the command's own exit 124
-# for a timeout and try it again.
+# A stand-in date first on PATH: it pauses PAUSED seconds on every second reading, the one the
+# script makes after an attempt has ended, as a busy runner can pause the script there. The bound is
+# ENDS, which the stand-in ends well inside, and the pause is longer than it and its kill, so a
+# script that read the end of its deadline off that clock would take the command's own exit 124 for
+# a timeout, or its own 137 for a kill, and try it again.
 stubs_date="$work/stubs-date"
 mkdir "$stubs_date"
-printf '#!/usr/bin/env bash\necho x >> "%s"\n[ $(( $(wc -l < "%s") %% 2 )) -eq 0 ] && "%s" 3\nexec "%s" "$@"\n' \
-  "$work/date.count" "$work/date.count" "$real_sleep" "$real_date" > "$stubs_date/date"
+printf '#!/usr/bin/env bash\necho x >> "%s"\n[ $(( $(wc -l < "%s") %% 2 )) -eq 0 ] && "%s" %s\nexec "%s" "$@"\n' \
+  "$work/date.count" "$work/date.count" "$real_sleep" "$PAUSED" "$real_date" > "$stubs_date/date"
 chmod +x "$stubs_date/date"
-seam "$HANGS"
-echo "case: a command's own exit 124 stays its own when the script is paused before it reads the clock"
-PATH="$stubs_date:$PATH" run_install "exits 124 itself, paused" apt -- "$standin" "$work/own124-paused.count" own124
-check "the pause came after the attempt" "$(is "$([ "$(count "$work/date.count")" -ge 2 ] && echo yes)" yes)"
-check "ran once" "$(is "$(count "$work/own124-paused.count")" 1)"
-check "names exit 124 as the command's" "$(contains "$out" "attempt 1 exited 124 after [0-9]* s, and its 2 s bound did not end it")"
-check "does not call it a timeout" "$(is "$(contains "$out" "timed out")" false)"
+seam "$ENDS"
+for own in 124 137; do
+  echo "case: a command's own exit $own stays its own when the script is paused before it reads the clock"
+  : > "$work/date.count"
+  PATH="$stubs_date:$PATH" run_install "exits $own itself, paused" apt -- "$standin" "$work/own$own-paused.count" "own$own"
+  check "$own: the pause came after the attempt" "$(is "$([ "$(count "$work/date.count")" -ge 2 ] && echo yes)" yes)"
+  check "$own: ran once" "$(is "$(count "$work/own$own-paused.count")" 1)"
+  check "$own: names exit $own as the command's" "$(contains "$out" "attempt 1 exited $own after [0-9]* s, and its $ENDS s bound did not end it")"
+  check "$own: does not call it a timeout or a kill" "$(is "$(contains "$out" "timed out\|was killed")" false)"
+done
 
 seam "$ENDS"
 echo "case: a command that is not there is not tried again"

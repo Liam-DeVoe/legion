@@ -3657,6 +3657,8 @@ lint_steps "$root" \
   "go get" "go get example.com/m@v1.0.0" \
   "go install at a version" "go install example.com/m/cmd/tool@v1.0.0" \
   "go run at a version" "go run example.com/m/cmd/tool@v1.0.0" \
+  "go mod tidy" "go mod tidy" \
+  "gh release download" "gh release download v1.0.0 -R example/tool -p 'tool_*_linux_amd64.tar.gz'" \
   "gem install" "gem install bundler" \
   "cargo install" "cargo install ripgrep" \
   "snap install" "sudo snap install jq" \
@@ -3681,6 +3683,8 @@ check "names uv tool install" "$(refused_in "uv tool install" "uv tool install")
 check "names go get" "$(refused_in "go get" "go get")"
 check "names go install of a module at a version" "$(refused_in "go install at a version" "go install <module>@<version>")"
 check "names go run of a module at a version" "$(refused_in "go run at a version" "go run <module>@<version>")"
+check "names go mod tidy" "$(refused_in "go mod tidy" "go mod tidy")"
+check "names gh release download" "$(refused_in "gh release download" "gh release download")"
 check "names gem install" "$(refused_in "gem install" "gem install")"
 check "names cargo install" "$(refused_in "cargo install" "cargo install")"
 check "names snap install" "$(refused_in "snap install" "snap install")"
@@ -3860,6 +3864,49 @@ replace "$root/.github/workflows/ci.yaml" "    timeout-minutes: 10" "    timeout
 replace "$root/.github/workflows/ci.yaml" "        timeout-minutes: 4" "        timeout-minutes: 5"
 run_check "$root"
 check "passes with limits that hold them" "$(is "$status" 0)"
+
+# An earlier step's own limit counts in full toward the job's, whatever that step runs: the job can
+# spend all of it before the install after it starts.
+root=$(fixture network-limits-earlier)
+lint_steps "$root" \
+  "Build" "make build" \
+  "Install the workspace" ".github/scripts/network-install.sh bun -- bun install --frozen-lockfile"
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Build\n' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 12\n    steps:\n      - name: Build\n        timeout-minutes: 6\n'
+run_check "$root"
+check "counts an earlier step's own limit in full" \
+  "$(contains "$out" "job lint of .github/workflows/ci.yaml has timeout-minutes 12, 720 s, and 785 s is what, up to step \"Install the workspace\"")"
+check "names that limit among what the job spent before the install" "$(contains "$out" "step \"Build\"'s limit 360 s before it")"
+
+# A builder pulls each FROM image no earlier step left on the runner with no bound of its own, at
+# PULL_SECONDS (180 s) each, and BuildKit builds the stages the last one needs side by side, so a
+# build can spend the longest chain of them: here the slow stage's pull and its install, then the
+# last stage's pull, 180 + 425 + 180 s, never the quick stage's 180 + 180 s.
+echo "case: rule 22 counts each FROM pull a build makes, and the longest chain of the stages it needs"
+root=$(fixture network-from-pulls)
+mkdir -p "$root/docker"
+cat > "$root/docker/pulls.Dockerfile" <<'DOCKERFILE'
+FROM ghcr.io/example/first:1 AS first
+FROM ghcr.io/example/second:1
+COPY --from=first /x /x
+DOCKERFILE
+cat > "$root/docker/chain.Dockerfile" <<'DOCKERFILE'
+FROM ghcr.io/example/slow:1 AS slow
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh bun -- bun install --frozen-lockfile
+FROM ghcr.io/example/quick:1 AS quick
+FROM ghcr.io/example/last:1
+COPY --from=slow /x /x
+COPY --from=quick /y /y
+DOCKERFILE
+replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n' \
+  $'      - name: Build the pulls\n        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0\n        with:\n          context: .\n          file: docker/pulls.Dockerfile\n      - name: Build the chain\n        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0\n        with:\n          context: .\n          file: docker/chain.Dockerfile\n      - name: Lint everything\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts each FROM pull at 180 s" \
+  "$(contains "$out" "builds docker/pulls.Dockerfile in step \"Build the pulls\", whose builder pulls and wrapped installs can take 360 s")"
+check "counts the longest chain of the stages the last one needs" \
+  "$(contains "$out" "builds docker/chain.Dockerfile in step \"Build the chain\", whose builder pulls and wrapped installs can take 785 s")"
 
 # A step that sets no limit of its own still carries the bound of each go test it runs, its
 # -timeout; raised alone, that bound must still leave the job room for its installs to fail by name.
@@ -4371,5 +4418,47 @@ check "names the docker run of the script the test runs without the fake" \
   "$(contains "$out" "in scripts/real.sh, which scripts/both_test.sh runs, runs \`docker run\`")"
 check "passes the docker run of the script it runs under the fake" \
   "$(is "$(contains "$out" "in scripts/faked.sh, which")" false)"
+
+# A job that pulls its build's base images before the build (envoy-smoke's pull-test-images step)
+# lists them under `images:`, and the list is the FROM pins of the Dockerfiles the job builds after
+# it, the same bytes: a pin changed in the Dockerfile alone, or a list entry no FROM names, fails by
+# name, so the two cannot drift apart.
+echo "case: rule 22 holds a pull-test-images list to the FROM images of the job's later builds"
+root=$(fixture network-pull-list)
+mkdir -p "$root/docker" "$root/.github/actions/pull-test-images"
+cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
+name: Pull test images
+inputs:
+  images:
+    description: The images to pull, one per line.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Pull them
+      shell: bash
+      run: echo pulled
+YAML
+cat > "$root/docker/app.Dockerfile" <<'DOCKERFILE'
+FROM ghcr.io/example/base@sha256:1111 AS build
+RUN echo built > /built
+FROM ghcr.io/example/runtime@sha256:2222
+COPY --from=build /built /built
+DOCKERFILE
+replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n' \
+  $'      - name: Pull the images\n        uses: ./.github/actions/pull-test-images\n        with:\n          images: |\n            ghcr.io/example/base@sha256:1111\n            ghcr.io/example/runtime@sha256:2222\n      - name: Build the image\n        timeout-minutes: 12\n        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0\n        with:\n          context: .\n          file: docker/app.Dockerfile\n      - name: Lint everything\n'
+run_check "$root"
+check "passes a list that is the build's FROM pins" "$(is "$status" 0)"
+replace "$root/docker/app.Dockerfile" "FROM ghcr.io/example/runtime@sha256:2222" "FROM ghcr.io/example/runtime@sha256:3333"
+run_check "$root"
+check "fails a pin changed in the Dockerfile alone" "$(is "$status" 1)"
+check "names the FROM pin the list leaves out" \
+  "$(contains "$out" "builds FROM ghcr.io/example/runtime@sha256:3333 at docker/app.Dockerfile:3, and step \"Pull the images\" pulls the job's FROM images but not that one")"
+check "names the list's pin no FROM names" \
+  "$(contains "$out" "pulls ghcr.io/example/runtime@sha256:2222 in step \"Pull the images\", and no FROM of a Dockerfile the job builds after it names that image")"
+replace "$root/.github/workflows/ci.yaml" "            ghcr.io/example/runtime@sha256:2222" "            ghcr.io/example/runtime@sha256:3333"
+run_check "$root"
+check "passes once the list follows the pin" "$(is "$status" 0)"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"
