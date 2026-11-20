@@ -56,11 +56,11 @@ var storedTaskReaders = map[string]string{
 		"of a design document",
 }
 
-// noticePublishers are the functions that hand a message to Envoy, each as go/types names it: the
+// envoyPublishes are the functions that hand a message to Envoy, each as go/types names it: the
 // outbox's publish and its publish with keep, which every executor publishes through, and the two
 // of notify.Publisher, which those call. A function that hands one of them a record.Notice it
 // holds publishes that notice: the queued notice's delivery (the outbox's deliverNotice) does.
-var noticePublishers = []string{
+var envoyPublishes = []string{
 	"(*" + senderModule + "daemon.outbox).publish",
 	"(*" + senderModule + "daemon.outbox).publishKept",
 	"(" + senderModule + "notify.Publisher).Publish",
@@ -120,11 +120,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     (workflow.Engine.ResumeAwaitedRoot), and so does the sweep's send of a resume's entry whose
 //     start was lost (workflow.Engine.SendArchitectStart); or
 //   - publishes a record.Notice it holds: hands a value of that type, however it was made (a
-//     row's payload, its Published copy, a conversion), to one of noticePublishers. A notice the
+//     row's payload, its Published copy, a conversion), to one of envoyPublishes. A notice the
 //     workflow queued is published where it is delivered (the outbox's deliverNotice), and a
-//     relay to the controller where its own row runs (the outbox's controllerNotice), each of
-//     which can be long after the workflow or the relay asked, so the publish is a send of its
-//     own.
+//     relay to the controller where its row runs (the outbox's controllerNotice): each can be long
+//     after the workflow or the relay asked, so the publish is a send of its own.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
@@ -135,14 +134,16 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //
 // The reach is transitive, which bounds what the rule for a publisher proves: it fails a publisher
 // that reaches the predicate through nothing it calls, and no more. The delivery of a notice
-// (deliverNotice) reaches it three ways: through its ask of a changes request
-// (readNoticeTree's decisionSuperseded), through the catch-up's Decided that readNoticeTree
-// writes again (workflow.KeptDecisionsTask), and through the relay of a parked decision
-// (parkDecision). Take the first out and the walk still passes. What holds that ask is its
-// behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of
-// a relay to the controller (controllerNotice) reaches it through its ask of a relayed changes
-// request alone (relayedChangesAnswered), so the walk fails it if that ask goes; that the ask
-// reads the review's mark from the decision the relay kept is its behavior too, which
+// (deliverNotice) reaches it four ways: through its ask of a changes request (readNoticeTree's
+// decisionSuperseded), through the catch-up's Decided that readNoticeTree writes again
+// (workflow.KeptDecisionsTask), through the hand-over of a catch-up's decisions to a fresh catch-up
+// (workflow.HandOverKept) once a newer one superseded it (supersededKept) or its re-holds are spent
+// (the re-hold policy's spentKept), and through the relay of a parked decision (parkDecision). Take
+// the first out and the walk still passes. What holds that ask is its behavior, which
+// TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of a relay to the
+// controller (controllerNotice) reaches it one way alone, through its ask of a relayed changes
+// request (relayedChangesAnswered), so the walk fails it if that ask goes; that the ask reads the
+// review's mark from the decision the relay kept is its behavior too, which
 // TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
@@ -294,8 +295,7 @@ type decisionFunc struct {
 	// queuesResume is whether the body writes a record.SuperviseRequest that carries a person's
 	// answered wait, whose task the daemon renders at each send (resumeSend).
 	queuesResume bool
-	// publishes are the positions where the body hands a record.Notice to one of
-	// noticePublishers.
+	// publishes are the positions where the body hands a record.Notice to one of envoyPublishes.
 	publishes []string
 }
 
@@ -712,11 +712,11 @@ func writesText(info *types.Info, call *ast.CallExpr) bool {
 		slices.ContainsFunc([]string{"Sprint", "Fprint", "Append"}, func(prefix string) bool { return strings.HasPrefix(fun.Name(), prefix) })
 }
 
-// publishesNotice is whether call hands a record.Notice to one of noticePublishers: an argument of
+// publishesNotice is whether call hands a record.Notice to one of envoyPublishes: an argument of
 // that type is the notice the call publishes, whatever made the value.
 func publishesNotice(info *types.Info, call *ast.CallExpr) bool {
 	fun := calledFunc(info, call)
-	if fun == nil || !slices.Contains(noticePublishers, fun.Origin().FullName()) {
+	if fun == nil || !slices.Contains(envoyPublishes, fun.Origin().FullName()) {
 		return false
 	}
 	return slices.ContainsFunc(call.Args, func(arg ast.Expr) bool { return isRecordType(info.TypeOf(arg), "Notice") })

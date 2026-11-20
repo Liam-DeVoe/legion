@@ -90,27 +90,23 @@ type recomposedCatchUp struct {
 // errNoticeRowGone, a changes request the person's approval followed is changesSuperseded, and a
 // notice it cannot route is errNoticeUnroutable. The changes request is asked of the gates of
 // row's issue as this read holds them (decisionSuperseded, at the version and the review's mark
-// the notice carries): the workflow asked when it queued the notice (workflow's tellChanges), and
-// the row may have waited since, for an architect whose pod was released or is relaunching, or as
-// a copy a listener's report queued again (reholdNotice). Only a changes request is dropped this
-// way: a design-approved notice behind it is the approval that answered it, and goes as before.
-// For a catch-up (payload.CatchUp) the same transaction composes again what the architect of row's
-// issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
-// workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
-// under it, so a child's architect is never told the whole tree), and what the architect is told
-// is the record at this read, the one the owner walk and the fence see, rather than at the moment
-// the row was queued: a gate registered between the two reached the architect at its old version
-// (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it carries no Kept and
-// Decided stays empty. The reason it composes keeps the sentence of what the architect's last
-// process ended that the row was queued with (record.CatchUp.Relaunch, workflow.CatchUpReason):
-// that sentence is of what ended before the launch, which this read does not restate. It writes
-// Decided again from the decisions the row claimed (Kept), each asked of the gates this read holds
-// (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so an approval that followed a kept
-// decision while the row waited drops it from the text. It deletes nothing: the row's queueing
-// claimed those decisions, and its settling stays keyed to the whole of Kept, so the publish
-// forgets a dropped decision with the rest, which the approval answered. A catch-up an earlier
-// release queued with Decided and no Kept is told as its row holds it. It is nil for every other
-// notice. The transaction stays read-only.
+// the notice carries). For a catch-up (payload.CatchUp) the same transaction composes again what
+// the architect of row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is
+// queued on, as workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and
+// every issue under it, so a child's architect is never told the whole tree), and what the
+// architect is told is the record at this read, the one the owner walk and the fence see, rather
+// than at the moment the row was queued: a gate registered between the two reached the architect at
+// its old version (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it
+// carries no Kept and Decided stays empty. The reason it composes keeps the sentence of what the
+// architect's last process ended that the row was queued with (record.CatchUp.Relaunch,
+// workflow.CatchUpReason): that sentence is of what ended before the launch, which this read does
+// not restate. It writes Decided again from the decisions the row claimed (Kept), each asked of the
+// gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so an approval that
+// followed a kept decision while the row waited drops it from the text. It deletes nothing: the
+// row's queueing claimed those decisions, and its settling stays keyed to the whole of Kept, so the
+// publish forgets a dropped decision with the rest, which the approval answered. A catch-up an
+// earlier release queued with Decided and no Kept is told as its row holds it. It is nil for every
+// other notice. The transaction stays read-only.
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, treeSnapshot, *recomposedCatchUp, error) {
 	var issue record.Issue
 	var tree treeSnapshot

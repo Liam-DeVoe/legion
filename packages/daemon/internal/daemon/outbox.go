@@ -1712,10 +1712,11 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // next start resumes — the row is held for it; once nobody will hold that role for this notice —
 // the claim has failed or retired, or its tree lingers or has closed — the row finishes
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
-// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
-// whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
-// the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
-// launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
+// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a
+// changes request the person's approval followed while it waited (changesSuperseded), a row whose
+// architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while the
+// child is out of the workflow by its status or its phase (record.InWorkflow), whose next launch
+// writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
 // will not hold its role again) goes to the controller instead (parkDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did

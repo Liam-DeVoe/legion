@@ -98,7 +98,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
 	case superseded != nil:
-		r.log.Info("outbox parked decision not relayed: the person approved a later version since",
+		r.log.Info("outbox parked decision not relayed: the person's approval followed it",
 			append(args, "version", notice.Version, "approved", superseded.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
@@ -124,7 +124,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 // controller (parkDecision), the publish of that relay when it is a changes request
 // (relayedChangesAnswered, which asks at the mark of the decision the relay kept, since the
 // controller notice carries none) and the delivery of a changes request to the architect
-// (readNoticeTree), and the line that says one was declined names the approved version.
+// (readNoticeTree), and the line each logs for a superseded decision names the approved version.
 func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Approval, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {

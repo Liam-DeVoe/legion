@@ -1467,16 +1467,15 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // (record.EventMark.After). Such an approval is the person's decision in the review's place,
 // whichever approval request carried it, so nothing of the review is left to tell or to act on.
 // Every sender of a task or a notice about a person's review reaches it through one predicate,
-// workflow's SupersedingApproval, which holds every guard that chooses whether to ask it — the kind of
-// decision, the gate of the document reviewed, whether the deployment gates that step, and an
+// workflow's SupersedingApproval, which holds every guard that chooses whether to ask it — the kind
+// of decision, the gate of the document reviewed, whether the deployment gates that step, and an
 // approval that is the gate's own — and is asked from the gates as the record holds them at that
 // moment: the changes notice (workflow's applyArtifact, tellChanges and gateRegistered, and the
-// daemon's readNoticeTree at its delivery), the
-// resume task of a root that waited on a person (workflow's resumeTask), the kept decisions and
-// the kept approval of an architect's start or catch-up (workflow's KeptDecisionsTask, which the
-// daemon's rootTask also renders through at each send and its readNoticeTree at each delivery)
-// and the controller's relay of an undelivered spec decision (the outbox's parkDecision, and its
-// controllerNotice at a relayed changes request's publish).
+// daemon's readNoticeTree at its delivery), the resume task of a root that waited on a person
+// (workflow's resumeTask), the kept decisions and the kept approval of an architect's start or
+// catch-up (workflow's KeptDecisionsTask, which the daemon's rootTask also calls at each send and
+// its readNoticeTree at each delivery) and the controller's relay of an undelivered spec decision
+// (the outbox's parkDecision, and its controllerNotice at a relayed changes request's publish).
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror

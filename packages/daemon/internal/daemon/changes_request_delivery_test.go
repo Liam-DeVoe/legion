@@ -33,7 +33,7 @@ import (
 // Where the person approved the reviewed version after the request, the request's row finishes
 // with nothing published and one line naming the row, the issue and both versions, and the
 // approval's own notice behind it still goes. The controls are a request no approval followed,
-// and one that came after the person's approval: each is published as it always was.
+// and one that came after the person's approval: each is published.
 func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
@@ -79,7 +79,7 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 				}
 			}
 			apply(tc.queued)
-			request := queuedNotice(t, pool, "design-changes-requested")
+			request := soleNoticeRow(t, pool, "design-changes-requested")
 			if want := (record.Notice{Kind: "design-changes-requested", Version: 3, Reason: changes.Reason, Actor: "user:alice",
 				Ref: "dispatch://LEGION-1/spec", Review: changes.Mark}); !reflect.DeepEqual(request.notice, want) {
 				t.Fatalf("the workflow queued %#v, want the changes request %#v", request.notice, want)
@@ -96,7 +96,7 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("first attempt: %v", err)
 			}
-			if published := architectNotices(t, publisher); len(published) != 0 || queuedNotice(t, pool, "design-changes-requested").id != request.id {
+			if published := architectNotices(t, publisher); len(published) != 0 || soleNoticeRow(t, pool, "design-changes-requested").id != request.id {
 				t.Fatalf("published %v to the architect on the attempt no session holds its role; want the request's row %d waiting", published, request.id)
 			}
 
@@ -150,8 +150,8 @@ type queuedRow struct {
 	notice record.Notice
 }
 
-// queuedNotice is the one notice row of kind the outbox holds.
-func queuedNotice(t *testing.T, pool *store.Pool, kind record.NoticeKind) queuedRow {
+// soleNoticeRow is the one notice row of kind the outbox holds.
+func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queuedRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and payload->>'kind' = $2 order by id`, string(record.OutboxKindNotice), string(kind))
@@ -191,8 +191,8 @@ func queuedNotice(t *testing.T, pool *store.Pool, kind record.NoticeKind) queued
 // Where the approval followed the request, the request's row finishes with nothing published and
 // one line naming the row, the issue, the ref and both versions, and the approval's own relay
 // still goes. The controls are a request no approval followed, and one Dispatch recorded after
-// the person's approval of the same version: each is told as it always was, since the review's
-// mark decides and not the version alone.
+// the person's approval of the same version: each is told, since the review's mark, not the version
+// alone, decides which came first.
 func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T) {
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
