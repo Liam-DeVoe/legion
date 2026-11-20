@@ -423,7 +423,7 @@ func (s *server) planStatusChangeUnderLocks(
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), includeChildren: change.includeChildren}
 	for index := range steps {
 		row := rows[steps[index].key]
-		steps[index].title, steps[index].labelsBefore, steps[index].lastSeq = row.title, row.labels, row.lastSeq
+		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
 		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)

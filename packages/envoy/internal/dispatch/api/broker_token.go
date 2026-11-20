@@ -170,16 +170,19 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
 	// never as a scope a route could require.
 	//
-	// A token scoped to a project whose answer holds legion-status gets that scope alone
+	// A token scoped to one project whose answer holds legion-status gets that scope alone
 	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. Dispatch
-	// reads the scope and does not check the token's session: the broker decides who holds it.
-	// No credential holds it beside person, so an act's scopes, which only a credential holding
-	// person records (actingPerson), never carry it.
+	// reads the scope only on a named token that names exactly one project. A named token that
+	// names no project names a person, as the shared public-session account's token does.
+	// legion-status on such a token would pass R26 on the Legion issues of every project, so it
+	// gets no scope. Dispatch does not check the token's session: the broker decides who holds
+	// the scope. No credential holds it beside person, so an act's scopes, which only a
+	// credential holding person records (actingPerson), never carry it.
 	var scopes []string
 	switch {
 	case caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson:
 		scopes = model.Scopes
-	case caller.LegionStatus && caller.ProjectScope == brokertoken.ProjectScopeNamed:
+	case caller.LegionStatus && caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1:
 		scopes = legionStatusScopes
 	}
 	actor := model.Actor{

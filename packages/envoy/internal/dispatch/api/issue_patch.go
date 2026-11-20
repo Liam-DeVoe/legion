@@ -444,27 +444,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		labelsAfter = &labels
 	}
 	// The plan's one check (refuseIssueWritePlan) runs here, after the refusals above and under
-	// the owner locks the write holds: the issue's, and for a status or parent write its current
-	// and proposed parent's. R26 (legion_status_scope.go) judges the write first, and R24
+	// the owner locks the write holds. R26 (legion_status_scope.go) judges the write first, and R24
 	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's.
-	//
-	// R26 judges every status write, label write and parent change, the write of the status the
-	// issue already has included. It reads the credential that resolved the writer, never the
-	// body's actor. R24 judges only the pairs the write changes. Every writer of a pair holds the
-	// parent's owner lock, so two writes of one pair are judged one after the other. For a write
-	// that changes no pair, R24 reads nothing.
-	if input.Status != nil || parentChanged || labelsAfter != nil {
-		var statusAfter *string
-		if input.Status != nil {
-			statusAfter = &status
-		}
-		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter))
-		if err != nil {
-			return issueWriteResult{}, err
-		}
-		if conflict != nil && s.deps.ParentStatusRule.On() {
-			return issueWriteResult{}, conflict
-		}
+	var statusAfter *string
+	if input.Status != nil {
+		statusAfter = &status
+	}
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter))
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	if conflict != nil && s.deps.ParentStatusRule.On() {
+		return issueWriteResult{}, conflict
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.

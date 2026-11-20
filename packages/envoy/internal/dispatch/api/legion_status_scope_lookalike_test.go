@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -133,4 +134,31 @@ func TestLegionAndALookAlikeLabelAreTwoLabels(t *testing.T) {
 			t.Errorf("%s after the person's write: labels %q, want %q", issue, got, want)
 		}
 	})
+}
+
+// TestEachLetterOfTheLegionLabelFoldsOnlyBetweenItsASCIICases holds the fact that the walk's
+// comment rests on (legionManagedStatusSQL, issue_parent.go). The walk compares
+// lower(label collate "C") with legionLabel, and holdsLegionLabel compares a label with it by
+// strings.EqualFold. lower() in "C" changes only A-Z. strings.EqualFold matches a rune with each
+// rune of its unicode.SimpleFold orbit. So the two agree only while each letter of legionLabel
+// folds only between its own ASCII lower and upper case.
+//
+// A legionLabel with a k or an s breaks that. k folds with U+212A (the Kelvin sign), and s folds
+// with U+017F (long s). lower() in "C" does not change either rune, so the walk would read no
+// legion label where holdsLegionLabel reads one.
+func TestEachLetterOfTheLegionLabelFoldsOnlyBetweenItsASCIICases(t *testing.T) {
+	for _, letter := range legionLabel {
+		if letter > unicode.MaxASCII || !unicode.IsLetter(letter) {
+			t.Errorf("the legion label %q holds %q, which is not an ASCII letter", legionLabel, letter)
+			continue
+		}
+		lower, upper := unicode.ToLower(letter), unicode.ToUpper(letter)
+		for folded := unicode.SimpleFold(letter); folded != letter; folded = unicode.SimpleFold(folded) {
+			if folded != lower && folded != upper {
+				t.Errorf("%q of the legion label %q folds with %U (%q), which is neither %q nor %q: "+
+					"lower() in the collation \"C\" does not change it, so the walk and strings.EqualFold disagree",
+					letter, legionLabel, folded, folded, lower, upper)
+			}
+		}
+	}
 }

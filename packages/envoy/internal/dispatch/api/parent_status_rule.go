@@ -97,8 +97,8 @@ func parentStatusFixWriter() issueWriter {
 	return issueWriter{actor: parentStatusRuleActor, system: true}
 }
 
-// issueWritePlan is a write of the status or the parent of one or more issues, step by step, as
-// refuseIssueWritePlan judges it before the first step writes.
+// issueWritePlan is a write of the status, the parent or the labels of one or more issues, step
+// by step, as refuseIssueWritePlan judges it before the first step writes.
 type issueWritePlan struct {
 	steps []issueWriteStep
 	// includeChildren is that the call moves the open issues under the issue it names with that
@@ -120,8 +120,6 @@ type issueWriteStep struct {
 	// parentAfter is nil.
 	reparent    bool
 	parentAfter *string
-	// labelsBefore is the labels the issue has before the step.
-	labelsBefore []string
 	// labelsAfter is the labels the step writes, or nil when the step keeps them. Only a PATCH
 	// writes labels.
 	labelsAfter *[]string
@@ -149,7 +147,6 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 		parentBefore: before.Parent,
 		reparent:     parentProvided,
 		parentAfter:  parent,
-		labelsBefore: before.Labels,
 		labelsAfter:  labels,
 	}}}
 }
@@ -194,19 +191,18 @@ func lockIssueWriteOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 type issueWriteRow struct {
 	key, title, status string
 	parent             *string
-	labels             []string
 	lastSeq            int
 }
 
 // readIssueWriteRows reads the rows of the issues keys, by key.
 func readIssueWriteRows(ctx context.Context, q queryer, keys []string) (map[string]issueWriteRow, error) {
-	rows, err := q.Query(ctx, `select key, title, status, parent_key, labels, last_seq from issues where key = any($1)`, keys)
+	rows, err := q.Query(ctx, `select key, title, status, parent_key, last_seq from issues where key = any($1)`, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a plan: %w", err)
 	}
 	collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueWriteRow, error) {
 		var read issueWriteRow
-		err := row.Scan(&read.key, &read.title, &read.status, &read.parent, &read.labels, &read.lastSeq)
+		err := row.Scan(&read.key, &read.title, &read.status, &read.parent, &read.lastSeq)
 		return read, err
 	})
 	if err != nil {
@@ -221,9 +217,9 @@ func readIssueWriteRows(ctx context.Context, q queryer, keys []string) (map[stri
 
 // refuseIssueWritePlan is the one check of a plan, which its caller runs before the plan's first
 // write, with the owner lock of each step's issue and of each step's current and new parent held.
-// It refuses with an error what no setting lets through, and it always answers the conflict with
-// R24 (parentStatusConflictOf), or nil when the plan keeps the rule. The caller refuses that
-// conflict only while the rule is on.
+// It refuses with an error R26's refusal, while its setting is on, and what no setting lets
+// through. It always answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
+// keeps the rule. The caller refuses that conflict only while the rule is on.
 func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
 	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
 	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {

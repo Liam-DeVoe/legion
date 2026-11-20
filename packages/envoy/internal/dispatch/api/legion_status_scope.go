@@ -84,8 +84,15 @@ import (
 const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 
 // refuseLegionStatusWrite is R26's refusal (this file's comment). refuseIssueWritePlan runs it as
-// its first statement, before the plan's first write, so a refused call changes nothing. It
-// judges every step of the plan. on is Deps.LegionStatusScope: off refuses nothing.
+// its first statement, before the plan's first write. It judges every step of the plan. on is
+// Deps.LegionStatusScope: off refuses nothing.
+//
+// A refused PATCH changes nothing, because the PATCH writes in one transaction. A refused
+// POST /api/v1/issues/{key}/status-change can change some issues. Its plan is checked once before
+// the first write (planStatusChangeUnderLocks). Then each step commits in a transaction of its
+// own through writeIssue, which runs this check again. A step refused there stops the call after
+// the earlier steps committed, and the answer lists those steps in changed, as for any refused
+// step.
 //
 // It lets two writers through. One is Dispatch's system writer (writer.system): only
 // parentStatusFixWriter sets it, for R25's boot fix, and no request can produce it. The other is
@@ -93,10 +100,11 @@ const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 // the one that optionalActor resolved for the request (requestWriter), and a nil credential holds
 // no scope.
 //
-// It reads the state of each step's issue before the call from the issue's stored row, never
-// from the step. The caller holds the owner lock of each step's issue, so the stored row is the
-// issue's state before the call. So R26 reads no builder's copy of the issue's labels. A builder
-// may still fill labelsBefore, and R26 does not read it.
+// It reads the issue's labels from its stored row, and walks the chain from that row to say
+// whether the issue is a Legion issue before the call. The caller holds the owner lock of each
+// step's issue, so the stored row is the issue's state before the call. The rest comes from the
+// step: what the step writes, and the parent that the plan read under the same lock
+// (parentBefore), which changesParent and parentLeft read.
 //
 // A refused step answers 403 codeLegionStatusScopeRequired. A read that fails is an error, which
 // the caller answers 500: the read gates a write, so a failed read never lets the write through.

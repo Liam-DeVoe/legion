@@ -527,10 +527,11 @@ REFGEN_API = envoy_import_closure(f"{ENVOY}/internal/broker/api", f"{ENVOY}/inte
 REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/broker/{d}" for d in ("api", "approval", "airlockproxy"))
 MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
-                             "the tests that ask it for the module's sources: lock_level_test.go:89, "
-                             "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
+                             "the tests that ask it for the module's sources: lock_level_test.go:129, "
+                             "event_insert_guard_test.go:49, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
-                             "issue_route_writer_guard_test.go:107 and :414; issue_route_writer_guard_test.go:126 "
+                             "issue_route_writer_guard_test.go:112 and :494, item_writer_census_test.go:277; "
+                             "issue_route_writer_guard_test.go:131 "
                              "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
