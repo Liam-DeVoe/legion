@@ -9,6 +9,8 @@ body: |-
     The heads a caller reads are the newest it can see: `GET /auth/whoami`'s `event_head` and an events subscription's `events_start` since are the newest event the caller can see, and a delivery view's `seq` and `changed_at` the newest change of a repository it sees, so no write of a project it cannot see moves them. Where no project is private, a full member reads the heads it read before.
 
     `/healthz`, which answers a caller with no credential, names no private project and no repository: in every deployment, with a private project or none, each failed GitHub read's `cause` in its `github` member is now its class alone, `status <n>` for the status GitHub answered or `no status`, and the failure's text, which names the repository the read read, is read in `github_read_attempts`.
+
+    A claim, the actor who parked an issue, a route's holder and a `legion-<project>-…` role name no session, person or project their reader may not see, in the issue read, the listing, the children, the priority faults, the ask reads and a claim's 409; a delivery to a role of a private project its sender does not see answers as a role no session holds.
 time: 2026-11-16T17:17:47.264285777Z
 custom:
     Issue: pr4177

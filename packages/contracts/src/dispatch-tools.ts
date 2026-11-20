@@ -945,7 +945,8 @@ export const dispatchToolSpecs = [
       "resolution or edit of it (other than a quiet edit), and every reply there (new, edited, resolved " +
       "or reopened), reach you " +
       "as its follower. Claiming is refused with 409 ISSUE_CLAIMED " +
-      "when another session holds the issue and is still running; the refusal names that session, so talk to " +
+      "when another session holds the issue and is still running; the refusal names that session, unless it is a " +
+      "session you may not see, when it names none, so talk to " +
       "it instead of working the same issue in parallel. When a human holds the claim the refusal names the " +
       "person, not a session: there is nothing running to message, so ask them on the issue rather than " +
       "taking it. 409 CLAIM_CONTENDED means the issue changed " +
