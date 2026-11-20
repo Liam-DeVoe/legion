@@ -235,7 +235,7 @@ func controlAlias(words string) string {
 			if err := c.write(plantDir+"control_holders.go", "package brokerclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n\ntype controlGeneric[T any] struct{ r T }\n\nvar controlInstance controlGeneric[*RefusedError]\n"); err != nil {
 				return err
 			}
-			return c.write(plantTSDir+"control-holder.ts", "import type { BrokerRefusedError } from \"./token-errors\";\n\n/** Control (6)'s planted holder, reaching the box through an array of refusals. */\nexport interface ControlHolder {\n  readonly refusals: readonly BrokerRefusedError[];\n}\n")
+			return c.write(plantTSDir+"control-holder.ts", "import type { LibraryError } from \"@legion/contracts/remote-text\";\n\n/** Control (6)'s planted holder, reaching the box through an array of library errors. */\nexport interface ControlHolder {\n  readonly errors: readonly LibraryError[];\n}\n")
 		}},
 	{id: "7", what: "one same-placement row's twin made unreachable at its recorded placement, with no relocation", rows: "box-string", stage: 4,
 		expect: []string{"baseline", "row box-string", "blind"},
