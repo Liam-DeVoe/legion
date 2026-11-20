@@ -203,6 +203,65 @@ func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
 	}
 }
 
+// newSessionsRoster is three sessions that have written nothing yet, so none has a
+// session_projects pair, as the listener lists them: session-new-priv registered with a token that
+// lists PRIV, session-new-pub with one that lists PUB, and session-new-none with one that lists no
+// project, which the listener sends no projects key for.
+const newSessionsRoster = `[
+	{"session_id":"session-new-priv","title":"New on PRIV","capabilities":["btw"],"projects":["PRIV"],"last_seen":300},
+	{"session_id":"session-new-pub","title":"New on PUB","capabilities":["btw"],"last_seen":200,"projects":["PUB"]},
+	{"session_id":"session-new-none","title":"New, no list","capabilities":["btw"],"last_seen":100}
+]`
+
+// TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee (K6): a session with no history is
+// judged by its listener record's projects (access.SessionClause), so GET /api/v1/agents leaves out,
+// for an open viewer that does not see PRIV (alice, carol's token that lists no project, the shared
+// token), session-new-priv, whose listener names PRIV alone, and lists session-new-pub, whose
+// listener names PUB, and session-new-none, whose listener names no project. carol, who sees PRIV,
+// lists all three; bob and carol's token that lists PRIV list session-new-priv alone; alice's token
+// that lists PRIV, which sees no project, lists none. A process that asks the listener on every read
+// (DISPATCH_TEST_ROSTER_UNCACHED) answers the same: it stores each answer it reads, since the
+// listener record the clause reads is that stored answer.
+//
+// Controls: the clause before its listener-record arms (access.SessionClause passing every session
+// with no pair to an open viewer), under which alice lists session-new-priv; and the uncached read
+// storing nothing, under which alice, in that mode, lists no session-new-none.
+func TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee(t *testing.T) {
+	for _, mode := range []struct {
+		name     string
+		uncached bool
+	}{{"the stored listener answer", false}, {"DISPATCH_TEST_ROSTER_UNCACHED", true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			listener, _ := newBroadcastListener(t, newSessionsRoster)
+			seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, rosterUncached: mode.uncached})
+			public := []string{"session-new-pub", "session-new-none"}
+			for _, test := range []struct {
+				caller privateCaller
+				want   []string
+			}{
+				{callerAlice, public},
+				{callerCarolToken, public},
+				{callerSharedToken, public},
+				{callerCarol, []string{"session-new-priv", "session-new-pub", "session-new-none"}},
+				{callerBob, []string{"session-new-priv"}},
+				{callerCarolPrivToken, []string{"session-new-priv"}},
+				{callerAlicePrivToken, []string{}},
+			} {
+				response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+				got := []string{}
+				for _, row := range decodeBody[[]struct {
+					SessionID string `json:"session_id"`
+				}](t, response) {
+					got = append(got, row.SessionID)
+				}
+				if !slices.Equal(got, test.want) {
+					t.Errorf("%s: GET /api/v1/agents = %v, want %v", test.caller, got, test.want)
+				}
+			}
+		})
+	}
+}
+
 // TestCIRepairPassesGoToAnOpenViewerOnly (check c-ci-passes-open): GET /api/v1/ci-reconcile/passes
 // reads the whole deployment. A pass covers repositories of many projects and names no issue, so it
 // has no project to hold a viewer to: an open viewer reads every pass, and every other viewer is
@@ -500,16 +559,17 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // and by a caller that may see every one of its recipients; to anyone else GET
 // /api/v1/broadcasts leaves it out and GET /api/v1/broadcasts/{id} answers it as an id nobody
 // holds. session-priv has acted in PRIV, so an open viewer that does not see PRIV (alice) may not
-// see it (access.SessionClause), and reads neither broadcast that went to it; carol's token that
-// lists no project acts for carol, who sent both, and reads them as their author.
-// The replies under a copy are a conversation of no project, read by its parties
-// or an open viewer (PartyClause): no caller reads what session-priv answered carol unless it reads
-// that conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's
-// count of recipients who answered. session-priv answers under the one credential that proves it
-// in PRIV (asSession): the shared token, which sees no private project, reads no conversation of
-// PRIV's session. Both routes are deployment reads (readClasses), so a viewer that is
-// not open, a restricted member or a credential that lists projects, is refused them whole, the
-// same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
+// see it (access.SessionClause), and reads neither broadcast that went to it;
+// carol's token that lists no project acts for carol, who sent both, and reads them as their
+// author. The replies under a copy are a conversation of no project, read when the caller's person
+// or session is a party, or the caller is open, and it may see every session party (PartyClause):
+// no caller reads what session-priv answered carol unless it reads that conversation, neither in
+// the reply list, nor as the attempt's reply id, nor in the list's count of recipients who
+// answered, so carol's token that lists no project, which does not see PRIV, reads none of it.
+// session-priv answers under the one credential that proves it in PRIV (asSession). Both routes
+// are deployment reads (readClasses), so a viewer that is not open, a restricted member or a
+// credential that lists projects, is refused them whole, the same bytes for a broadcast it wrote,
+// one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -544,7 +604,7 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
 		{callerCarolPrivToken, true, nil, false},
 		{callerAlicePrivToken, true, nil, false},
-		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, false},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
 			if test.refused {

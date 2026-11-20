@@ -228,9 +228,9 @@ type scopedNode struct {
 // with its kind a literal (VisibleKind) or a column (VisibleEnd), and over a row a read already
 // holds (VisibleKindRow, VisibleRow) - answers the kind's rule: a node of PRIV only to the people
 // and credentials that see PRIV, a node of PUB only to those that see PUB, a person, a session, a
-// role and a page as the access package's clauses decide, a conversation to its parties and to an
-// open viewer, the block schema's nodes to everyone, and a node of a project kind the store holds
-// no row of to no caller while a project is private.
+// role, a page and a conversation as the access package's clauses decide, the block schema's nodes
+// to everyone, and a node of a project kind the store holds no row of to no caller while a project
+// is private.
 func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 	tx := beginSeed(t)
 	seedVerificationProjects(t, tx)
@@ -267,9 +267,10 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		{kind: "comment_block", id: "comment/" + pubComment + "#b1", held: true, sees: seesPublic},
 		{kind: "message_block", id: "message/" + pubMessage + "#b1", held: true, sees: seesPublic},
 		{kind: "component", id: "PUB/storage", sees: seesPublic},
-		// A conversation of no project: its parties, every credential of a person party, and an
-		// open viewer, which sees every session party.
-		{kind: "message", id: conversation, held: true, sees: append(slices.Clone(open), "carol's token that lists PRIV")},
+		// A conversation of no project: an open viewer, which sees every session party, and a
+		// party or a credential of a person party only when it sees each session party too
+		// (access.PartyClause): carol's token that lists PRIV does not see ses_pub, of PUB.
+		{kind: "message", id: conversation, held: true, sees: open},
 		// Nothing wrote these: a node of a project kind the store holds no row of is visible
 		// only to an open viewer while no project is private.
 		{kind: "issue", id: "PRIV-404"},
@@ -281,12 +282,12 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		// A session and its page: a viewer that sees a project the session acted in, and an open
 		// viewer unless the session acted in a project it does not see (access.SessionClause), so
 		// a session of PRIV reaches only those that see PRIV. A role the session holds, and its
-		// page: an open viewer, and a viewer that sees a project its holder acted in
-		// (access.RoleClause).
+		// page: a viewer that may read that session, an open viewer included only then
+		// (access.RoleClause), so the role of PRIV's session reaches only those that see PRIV.
 		{kind: graphstore.KindSession, id: "ses_priv", held: true, sees: seesPrivate},
-		{kind: graphstore.KindRole, id: "r_priv", held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
+		{kind: graphstore.KindRole, id: "r_priv", held: true, sees: seesPrivate},
 		{kind: graphstore.KindPage, id: graphstore.SessionPageID("ses_priv"), held: true, sees: seesPrivate},
-		{kind: graphstore.KindPage, id: graphstore.RolePageID("r_priv"), held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
+		{kind: graphstore.KindPage, id: graphstore.RolePageID("r_priv"), held: true, sees: seesPrivate},
 		{kind: graphstore.KindSession, id: "ses_pub", held: true, sees: open},
 		{kind: graphstore.KindRole, id: "r_pub", held: true, sees: open},
 		{kind: graphstore.KindPage, id: graphstore.SessionPageID("ses_pub"), held: true, sees: open},

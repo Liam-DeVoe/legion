@@ -437,19 +437,20 @@ export function isAgentListRefilling(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "ENVOY_REFILLING";
 }
 
-// The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a read of the whole deployment
-// refused to a viewer that is not open, a stored document outside Proof's schema, or a stored
-// history that cannot load is definitive and retrying it changes nothing; any other failure
-// (dropped connection, a read past its deadline, 5xx, a document holding content this build
-// cannot read yet) is worth a couple of automatic attempts before surfacing a Retry affordance to
-// the user.
+// The retry policy every query in the app shares: an auth outcome (401), any 403, a missing
+// architecture source, an unconfigured credential broker or delivery timeline, a stored document
+// outside Proof's schema, or a stored history that cannot load is definitive and retrying it
+// changes nothing; any other failure (dropped connection, a read past its deadline, 5xx, a
+// document holding content this build cannot read yet) is worth a couple of automatic attempts
+// before surfacing a Retry affordance to the user. A 403 is Dispatch's permanent answer to the
+// credential the request carried (a deployment read refused to a restricted member, a role the
+// caller does not hold), and a retry carries the same credential.
 export function isRetryableQueryError(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 403) return false;
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
     !isCredentialFeatureOff(error) &&
-    !isDeploymentReadRefused(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error)

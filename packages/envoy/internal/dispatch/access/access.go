@@ -158,11 +158,22 @@ func PersonClause(loginExpr, viewerParam string) string {
 		PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
 }
 
-// SessionClause passes a session, by id, when it is the viewer's own; to an open viewer, unless it
-// acted in a project the viewer does not see (session_projects), so an open member reads no
-// session of a private project it is not on, whatever else the session did; and to any other
-// viewer, when it acted in a project the viewer sees. A deployment that holds no private project
-// skips the open viewer's read: every project is public and the open viewer sees each one (R9).
+// SessionClause passes a session, by id, when it is the viewer's own; to any other viewer, never
+// when it acted in a private project the viewer does not see (a session_projects pair), whatever
+// else it did, and otherwise to an open viewer, and to a viewer that is not open when it acted in a
+// project the viewer sees. So an open member reads no session of a private project it is not on,
+// and neither does a restricted member or a credential that lists projects, though the session
+// acted in one of theirs too.
+//
+// A session with no pair, which has acted in no project, is judged by its listener record's
+// projects (listenerProjects, the projects of the credential it registered with): it passes an
+// open viewer when the record names no project the viewer does not see, an empty list included,
+// and a viewer that is not open when the record names a project the viewer sees (K6). While a
+// project is private, a session with neither a pair nor a listener record passes no viewer but its
+// own: nothing Dispatch holds says which projects it works for. A deployment that holds no
+// private project skips the reads of the private pairs and of the listener records: every project
+// is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
+// not open reads a session by its pairs alone, as before (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
@@ -177,19 +188,56 @@ func SessionClause(sessionExpr, viewerParam string) string {
 		or (%[3]s and (not %[5]s or (exists (select 1 from session_projects_filled offset 0) and not exists (
 			select 1 from session_projects unseen
 			where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
-			offset 0))))
+			offset 0)
+			and (exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
+				or coalesce((%[6]s -> (%[1]s)) <@ (%[4]s::jsonb->'sees'), false)))))
 		or (not %[3]s and exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
-			offset 0)))`,
-		sessionExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam, ViewerFlag(viewerParam, "private")))
+			offset 0)
+			and (not %[5]s or not exists (
+				select 1 from session_projects unseen
+				join projects hidden on hidden.key = unseen.project_key and hidden.visibility = 'private'
+				where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
+				offset 0)))
+		or (not %[3]s and %[5]s
+			and not exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
+			and coalesce((%[6]s -> (%[1]s)) ?| array(select jsonb_array_elements_text(%[4]s::jsonb->'sees')), false)))`,
+		sessionExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam, ViewerFlag(viewerParam, "private"),
+		listenerProjects))
 }
 
-// RoleClause passes a role, by name, to an open viewer; to any other viewer, when the session that
-// holds the role now (its held_by tuple not retracted since) passes SessionClause.
+// listenerProjects is the listener's record of each session it lists, read from the stored answer
+// every process shares (the route_roster row, api/issue_route_status.go): one jsonb object from a
+// session's id to the projects of its credential as envoy.Session marshals them, [] where the list
+// is empty and so left out, and null when the row lists no session. A session the row does not
+// list has no record. It names no column of the row a clause tests, so a statement reads the row
+// once (an InitPlan), and only for a session with no session_projects pair while a project is
+// private.
+const listenerProjects = `(select jsonb_object_agg(listed->>'session_id', coalesce(listed->'projects', '[]'::jsonb))
+	from route_roster roster cross join jsonb_array_elements(roster.sessions) listed
+	where listed->>'session_id' is not null)`
+
+// roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
+// key a Legion role's name, legion-<token>-…, gives, its token of lower-case letters and digits
+// upper-cased when that is a project key, and null for every other name. translate upper-cases the
+// token the same in every locale, as strings.ToUpper does the ASCII a token holds.
+func roleProjectSQL(roleExpr string) string {
+	return `translate(substring((` + roleExpr + `) from '^legion-([a-z][a-z0-9]{1,9})-.'), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')`
+}
+
+// RoleClause passes a role, by name, to no viewer but the server's when it works for a private
+// project the viewer does not see (contracts.RoleProject: legion-<token>-…), whether or not a
+// session holds it. Any other role it passes to an open viewer unless a session that holds it now
+// (its held_by tuple not retracted since) does not pass SessionClause, and to any other viewer when
+// a session that holds it now passes SessionClause. So a role held by a session of a private
+// project the viewer does not see reaches no viewer that may not read that session. A deployment
+// that holds no private project skips the read of the role's project and the open viewer's read of
+// the holders: SessionClause then passes every session to it (R9).
 func RoleClause(roleExpr, viewerParam string) string {
-	return clause("RoleClause", fmt.Sprintf(`(%[2]s or %[3]s
-		or exists (
+	session := SessionClause("holder.to_id", viewerParam)
+	holder := func(condition string) string {
+		return fmt.Sprintf(`exists (
 			select 1 from graph_tuples holder
 			where holder.from_kind = 'role' and holder.from_id = (%[1]s) and holder.kind = 'held_by'
 				and holder.to_kind = 'session' and holder.asserted
@@ -199,23 +247,32 @@ func RoleClause(roleExpr, viewerParam string) string {
 						and later.kind = holder.kind and later.to_kind = holder.to_kind
 						and later.to_id = holder.to_id and later.seq > holder.seq
 					offset 0)
-				and %[4]s
-			offset 0))`,
-		roleExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), SessionClause("holder.to_id", viewerParam)))
+				and %[2]s
+			offset 0)`, roleExpr, condition)
+	}
+	return clause("RoleClause", fmt.Sprintf(`(%[1]s
+		or (not (%[3]s and exists (
+				select 1 from projects hidden
+				where hidden.key = %[6]s and hidden.visibility = 'private'
+					and not ((%[7]s::jsonb->'sees') ? hidden.key)
+				offset 0))
+			and ((%[2]s and (not %[3]s or not %[4]s)) or %[5]s)))`,
+		ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private"),
+		holder("not "+session), holder(session), roleProjectSQL(roleExpr), viewerParam))
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
-// "session:<id>"), to the viewer when its own person or session is a party, or to an open viewer
-// when every session party passes SessionClause. A restricted member and a credential that lists
-// projects so read only their own direct conversations.
+// "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, and
+// every session party passes SessionClause.
 func PartyClause(partiesExpr, viewerParam string) string {
 	return clause("PartyClause", fmt.Sprintf(`(%[2]s
-		or ('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
-		or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
-		or (%[3]s and not exists (
-			select 1 from unnest(%[1]s) party
-			where party like 'session:%%' and not %[5]s
-			offset 0)))`,
+		or ((('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
+				or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
+				or %[3]s)
+			and not exists (
+				select 1 from unnest(%[1]s) party
+				where party like 'session:%%' and not %[5]s
+				offset 0)))`,
 		partiesExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
 		SessionClause("substr(party, 9)", viewerParam)))
 }
