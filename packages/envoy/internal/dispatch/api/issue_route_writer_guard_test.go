@@ -232,3 +232,301 @@ func (f fakeFile) Name() string             { return string(f) }
 func (fakeFile) IsDir() bool                { return false }
 func (fakeFile) Type() fs.FileMode          { return 0 }
 func (fakeFile) Info() (fs.FileInfo, error) { return nil, nil }
+
+// judgedIssueWriter is the source file whose writes of an issue's status, labels and parent R26
+// of dispatch://INFRA-3320 judges: the PATCH of an issue. It calls legionStatusGuard before its
+// first write.
+const judgedIssueWriter = "internal/dispatch/api/issue_patch.go"
+
+// legionStatusGuard is the function that judges a write of an issue's status, labels or parent
+// for R26 (legion_status_scope.go).
+const legionStatusGuard = "refuseLegionStatusWrite"
+
+// statusLabelsOrParentWriters is every place of the module that may write an issue's status,
+// labels or parent, each with the reason it may. A path that ends in a slash is a directory, and
+// every Go file under it is that writer.
+var statusLabelsOrParentWriters = []struct{ path, reason string }{
+	{judgedIssueWriter, "the PATCH of an issue, whose every write R26 judges: it calls " + legionStatusGuard + " before its first write"},
+	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
+	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+}
+
+// statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that
+// path, a path from the module's root, belongs to, and false for a path of no such writer.
+func statusLabelsOrParentWriter(path string) (int, bool) {
+	for index, writer := range statusLabelsOrParentWriters {
+		if path == writer.path || (strings.HasSuffix(writer.path, "/") && strings.HasPrefix(path, writer.path)) {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+// statusLabelsOrParentWrite matches a statement, lower-cased with its whitespace collapsed, that
+// writes the status, labels or parent_key column of Dispatch's issues table: an update that sets
+// one, an insert or a copy that lists one, and a fragment that assigns one, which is the shape of
+// the pieces the PATCH builds its update from ("status = "+placeholder). The update's pattern
+// also matches an update that only compares such a column after its set list. That can add a
+// finding, and it never hides one.
+var statusLabelsOrParentWrite = []*regexp.Regexp{
+	regexp.MustCompile(`\bupdate (only )?(public\.)?issues\b( (as )?\w+)? set\b[^;]{0,400}?\b(status|labels|parent_key) ?=`),
+	regexp.MustCompile(`\binsert into (public\.)?issues ?\([^)]*\b(status|labels|parent_key)\b`),
+	regexp.MustCompile(`\bcopy (public\.)?issues ?\([^)]*\b(status|labels|parent_key)\b`),
+	regexp.MustCompile(`^ ?(status|labels|parent_key) = `),
+}
+
+func writesStatusLabelsOrParent(statement string) bool {
+	return slices.ContainsFunc(statusLabelsOrParentWrite, func(pattern *regexp.Regexp) bool {
+		return pattern.MatchString(statement)
+	})
+}
+
+// judgedIssueColumn says whether column is one of the three columns whose write R26 judges.
+func judgedIssueColumn(column string) bool {
+	return column == "status" || column == "labels" || column == "parent_key"
+}
+
+// statusLabelsOrParentWrites names, one line each, every write of an issue's status, labels or
+// parent that the scan finds in source. It reads three shapes:
+//
+//   - a statement that sqlStatements assembles (writesStatusLabelsOrParent);
+//   - a call set("status" | "labels" | "parent_key", ...), the way the PATCH names a column of
+//     the update it builds;
+//   - a CopyFrom into pgx.Identifier{"issues"} whose column list names one of the three, the way
+//     cmd/dispatch-seed writes its issues. A column list that is no literal the scan can read
+//     counts as a write, because the scan cannot tell which columns it names.
+func statusLabelsOrParentWrites(source moduleSource, constants map[string]string) []string {
+	var found []string
+	for _, statement := range sqlStatements(source.file, constants) {
+		if writesStatusLabelsOrParent(statement) {
+			found = append(found, statement)
+		}
+	}
+	ast.Inspect(source.file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		at := "line " + strconv.Itoa(source.positions.Position(call.Pos()).Line) + ": "
+		switch callee := call.Fun.(type) {
+		case *ast.Ident:
+			if callee.Name != "set" || len(call.Args) == 0 {
+				return true
+			}
+			if column, ok := goStringLiteral(call.Args[0]); ok && judgedIssueColumn(column) {
+				found = append(found, at+"set("+strconv.Quote(column)+", ...)")
+			}
+		case *ast.SelectorExpr:
+			if callee.Sel.Name != "CopyFrom" || len(call.Args) < 3 || !namesTheIssuesTable(call.Args[1]) {
+				return true
+			}
+			if columns, read := goStringLiterals(call.Args[2]); !read || slices.ContainsFunc(columns, judgedIssueColumn) {
+				found = append(found, at+"CopyFrom into issues")
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// goStringLiteral is the value of expression when it is a string literal.
+func goStringLiteral(expression ast.Expr) (string, bool) {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	return value, err == nil
+}
+
+// goStringLiterals is the values of expression when it is a composite literal of string literals
+// alone, such as []string{"key", "status"}.
+func goStringLiterals(expression ast.Expr) ([]string, bool) {
+	composite, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return nil, false
+	}
+	values := make([]string, 0, len(composite.Elts))
+	for _, element := range composite.Elts {
+		value, ok := goStringLiteral(element)
+		if !ok {
+			return nil, false
+		}
+		values = append(values, value)
+	}
+	return values, true
+}
+
+// namesTheIssuesTable says whether expression is an identifier of the issues table:
+// pgx.Identifier{"issues"}, or the same with a schema before the table's name.
+func namesTheIssuesTable(expression ast.Expr) bool {
+	composite, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	if kind, ok := composite.Type.(*ast.SelectorExpr); !ok || kind.Sel.Name != "Identifier" {
+		return false
+	}
+	names, ok := goStringLiterals(composite)
+	return ok && len(names) > 0 && names[len(names)-1] == "issues"
+}
+
+// callsLegionStatusGuard says whether file calls legionStatusGuard, as a function or as a method.
+func callsLegionStatusGuard(file *ast.File) bool {
+	called := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || called {
+			return !called
+		}
+		switch callee := call.Fun.(type) {
+		case *ast.Ident:
+			called = callee.Name == legionStatusGuard
+		case *ast.SelectorExpr:
+			called = callee.Sel.Name == legionStatusGuard
+		}
+		return !called
+	})
+	return called
+}
+
+// TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent holds R26 to every write it judges.
+// R26 refuses a write of a Legion issue's status, the removal of the legion label and a move of
+// a Legion issue out from under every labelled issue, from a credential that holds neither the
+// person scope nor the legion-status scope (legion_status_scope.go). The rule holds only while
+// every write of an issue's status, labels or parent goes through its guard: a route or a job
+// that writes one of the three columns past the guard writes a Legion issue's status for any
+// caller.
+//
+// The guard reads every Go statement and call of the envoy module that writes one of the three
+// columns, in the shapes statusLabelsOrParentWrites reads, and fails:
+//
+//   - for a write outside the writers statusLabelsOrParentWriters names, each with its reason;
+//   - for a named writer in which the scan finds no write, because a scan that finds nothing
+//     proves nothing;
+//   - when the judged writer, issue_patch.go, does not call refuseLegionStatusWrite.
+//
+// The scan reads the module's Go source alone, so it leaves out the migrations, which are SQL. A
+// migration runs once, at the boot of the release that brings it, and no caller's request runs
+// it, so it makes no call for R26 to judge. A new writer belongs behind the guard: make it call
+// refuseLegionStatusWrite before its first write, then name it here.
+func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
+	sources := moduleSources(t)
+	constants, err := stringConstants(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := make([][]string, len(statusLabelsOrParentWriters))
+	var offences []string
+	judgedRead, guarded := false, false
+	for _, source := range sources {
+		path := strings.TrimPrefix(filepath.ToSlash(source.path), moduleRoot+"/")
+		if path == judgedIssueWriter {
+			judgedRead, guarded = true, callsLegionStatusGuard(source.file)
+		}
+		writes := statusLabelsOrParentWrites(source, constants)
+		if len(writes) == 0 {
+			continue
+		}
+		writer, allowed := statusLabelsOrParentWriter(path)
+		for _, write := range writes {
+			if allowed {
+				found[writer] = append(found[writer], path+": "+write)
+			} else {
+				offences = append(offences, path+": "+write)
+			}
+		}
+	}
+	if len(offences) > 0 {
+		t.Errorf("only the writers this guard names may write an issue's status, labels or parent, and these write one too:\n\t%s\n"+
+			"Make each writer call %s before its first write, so that R26 judges it, and name it in statusLabelsOrParentWriters.",
+			strings.Join(offences, "\n\t"), legionStatusGuard)
+	}
+	for index, writer := range statusLabelsOrParentWriters {
+		if len(found[index]) == 0 {
+			t.Errorf("the scan finds no write of an issue's status, labels or parent in %s, so it proves nothing there: "+
+				"if the write moved or changed its shape, teach the scan to find it again", writer.path)
+			continue
+		}
+		t.Logf("%s, %s:\n\t%s", writer.path, writer.reason, strings.Join(found[index], "\n\t"))
+	}
+	switch {
+	case !judgedRead:
+		t.Errorf("the scan did not read %s, the judged writer", judgedIssueWriter)
+	case !guarded:
+		t.Errorf("%s writes an issue's status, labels and parent and does not call %s, so R26 judges none of its writes",
+			judgedIssueWriter, legionStatusGuard)
+	}
+}
+
+// TestTheJudgedWriterGuardSeesAPlantedWriter plants a writer of each shape the guard reads and
+// checks that the guard finds each. It checks that the guard finds nothing in code that writes
+// none of the three columns: an update of another column, a read of the three, a write of
+// another table, and a CopyFrom into issues of other columns. It checks that the guard tells a
+// call of refuseLegionStatusWrite from a mention of it, and that only the named writers' paths
+// are allowed.
+func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
+	plant := func(t *testing.T, body string) moduleSource {
+		t.Helper()
+		positions := token.NewFileSet()
+		file, err := parser.ParseFile(positions, "planted.go", "package planted\n\nfunc write() {\n"+body+"\n}\n", 0)
+		if err != nil {
+			t.Fatalf("parse the planted writer: %v", err)
+		}
+		return moduleSource{path: "planted.go", file: file, positions: positions}
+	}
+	for _, shape := range []struct{ name, body string }{
+		{"an update that sets the status", `tx.Exec(ctx, "UPDATE issues SET status = $2 WHERE key = $1", key, status)`},
+		{"an update of an aliased table that sets the labels", `tx.Exec(ctx, "update issues as i set title = $3, labels = $2 where i.key = $1", key, labels, title)`},
+		{"an update of the schema's table that sets the parent", `tx.Exec(ctx, "update only public.issues set parent_key = $2 where key = $1", key, parent)`},
+		{"an insert that lists the parent", `tx.Exec(ctx, "insert into issues (key, project_key, parent_key) values ($1, $2, $3)", key, project, parent)`},
+		{"a copy that lists the labels", `tx.Exec(ctx, "COPY issues (key, labels) FROM STDIN")`},
+		{"a CopyFrom whose columns name the status", `tx.CopyFrom(ctx, pgx.Identifier{"issues"}, []string{"key", "status"}, rows)`},
+		{"a CopyFrom whose columns the scan cannot read", `tx.CopyFrom(ctx, pgx.Identifier{"public", "issues"}, columns, rows)`},
+		{"a set call that names the parent", `set("parent_key", parent)`},
+		{"a fragment of an update the code builds", `sets = append(sets, "labels = "+placeholder)`},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			if found := statusLabelsOrParentWrites(plant(t, shape.body), map[string]string{}); len(found) != 1 {
+				t.Errorf("the guard finds %q in the planted writer, want one write", found)
+			}
+		})
+	}
+	quiet := plant(t, strings.Join([]string{
+		`tx.Exec(ctx, "update issues set claimed_by = $2 where key = $1", key, session)`,
+		`tx.QueryRow(ctx, "select status, labels, parent_key from issues where key = $1", key)`,
+		`tx.Exec(ctx, "update request_keys set status = $4 where login = $1", login)`,
+		`tx.Exec(ctx, "insert into issue_links (issue_key, kind, target_key) values ($1, $2, $3)", key, kind, target)`,
+		`tx.CopyFrom(ctx, pgx.Identifier{"issue_links"}, []string{"issue_key", "status"}, rows)`,
+		`tx.CopyFrom(ctx, pgx.Identifier{"issues"}, []string{"key", "title"}, rows)`,
+		`set("title", title)`,
+		`get("/api/v1/issues?status=todo&labels=legion")`,
+	}, "\n"))
+	if found := statusLabelsOrParentWrites(quiet, map[string]string{}); len(found) > 0 {
+		t.Errorf("the guard counts %q as writes of an issue's status, labels or parent", found)
+	}
+	for body, want := range map[string]bool{
+		`s.refuseLegionStatusWrite(ctx, tx, step)`:             true,
+		`refuseLegionStatusWrite(ctx, tx, step)`:               true,
+		`log("refuseLegionStatusWrite")`:                       false,
+		`judge := refuseLegionStatusWrite; _ = judge`:          false,
+		`s.refuseLegionStatusWriteLater(ctx, tx, step)`:        false,
+		`if err := s.refuseLegionStatusWrite(); err != nil {}`: true,
+	} {
+		if got := callsLegionStatusGuard(plant(t, body).file); got != want {
+			t.Errorf("the guard reads %q as a call of %s: %t, want %t", body, legionStatusGuard, got, want)
+		}
+	}
+	for path, want := range map[string]bool{
+		judgedIssueWriter:                           true,
+		"internal/dispatch/api/issue_create.go":     true,
+		"cmd/dispatch-seed/write_core.go":           true,
+		"internal/dispatch/api/issue_claim.go":      false,
+		"internal/dispatch/api/issue_patch_bulk.go": false,
+		"cmd/dispatch-seeder/main.go":               false,
+	} {
+		if _, allowed := statusLabelsOrParentWriter(path); allowed != want {
+			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t", path, allowed, want)
+		}
+	}
+}
