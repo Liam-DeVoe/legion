@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -72,12 +73,16 @@ func TestAClearHandedNoForgetForTheKeptDecisionsIsRefusedAndClearsNothing(t *tes
 	}
 }
 
-// A clear runs the forget it is handed once, over the decisions kept on the issues it clears,
-// while those issues' gates still stand (Postgres.forgetKept): the clear of one issue hands over
-// that issue's decisions, and the clear of a tree every decision kept on an issue of it. Neither
-// hands over a decision kept on another tree, nor the tree's kept approval, which the forget
-// deletes nothing of. The forget asks each decision of the gates of the issue it was made on, so
-// a set handed over after the gates went would ask a gate that is gone.
+// A clear runs the forget it is handed once, over the decisions kept on the issues it clears and
+// the changes requests the outbox holds on them, while those issues' gates still stand
+// (Postgres.forgetKept): the clear of one issue hands over that issue's, and the clear of a tree
+// those of every issue of it. Neither hands over a decision kept on, or a request queued on,
+// another tree, nor the tree's kept approval, which the forget deletes nothing of, nor a queued
+// approval, whose own notice is the person's later word. A request is handed over as the row
+// carries it, a design-changes-requested notice for the architect or its relay to the controller
+// read as the Notice it is, with the version, the mark and the document the forget asks of. The
+// forget asks each of the gates of the issue it was made on, so a set handed over after the gates
+// went would ask a gate that is gone.
 func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 	ctx := context.Background()
 	records := NewStore()
@@ -97,17 +102,43 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 		{Issue: child, Ref: "dispatch://LEGION-301/spec", Decision: DecisionDesignChangesRequested, Actor: "user:bob", At: at.Add(time.Minute), Seq: 9},
 		{Issue: other, Ref: "dispatch://LEGION-302/spec", Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: at.Add(2 * time.Minute), Seq: 10},
 	}
+	// changes is the changes request each issue's notice carries, and relay the parked-decision
+	// controller notice that relays it, read as the Notice it is.
+	changes := func(issue Issue) Notice {
+		return Notice{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path",
+			Actor: "user:alice", Ref: "dispatch://" + issue.Key + "/spec",
+			Review: EventMark{Seq: 11, At: at.Add(time.Hour)}, Artifact: "artifact-" + issue.Key}
+	}
+	relay := func(issue Issue, decision DecisionKind) Notice {
+		notice := changes(issue)
+		if decision != DecisionDesignChangesRequested {
+			notice.Reason = ""
+		}
+		notice.Kind, notice.Decision, notice.Root = ParkedDecisionNotice, decision, issue.Tree
+		return notice
+	}
+	queuedOn := func(keys ...string) map[string]Notice {
+		want := map[string]Notice{}
+		for _, issue := range issues {
+			if slices.Contains(keys, issue.Key) {
+				want[string(OutboxKindNotice)+" "+issue.Key] = changes(issue)
+				want[string(OutboxKindControllerNotice)+" "+issue.Key] = relay(issue, DecisionDesignChangesRequested)
+			}
+		}
+		return want
+	}
 	for _, tc := range []struct {
-		name  string
-		clear func(tx pgx.Tx, forget KeptForget) ([]string, error)
-		want  []string
+		name   string
+		clear  func(tx pgx.Tx, forget KeptForget) ([]string, error)
+		want   []string
+		queued map[string]Notice
 	}{
 		{name: "the clear of the child", clear: func(tx pgx.Tx, forget KeptForget) ([]string, error) {
 			return records.ClearGeneration(ctx, tx, issues[1], forget)
-		}, want: []string{kept[1].Ref}},
+		}, want: []string{kept[1].Ref}, queued: queuedOn(child)},
 		{name: "the clear of the tree", clear: func(tx pgx.Tx, forget KeptForget) ([]string, error) {
 			return records.ClearTreeGeneration(ctx, tx, root, forget)
-		}, want: []string{kept[0].Ref, kept[1].Ref}},
+		}, want: []string{kept[0].Ref, kept[1].Ref}, queued: queuedOn(root, child)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := migratedStore(t)
@@ -118,23 +149,40 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 					must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-" + issue.Key, LatestVersion: 3,
 						ApprovedVersion: &approved}))
 					must(t, records.AddParkedDecision(ctx, tx, kept[i]))
+					request := changes(issue)
+					approval := request
+					approval.Kind, approval.Reason = "design-approved", ""
+					for _, payload := range []OutboxPayload{request, ControllerNotice(relay(issue, DecisionDesignChangesRequested)),
+						approval, ControllerNotice(relay(issue, DecisionDesignApproved))} {
+						row, err := NewOutboxRow(issue.Key, payload, at)
+						must(t, err)
+						must(t, records.Enqueue(ctx, tx, row))
+					}
 				}
 				must(t, records.KeepReadmittedApproval(ctx, tx, root, KeptApproval{Step: DesignStepSpec, Approved: 2, Latest: 3}))
 			})
 			var runs int
 			var tree string
 			var handed KeptDecisions
+			var requests []QueuedChanges
 			var ungated []string
-			forget := func(ctx context.Context, tx pgx.Tx, owedTo string, owed KeptDecisions) error {
+			forget := func(ctx context.Context, tx pgx.Tx, owedTo string, owed KeptDecisions, queued []QueuedChanges) error {
 				runs++
-				tree, handed = owedTo, owed
+				tree, handed, requests = owedTo, owed, queued
+				var asked []string
 				for _, d := range owed.Decisions {
-					gates, err := records.GatesOf(ctx, tx, d.Issue)
+					asked = append(asked, d.Issue)
+				}
+				for _, request := range queued {
+					asked = append(asked, request.Issue)
+				}
+				for _, issue := range asked {
+					gates, err := records.GatesOf(ctx, tx, issue)
 					if err != nil {
 						return err
 					}
 					if len(gates) == 0 {
-						ungated = append(ungated, d.Issue)
+						ungated = append(ungated, issue)
 					}
 				}
 				return nil
@@ -159,6 +207,14 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 			if handed.KeptApproval != (KeptApproval{}) {
 				t.Fatalf("%s handed its forget the kept approval %#v, want none: the forget deletes no approval",
 					tc.name, handed.KeptApproval)
+			}
+			got := map[string]Notice{}
+			for _, request := range requests {
+				got[string(request.Kind)+" "+request.Issue] = request.Notice
+			}
+			if len(requests) != len(tc.queued) || !reflect.DeepEqual(got, tc.queued) {
+				t.Fatalf("%s handed its forget the queued requests %#v, want %#v: the changes requests queued on the issues it clears, "+
+					"and no other", tc.name, requests, tc.queued)
 			}
 			if len(ungated) != 0 {
 				t.Fatalf("%s ran its forget after the gates of %v went, want it run while they stand: the forget's rule reads them",

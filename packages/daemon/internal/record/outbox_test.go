@@ -851,8 +851,9 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 // A person's review of a design document travels as Dispatch recorded it, its mark and the
 // document reviewed, on the three notices that carry one: the design-approved and
 // design-changes-requested notices that report it, and the parked-decision controller notice that
-// relays either, whose publish asks again whether the review stands. Every other kind is refused
-// them (TestNewOutboxRowRefusesInvalidPayloads).
+// relays either as the notice did, whose publish asks again whether the review stands when it
+// relays a changes request. Every other kind is refused them
+// (TestNewOutboxRowRefusesInvalidPayloads).
 func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
 	review := EventMark{Seq: 8, At: now.Add(-time.Hour)}

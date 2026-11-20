@@ -165,12 +165,28 @@ type DecisionMark struct {
 	Seq int64 `json:"seq,omitempty"`
 }
 
-// KeptForget deletes in tx the row of each decision of owed, decisions kept on issues of tree,
-// that a later approval superseded. The record holds no rule of its own for that: the workflow's
-// forget is the one rule (workflow.ForgetSuperseded), which a start, a ready and a send each run
-// before they name what a tree is owed, and a clear of a generation is handed it
-// (Store.ClearGeneration), because the clear deletes the gates the rule reads.
-type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions) error
+// KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no
+// gate, once a later approval superseded it: the row of each decision of owed, decisions kept on
+// issues of tree, and each changes request of queued, the ones the outbox holds on the issues the
+// clear covers. The record holds no rule of its own for that: the workflow's forget is the one
+// rule (workflow.ForgetSuperseded, which a start, a ready and a send each run before they name
+// what a tree is owed, and workflow.SupersedingApproval for a queued request, which its delivery
+// asks), and a clear of a generation is handed it (Store.ClearGeneration), because the clear
+// deletes the gates the rule reads.
+type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions,
+	queued []QueuedChanges) error
+
+// QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
+// included: a design-changes-requested notice for an architect, or the parked-decision controller
+// notice that relays one (Kind, the row's kind, says which). Row is the row's id, Issue the issue
+// the request was made on (the row's), and Notice the decision the row carries, a relay read as
+// the Notice it is.
+type QueuedChanges struct {
+	Row    int64
+	Kind   OutboxKind
+	Issue  string
+	Notice Notice
+}
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start
 // (Store.KeepReadmittedApproval): the design-gate step whose document a person approved, the

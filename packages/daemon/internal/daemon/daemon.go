@@ -2972,10 +2972,11 @@ type source struct {
 // refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
 // ClearGeneration and ClearTreeGeneration refuse one too: they write no outbox row, since their
 // caller queues the publication of the gates they empty (workflow's Engine.ClearGeneration,
-// through EnqueueDesignGates), but the facts they delete are that project's daemon's.
-// The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
-// (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
-// here.
+// through EnqueueDesignGates), but the facts they delete are that project's daemon's, and so are
+// the changes requests their forget deletes by id (DropQueuedChanges), which only the clear's own
+// read hands it. The rest act on a row by its id under a lease this daemon holds of a row its own
+// scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and
+// need no rule here.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through

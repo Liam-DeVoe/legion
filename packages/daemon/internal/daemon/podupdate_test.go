@@ -1198,7 +1198,8 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // and tells a role how to keep the work, with other reasons in the round or without them. On
 // such a round, whatever the disk, the pushed work is on the old repository's issue branch and
 // the new pod's origin is the new repository, so the last sentence names both. The message of
-// every other round, and the disk's part of it for an ephemeral volume, stays as it was.
+// every other round, and the disk's part of it for an ephemeral volume, is the one above, word
+// for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. "
 	const atOrigin = "Each role must read its issue branch at origin " +

@@ -1502,14 +1502,15 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
 // the counters of one still open, its design gates and its recorded handoffs, once forget has
-// been run over the decisions kept on it (forgetKept), and answers the issues whose gates it
-// emptied (clearGates): issue itself where it held a gate, else none.
+// been run over the decisions kept on it and the changes requests queued on it (forgetKept), and
+// answers the issues whose gates it emptied (clearGates): issue itself where it held a gate, else
+// none.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of %s", issue.Key)
 	if err := s.forgetKept(ctx, tx, issue.Tree, issue.Key, forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, "issue = $1", issue.Key, describe)
+	return s.clearGeneration(ctx, tx, clearedIssue, issue.Key, describe)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
@@ -1520,16 +1521,23 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", tree, describe)
+	return s.clearGeneration(ctx, tx, clearedTree, tree, describe)
 }
+
+// The issues a clear covers, as the where clause of a statement over a table keyed by issue, with
+// the key as $1: one issue's (ClearGeneration) or every issue of a tree's (ClearTreeGeneration).
+const (
+	clearedIssue = "issue = $1"
+	clearedTree  = "issue in (select key from issues where tree = $1)"
+)
 
 // forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
 // forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
-// "", whoever claims or holds them, as one KeptDecisions. Only the cleared issues' decisions are
-// handed over: a decision is asked of the gates of the issue it was made on, and every other issue
-// keeps its gates. The set carries no kept approval: the forget deletes none
-// (workflow.ForgetSuperseded). A nil forget is refused before anything is read or written, so a
-// clear handed no forget clears nothing.
+// "", whoever claims or holds them, as one KeptDecisions, and the changes requests the outbox
+// holds on the same issues (queuedChanges). Only the cleared issues' are handed over: a decision
+// is asked of the gates of the issue it was made on, and every other issue keeps its gates. The
+// set carries no kept approval: the forget deletes none (workflow.ForgetSuperseded). A nil forget
+// is refused before anything is read or written, so a clear handed no forget clears nothing.
 func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
 	if forget == nil {
 		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)
@@ -1544,15 +1552,64 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 			owed.Decisions = append(owed.Decisions, d.Mark())
 		}
 	}
-	if err := forget(ctx, tx, tree, owed); err != nil {
+	where, key := clearedTree, tree
+	if issue != "" {
+		where, key = clearedIssue, issue
+	}
+	queued, err := queuedChanges(ctx, tx, where, key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := forget(ctx, tx, tree, owed, queued); err != nil {
 		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
 	}
 	return nil
 }
 
+// queuedChanges is every person's changes request the outbox holds on the issues where selects
+// with key as $1, a row a runner has leased included, oldest first: each design-changes-requested
+// notice, and each parked-decision controller notice that relays one (QueuedChanges).
+func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
+		and ((kind = $2 and payload->>'kind' = $3)
+			or (kind = $4 and payload->>'kind' = $5 and payload->>'decision' = $6))
+		order by id`, key, string(OutboxKindNotice), "design-changes-requested",
+		string(OutboxKindControllerNotice), string(ParkedDecisionNotice),
+		string(DecisionDesignChangesRequested))
+	if err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	defer rows.Close()
+	var queued []QueuedChanges
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan a changes request the outbox holds: %w", err)
+		}
+		payload, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		request := QueuedChanges{Row: row.ID, Kind: row.Kind, Issue: row.Issue}
+		switch payload := payload.(type) {
+		case Notice:
+			request.Notice = payload
+		case ControllerNotice:
+			request.Notice = Notice(payload)
+		default:
+			return nil, fmt.Errorf("outbox row %d of kind %s carries %T, no notice", row.ID, row.Kind, payload)
+		}
+		queued = append(queued, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	return queued, nil
+}
+
 // clearGeneration runs each statement with key as $1, where selecting the cleared issues' rows by
-// their issue column. The design gates go with them, in a statement of their own (clearGates),
-// whose emptied issues it answers.
+// their issue column (clearedIssue, clearedTree). The design gates go with them, in a statement
+// of their own (clearGates), whose emptied issues it answers.
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
@@ -3295,6 +3352,13 @@ func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string
 func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2", string(OutboxKindDispatchStatus), issue); err != nil {
 		return fmt.Errorf("drop the queued status writes of %s: %w", issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
+		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
 	}
 	return nil
 }

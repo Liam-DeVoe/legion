@@ -1473,9 +1473,7 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // whichever approval request carried it, so nothing of the review is left to tell or to act on.
 // Every sender of a task or a notice about a person's review reaches it through one predicate,
 // workflow's SupersedingApproval, asked from the gates as the record holds them at that moment.
-// That predicate's doc is the one list of the guards that choose whether this rule is asked of a
-// review, of the senders that ask it, and of which reviews each sender asks about, so none of
-// them is written again here.
+// That predicate's doc lists the guards that choose whether this rule is asked of a review.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror

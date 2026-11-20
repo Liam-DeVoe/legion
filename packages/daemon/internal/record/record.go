@@ -2142,21 +2142,24 @@ type Store interface {
 	// (workflow.Engine.ClearGeneration, the daemon's projectRecords). issue is the record as tx
 	// holds it.
 	//
-	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue,
-	// while that issue's gates stand, and forget deletes each one a later approval superseded.
-	// The clear deletes those gates, and a gate is the only record of the approval that
-	// superseded a decision kept for the tree: a start or catch-up that names the decision after
-	// the clear asks a gate that is gone or new, and the decision would read as the
+	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue, and
+	// every changes request the outbox holds on one (QueuedChanges), while that issue's gates
+	// stand, and forget deletes each one a later approval superseded. The clear deletes those
+	// gates, and a gate is the only record of the approval that superseded a decision: a start or
+	// catch-up that names a kept decision after the clear, or the delivery of a queued request or
+	// the publish of its relay, asks a gate that is gone or new, and the decision would read as the
 	// person's word again. A person who requested changes and then approved the latest version as
-	// their hand-over would send the new architect to revise the spec they approved. Which rows
-	// forget deletes, and which it leaves, is the forget's own rule (workflow.ForgetSuperseded,
-	// ForgetKeptDecisions). forget is required, so no clear can skip it: a nil forget is refused
-	// before anything is written. The workflow passes the forget every start and catch-up runs,
-	// through workflow.Engine.ClearGeneration, the only caller, so the clear asks its one rule.
+	// their hand-over would send the new architect, or the controller, to revise the spec they
+	// approved. Which rows forget deletes, and which it leaves, is the forget's own rule
+	// (workflow.ForgetSuperseded, ForgetKeptDecisions, DropQueuedChanges). forget is required, so
+	// no clear can skip it: a nil forget is refused before anything is written. The workflow
+	// passes a forget that asks what every start, catch-up and delivery asks, through
+	// workflow.Engine.ClearGeneration, the only caller, so the clear asks its one rule.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error)
 	// ClearTreeGeneration empties them for every issue of tree, and runs forget over every
-	// decision the tree keeps first, as ClearGeneration does, answering the issues whose gates it
-	// emptied in the same way (workflow.Engine.ClearTreeGeneration, the only caller).
+	// decision the tree keeps and every changes request the outbox holds on its issues first, as
+	// ClearGeneration does, answering the issues whose gates it emptied in the same way
+	// (workflow.Engine.ClearTreeGeneration, the only caller).
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error)
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
@@ -2453,8 +2456,14 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
+	// DropQueuedChanges deletes each outbox row of rows, a row a runner has leased included: the
+	// changes requests a clear's forget found that the person's approval followed (KeptForget,
+	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in
+	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
+	// its finish then finds nothing to delete.
+	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
-	// another transaction deleted it while the runner held it (DropCatchUps).
+	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)

@@ -433,20 +433,23 @@ carries from an earlier one does not count), or, when the controller parked it f
 own, once the controller judges that a person's decision gives its work a next step or its walk
 finds the hold's cause gone or its event happened. The controller marks such a park with a comment
 on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
-the decision. Its JSON log names the issue and the root on each of these lines:
+the decision. Its JSON log names the issue and the root on each of these lines but one, which the
+list says:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
-  tree goes to the controller`: the daemon queued the decision for the controller. For an
-  approval or an answer, the controller then receives it. For a changes request, "sent" means
-  queued only: the row waits for a session that holds the controller's claim, and its publish
-  asks again whether the person's approval followed the request. When it did, the row ends with
-  `outbox parked changes request finished without publishing: the person's approval followed it`,
-  which names the approved version, and the controller is not told.
+  tree goes to the controller`: the daemon queued the decision for the controller, which receives
+  it once a session holds the controller's claim. A changes request's publish first asks again
+  whether the person's approval followed it; when it did, the row ends with `outbox parked changes
+  request finished without publishing: the person's approval followed it`, which names the
+  approved version, and the controller is not told. When that approval sets the root back to
+  `todo` before the row runs, the re-admission's clear of the tree's generation ends the row
+  instead, with `workflow: a queued changes request finished unpublished at its generation's
+  clear: the person's approval followed it`, which names the approved version too.
 - `outbox parked decision not relayed: the person's approval followed it`: the person approved
   that version or a later one after the decision, so the controller is not told of a decision the
   approval replaced. The line names the approved version. The same rule ends a changes request
   queued for a tree's own architect, with `outbox changes request finished without publishing:
-  the person's approval followed it`.
+  the person's approval followed it`, the one line here that names the issue and not the root.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a

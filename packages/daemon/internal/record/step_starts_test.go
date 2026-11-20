@@ -250,8 +250,8 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 					want[seed.key] = StepStart{Starts: int64(seed.count), Agent: seed.agent, StartedAt: seed.at, Run: seed.run}
 				}
 				// The clear is required to be handed a forget (KeptForget), which runs here over no
-				// decision: no issue keeps one.
-				forget := func(context.Context, pgx.Tx, string, KeptDecisions) error { return nil }
+				// decision and no queued request: no issue keeps or queues one.
+				forget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
 				cleared := []string{"LEGION-1"}
 				if clear == "the issue's" {
 					if _, err := store.ClearGeneration(t.Context(), tx, Issue{Key: "LEGION-1", Tree: "LEGION-1"}, forget); err != nil {

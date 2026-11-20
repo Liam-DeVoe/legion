@@ -38,13 +38,14 @@ type Approval struct {
 // person answered (resumeTask), the decisions and the approval kept for an architect's start or
 // catch-up (KeptDecisionsTask, again at each send and each delivery) and the controller's relay of
 // a decision nobody in its tree hears (the daemon's parkDecision, and again at a relayed changes
-// request's publish, its controllerNotice); the clear of a generation asks it too, of each decision
-// kept on the issues it clears, before it deletes their gates (Engine.ClearGeneration). It holds
-// the guards that choose whether the one rule (classify.ReviewSuperseded) is asked of a review,
-// and this doc is the one list of them, so a new step kind or a change to how an approval of the
-// same version is read is made here once. Which reviews a sender asks about is the sender's: the
-// daemon's readNoticeTree and controllerNotice ask again of a queued notice they deliver only when
-// it is a changes request, since an approval's own notice is the person's later word.
+// request's publish, its controllerNotice); the clear of a generation asks it too, before it
+// deletes the gates of the issues it clears, of each decision kept on them and each changes
+// request the outbox holds on them (Engine.ClearGeneration). It holds the guards that choose
+// whether the one rule (classify.ReviewSuperseded) is asked of a review, listed below, so a new
+// step kind or a change to how an approval of the same version is read is made here once. Which
+// reviews a sender asks about is the sender's: the daemon's readNoticeTree and controllerNotice,
+// and the clear, ask again of a queued notice only when it is a changes request, since an
+// approval's own notice is the person's later word.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
 // review stands. The review stands at each of these guards, in the order they are asked, because
@@ -106,6 +107,18 @@ func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record
 	}
 	d.Step = step
 	return SupersedingApproval(gateOf(gates, step), slices.Contains(steps, step), d)
+}
+
+// NoticeSuperseded is RefSuperseded of the decision of kind a queued notice carries on issue, a
+// design decision's notice or the parked-decision relay of one read as the Notice it is: its
+// reference, its version, Dispatch's mark of the review (record.Notice.Review) and the document
+// reviewed (record.Notice.Artifact). Every reader of a queued notice asks through it, the daemon's
+// delivery and publish (its decisionSuperseded) and the clear of a generation
+// (Engine.ClearGeneration), so each asks the same question of the same notice.
+func NoticeSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep,
+	issue string, notice record.Notice, kind record.DecisionKind) *Approval {
+	return RefSuperseded(gates, steps, issue, notice.Ref, Decision{Kind: kind,
+		Artifact: notice.Artifact, Version: notice.Version, Mark: notice.Review})
 }
 
 // gateOf is the gate gates holds for step, nil where it holds none: the gate SupersedingApproval asks

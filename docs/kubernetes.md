@@ -2961,7 +2961,7 @@ The migrations recorded above this one are these.
 20261112012123_issue_repository_correction, of dispatch://INFRA-3136, adds the four `issues` columns of a repository correction and `workspace_bundles.repo`, creates `workspace_bundles_refused` and lets a bundle's restore attempt record `refused_repository`, and touches none of the six, so the block holds over it and leaves the five columns and the table standing, which the earlier release names in no statement, and the wider check, which takes every outcome that release writes; a rollback to a release before it needs no statement for it, as the contract 193 section below says.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
-20261112215432_delivery_resume, of dispatch://INFRA-3136, adds `pending_task_deliveries.resume`, `parked_decisions.seq` and the two `issues` columns of the version whose changes request answered a root's wait, which it fills from each such answer's detail, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; a rollback to a release before it first runs the three reads of the contract 193 section below until none returns a row, since the earlier release sends a held resume task as the empty text its row keeps.
+20261112215432_delivery_resume, of dispatch://INFRA-3136, adds `pending_task_deliveries.resume`, `parked_decisions.seq` and the two `issues` columns of the version whose changes request answered a root's wait, which it fills from each such answer's detail, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; a rollback to a release before it first runs the four reads of the contract 193 section below until none returns a row, since the earlier release sends a held resume task as the empty text its row keeps and refuses a queued row that carries a key it does not know.
 20261113082214_outbox_kinds_with_the_update_ask, of cybermonklabs/legion#3982, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
@@ -3130,24 +3130,29 @@ Applying the migration again then gave both architect rows the empty wait and le
 
 Going back costs four things, and the first two lose work unless you act before the earlier image is pinned.
 
-- A resume task, a design decision's notice, or an architect's catch-up that this release queued and has not sent reaches its architect with no text, or not at all.
-  The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting` (whose wait carries `AnsweredVersion` beside `AnsweredDetail` for a changes request), a notice that carries `review` or `artifact`, and a catch-up that carries `relaunch` (the sentence naming what the architect's relaunch ended, which this release keeps beside the reason so its delivery can compose the reason again), and retries that row on its backoff until this release runs again: the answered root's architect is not resumed, the design decision is not told, and the catch-up reaches nobody.
+- A resume task, a design decision's notice, or an architect's catch-up or start that this release queued and has not sent reaches its architect with no text, or not at all.
+  The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting` (whose wait carries `AnsweredVersion` beside `AnsweredDetail` for a changes request), a notice that carries `review` or `artifact`, a catch-up that carries `relaunch` (the sentence naming what the architect's relaunch ended, which this release keeps beside the reason so its delivery can compose the reason again), and a root architect's start or a catch-up whose kept decisions carry `seq` (`kept.decisions[].seq` on a `supervise` start, `catch_up.kept.decisions[].seq` on a catch-up `notice`, Dispatch's sequence of each kept review, `record.DecisionMark.Seq`), and retries that row on its backoff until this release runs again: the answered root's architect is not resumed, the design decision is not told, and the start or the catch-up reaches nobody.
+  It also decodes every `supervise` row of an issue when it reads that issue's role runs, so while such a start waits, every admission pass that reads that issue's runs fails.
   It does not read `pending_task_deliveries.resume`, so it sends a held resume task as the text the row holds, which is empty until this release has sent it.
   Before you pin the earlier image, resume the project if it is paused (`legion project resume --operator-token-file <file>`), since a pause holds every `supervise` start and every `notice` row and every task a claim holds ([Pausing a project](#pausing-a-project)), so the rows below never leave while it stands.
-  Then stop this release's daemon and run the three reads below.
-  When any returns a row, start this release again, let it send those rows, and stop it and read again, until all three return none.
+  Then stop this release's daemon and run the four reads below.
+  When any returns a row, start this release again, let it send those rows, and stop it and read again, until all four return none.
 
   ```sql
   select id, payload->>'tree' as tree from outbox where kind = 'supervise' and payload ? 'awaiting';
   select id, issue from outbox where kind = 'notice' and (payload ? 'review' or payload ? 'artifact' or payload->'catch_up' ? 'relaunch');
+  select id, kind, issue from outbox where kind in ('supervise', 'notice') and (payload @? '$.kept.decisions[*].seq' or payload @? '$.catch_up.kept.decisions[*].seq');
   select claim_token, delivery_id from pending_task_deliveries
    where resume->>'delivery' = delivery_id and task = '';
   ```
 
+  The `seq` read was run on 2026-11-20 at 16:14Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 166 migrations, the highest 20261120055717, and that held four outbox rows: a `supervise` start and a catch-up `notice` whose kept decision carries `seq`, and one of each whose kept decision carries none.
+  It printed two rows, `1 | supervise | LEGION-1` and `3 | notice | LEGION-3`, the start and the catch-up that carry `seq`, and exited 0.
+
 - A design decision's relay to the controller that this release queued and has not sent reaches the controller without this release's ask of it, or not at all.
   The earlier release refuses a `controller_notice` row that carries `review` or `artifact` by the same strict decode, and retries it on its backoff until this release runs again.
   Letting this release run does not end such a row as it ends the rows above, because the row waits for as long as no session holds the controller's claim.
-  So once the three reads above return none, with this release's daemon still stopped and before the earlier image is pinned, run this statement, which takes both keys off every such row:
+  So once the four reads above return none, with this release's daemon still stopped and before the earlier image is pinned, run this statement, which takes both keys off every such row:
 
   ```sql
   update outbox set payload = payload - 'review' - 'artifact'
@@ -3156,7 +3161,8 @@ Going back costs four things, and the first two lose work unless you act before 
 
   It prints `UPDATE <n>` for the relays it rewrote, and a rerun prints `UPDATE 0` and changes nothing.
   What it costs is the ask at the publish: the earlier release publishes each rewritten relay as it did before this release, without asking whether the person's approval followed it, so a changes request the person has approved since reaches the controller as standing.
-  When this release is pinned again, a rewritten relay, like every relay and design decision's notice the earlier release queued, carries no mark and no document, so its publish asks at its version alone, as the architect's delivery asks such a notice: an approval of that version or a later one, of whichever document the gate then holds, can answer it.
+  When this release is pinned again, a rewritten relay, like every relay and design decision's notice the earlier release queued, carries no mark and no document, so the publish of one that relays a changes request asks at its version alone, as the architect's delivery asks such a notice: an approval of that version or a later one, of whichever document the gate then holds, can answer it.
+  Every other relay is published as it is, as it was before this release.
   The SQL was run on 2026-11-20 at 14:29Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 166 migrations, the highest 20261120055717, and that held three outbox rows: a `controller_notice` relaying a changes request with `review` and `artifact`, a `controller_notice` relaying an answer with neither, and a `notice` of an approval carrying both.
   The `notice` read printed that notice's row on each of its two runs, the `update` printed `UPDATE 1` and then `UPDATE 0`, and all four runs exited 0.
   After them the changes request's relay had lost both keys and kept every other key it carried, the answer's relay was as it was written, and the `notice` row kept its `review` and `artifact`, which the read is there to find.

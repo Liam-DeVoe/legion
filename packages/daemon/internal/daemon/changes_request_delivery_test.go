@@ -228,8 +228,8 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // failed, so every row is one the workflow and the relay write.
 //
 // Where the approval followed the request, the request's row finishes with nothing published and
-// one line naming the row, the issue, the ref and both versions, and the approval's own relay
-// still goes. That holds whether the request's row asks before the approval's own notice is
+// one line naming the row, the issue, the root, the ref and both versions, and the approval's own
+// relay still goes. That holds whether the request's row asks before the approval's own notice is
 // relayed or after, when the decision kept on the document's reference is the approval in the
 // request's place (record.Store.AddParkedDecision): what is kept beside the row decides nothing.
 // The controls are a request no approval followed, one Dispatch recorded after the person's
@@ -359,10 +359,201 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 				}
 				return
 			}
-			want := fmt.Sprintf("row=%d issue=LEGION-1 ref=dispatch://LEGION-1/spec version=3 approved=3", request)
+			want := fmt.Sprintf("row=%d issue=LEGION-1 root=LEGION-1 ref=dispatch://LEGION-1/spec version=3 approved=3", request)
 			if len(dropped) != 1 || !strings.Contains(dropped[0], `the person's approval followed it"`) || !strings.Contains(dropped[0], want) ||
 				!strings.Contains(dropped[0], "level=INFO") {
 				t.Fatalf("logged %q, want one Info line that the approval followed the request, naming %s", dropped, want)
+			}
+		})
+	}
+}
+
+// A person's changes request the outbox still holds when a clear of its generation runs is
+// finished by that clear, unpublished, once the person's approval followed it
+// (dispatch://INFRA-3136/spec R2): the clear deletes the issue's gates, the only record of that
+// approval, so the request's next attempt, asked of no gate, would read as the person's word
+// again. The request waits for its tree's architect, whose role no session holds, or, relayed
+// because that architect's claim failed, for the controller, whose claim no session holds; the
+// person's approval of the version reviewed lands; the generation is cleared, of the tree as a
+// re-admission clears it (workflow.Engine.ClearTreeGeneration) or of the issue alone
+// (workflow.Engine.ClearGeneration); the holder returns and the next attempts run. The request
+// is told to nobody, the clear writes one Info line naming the row, the issue, the root, the ref
+// and both versions, and the approval's own notice still goes. A runner that held the relay's
+// lease through the clear finishes it unpublished too, since it reads its lease in the snapshot
+// it asks the gates in. The controls are requests no approval followed, which the clear leaves
+// and their holder is told.
+func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
+	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
+		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
+		Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
+	approved := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
+		Kind: intake.DispatchArtifactApproved, Version: 3, Actor: alice,
+		Mark: record.EventMark{Seq: 9, At: reviewed.Add(5 * time.Minute)}}
+	clearTree := func(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, at time.Time) error {
+		return engine.ClearTreeGeneration(ctx, tx, "LEGION-1", at)
+	}
+	clearIssue := func(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, at time.Time) error {
+		issue, err := record.NewStore().Issue(ctx, tx, "LEGION-1")
+		if err != nil {
+			return err
+		}
+		return engine.ClearGeneration(ctx, tx, *issue, at)
+	}
+	for _, tc := range []struct {
+		name string
+		// relayed has the request wait relayed to the controller rather than for the architect,
+		// approved has the person approve it before the clear, and leased has a runner hold the
+		// relay's lease through the clear and then run it.
+		relayed, approved, leased bool
+		clear                     func(context.Context, pgx.Tx, *workflow.Engine, time.Time) error
+	}{
+		{name: "for the architect, approved, then the tree's clear", approved: true, clear: clearTree},
+		{name: "for the architect, approved, then the issue's clear", approved: true, clear: clearIssue},
+		{name: "for the architect, not approved, then the tree's clear", clear: clearTree},
+		{name: "relayed, approved, then the tree's clear", relayed: true, approved: true,
+			clear: clearTree},
+		{name: "relayed, approved, then the issue's clear", relayed: true, approved: true,
+			clear: clearIssue},
+		{name: "relayed, approved, then the tree's clear under a runner's lease", relayed: true,
+			approved: true, leased: true, clear: clearTree},
+		{name: "relayed, not approved, then the tree's clear", relayed: true, clear: clearTree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
+					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
+			}); err != nil {
+				t.Fatalf("register the spec gate at version 3: %v", err)
+			}
+			clock := reviewed.Add(time.Hour)
+			now := func() time.Time { return clock }
+			steps := config.DesignGateRootIssues.Steps()
+			var cleared bytes.Buffer
+			engine := workflow.New(records, workflow.Config{Project: "LEGION",
+				Repositories: testRepositories, Steps: steps, Clock: now},
+				slog.New(slog.NewTextHandler(&cleared, nil)))
+			applyFacts(t, pool, engine, []intake.Fact{changes})
+
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architect := supervise.StateWorking
+			if tc.relayed {
+				architect = supervise.StateFailed
+			}
+			architectClaim(t, sup, "LEGION-1", architect)
+			publisher := &holderPublisher{}
+			publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+			var logged bytes.Buffer
+			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool,
+				dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
+				project: "legion", gatedSteps: steps, now: now}
+			// The first run is the request's first attempt, which waits for the architect or
+			// relays the request; the second is the relay's first attempt, which waits for the
+			// controller.
+			for run := range 2 {
+				if err := runner.RunOnce(ctx); err != nil {
+					t.Fatalf("run %d before the clear: %v", run, err)
+				}
+			}
+			request := queuedRow{}
+			if tc.relayed {
+				request.id, _ = relayRow(t, pool, record.DecisionDesignChangesRequested)
+			} else {
+				request = soleNoticeRow(t, pool, "design-changes-requested")
+			}
+			if told := len(architectNotices(t, publisher)) + len(controllerDecisions(publisher)); told != 0 {
+				t.Fatalf("told %d notices before the clear, want the request's row %d waiting",
+					told, request.id)
+			}
+
+			clock = clock.Add(time.Minute)
+			if tc.approved {
+				applyFacts(t, pool, engine, []intake.Fact{approved})
+			}
+			var held record.OutboxRow
+			if tc.leased {
+				if err := pool.QueryRow(ctx, "select id, kind, issue, payload from outbox where id = $1",
+					request.id).Scan(&held.ID, &held.Kind, &held.Issue, &held.Payload); err != nil {
+					t.Fatalf("read the relay's row %d: %v", request.id, err)
+				}
+				held.LeaseToken = leaseOutboxRow(t, pool, request.id)
+			}
+			scoped, committed := intake.WithCommitHooks(ctx)
+			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
+				return tc.clear(scoped, tx, engine, clock)
+			}); err != nil {
+				t.Fatalf("clear the generation: %v", err)
+			}
+			committed()
+			if tc.leased {
+				if err := runner.run(ctx, held); err != nil {
+					t.Fatalf("the leased run of the relay's row %d: %v", held.ID, err)
+				}
+				if told := controllerDecisions(publisher); len(told) != 0 {
+					t.Fatalf("the leased run told the controller %v, want nothing", told)
+				}
+				gone := textLines(logged.String(), `msg="outbox parked changes request finished `+
+					`without publishing: its row was deleted under its lease"`)
+				if want := fmt.Sprintf("row=%d issue=LEGION-1", held.ID); len(gone) != 1 ||
+					!strings.Contains(gone[0], want) {
+					t.Fatalf("logged %q, want one line naming %s", gone, want)
+				}
+			}
+
+			if tc.relayed {
+				publisher.setAbsent(architectTopic(t, "LEGION-1"))
+			} else {
+				publisher.setAbsent()
+			}
+			left := func() int {
+				return outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) +
+					outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindControllerNotice)
+			}
+			for run := 0; run < 5 && left() > 0; run++ {
+				clock = clock.Add(time.Hour)
+				if err := runner.RunOnce(ctx); err != nil {
+					t.Fatalf("run %d after the clear: %v", run, err)
+				}
+			}
+			if rows := left(); rows != 0 {
+				t.Fatalf("%d notice and controller rows of LEGION-1 left, want every row finished; log %s",
+					rows, logged.String())
+			}
+			var told, want any
+			switch {
+			case tc.relayed && tc.approved:
+				told, want = controllerDecisions(publisher), []record.DecisionKind{record.DecisionDesignApproved}
+			case tc.relayed:
+				told, want = controllerDecisions(publisher), []record.DecisionKind{record.DecisionDesignChangesRequested}
+			case tc.approved:
+				told, want = architectNotices(t, publisher), []record.NoticeKind{"design-approved"}
+			default:
+				told, want = architectNotices(t, publisher), []record.NoticeKind{"design-changes-requested"}
+			}
+			if !reflect.DeepEqual(told, want) {
+				t.Fatalf("told %v, want %v; runner's log %s", told, want, logged.String())
+			}
+			finished := textLines(cleared.String(), `msg="workflow: a queued changes request `+
+				`finished unpublished at its generation's clear: the person's approval followed it"`)
+			if !tc.approved {
+				if len(finished) != 0 {
+					t.Fatalf("the clear logged %q, want no changes request finished", finished)
+				}
+				return
+			}
+			kind := record.OutboxKindNotice
+			if tc.relayed {
+				kind = record.OutboxKindControllerNotice
+			}
+			line := fmt.Sprintf("row=%d kind=%s issue=LEGION-1 root=LEGION-1 "+
+				"ref=dispatch://LEGION-1/spec version=3 approved=3", request.id, kind)
+			if len(finished) != 1 || !strings.Contains(finished[0], line) ||
+				!strings.Contains(finished[0], "level=INFO") {
+				t.Fatalf("the clear logged %q, want one Info line naming %s", finished, line)
 			}
 		})
 	}

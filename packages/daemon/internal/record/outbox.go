@@ -472,9 +472,9 @@ type Notice struct {
 	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
 	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
 	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
-	// parked-decision controller notice that relays one of those two carries it as well, as the
-	// relayed notice did, because its publish asks again whether the review stands (the daemon's
-	// controllerNotice). Every other kind carries none.
+	// parked-decision controller notice that relays one of those two carries it as the notice did,
+	// and the publish of a relayed changes request asks again of it whether the review stands (the
+	// daemon's controllerNotice). Every other kind carries none.
 	Review EventMark `json:"review,omitzero"`
 	// Artifact is the Dispatch artifact id of the document that review is of, carried by the same
 	// three: a step's gate can move to another document while its reference (Ref) stays the
@@ -2252,11 +2252,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
-		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
+		decision, spec := SpecDecision(value.Kind)
+		if !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
-		designReview := value.Kind == "design-approved" || value.Kind == "design-changes-requested"
-		if carriesReview(value) && !designReview {
+		if carriesReview(value) && !designReview(decision) {
 			return fmt.Errorf("a %s notice carries a review's mark or document; "+
 				"only a design-approved or design-changes-requested notice does", value.Kind)
 		}
@@ -2297,9 +2297,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
 			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
 		}
-		reviewed := value.Decision == DecisionDesignApproved ||
-			value.Decision == DecisionDesignChangesRequested
-		if carriesReview(Notice(value)) && (value.Kind != ParkedDecisionNotice || !reviewed) {
+		if carriesReview(Notice(value)) && (value.Kind != ParkedDecisionNotice || !designReview(value.Decision)) {
 			return fmt.Errorf("a %s controller notice carries a review's mark or document; only a "+
 				"parked-decision notice relaying a design approval or changes request does",
 				value.Kind)
@@ -2551,6 +2549,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // so one rule of the kinds that may carry them holds both.
 func carriesReview(n Notice) bool {
 	return n.Review.Seq != 0 || !n.Review.At.IsZero() || n.Artifact != ""
+}
+
+// designReview says whether decision is a person's review of a design document, an approval or a
+// changes request: the two decisions whose notice, and whose relay to the controller, may carry
+// the review's mark and document (carriesReview).
+func designReview(decision DecisionKind) bool {
+	return decision == DecisionDesignApproved || decision == DecisionDesignChangesRequested
 }
 
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may

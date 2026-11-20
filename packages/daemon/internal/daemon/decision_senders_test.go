@@ -101,8 +101,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 
 // Every sender of a person's design decision asks the one predicate whether that decision is
 // still the person's word (workflow.SupersedingApproval), so no sender decides it for itself and
-// no sender asks the rule itself (dispatch://INFRA-3136/spec R2). The predicate's doc says which
-// reviews each sender asks about, so this test does not restate it.
+// no sender asks the rule itself (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //

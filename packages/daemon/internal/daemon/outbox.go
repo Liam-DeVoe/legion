@@ -1757,8 +1757,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // answer reaches the policy only from a listener of the deployed, older build, until that
 // rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
-// catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
-// publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
+// catch-up a newer ready dropped, or a changes request a clear of its generation dropped,
+// errNoticeRowGone) is found gone in the tree's snapshot and finishes without a publish, and so
+// does a catch-up a newer one superseded (catchUpSuperseded, read against the
 // row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
 // reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
 // race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
@@ -2357,24 +2358,28 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // request is still the person's word, and finishes with nothing published and one line naming the
 // approved version once the person's approval followed it: the relay asked when it wrote the row
 // (parkDecision), but the row waits here for as long as no session holds the controller's claim,
-// and an approval that lands meanwhile would reach the controller as a request to act on. The ask
-// is the one predicate's (decisionSuperseded), of the decision the row carries: the version,
-// Dispatch's mark of the review and the document reviewed, which the relay copied from the
-// changes request's own notice (record.RelayParkedDecision), read in one read-only snapshot of
-// the gates. A row an earlier daemon queued carries no mark and no document, and is asked at its
-// version alone, as the architect's delivery asks such a notice (readNoticeTree). One window is
-// left, as in deliverNotice: an approval that commits between that read and the publish, which
-// reaches the controller after the request it answered. Every other notice, a parked decision of
-// any other kind among them, is published as it is.
+// and an approval that lands meanwhile would reach the controller as a request to act on. It asks
+// decisionSuperseded, of the decision the row carries (record.RelayParkedDecision). It reads first
+// that the row is still in the outbox under its lease, in the same repeatable-read snapshot as the
+// gates: a clear of the row's generation deletes the gates that record the approval, and deletes
+// a row the approval followed before them (workflow.Engine.ClearGeneration), so a row found gone
+// finishes unpublished with one line, and a row found still there is asked of gates no clear has
+// deleted since. One window is left, as in deliverNotice: an approval that commits between that
+// read and the publish, which reaches the controller after the request it answered. Every other
+// notice, a parked decision of any other kind among them, is published as it is.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
 	if payload.Kind == record.ParkedDecisionNotice && payload.Decision == record.DecisionDesignChangesRequested {
+		var leased bool
 		var approval *workflow.Approval
 		read := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
 		if err := pgx.BeginTxFunc(ctx, r.pool, read, func(tx pgx.Tx) error {
 			var err error
+			if leased, err = r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken); err != nil || !leased {
+				return err
+			}
 			approval, err = r.decisionSuperseded(ctx, tx, row.Issue, record.Notice(payload),
 				payload.Decision)
 			return err
@@ -2382,10 +2387,16 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 			return fmt.Errorf("read whether the changes request relayed for %s is still the "+
 				"person's word: %w", row.Issue, err)
 		}
-		if approval != nil {
+		args := []any{"row", row.ID, "issue", row.Issue, "root", payload.Root, "ref", payload.Ref,
+			"version", payload.Version}
+		switch {
+		case !leased:
 			r.log.Info("outbox parked changes request finished without publishing: "+
-				"the person's approval followed it", "row", row.ID, "issue", row.Issue,
-				"ref", payload.Ref, "version", payload.Version, "approved", approval.Version)
+				"its row was deleted under its lease", args...)
+			return nil
+		case approval != nil:
+			r.log.Info("outbox parked changes request finished without publishing: "+
+				"the person's approval followed it", append(args, "approved", approval.Version)...)
 			return nil
 		}
 	}

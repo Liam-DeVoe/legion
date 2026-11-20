@@ -1196,7 +1196,7 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		}
 	})
 
-	forget := func(context.Context, pgx.Tx, string, KeptDecisions) error { return nil }
+	forget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
 	for _, tc := range []struct {
 		name  string
 		key   string
