@@ -68,7 +68,7 @@ import {
   STEP_RESULTS,
   STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
-import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
+import { DEAD_LETTER_REASONS, MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
@@ -1047,7 +1047,36 @@ import (
 )
 
 ${renderEnvelope(envelope)}
+
+${renderDeadLetterReasons(envelope)}
 `;
+}
+
+// The Go constants of the dead letter's reasons, from DEAD_LETTER_REASONS in packages/contracts:
+// the Envoy listener writes them into a dead letter's dead_letter field, and the Legion daemon
+// reads that field by them, so no reason is written twice. The schema's dead_letter enum, which the
+// generated Validate checks, must be that same list in the same order, or nothing is generated.
+function renderDeadLetterReasons(envelope: Schema) {
+  const listed = envelope.properties.dead_letter?.enum ?? [];
+  if (JSON.stringify(listed) !== JSON.stringify(DEAD_LETTER_REASONS)) {
+    throw new Error(
+      `envelope.schema.json's dead_letter enum is ${JSON.stringify(listed)}, want DEAD_LETTER_REASONS ${JSON.stringify(DEAD_LETTER_REASONS)}`
+    );
+  }
+  const constants = DEAD_LETTER_REASONS.map((reason) => [`DeadLetter${name(reason)}`, reason] as const);
+  const wide = Math.max(...constants.map(([constant]) => constant.length));
+  const lines = constants
+    .map(([constant, reason]) => `\t${constant.padEnd(wide)} = ${JSON.stringify(reason)}`)
+    .join("\n");
+  return `// The reasons a dead letter's dead_letter field names (Envelope.DeadLetter): why the Envoy
+// listener dropped the kept role message the dead letter names as its source_event_id. Expired is
+// a copy whose hour ended, and DeliveryMode one the role's live holder does not take for its
+// delivery mode; the Unconfirmed form of either is a copy a walk had started to forward to the
+// session that held the role then, with no walk confirming that forward, so the message may have
+// reached that session. Generated from DEAD_LETTER_REASONS in packages/contracts.
+const (
+${lines}
+)`;
 }
 
 // internal/contracts names each envelope type listenerwire declares, so the code of the envoy

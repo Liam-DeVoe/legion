@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // roleKeepWindow is a kept copy's hour: how old it may be, counted from the time the stream stored
@@ -97,23 +98,27 @@ const (
 // of a copy whose forward a walk claimed and no walk confirmed (unconfirmedClaimSuffix,
 // keptRoleDrop.claimReason, bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter), so the
 // walk that takes that claim over sends the dead letter again for the same reason and with the
-// same qualifier (keptCopyClaimOf).
+// same qualifier (keptCopyClaimOf). The two reasons are the contracts' own words
+// (listenerwire.DeadLetterExpired, listenerwire.DeadLetterDeliveryMode), which the dead letter's
+// dead_letter field carries with the claim's qualifier (keptRoleDeadLetter).
 type deadLetterReason string
 
 const (
-	deadLetterExpired      deadLetterReason = "expired"
-	deadLetterDeliveryMode deadLetterReason = "delivery_mode"
+	deadLetterExpired      deadLetterReason = listenerwire.DeadLetterExpired
+	deadLetterDeliveryMode deadLetterReason = listenerwire.DeadLetterDeliveryMode
 )
 
 // unconfirmedClaimSuffix is what a walk adds to the reason it writes into its claim of a copy it
 // ends with a dead letter, whichever reason that is, when a walk before it claimed the copy to
 // forward it and no walk confirmed that forward (keptRoleDrop.forwarded, keptRoleDrop.claimReason):
-// the claim then reads expired_unconfirmed or delivery_mode_unconfirmed. The claim carries that
-// qualifier because the walk that takes the claim over reads the claim and nothing else
+// the claim then reads expired_unconfirmed or delivery_mode_unconfirmed, the contracts' other two
+// words (listenerwire.DeadLetterExpiredUnconfirmed, listenerwire.DeadLetterDeliveryModeUnconfirmed),
+// which TestTheClaimReasonsAreTheContractsDeadLetterWords holds to that suffix. The claim carries
+// that qualifier because the walk that takes the claim over reads the claim and nothing else
 // (keptCopyClaimOf), and its dead letter must still say that the message may have reached the
 // session that held the role then: the forward's claim that said so is overwritten by this one.
-// It is a part of the claim alone: the dead letter's own reason, its line and its label stay
-// deadLetterExpired or deadLetterDeliveryMode.
+// The dead letter's dead_letter field carries it too (keptRoleDeadLetter); the dead letter's
+// lines and its label name the reason alone, deadLetterExpired or deadLetterDeliveryMode.
 const unconfirmedClaimSuffix = "_unconfirmed"
 
 // The walk's lines for a copy it drops: the drop itself, which keeps the text a production check
@@ -1726,7 +1731,12 @@ func keyedEventID(key string) string {
 // keptRoleDeadLetter is the dead letter of the copy item, stored at stored on role's kept lane and
 // dropped at dropped for drop, and the message id it is published under. It is a stored envelope
 // from source envoy on the copy sender's agent subject, with no source_session of its own, so the
-// sender's host shows it as a message from Envoy, and source_event_id names the copy. Its dedupe
+// sender's host shows it as a message from Envoy, and source_event_id names the copy. Its
+// dead_letter field is why Envoy dropped the copy, in the one word the walk writes into its claim
+// of the copy (keptRoleDrop.claimReason, one of listenerwire's DeadLetter reasons), so a sender
+// that acts on a dead letter, the Legion daemon's provider-errors notice among them, reads why
+// from the field and not from the text, and an unconfirmed drop - a copy whose forward may have
+// reached the holder - is told apart from a copy no session was handed. Its dedupe
 // key and its message id are both envoy.dead-letter.<role>.<the copy's sequence>, which no other
 // copy has, so the stream holds one dead letter for each copy however many walks and listeners
 // send it, and its event id is that key's (keyedEventID). issued_at is the walk's clock when it
@@ -1754,6 +1764,7 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 		PayloadSummary: "Envoy dropped your message to role " + role + ": " + drop.summary() + ".",
 		Payload:        text,
 		TraceID:        id.New(),
+		DeadLetter:     drop.claimReason(),
 	}, key
 }
 

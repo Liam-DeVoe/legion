@@ -1523,8 +1523,8 @@ func main() {
 		roleKeepDrains: newRoleKeepGuards(),
 		// The listener's one clock for a kept copy's hour: the keep's answer, and the
 		// handovers the claim route, the keep, the registration and the sweep start
-		// (role_keep.go).
-		now: time.Now,
+		// (role_keep.go). It is the wall clock in every release build (keptCopyClock).
+		now: keptCopyClock(),
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are

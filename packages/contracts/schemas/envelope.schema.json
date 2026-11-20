@@ -55,6 +55,10 @@
     "expects_reply": {
       "enum": [false, "optional", "required"],
       "x-go-type": "ExpectsReply"
+    },
+    "dead_letter": {
+      "type": "string",
+      "enum": ["expired", "expired_unconfirmed", "delivery_mode", "delivery_mode_unconfirmed"]
     }
   },
   "additionalProperties": false

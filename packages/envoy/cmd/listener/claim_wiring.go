@@ -9,7 +9,8 @@ import (
 
 // sessionEntryFromSubscribe is the session entry a registration writes: the body's fields, the
 // registering listener's machine id, and, when delivery says the listener holds the session's
-// consumer for it, consumer delivery, the plugin's epoch and the sequence that consumer starts at.
+// consumer for it, consumer delivery, the plugin's epoch and the sequence that consumer starts at,
+// or, when delivery says the session reads its own agent subject, own-reader delivery.
 // The entry's Port is left 0: a registration naming one is refused before it reaches here
 // (subscribeHandler).
 func sessionEntryFromSubscribe(body listenerwire.SubscribeRequest, machineID string, delivery sessionDeliveryOutcome) session.SessionEntry {
@@ -31,6 +32,9 @@ func sessionEntryFromSubscribe(body listenerwire.SubscribeRequest, machineID str
 		// The start comes off the answer, as the mode does (sessionDeliveryOutcome.relayed), so
 		// the entry the registration writes and the answer the session reads name one sequence.
 		entry.ConsumerStart = delivery.answer.ConsumerStart
+	}
+	if delivery.ownReader() {
+		entry.Delivery = session.DeliveryOwnReader
 	}
 	return entry
 }

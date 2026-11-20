@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import dedupeKeys from "../fixtures/dedupe-keys.json";
-import { dedupeKeyNamesItsEvent, EnvelopeSchema } from "./envelope";
+import { DEAD_LETTER_REASONS, dedupeKeyNamesItsEvent, EnvelopeSchema } from "./envelope";
 import {
   dispatchDocumentSubject,
   GHOSTWISPR_TOPIC_PREFIX,
@@ -124,6 +124,15 @@ describe("EnvelopeSchema", () => {
 
   test("rejects unrecognized urgency", () => {
     expectInvalidFields({ urgency: "urgent" }, ["urgency"]);
+  });
+
+  test("reads each dead letter reason and refuses a reason it does not name", () => {
+    for (const reason of DEAD_LETTER_REASONS) {
+      const item = EnvelopeSchema.parse(buildEnvelope({ source: "envoy", dead_letter: reason }));
+      expect(item.dead_letter).toBe(reason);
+    }
+    expect(EnvelopeSchema.parse(buildEnvelope()).dead_letter).toBeUndefined();
+    expectInvalidFields({ dead_letter: "lost" }, ["dead_letter"]);
   });
 
   test("accepts ghostwispr source", () => {

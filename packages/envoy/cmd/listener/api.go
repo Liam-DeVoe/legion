@@ -2676,14 +2676,15 @@ func (d *listenerDeps) registerSession(
 		filtered = true
 		// The gap is read out of each pass's answer and never back out of it: only the pass
 		// that creates the consumer is told of a gap, and a later pass finds the consumer
-		// already made and answers none (sessionDelivery.consumerFor).
-		if registered.delivery.answer != nil && *registered.delivery.answer.Gap {
+		// already made and answers none (sessionDelivery.consumerFor). An own reader's answer
+		// holds no consumer, so it carries no gap at all.
+		if registered.delivery.relayed() && *registered.delivery.answer.Gap {
 			gap = true
 		}
 		// A pass that answers carries no error (listenerDeps.registerPass), so the switch
 		// below is left every error there is, the entry write's among them.
 		if answeredPass {
-			if registered.delivery.answer != nil {
+			if registered.delivery.relayed() {
 				registered.delivery.answer.Gap = &gap
 			}
 			answered = true

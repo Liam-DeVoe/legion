@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -51,8 +52,10 @@ type SessionEntry struct {
 	// listener it registered through holds its session consumer (bus.SessionConsumers): the
 	// session's stored messages reach it from that consumer, relayed by the listener that owns it,
 	// so the durable path acknowledges them with nothing to deliver and no exception
-	// (Resolve). Empty for a session on the core path: a plugin that did not ask, an older
-	// listener, or a hub that refused the consumer.
+	// (Resolve). It is DeliveryOwnReader for a session that reads its own agent subject from a
+	// consumer of its own, which no listener holds or relays (OwnReaderTakes). Empty for a session
+	// on the core path: a plugin that did not ask, an older listener, or a hub that refused the
+	// consumer.
 	Delivery string `json:"delivery,omitempty"`
 	// Epoch is the session's delivery epoch while Delivery is DeliveryConsumer: a random string per
 	// plugin NATS connection, so a new one tells the relay the session reconnected and its consumer
@@ -103,6 +106,20 @@ type TmuxPlace = listenerwire.TmuxPlace
 // DeliveryConsumer is SessionEntry.Delivery for a session whose stored messages its session consumer
 // delivers.
 const DeliveryConsumer = "consumer"
+
+// DeliveryOwnReader is SessionEntry.Delivery for a session that reads its own agent subject from a
+// JetStream consumer it holds itself (listenerwire.SubscribeDelivery.OwnReader): no listener holds
+// a consumer for it or relays anything to it. The Legion daemon's provider-errors sender is one.
+const DeliveryOwnReader = "own_reader"
+
+// OwnReaderTakes reports whether the reader of the session sessionID, on own-reader delivery,
+// takes a message stored on topic, so no delivery path owes it anything: it reads its own agent
+// subject in the one-token form (contracts.LegacyAgentSubject), the subject every dead letter is
+// sent on, and nothing else, and only a stored message, which captured says the deployed stream
+// keeps (Resolve).
+func (e SessionEntry) OwnReaderTakes(sessionID, topic string, captured bool) bool {
+	return e.Delivery == DeliveryOwnReader && captured && topic == contracts.LegacyAgentSubject(sessionID)
+}
 
 // ConsumerHoldsStored reports whether the session's own consumer holds the stored message of stream
 // sequence storedSeq, so no delivery path owes it anything: a session on consumer delivery is held

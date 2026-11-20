@@ -28,6 +28,7 @@ type Envelope struct {
 	Supersedes        string            `json:"supersedes,omitempty"`
 	Urgency           string            `json:"urgency,omitempty"`
 	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
+	DeadLetter        string            `json:"dead_letter,omitempty"`
 }
 
 type EnvelopeSender struct {
@@ -87,6 +88,13 @@ func (e Envelope) Validate() error {
 	if err := e.ExpectsReply.Validate(); err != nil {
 		return err
 	}
+	if e.DeadLetter != "" {
+		switch e.DeadLetter {
+		case "expired", "expired_unconfirmed", "delivery_mode", "delivery_mode_unconfirmed":
+		default:
+			return fmt.Errorf("dead_letter must be one of: expired, expired_unconfirmed, delivery_mode, delivery_mode_unconfirmed")
+		}
+	}
 	if e.Sender != nil {
 		if strings.TrimSpace(e.Sender.SessionID) == "" {
 			return fmt.Errorf("sender.session_id is required")
@@ -94,3 +102,16 @@ func (e Envelope) Validate() error {
 	}
 	return nil
 }
+
+// The reasons a dead letter's dead_letter field names (Envelope.DeadLetter): why the Envoy
+// listener dropped the kept role message the dead letter names as its source_event_id. Expired is
+// a copy whose hour ended, and DeliveryMode one the role's live holder does not take for its
+// delivery mode; the Unconfirmed form of either is a copy a walk had started to forward to the
+// session that held the role then, with no walk confirming that forward, so the message may have
+// reached that session. Generated from DEAD_LETTER_REASONS in packages/contracts.
+const (
+	DeadLetterExpired                 = "expired"
+	DeadLetterExpiredUnconfirmed      = "expired_unconfirmed"
+	DeadLetterDeliveryMode            = "delivery_mode"
+	DeadLetterDeliveryModeUnconfirmed = "delivery_mode_unconfirmed"
+)

@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The dead letter the listener sends the sender of a kept role message it drops unread now carries why in a structured field, `dead_letter`, with one of the four words its walk writes into its claim of the copy: `expired`, `delivery_mode`, or either with `_unconfirmed` after it for a copy the listener had started to forward to the session that held the role then and never confirmed, which may have reached that session. A sender reads the field and never the dead letter's text. The words are defined once in `@legion/contracts` (`DEAD_LETTER_REASONS`) and generated into Go as `listenerwire.DeadLetter*`.
+  A session that reads its own agent subject from a JetStream consumer of its own registers with `delivery.own_reader` true, no topics and no consumer: the listener answers mode `own_reader`, creates no consumer and starts no relay for it, and acknowledges a message stored on that subject as the session's own reader's to take, rather than holding it for its unplaceable window and then giving it up with an agent wake report. A registration that asks for both a consumer and an own reader, or that follows a topic, is refused 409 `own_reader_conflict`. The Legion daemon registers its provider-errors sender this way.
+time: 2026-11-20T16:35:46Z
+custom:
+  Issue: pr4508

@@ -17,6 +17,27 @@ export const EXPECTS_REPLY_VALUES = [false, "optional", "required"] as const;
 export type ExpectsReply = (typeof EXPECTS_REPLY_VALUES)[number];
 
 /**
+ * Why the Envoy listener dropped a kept role message without handing it to the role's holder, as
+ * the dead letter it sends that message's sender names it in `dead_letter`: the copy's hour ended
+ * (`expired`), or the role's live holder does not take the copy's delivery mode
+ * (`delivery_mode`). A reason with `_unconfirmed` after it is a copy a walk had started to forward
+ * to the session that held the role then, with no walk confirming the forward, so the message may
+ * have reached that session. These are the four strings the listener writes into its claim of the
+ * copy it ends with a dead letter (packages/envoy/cmd/listener's keptRoleDrop.claimReason), so a
+ * sender reads why from this field and never from the dead letter's text. `scripts/gen-go.ts`
+ * emits them into Go as `listenerwire.DeadLetter*`, and refuses a schema whose `dead_letter` enum
+ * is not this list.
+ */
+export const DEAD_LETTER_REASONS = [
+  "expired",
+  "expired_unconfirmed",
+  "delivery_mode",
+  "delivery_mode_unconfirmed",
+] as const;
+
+export type DeadLetterReason = (typeof DEAD_LETTER_REASONS)[number];
+
+/**
  * The envelope the Envoy listener stores and delivers. A field added to it is optional, and every
  * reader of a delivered envelope takes one it does not know without refusing it: the readers in
  * `@legion/envoy-client`, claude-envoy and pi-envoy parse with a stripping or passthrough zod
@@ -91,6 +112,13 @@ export const EnvelopeSchema = z.object({
   supersedes: z.string().min(1).optional(),
   urgency: z.enum(["low", "med", "high", "blocking"]).optional(),
   expects_reply: z.literal(EXPECTS_REPLY_VALUES).optional(),
+  /**
+   * Why the listener dropped the kept role message this envelope is the dead letter of
+   * (`DEAD_LETTER_REASONS`), set only on such a dead letter, which the listener sends from source
+   * `envoy` to the agent subject of the message's sender, naming the message as its
+   * `source_event_id`. A reader that does not know the field ignores it.
+   */
+  dead_letter: z.enum(DEAD_LETTER_REASONS).optional(),
 });
 
 export type Envelope = z.infer<typeof EnvelopeSchema>;

@@ -404,8 +404,9 @@ type SubscribeRequest struct {
 	// instance from another instance's live session. Empty for a client whose plugin predates the
 	// field.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
-	// Delivery asks for consumer delivery. A registration that carries none, an older plugin's,
-	// is refused.
+	// Delivery asks for consumer delivery, or says the session reads its own agent subject itself
+	// (SubscribeDelivery.OwnReader). A registration that carries none, an older plugin's, is
+	// refused.
 	Delivery *SubscribeDelivery `json:"delivery,omitempty"`
 }
 
@@ -413,10 +414,21 @@ type SubscribeRequest struct {
 // session's consumer, relayed on the session's relay subject; Epoch is the plugin's random string
 // for its current NATS connection; and Resume, when the session's consumer is missing, seeds the
 // new one from the plugin's persisted resume point.
+//
+// OwnReader is the other delivery: the session reads its own agent subject, in its one-token form
+// (notifications.agent.<session id>), from a JetStream consumer it holds itself, so the listener
+// creates no consumer and starts no relay for it, and answers mode own_reader. A message stored on
+// that subject is the session's own reader's to take: the listener's delivery of it acknowledges
+// it with nothing to deliver, as it does a message a session's consumer holds, rather than holding
+// it for its retry window and giving it up with a wake report naming the session. A registration
+// that sets OwnReader may not set Consumer and follows no topic. The Legion daemon registers so the
+// session it publishes its provider-errors notice as, to read the dead letter Envoy sends that
+// session when it drops a copy of the notice unread.
 type SubscribeDelivery struct {
-	Consumer bool             `json:"consumer,omitempty"`
-	Epoch    string           `json:"epoch,omitempty"`
-	Resume   *SubscribeResume `json:"resume,omitempty"`
+	Consumer  bool             `json:"consumer,omitempty"`
+	OwnReader bool             `json:"own_reader,omitempty"`
+	Epoch     string           `json:"epoch,omitempty"`
+	Resume    *SubscribeResume `json:"resume,omitempty"`
 }
 
 // SubscribeResume is a session's resume point: the stream's identity and a sequence below which
@@ -442,9 +454,11 @@ type SubscribeResponse struct {
 
 // DeliveryAnswer is the delivery field of a registration's answer. Every registration the
 // listener answers at all carries one: the session's consumer is held and relayed, which is the
-// only way a message reaches a session.
+// way a message reaches an agent session, or the session reads its own agent subject itself
+// (SubscribeDelivery.OwnReader).
 type DeliveryAnswer struct {
-	// Mode is consumer, the one mode a registration is answered.
+	// Mode is consumer, or own_reader for a session that reads its own agent subject. Only a
+	// consumer answer carries the fields below.
 	Mode string `json:"mode"`
 	// Subject is the session's relay subject.
 	Subject string `json:"subject,omitempty"`

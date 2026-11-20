@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The lines and the counters the tests of a kept copy's hour read, by the text and the series name
@@ -499,14 +500,17 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 }
 
 // assertDeadLetterOf fails unless letter is the dead letter of held, a copy of role's lane: from
-// Envoy on its sender's agent subject, naming the copy as its source event, with a summary that
-// names the role, and a text that names the role, the copy's event id and first line, the time
-// Envoy kept it, the time Envoy dropped it - no earlier than droppedAfter and no later than
-// droppedBy - and each of says.
-func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, held laneCopy, droppedAfter, droppedBy time.Time, says ...string) {
+// Envoy on its sender's agent subject, naming the copy as its source event and reason as its
+// dead_letter field (listenerwire.DeadLetter*), with a summary that names the role, and a text
+// that names the role, the copy's event id and first line, the time Envoy kept it, the time Envoy
+// dropped it - no earlier than droppedAfter and no later than droppedBy - and each of says.
+func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, held laneCopy, reason string, droppedAfter, droppedBy time.Time, says ...string) {
 	t.Helper()
 	if letter.Source != "envoy" || letter.SourceSession != "" || letter.Topic != contracts.LegacyAgentSubject(held.item.SourceSession) || letter.SourceEventID != held.item.EventID {
 		t.Fatalf("the dead letter is %+v, want one from envoy on %s naming event %s", letter, contracts.LegacyAgentSubject(held.item.SourceSession), held.item.EventID)
+	}
+	if letter.DeadLetter != reason {
+		t.Fatalf("the dead letter's dead_letter field is %q, want %q", letter.DeadLetter, reason)
 	}
 	if !strings.HasPrefix(letter.PayloadSummary, "Envoy dropped your message to role "+role+": ") {
 		t.Fatalf("the dead letter's summary is %q, want it to name role %s", letter.PayloadSummary, role)
@@ -710,7 +714,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want its one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored.Add(time.Hour), rig.now(), hourExpiryExplained)
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterExpired, held.stored.Add(time.Hour), rig.now(), hourExpiryExplained)
 		stored := rig.lines(hourDeadLetterLine, map[string]any{"role": role})
 		if len(stored) != 1 || stored[0]["event_id"] != held.item.EventID || stored[0]["reason"] != "expired" || stored[0]["dead_letter_event_id"] != letters[0].EventID {
 			t.Fatalf("the dead letter lines are %v, want one naming event %s, reason expired and dead letter %s", stored, held.item.EventID, letters[0].EventID)
@@ -742,7 +746,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			if len(letters) != 1 {
 				t.Fatalf("%s's agent subject holds %d messages, want one dead letter: %+v", sender, len(letters), letters)
 			}
-			assertDeadLetterOf(t, letters[0], role, held[i], held[i].stored.Add(time.Hour), rig.now(), hourExpiryExplained)
+			assertDeadLetterOf(t, letters[0], role, held[i], listenerwire.DeadLetterExpired, held[i].stored.Add(time.Hour), rig.now(), hourExpiryExplained)
 		}
 		if dropped := rig.count(hourExpired); dropped != 2 {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want two", dropped)
@@ -811,7 +815,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		// The claim's walk is for the claimant, which holds the role live, so the dead letter
 		// names it and does not say that no session held the role.
-		assertDeadLetterOf(t, letters[0], role, held, held.stored.Add(time.Hour), rig.now(),
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterExpired, held.stored.Add(time.Hour), rig.now(),
 			"The hour ended before session "+holder+", which holds the role now, took the message.")
 		if want := "Envoy dropped your message to role " + role + ": its hour ended before the session that holds the role now took it."; letters[0].PayloadSummary != want {
 			t.Fatalf("the dead letter's summary is %q, want %q", letters[0].PayloadSummary, want)
@@ -971,7 +975,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(),
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterDeliveryMode, held.stored, rig.now(),
 			"Session "+holder+" held the role.", "does not take the delivery mode steer.")
 		if stored := rig.lines(hourDeadLetterLine, map[string]any{"role": role}); len(stored) != 1 || stored[0]["reason"] != "delivery_mode" {
 			t.Fatalf("the dead letter lines are %v, want one with reason delivery_mode", stored)
@@ -1074,7 +1078,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored.Add(time.Hour), rig.now(), hourExpiryExplained)
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterExpired, held.stored.Add(time.Hour), rig.now(), hourExpiryExplained)
 		if listener, outbox := rig.count(hourExpired), rig.count(hourExpiredOutbox); listener != 1 || outbox != 0 {
 			t.Fatalf("envoy_role_kept_expired_total counts %d kept by the listener and %d by the outbox, want one by the listener", listener, outbox)
 		}
@@ -1207,7 +1211,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(), "does not take the delivery mode steer.")
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterDeliveryMode, held.stored, rig.now(), "does not take the delivery mode steer.")
 		for _, wrong := range []string{"No session held the role", "no session held the role", "The hour ended before session", "its hour ended before"} {
 			if strings.Contains(letters[0].Payload, wrong) || strings.Contains(letters[0].PayloadSummary, wrong) {
 				t.Fatalf("the dead letter of a copy dropped for its delivery mode says %q:\n%s\n%s", wrong, letters[0].PayloadSummary, letters[0].Payload)
@@ -1258,7 +1262,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(), "The message may have reached that session.")
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterExpiredUnconfirmed, held.stored, rig.now(), "The message may have reached that session.")
 		for _, wrong := range []string{"No session held the role", "no session held the role", "The hour ended before session"} {
 			if strings.Contains(letters[0].Payload, wrong) || strings.Contains(letters[0].PayloadSummary, wrong) {
 				t.Fatalf("the dead letter of a copy whose forward was claimed says %q:\n%s\n%s", wrong, letters[0].PayloadSummary, letters[0].Payload)
@@ -1322,7 +1326,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
-		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(),
+		assertDeadLetterOf(t, letters[0], role, held, listenerwire.DeadLetterDeliveryModeUnconfirmed, held.stored, rig.now(),
 			"does not take the delivery mode steer.", "The message may have reached that session.")
 		for _, wrong := range []string{"No session held the role", "no session held the role", "The hour ended before", "its hour ended before"} {
 			if strings.Contains(letters[0].Payload, wrong) || strings.Contains(letters[0].PayloadSummary, wrong) {
@@ -2046,4 +2050,34 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The four words a walk writes into its claim of a copy it ends with a dead letter
+// (keptRoleDrop.claimReason) are the contracts' dead letter reasons, and the dead letter carries
+// the word of its drop in its dead_letter field (keptRoleDeadLetter), which the generated
+// Envelope.Validate holds to those reasons: a word outside them would make every dead letter of
+// that drop a refusal for good (deadLetterRefusal), sent to nobody.
+func TestTheClaimReasonsAreTheContractsDeadLetterWords(t *testing.T) {
+	for _, tc := range []struct {
+		drop keptRoleDrop
+		want string
+	}{
+		{keptRoleDrop{reason: deadLetterExpired}, listenerwire.DeadLetterExpired},
+		{keptRoleDrop{reason: deadLetterExpired, forwarded: true}, listenerwire.DeadLetterExpiredUnconfirmed},
+		{keptRoleDrop{reason: deadLetterDeliveryMode}, listenerwire.DeadLetterDeliveryMode},
+		{keptRoleDrop{reason: deadLetterDeliveryMode, forwarded: true}, listenerwire.DeadLetterDeliveryModeUnconfirmed},
+	} {
+		if got := tc.drop.claimReason(); got != tc.want {
+			t.Fatalf("the claim of drop %+v reads %q, want %q", tc.drop, got, tc.want)
+		}
+		stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+		item := contracts.Envelope{EventID: "evt_dropped", SourceSession: "ses_dropped_sender", PayloadSummary: "the dropped message"}
+		letter, _ := keptRoleDeadLetter("a-role", stored, item, stored.Time.Add(time.Hour+time.Minute), tc.drop)
+		if letter.DeadLetter != tc.want {
+			t.Fatalf("the dead letter of drop %+v carries dead_letter %q, want %q", tc.drop, letter.DeadLetter, tc.want)
+		}
+		if err := deadLetterRefusal(item.SourceSession, letter); err != nil {
+			t.Fatalf("the dead letter of drop %+v is refused for good: %v", tc.drop, err)
+		}
+	}
 }

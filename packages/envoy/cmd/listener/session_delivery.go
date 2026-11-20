@@ -21,12 +21,19 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// deliveryModeConsumer is the one mode a registration is answered
+// deliveryModeConsumer is the mode an agent session's registration is answered
 // (listenerwire.DeliveryAnswer.Mode): the listener holds the session's consumer, filtered on the
 // session's agent subject and its stored followed topics, and relays it on the session's relay
 // subject. A registration the listener cannot give a consumer is refused (deliveryRefusal), since
-// no other path reaches a session.
+// no other path reaches such a session.
 const deliveryModeConsumer = "consumer"
+
+// deliveryModeOwnReader is the mode a registration that reads its own agent subject is answered
+// (listenerwire.SubscribeDelivery.OwnReader, ownReaderFor): the listener holds no consumer and
+// starts no relay for the session, and its entry records session.DeliveryOwnReader, so a message
+// stored on the session's agent subject is acknowledged as the session's own reader's to take
+// (session.SessionEntry.OwnReaderTakes) rather than held and given up with a wake report.
+const deliveryModeOwnReader = "own_reader"
 
 // The reasons a registration is refused for want of a session consumer (deliveryRefusal.Reason),
 // short and machine-readable.
@@ -45,6 +52,10 @@ const (
 	// deliveryReasonNotRequested: the registration asked for no consumer and registered no serving
 	// port, so nothing would deliver to the session it describes.
 	deliveryReasonNotRequested = "not_requested"
+	// deliveryReasonOwnReaderConflict: the registration says the session reads its own agent
+	// subject and asks for a consumer as well, or follows a topic its own reader does not read
+	// (ownReaderFor).
+	deliveryReasonOwnReaderConflict = "own_reader_conflict"
 )
 
 // consumerPluginPackage and consumerPluginMinimumVersion name the release of Oh My Pi's plugin
@@ -124,6 +135,12 @@ type sessionDeliveryOutcome struct {
 // the session reads can never say different things.
 func (o sessionDeliveryOutcome) relayed() bool {
 	return o.answer != nil && o.answer.Mode == deliveryModeConsumer
+}
+
+// ownReader reports whether the session's entry records own-reader delivery
+// (session.DeliveryOwnReader), from the answer's own mode as relayed reads it.
+func (o sessionDeliveryOutcome) ownReader() bool {
+	return o.answer != nil && o.answer.Mode == deliveryModeOwnReader
 }
 
 // sessionRelay is what the relay of session consumers hears from registrations.
@@ -684,6 +701,10 @@ func versionPart(version string, i int) (int, bool) {
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
 func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.SubscribeRequest, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
+	if body.Delivery != nil && body.Delivery.OwnReader {
+		outcome, refusal := ownReaderFor(body)
+		return outcome, refusal, noUnlock
+	}
 	if body.Delivery == nil || !body.Delivery.Consumer {
 		// A registration with no delivery field asks for nothing this listener delivers, so it is
 		// told so rather than left registered and silent, with what to do about it
@@ -756,6 +777,40 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 		ackFloor:      start.AckFloor,
 		heard:         m.mark(),
 	}, nil, unlock
+}
+
+// ownReaderFor answers a registration that says its session reads its own agent subject from a
+// consumer of its own (listenerwire.SubscribeDelivery.OwnReader): mode own_reader, with no consumer
+// call, no lock and no relay, so it needs no session-consumer connection or grant and costs the
+// stream no consumer. Such a session follows no topic, since its reader reads its own agent subject
+// alone and a followed topic's message would reach nobody, and asks for no consumer beside its own
+// reader; either is refused 409 own_reader_conflict, as is a session id that is not one subject
+// token, refused invalid_session_id as a consumer's is, since its agent subject would then name
+// another session's or a wildcard.
+func ownReaderFor(body listenerwire.SubscribeRequest) (sessionDeliveryOutcome, *deliveryRefusal) {
+	switch {
+	case body.Delivery.Consumer:
+		return sessionDeliveryOutcome{}, &deliveryRefusal{
+			status: http.StatusConflict,
+			Error:  fmt.Sprintf("%s asked for a session consumer and said it reads its own agent subject: ask for one of the two", body.SessionID),
+			Reason: deliveryReasonOwnReaderConflict,
+		}
+	case len(body.Topics) > 0:
+		return sessionDeliveryOutcome{}, &deliveryRefusal{
+			status: http.StatusConflict,
+			Error:  fmt.Sprintf("%s reads its own agent subject alone, so it follows no topic: register with no topics", body.SessionID),
+			Reason: deliveryReasonOwnReaderConflict,
+		}
+	}
+	if _, ok := bus.SessionConsumerName(body.SessionID); !ok {
+		return sessionDeliveryOutcome{}, &deliveryRefusal{
+			status: http.StatusConflict,
+			Error: fmt.Sprintf("%q names no agent subject of its own: a session id holds no dot, star, angle bracket, slash or whitespace",
+				body.SessionID),
+			Reason: deliveryReasonInvalidSessionID,
+		}
+	}
+	return sessionDeliveryOutcome{answer: &listenerwire.DeliveryAnswer{Mode: deliveryModeOwnReader}}, nil
 }
 
 // noGrantRefusal is the refusal of sessionID's registration for want of the grant that manages

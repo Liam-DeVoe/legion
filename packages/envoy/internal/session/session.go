@@ -36,7 +36,9 @@ func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool
 // what delivers it - and ErrNoSessionRecord is an entry that records no way of receiving at all.
 // No session takes a message off a NATS subscription of its own any more (dispatch://INFRA-771),
 // so there is no third outcome for a result to describe. A nil entry produces ErrNoSessionRecord,
-// the same answer a failed lookup produces, so a caller can avoid a second registry read.
+// the same answer a failed lookup produces, so a caller can avoid a second registry read. The
+// session's own reader taking a message from the stream (SessionEntry.OwnReaderTakes) is a nil
+// error too: nothing is left for this delivery to do.
 //
 // It is a package function because the decision holds no state at all: every caller resolves the
 // entry it decides on and hands it over, so the record the decision acts on is the one that
@@ -55,12 +57,14 @@ func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, sto
 	if entry == nil {
 		return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 	}
-	if entry.ConsumerRelaysStored(captured, storedSeq) {
+	if entry.ConsumerRelaysStored(captured, storedSeq) || entry.OwnReaderTakes(sessionID, item.Topic, captured) {
 		// The session's consumer holds this stored message, and the listener that owns the session
-		// relays it from there: no other path delivers it, and none records anything about it. A
+		// relays it from there, or the session reads its own agent subject from a consumer of its
+		// own and takes it there: no other path delivers it, and none records anything about it. A
 		// topic the stream does not store is in no consumer, and so is a durable message stored
 		// below the consumer's start; no path of the session's own carries such a message either,
-		// so the branch below answers it.
+		// and an own reader reads no subject but its own agent subject, so the branch below
+		// answers those.
 		return nil
 	}
 	// The entry records no way of receiving this message: a session receives what its own
