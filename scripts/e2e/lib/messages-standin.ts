@@ -1,16 +1,21 @@
-// The model a proof's agents reach: a stand-in on loopback for the two wire protocols the proofs'
-// providers speak, Anthropic Messages and OpenAI Chat Completions, so a run takes no model and no
-// key from outside the runner. Both harnesses call it: Oh My Pi through its profile's provider,
-// whose baseUrl names this server (or ANTHROPIC_BASE_URL, for its built-in anthropic provider), and
-// Claude Code through ANTHROPIC_BASE_URL.
+// The model a proof's agents reach: a stand-in on loopback for the three wire protocols the proofs'
+// providers speak, Anthropic Messages, OpenAI Chat Completions and OpenAI Responses, so a run takes
+// no model and no key from outside the runner. Every harness calls it: Oh My Pi through its
+// profile's provider, whose baseUrl names this server (or ANTHROPIC_BASE_URL, for its built-in
+// anthropic provider), Claude Code through ANTHROPIC_BASE_URL, and Codex CLI through a model
+// provider of its config.toml, whose base_url names this server's /v1 (wire_api responses).
 //
-//   bun scripts/e2e/lib/messages-standin.ts <port-file> <key-file> <requests-file> [<reply>]
+//   bun scripts/e2e/lib/messages-standin.ts <port-file> <key-file> <requests-file> \
+//     [<reply> [<model>...]]
 //
-// answers every turn with one text block, <reply> (default `ready`): stage2-tmux-supervision.sh
-// and clean-session-stop-tmux.sh run it so. A proof whose agents must call tools, or answer what
-// they were asked, runs a script of its own instead, a module that hands `runStandin` its reply and
-// takes the same three arguments: lib/session-settings-model.ts, lib/user-turns-model.ts,
-// lib/session-delivery-model.ts and lib/plugin-smoke-model.ts.
+// answers every turn with one text block, <reply> (default `ready`): stage2-tmux-supervision.sh,
+// clean-session-stop-tmux.sh and nats-callout-sessions.sh run it so. Each <model> is one its model
+// listing names: a Responses endpoint's preflight (lib/model-endpoint.sh's responses_key_preflight)
+// asks the listing for the model Codex runs, which nats-callout-sessions.sh names. A proof whose
+// agents must call tools, or answer what they were asked, runs a script of its own instead, a
+// module that hands `runStandin` its reply and takes the same three arguments:
+// lib/session-settings-model.ts, lib/user-turns-model.ts, lib/session-delivery-model.ts and
+// lib/plugin-smoke-model.ts.
 //
 // It serves on a port the kernel chose and writes that port to <port-file> once it answers, so the
 // caller reads it as it reads a held port (lib/port-file.sh). Every request must carry the
@@ -18,7 +23,8 @@
 // each harness sends the key its profile, its key command or its environment gave it; any other is
 // answered 401, so a turn that reached the model proves the pane's key route did. It answers, under
 // any path prefix:
-//   GET  …/models                    an empty listing, as the daemon's own stand-ins do;
+//   GET  …/models                    a listing of the <model>s, empty where none is named, as the
+//                                    daemon's own stand-ins answer;
 //   POST …/v1/messages/count_tokens  a count;
 //   POST …/v1/messages               an Anthropic Messages turn: streamed when the request
 //                                    streams, in the events `messageStream` of
@@ -26,6 +32,9 @@
 //                                    Oh My Pi tests, and as one message when it does not;
 //   POST …/chat/completions          an OpenAI Chat Completions turn: streamed as chunks when the
 //                                    request streams, and as one completion when it does not;
+//   POST …/responses                 an OpenAI Responses turn: streamed when the request streams,
+//                                    in the events lib/responses-stream.ts writes (Codex streams
+//                                    every turn), and as one response when it does not;
 // and 404 for anything else. Each request is one JSON line in <requests-file>: its method, path,
 // model, whether it carried the key, the end of its last user text, and what the stand-in
 // answered, which a proof reads to say what the stand-in served. It runs until it is signalled.
@@ -35,22 +44,29 @@ import {
   messageStream,
   type Request,
 } from "../../../packages/pi-shared/test/omp-harness.ts";
+import {
+  type ResponsesItem,
+  responsesCall,
+  responsesMessage,
+  responsesStream,
+} from "./responses-stream.ts";
 
-/** One message of a turn's conversation, read the same from either protocol. */
+/** One message of a turn's conversation, read the same from each protocol. */
 export interface TurnMessage {
   readonly role: "user" | "assistant";
   /** Its text blocks, joined by blank lines. */
   readonly text: string;
   /** The tools an assistant message called, in order. */
   readonly calls: readonly { readonly name: string; readonly input: unknown }[];
-  /** The text of each tool result a user message carries. OpenAI's `tool` messages are folded
-   *  into one user message, as Anthropic's request carries them. */
+  /** The text of each tool result a user message carries. OpenAI's `tool` messages and Responses'
+   *  `function_call_output` items are folded into one user message, as Anthropic's request
+   *  carries them. */
   readonly results: readonly string[];
 }
 
 /** What a reply reads of one request. */
 export interface Turn {
-  readonly api: "anthropic" | "openai";
+  readonly api: "anthropic" | "openai" | "responses";
   readonly model: string;
   /** The system prompt's text. */
   readonly system: string;
@@ -229,6 +245,94 @@ function openaiTurn(body: Record<string, unknown>, request: Request): Turn {
   };
 }
 
+/** The text of a Responses content value: a string, or the text of its text parts joined. */
+function responsesText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      const each = record(part);
+      return ["input_text", "output_text", "text"].includes(String(each.type)) &&
+        typeof each.text === "string"
+        ? each.text
+        : "";
+    })
+    .filter((each) => each !== "")
+    .join("\n\n");
+}
+
+/** A Responses request read as a turn: its `input` items in order, a function call joining the
+ *  assistant message before it and an output the user message of results before it, as
+ *  Anthropic's request carries them; its `instructions` and system or developer messages are the
+ *  system prompt, and an item a reply reads nothing of (reasoning, say) is passed over. */
+function responsesTurn(body: Record<string, unknown>, request: Request): Turn {
+  const system: string[] = [];
+  if (typeof body.instructions === "string" && body.instructions !== "") {
+    system.push(body.instructions);
+  }
+  const messages: TurnMessage[] = [];
+  const input =
+    typeof body.input === "string"
+      ? [{ type: "message", role: "user", content: body.input }]
+      : Array.isArray(body.input)
+        ? body.input
+        : [];
+  for (const raw of input) {
+    const item = record(raw);
+    const last = messages.at(-1);
+    if (item.type === "function_call") {
+      let parsed: unknown = {};
+      try {
+        parsed = JSON.parse(String(item.arguments ?? "{}"));
+      } catch {
+        parsed = item.arguments;
+      }
+      const call = { name: String(item.name), input: parsed };
+      if (last !== undefined && last.role === "assistant") {
+        messages[messages.length - 1] = { ...last, calls: [...last.calls, call] };
+      } else {
+        messages.push({ role: "assistant", text: "", calls: [call], results: [] });
+      }
+    } else if (item.type === "function_call_output") {
+      const result = responsesText(item.output);
+      if (
+        last !== undefined &&
+        last.role === "user" &&
+        last.text === "" &&
+        last.results.length > 0
+      ) {
+        messages[messages.length - 1] = { ...last, results: [...last.results, result] };
+      } else {
+        messages.push({ role: "user", text: "", calls: [], results: [result] });
+      }
+    } else if (item.type === undefined || item.type === "message") {
+      if (item.role === "system" || item.role === "developer") {
+        system.push(responsesText(item.content));
+      } else {
+        messages.push({
+          role: item.role === "assistant" ? "assistant" : "user",
+          text: responsesText(item.content),
+          calls: [],
+          results: [],
+        });
+      }
+    }
+  }
+  const tools = new Map(
+    (Array.isArray(body.tools) ? body.tools.map(record) : [])
+      .filter((tool) => tool.type === "function")
+      .map((tool) => [String(tool.name), Object.keys(record(record(tool.parameters).properties))])
+  );
+  return {
+    api: "responses",
+    model: typeof body.model === "string" ? body.model : "",
+    system: system.join("\n\n"),
+    messages,
+    tools,
+    request,
+  };
+}
+
 // ---- answering --------------------------------------------------------------------------------
 
 function anthropicMessage(blocks: readonly Block[], id: string, model: string): Response {
@@ -314,16 +418,47 @@ function openaiCompletion(blocks: readonly Block[], id: string, model: string): 
   });
 }
 
+/** `blocks` as Responses output items: their text as one assistant message, then each call. */
+function responsesItems(blocks: readonly Block[], id: string): ResponsesItem[] {
+  const content = blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+  const items = content === "" ? [] : [responsesMessage(`${id}_message`, content)];
+  blocks.forEach((block, index) => {
+    if (block.type === "tool_use") {
+      items.push(
+        responsesCall(
+          `fc_${id}_${index}`,
+          `call_${id}_${index}`,
+          block.name,
+          JSON.stringify(block.input)
+        )
+      );
+    }
+  });
+  return items;
+}
+
+function responsesResponse(items: readonly ResponsesItem[], id: string, model: string): Response {
+  return Response.json({
+    id,
+    object: "response",
+    status: "completed",
+    model,
+    output: items,
+    usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+  });
+}
+
 function refusal(status: number, type: string, message: string): Response {
   return Response.json({ type: "error", error: { type, message } }, { status });
 }
 
-/** Serves `reply` as the model, on the three arguments the header names; never returns. */
-export function runStandin(reply: TurnReply): void {
+/** Serves `reply` as the model, on the three arguments the header names, its model listing naming
+ *  `listed`; never returns. */
+export function runStandin(reply: TurnReply, listed: readonly string[] = []): void {
   const [portFile, keyFile, requestsFile] = process.argv.slice(2);
   if (portFile === undefined || keyFile === undefined || requestsFile === undefined) {
     process.stderr.write(
-      `usage: bun ${process.argv[1] ?? "messages-standin.ts"} <port-file> <key-file> <requests-file>${import.meta.main ? " [<reply>]" : ""}\n`
+      `usage: bun ${process.argv[1] ?? "messages-standin.ts"} <port-file> <key-file> <requests-file>${import.meta.main ? " [<reply> [<model>...]]" : ""}\n`
     );
     process.exit(2);
   }
@@ -346,9 +481,12 @@ export function runStandin(reply: TurnReply): void {
         request.headers.get("x-api-key") === key ||
         request.headers.get("authorization") === `Bearer ${key}`;
       const chat = url.pathname.endsWith("/chat/completions");
+      const responses = url.pathname.endsWith("/responses");
       const turn = chat
         ? openaiTurn(body, { path: url.pathname, body })
-        : anthropicTurn(body, { path: url.pathname, body });
+        : responses
+          ? responsesTurn(body, { path: url.pathname, body })
+          : anthropicTurn(body, { path: url.pathname, body });
       const lastUser = turn.messages.findLast((message) => message.role === "user");
       const log = (answer: unknown) =>
         appendFileSync(
@@ -365,7 +503,7 @@ export function runStandin(reply: TurnReply): void {
         );
       if (!carried) {
         log("401");
-        return chat
+        return chat || responses
           ? Response.json(
               { error: { message: "invalid api key", type: "invalid_request_error" } },
               { status: 401 }
@@ -376,17 +514,26 @@ export function runStandin(reply: TurnReply): void {
         log("models");
         return Response.json({
           object: "list",
-          data: [],
+          data: listed.map((id) => ({
+            id,
+            object: "model",
+            type: "model",
+            display_name: id,
+            owned_by: "standin",
+          })),
           has_more: false,
-          first_id: null,
-          last_id: null,
+          first_id: listed[0] ?? null,
+          last_id: listed.at(-1) ?? null,
         });
       }
       if (request.method === "POST" && url.pathname.endsWith("/v1/messages/count_tokens")) {
         log("count");
         return Response.json({ input_tokens: 5 });
       }
-      if (request.method !== "POST" || !(chat || url.pathname.endsWith("/v1/messages"))) {
+      if (
+        request.method !== "POST" ||
+        !(chat || responses || url.pathname.endsWith("/v1/messages"))
+      ) {
         log("404");
         return refusal(404, "not_found_error", `no route ${url.pathname}`);
       }
@@ -394,6 +541,14 @@ export function runStandin(reply: TurnReply): void {
       const id = `msg_standin_${answered}`;
       const blocks = reply(turn);
       log(blocks);
+      if (responses) {
+        const items = responsesItems(blocks, id);
+        return body.stream === true
+          ? new Response(responsesStream(id, items), {
+              headers: { "content-type": "text/event-stream" },
+            })
+          : responsesResponse(items, id, turn.model);
+      }
       if (chat) {
         return body.stream === true
           ? new Response(openaiStream(blocks, id, turn.model), {
@@ -421,5 +576,5 @@ export function runStandin(reply: TurnReply): void {
 
 if (import.meta.main) {
   const reply = process.argv[5] ?? "ready";
-  runStandin(() => text(reply));
+  runStandin(() => text(reply), process.argv.slice(6));
 }

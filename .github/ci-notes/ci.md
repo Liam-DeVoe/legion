@@ -975,7 +975,9 @@ in packages/pi-envoy and packages/dispatch, the rig they source, the two stacks 
 packages/envoy-client/test it starts under bun and the model stand-in it runs. The
 nats-callout-sessions part adds scripts/e2e/nats-callout-sessions.sh, the stack of
 packages/envoy/scripts/dev-stack.sh --callout it runs and that stack's build of eight
-commands of packages/envoy, and the Codex plugin it builds and packs.
+commands of packages/envoy, and the Codex plugin it builds and packs; its --real-hosts
+step adds its build of `legion`, the model stand-in it runs under bun and what that
+loads, and the pinned Oh My Pi, Claude Code and Codex CLI.
 
 ## agent_harness: The plugin packs each test runs
 
@@ -1019,7 +1021,12 @@ The nats-callout-sessions part: its script, the lib file it sources for its Code
 sessions, the stack it runs (packages/envoy/scripts/dev-stack.sh and the lib file
 that sources for the NATS auth service), and the Codex plugin's marketplace entry it
 packs the plugin by. The stack's go build follows them, with its whole closure; the
-plugins and their stand-in hosts are in the packages above.
+plugins and their stand-in hosts are in the packages above. Its second step runs the
+script with --real-hosts: the hosts themselves, each calling the model stand-in the
+script starts (scripts/e2e/lib/messages-standin.ts), which streams Codex's turns
+through scripts/e2e/lib/responses-stream.ts, and the Codex CLI .codex-pin names, which
+.github/actions/install-codex installs; the step's other reads (the plugin packs, the
+model stand-in, the Claude Code release and Oh My Pi) are in the sections above.
 
 ## proof_sdk_offline: The proof-sdk-offline job: a frozen install behind a
 
@@ -1825,8 +1832,9 @@ sweep tests in a third, the Sandbox runtime's live test in four, one group of it
 each of those seven within about 24 minutes, and the whole-tree tests in four more, one each:
 tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
 tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
-runs past that budget, so three tests on rigs of their own hold them, each within it by the
-estimate from CI run 44744458379 until a green run times it.
+runs past that budget, so three tests on rigs of their own hold them, each within it as CI run
+44766893801 measured them (17.4, 18.5 and 24.0 minutes, the last before its controller check
+moved to tree-stage4b-restart).
 The image under test is the worker-image job's on a pull request where that job built the
 head, handed down as `worker-image`, and otherwise the called file's image job builds it once
 per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls

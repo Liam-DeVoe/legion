@@ -1,7 +1,9 @@
 // The Codex plugin on the real Codex CLI binary: a fresh `scripts/build.ts
 // --codex-out` build of this tree, the `@sjawhar/codex-envoy` package, installed from a local
 // marketplace into a Codex home of the test's own, run with `codex exec` against a stand-in for
-// OpenAI's Responses API. It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
+// OpenAI's Responses API, whose turns scripts/e2e/lib/responses-stream.ts streams, as it streams
+// the proofs' model stand-in's (scripts/e2e/lib/messages-standin.ts).
+// It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
 // reads, that the session record lands where the MCP server looks for it, that a message waiting
 // in the inbox reaches the model in the very next request of the running turn, and that a side
 // question runs in an ephemeral fork with the plugin off.
@@ -20,6 +22,12 @@ import { join, resolve } from "node:path"
 import { requireOrSkip } from "@legion/test-fixtures/host-tools"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
+import {
+  type ResponsesItem,
+  responsesCall,
+  responsesMessage,
+  responsesStream,
+} from "../../../scripts/e2e/lib/responses-stream"
 import { askSideQuestion } from "../src/codex/codex-cli"
 import { codexInboxDirectory, putInbox, takenBy } from "../src/codex/codex-inbox"
 import { codexSessionRecordFile, readCodexSessionRecord } from "../src/codex/codex-session-record"
@@ -49,33 +57,21 @@ describe.skipIf(skipped)("the Codex plugin on the real Codex binary", () => {
   let beforeAnswer: (outputs: number) => Promise<void> = async () => {}
   /** Answers each request: a tool call for a prompt holding `RUN: <command>`, a second one for its
    *  `THEN: <command>` once the first call's output is back (`outputs`), else an echo. */
-  const answer = (
-    input: readonly Record<string, unknown>[],
-    outputs: number,
-  ): Record<string, unknown>[] => {
+  const answer = (input: readonly Record<string, unknown>[], outputs: number): ResponsesItem[] => {
     const user = [...input].reverse().find((item) => item["role"] === "user")
     const text = JSON.stringify(user?.["content"] ?? "")
     const command = /RUN: ([^"\\]*?)(?: THEN: ([^"\\]*))?"/.exec(text)?.[outputs + 1]
     if (command !== undefined) {
       return [
-        {
-          arguments: JSON.stringify({ cmd: command }),
-          call_id: `call_${requests.length}`,
-          id: `fc_${requests.length}`,
-          name: "exec_command",
-          type: "function_call",
-        },
+        responsesCall(
+          `fc_${requests.length}`,
+          `call_${requests.length}`,
+          "exec_command",
+          JSON.stringify({ cmd: command }),
+        ),
       ]
     }
-    return [
-      {
-        content: [{ annotations: [], text: `ECHO ${requests.length}`, type: "output_text" }],
-        id: `msg_${requests.length}`,
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
-    ]
+    return [responsesMessage(`msg_${requests.length}`, `ECHO ${requests.length}`)]
   }
 
   beforeAll(async () => {
@@ -86,29 +82,9 @@ describe.skipIf(skipped)("the Codex plugin on the real Codex binary", () => {
         const input = body.input ?? []
         const outputs = input.filter((item) => item["type"] === "function_call_output").length
         await beforeAnswer(outputs)
-        const id = `resp_${requests.length}`
-        const events: Record<string, unknown>[] = [{ response: { id }, type: "response.created" }]
-        for (const item of answer(input, outputs))
-          events.push({ item, type: "response.output_item.done" })
-        events.push({
-          response: {
-            id,
-            usage: {
-              input_tokens: 1,
-              input_tokens_details: { cached_tokens: 0 },
-              output_tokens: 1,
-              output_tokens_details: { reasoning_tokens: 0 },
-              total_tokens: 2,
-            },
-          },
-          type: "response.completed",
+        return new Response(responsesStream(`resp_${requests.length}`, answer(input, outputs)), {
+          headers: { "content-type": "text/event-stream" },
         })
-        return new Response(
-          events
-            .map((event) => `event: ${event["type"]}\ndata: ${JSON.stringify(event)}\n\n`)
-            .join(""),
-          { headers: { "content-type": "text/event-stream" } },
-        )
       },
       port: 0,
     })

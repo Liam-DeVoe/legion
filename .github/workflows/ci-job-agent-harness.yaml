@@ -135,23 +135,32 @@ name: CI job agent-harness
 # failed step leaves its logs under agent-harness-logs, which the step after them uploads when the
 # part fails.
 #
-# nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh in its default mode, itself the
-# test, with the same CHECK lines: an Oh My Pi session, a Claude Code session and two Codex CLI
-# sessions, each the plugin's own code under a stand-in host and each with a broker token of its
-# own, are admitted to their own channels on the hub behind the NATS auth service, receive a
-# direct message across a restart of the listener and of natsd, and a probe in one session's
-# environment is refused another's channel. It takes the job's environment alone: the stack of
-# packages/envoy/scripts/dev-stack.sh --callout on two databases of its own on the job's
-# PostgreSQL (LEGION_TEST_PG_DSN), built from this checkout; no model, no container and no
-# credential.
+# nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh, itself the test, with the same
+# CHECK lines, in two steps, one per mode: an Oh My Pi session, a Claude Code session and two Codex
+# CLI sessions, each with a broker token of its own, are admitted to their own channels on the hub
+# behind the NATS auth service, receive a direct message across a restart of the listener and of
+# natsd, and a probe in one session's environment is refused another's channel. The first step
+# runs the default mode, each session the plugin's own code under a stand-in host, with no model.
+# The second runs --real-hosts, the hosts themselves: the pinned Oh My Pi in RPC mode, the pinned
+# Claude Code under `legion claude-bridge` and the pinned Codex CLI in a tmux server of the run's
+# own, each with this checkout's plugin, each delivery's model turn answered by the script's own
+# model stand-in (scripts/e2e/lib/messages-standin.ts), keyed by a placeholder of the run's own:
+# Anthropic Messages for Oh My Pi and Claude Code, OpenAI Responses for Codex. Each takes the job's
+# environment alone: the stack of packages/envoy/scripts/dev-stack.sh --callout on two databases
+# of its own on the job's PostgreSQL (LEGION_TEST_PG_DSN), built from this checkout; no container,
+# no credential and no model from outside the runner.
 #
-# What nats-callout-sessions installs is what its script needs: the PostgreSQL client (dev-stack.sh
-# makes and drops its databases with psql) from apt; Bun and a frozen install, for the plugins,
-# their stand-in hosts, the Codex plugin's build and pack and the stand-in `codex` it compiles; and
-# setup-go and the go-envoy-test cache restore, since dev-stack.sh builds the stack's eight
-# commands, all of packages/envoy. curl, jq and python3 are the runner image's own. A failed step
-# leaves its evidence directory under agent-harness-logs, which the step after it uploads when the
-# part fails.
+# What nats-callout-sessions installs is what its script needs: tmux (each real Codex session's
+# terminal) and the PostgreSQL client (dev-stack.sh makes and drops its databases with psql) from
+# apt; jj, for the mise install-omp installs Oh My Pi through; the pins of the three hosts the
+# second step runs, Oh My Pi at .omp-pin (LEGION_TEST_OMP), Claude Code at .claude-code-pin
+# (LEGION_TEST_CLAUDE) and Codex CLI at .codex-pin (LEGION_TEST_CODEX); Bun and a frozen install,
+# for the plugins, their stand-in hosts, the Codex plugin's build and pack, the stand-in `codex` it
+# compiles and the model stand-in; and setup-go with two cache restores, go-envoy-test, since
+# dev-stack.sh builds the stack's eight commands, all of packages/envoy, and go-daemon, since the
+# second step builds `legion` of packages/daemon for the bridge. curl, jq and python3 are the
+# runner image's own. A failed step leaves its evidence directory under agent-harness-logs, which
+# the step after them uploads when the part fails.
 #
 # Each part's last step reports ci-ok for the caller: on a merge-group run that part's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -722,11 +731,13 @@ jobs:
 
   nats-callout-sessions:
     runs-on: ubuntu-24.04
-    # Budget, not yet measured on a runner: dev-stack.sh's build of eight commands of
-    # packages/envoy, which the go-envoy-test cache restore makes incremental, then the sessions'
-    # four rounds of a message each, each receive waiting up to 45 s for its ack, and two restarts.
-    # 25 minutes, as session-settings' and plugin-smokes' first runs had, lets the first runs say
-    # what it takes.
+    # Budget: the default-mode step printed 19 of 19 checks in 2.1 minutes in CI run 44744458379.
+    # The --real-hosts step is not yet measured on a runner: in a worker pod of 2 CPUs it took 17.3
+    # minutes, 14.2 of them its builds of `legion` and of dev-stack.sh's eight commands at -p=1,
+    # which the go-daemon and go-envoy-test restores make incremental here, then 3.1 for the
+    # sessions' three rounds of a message each, each receive waiting up to 45 s for its ack, and
+    # two restarts. 25 minutes, as session-settings' and plugin-smokes' first runs had, lets the
+    # first runs say what the part takes.
     timeout-minutes: 25
     services:
       postgres:
@@ -750,20 +761,34 @@ jobs:
         with:
           persist-credentials: false
 
-      # dev-stack.sh makes and drops its two databases with psql.
-      - name: Install the PostgreSQL client
+      # dev-stack.sh makes and drops its two databases with psql; --real-hosts runs each Codex
+      # session in a tmux server of its own.
+      - name: Install tmux and the PostgreSQL client
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client
+          sudo apt-get install -y --no-install-recommends tmux postgresql-client
+          tmux -V
           psql --version
 
-      # The plugins, their stand-in hosts, the Codex plugin's build and pack and the stand-in
-      # `codex` run on Bun over the installed workspace.
+      # --real-hosts' Oh My Pi, the build .omp-pin names (LEGION_TEST_OMP), which install-omp
+      # installs through the mise install-jj leaves.
+      - uses: ./.github/actions/install-jj
+
+      - uses: ./.github/actions/install-omp
+
+      # The plugins, their stand-in hosts, the Codex plugin's build and pack, the stand-in `codex`
+      # and the model stand-in run on Bun over the installed workspace.
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # --real-hosts' Claude Code and Codex CLI, the releases .claude-code-pin and .codex-pin name
+      # (LEGION_TEST_CLAUDE, LEGION_TEST_CODEX), the installs the claude-envoy job runs.
+      - uses: ./.github/actions/install-claude-code
+
+      - uses: ./.github/actions/install-codex
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -783,14 +808,36 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
 
-      # The script's own variable names its evidence directory, set on the command line rather
+      # go-daemon, shared with the other parts and the jobs pane-drivers' comment names:
+      # --real-hosts builds ./cmd/legion for its claude-bridge. Its key carries the Go version
+      # setup-go read from packages/envoy/go.mod, the one packages/daemon/go.mod names too. The
+      # two entries hold the same module versions in ~/go/pkg/mod, read-only there, so this second
+      # extraction refuses those files ("Cannot open: File exists"), keeps the copies the first one
+      # wrote, extracts every other file, and ends in the action's "Failed to restore" warning.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # Each step's own variable names its evidence directory, set on the command line rather
       # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
-      # commands the script starts compile.
+      # commands the script starts compile. The second step runs whether or not the first failed,
+      # so one mode's failure hides neither result.
       - name: Each session's broker token admits it to its own channel alone
         run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions" bash scripts/e2e/nats-callout-sessions.sh
 
-      # A failed step's evidence: the stack's logs, each client's output and every answer the
-      # checks read.
+      # The same proof on the hosts themselves: the pinned Oh My Pi, Claude Code and Codex CLI with
+      # this checkout's plugins, each calling the script's own model stand-in
+      # (scripts/e2e/lib/messages-standin.ts), keyed by a placeholder of the run's own.
+      - name: Each real host's plugin joins its own channel with its broker token
+        if: ${{ !cancelled() }}
+        run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions-real-hosts" bash scripts/e2e/nats-callout-sessions.sh --real-hosts
+
+      # A failed step's evidence: the stack's logs, each client's output, every answer the checks
+      # read, and with --real-hosts each host's transcript and the model stand-in's requests.
       - name: Upload the NATS auth service sessions proof's logs
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

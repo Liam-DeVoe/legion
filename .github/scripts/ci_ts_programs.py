@@ -80,11 +80,13 @@ BUNDLES = [
      at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:763 runs "
                        "`bun scripts/e2e/completion-head.ts`, the real findHandoffReport)")),
     # The agent-harness job's tmux-scripts part runs the model stand-in under bun from two of its
-    # scripts, stage2-tmux-supervision.sh and clean-session-stop-tmux.sh.
+    # scripts, stage2-tmux-supervision.sh and clean-session-stop-tmux.sh, and its
+    # nats-callout-sessions part from nats-callout-sessions.sh's --real-hosts step.
     ("agent_harness", "scripts/e2e/lib/messages-standin.ts",
      "ci-job-agent-harness.yaml's tmux-scripts job: Stage 2's supervision on tmux and The daemon's clean stop of a "
      "dead role's session (scripts/e2e/stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
-     "`bun scripts/e2e/lib/messages-standin.ts`, the model stand-in)"),
+     "`bun scripts/e2e/lib/messages-standin.ts`, the model stand-in), and its nats-callout-sessions job: Each real "
+     "host's plugin joins its own channel with its broker token (scripts/e2e/nats-callout-sessions.sh:387 runs it)"),
     # Its session-settings and session-scripts parts run a driver and a model stand-in under bun
     # from each of their three scripts.
     *[("agent_harness", f"scripts/e2e/lib/{entry}",

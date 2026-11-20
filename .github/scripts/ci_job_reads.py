@@ -484,7 +484,11 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:316,342 runs"),
         (".github/actions/install-codex/**", at("claude-envoy", "./.github/actions/install-codex")),
         (".codex-pin", ".github/actions/install-codex/action.yml:19 pin=$(<.codex-pin), the release "
-                       "packages/claude-envoy/tests/codex-real.test.ts:164,192,256 runs"),
+                       "packages/claude-envoy/tests/codex-real.test.ts:140,168,232 runs"),
+        ("scripts/e2e/lib/responses-stream.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: "
+                                                "packages/claude-envoy/tests/codex-real.test.ts:25-30 imports it, so tsc "
+                                                "compiles it in that program, and its stand-in model streams each turn "
+                                                "through it"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (f"{FIX}/envelope-without-role.json", "packages/claude-envoy/tests/envelope-role-field.test.ts:5"),
@@ -1850,14 +1854,16 @@ PLUGIN_SMOKE_RUNS = [
                ENVOY, ["./cmd/dispatch"], mode="build"),
 ]
 
-# The agent-harness job's nats-callout-sessions part: scripts/e2e/nats-callout-sessions.sh in its
-# default mode, itself the test and a step of its own. It runs packages/envoy/scripts/dev-stack.sh
+# The agent-harness job's nats-callout-sessions part: scripts/e2e/nats-callout-sessions.sh, itself
+# the test, once in each mode, each a step of its own. Each runs packages/envoy/scripts/dev-stack.sh
 # --callout, whose one go build of the stack's commands (STACK_PACKAGES, dev-stack.sh:244-245) is
-# the go command a run of the step starts, which NATS_CALLOUT_RUNS pins to dev-stack.sh's own
-# line. The script's build of `legion` is --real-hosts' alone, which no step runs.
+# a go command a run of either step starts, which NATS_CALLOUT_RUNS pins to dev-stack.sh's own
+# line; and --real-hosts builds `legion` of packages/daemon for its claude-bridge, which it pins to
+# the script's own line.
 AGENT_HARNESS_NATS_CALLOUT = "nats-callout-sessions"
 AGENT_HARNESS_NATS_CALLOUT_SCRIPT = "scripts/e2e/nats-callout-sessions.sh"
 AGENT_HARNESS_NATS_CALLOUT_STEP = "Each session's broker token admits it to its own channel alone"
+AGENT_HARNESS_NATS_CALLOUT_REAL_STEP = "Each real host's plugin joins its own channel with its broker token"
 DEV_STACK = f"{ENVOY}/scripts/dev-stack.sh"
 DEV_STACK_PACKAGES = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./cmd/dispatch", "./cmd/listener",
                       "./cmd/agent-secrets", "./cmd/agent-secrets-helper", "./internal/testnats/cmd/natsd",
@@ -1871,8 +1877,11 @@ def at_nats_callout(step):
 
 NATS_CALLOUT_RUNS = [
     script_run(DEV_STACK, 'GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"',
-               f"run by {AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:450, which "
-               f"{at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)} runs", ENVOY, DEV_STACK_PACKAGES, mode="build"),
+               f"run by {AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:442, which {at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)} "
+               f"and {at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_REAL_STEP)} run", ENVOY, DEV_STACK_PACKAGES, mode="build"),
+    script_run(AGENT_HARNESS_NATS_CALLOUT_SCRIPT,
+               '(cd "$root/packages/daemon" && go build -o "$work/bin/legion" ./cmd/legion)',
+               at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_REAL_STEP), DAEMON, [LEGION_BUILD], mode="build"),
 ]
 
 # ---------------------------------------------------------------- the kind rig
@@ -1948,7 +1957,7 @@ KIND_PARTS = {
 KIND_TREE_FILES = {
     "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
                         ["TestStage4bDaemonRestartsOnTheKindRigLive", "TestStage4bSandboxTreeOnTheKindRigLive",
-                         "TestStage4bStreamMoveAndControllerOnTheKindRigLive",
+                         "TestStage4bStreamMoveOnTheKindRigLive",
                          "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
 }
 # The tree parts, in the order the called file holds them and in KIND_PARTS' shape: each part's job
@@ -1956,14 +1965,12 @@ KIND_TREE_FILES = {
 # by package; hold_kind_tree_parts() holds them to run each of those tests once and nothing else.
 # -timeout is more than half again over the test's time, its rig included: 20m for the Claude Code
 # backend's, which took 732 s and 706 s in CI runs 44615479190 and 44625956146. Stage 4b's fourteen
-# checkpoints run past the part budget on one rig: in CI run 44744458379 (job 136321348462) the rig
-# took 501 s to the first checkpoint and the first seven checkpoints 174 s, and the rest, with a
-# credential refresh and four daemon restarts of about two minutes of image probe each, come to
-# about 30 minutes in all by estimate. So they run in three tests, each on a rig of its own, whose
-# times are estimates until a green run measures them: tree-stage4b the tree through one role's
-# end and its pod's loss, about 777 s, so 20m; tree-stage4b-restart the restarts at the same
-# addresses and at another address of the listener, and tree-stage4b-move the stream's move, the
-# controller and the pod shape, each about 985 s, so 25m.
+# checkpoints run past the part budget on one rig, about 30 minutes with four daemon restarts of
+# about two minutes of image probe each, so they run in three tests, each on a rig of its own,
+# measured in CI run 44766893801: tree-stage4b the tree through one role's end and its pod's
+# loss, 778 s, so 20m; tree-stage4b-restart the restarts at the same addresses, at another
+# address of the listener and under `controller: daemon`, 848 s and the controller's 185 s, so
+# 26m; and tree-stage4b-move the stream's move and the pod shape, about 843 s, so 25m.
 KIND_TREE_PARTS = {
     "tree-claude": ("Run the Claude Code backend's tree test", "20m", {
         "internal/daemon": ["TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"],
@@ -1971,11 +1978,11 @@ KIND_TREE_PARTS = {
     "tree-stage4b": ("Run Stage 4b's tree test", "20m", {
         "internal/daemon": ["TestStage4bSandboxTreeOnTheKindRigLive"],
     }),
-    "tree-stage4b-restart": ("Run Stage 4b's restart test", "25m", {
+    "tree-stage4b-restart": ("Run Stage 4b's restart test", "26m", {
         "internal/daemon": ["TestStage4bDaemonRestartsOnTheKindRigLive"],
     }),
-    "tree-stage4b-move": ("Run Stage 4b's stream move and controller test", "25m", {
-        "internal/daemon": ["TestStage4bStreamMoveAndControllerOnTheKindRigLive"],
+    "tree-stage4b-move": ("Run Stage 4b's stream move test", "25m", {
+        "internal/daemon": ["TestStage4bStreamMoveOnTheKindRigLive"],
     }),
 }
 KIND_JOB = "kind"
@@ -3555,10 +3562,13 @@ GATES = [
     # rig they source, the two stacks and the model stand-in it runs under bun, whose loads BUNDLES
     # holds to this filter too, their go commands (PLUGIN_SMOKE_RUNS) and the pi-envoy they pack
     # through the same scripts/e2e/lib/pack-plugin.sh.
-    # The nats-callout-sessions part adds its own: its script, the lib file and the clients it
+    # The nats-callout-sessions part adds its own: its script, the lib files and the clients it
     # sources, the stack it runs (packages/envoy/scripts/dev-stack.sh --callout) and that stack's
     # go build (NATS_CALLOUT_RUNS), the plugins it runs under their stand-in hosts, and the Codex
-    # plugin it builds and packs as the release does.
+    # plugin it builds and packs as the release does; and for its --real-hosts step, its build of
+    # `legion` (NATS_CALLOUT_RUNS too), the pi-envoy it packs through the same
+    # scripts/e2e/lib/pack-plugin.sh, the model stand-in it runs under bun, whose loads BUNDLES
+    # holds to this filter, and the pinned Oh My Pi, Claude Code and Codex CLI it runs.
     gate("agent_harness", AGENT_HARNESS_JOB, runs=[
         script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
                    'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
@@ -3614,7 +3624,7 @@ GATES = [
                                            "clean-session-stop-tmux.sh:607 run it"),
         ("scripts/e2e/lib/messages-standin.ts", "stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
                                                 "it under bun, the model stand-in"),
-        ("packages/pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:23 imports messageStream"),
+        ("packages/pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:42-46 imports messageStream"),
         ("scripts/e2e/lib/controller-liveprobe.go", "controller-start-tmux.sh:447-449 runs it with go run -overlay as "
                                                     "packages/daemon/cmd/liveprobe-accept/main.go"),
         (TEST_FIXTURES_SRC, "packages/pi-shared/test/omp-harness.ts:19, which the model stand-in imports, imports "
@@ -3721,20 +3731,40 @@ GATES = [
       + setup_go(AGENT_HARNESS_PLUGIN_SMOKES, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + reads(
-        (AGENT_HARNESS_NATS_CALLOUT_SCRIPT, at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)),
-        ("scripts/e2e/lib/codex-host.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:230 sources it"),
-        ("packages/pi-envoy/scripts/role-takeover/clients.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:539 sources it"),
-        (DEV_STACK, f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:450 runs it with --callout"),
+        (AGENT_HARNESS_NATS_CALLOUT_SCRIPT, f"{at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)} and "
+                                            f"{at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_REAL_STEP)}"),
+        ("scripts/e2e/lib/codex-host.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:232 sources it"),
+        ("packages/pi-envoy/scripts/role-takeover/clients.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:531 sources it"),
+        (DEV_STACK, f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:442 runs it with --callout"),
         (f"{ENVOY}/scripts/lib/callout-stack.sh", f"{DEV_STACK}:400 sources it"),
         ("scripts/e2e/lib/held-port.py", f"{DEV_STACK}:151,574 runs it to hold the stack's ports"),
-        ("packages/pi-envoy/**", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:582 runs the Oh My Pi extension under "
-                                 "role-takeover/omp-client.ts with bun, and scripts/e2e/lib/codex-host.sh:58,269 compiles "
+        ("packages/pi-envoy/**", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:574 runs the Oh My Pi extension under "
+                                 "role-takeover/omp-client.ts with bun, and scripts/e2e/lib/codex-host.sh:58,270 compiles "
                                  "role-takeover/codex-client.ts and runs role-takeover/codex-probe.ts"),
         ("packages/pi-shared/**", "packages/pi-envoy/scripts/role-takeover/host-stub.ts:15 and omp-client.ts:43 import "
                                   "@legion/pi-shared/*"),
         ("packages/contracts/**", "the Oh My Pi extension and the channel server the stand-ins run import @legion/contracts"),
         (".agents/plugins/marketplace.json", "scripts/e2e/lib/codex-host.sh:27 reads the codex-envoy plugin's entry"),
-    ) + CLAUDE_ENVOY_BUILD
+        ("scripts/e2e/lib/model-endpoint.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:250 sources it for --real-hosts' "
+                                              "preflights"),
+        ("scripts/e2e/lib/port-file.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:252 sources it"),
+        ("scripts/e2e/lib/messages-standin.ts", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:387 runs it under bun, the model "
+                                                "stand-in"),
+        ("scripts/e2e/lib/responses-stream.ts", "scripts/e2e/lib/messages-standin.ts:47-52 imports it"),
+        ("scripts/e2e/lib/pack-plugin.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:406 runs it for pi-envoy"),
+        (".claude-code-pin", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:255 holds LEGION_TEST_CLAUDE's --version to it, and "
+                             ".github/actions/install-claude-code/action.yml:16 installs the release it names"),
+        (".codex-pin", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:256 holds LEGION_TEST_CODEX's --version to it, and "
+                       ".github/actions/install-codex/action.yml:19 installs the release it names"),
+        (".github/actions/install-claude-code/**", at_nats_callout("./.github/actions/install-claude-code")),
+        (".github/actions/install-codex/**", at_nats_callout("./.github/actions/install-codex")),
+    ) + [
+        Read(g, f"{at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_REAL_STEP)}: {AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:406 packs "
+                "packages/pi-envoy through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs its prepack")
+        for g in PACK_READS
+    ] + install_jj(AGENT_HARNESS_NATS_CALLOUT, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_NATS_CALLOUT, AGENT_HARNESS_WORKFLOW)
+      + CLAUDE_ENVOY_BUILD
       + setup_go(AGENT_HARNESS_NATS_CALLOUT, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_NATS_CALLOUT, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
@@ -3855,7 +3885,7 @@ GATES = [
               ("envoy-client/test/dispatch-stack.ts", "scripts/e2e/lib/plugin-smoke-stack.ts:27 imports it"),
               ("envoy-client/test/envoy-stack.ts", "scripts/e2e/lib/plugin-smoke-stack.ts:31 imports it"),
               ("envoy-client/test/subscribe-answer.ts", "packages/pi-shared/test/omp-harness.ts:17 imports it"),
-              ("pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:37, plugin-smoke-model.ts:23, "
+              ("pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:46, plugin-smoke-model.ts:23, "
                                                 "user-turns-model.ts:18 and dispatch-session-settings.ts:32 import it"),
               ("pi-shared/test/omp-natives.ts", "packages/pi-shared/test/omp-harness.ts:21 imports it"),
           )],
