@@ -554,10 +554,14 @@ func (r *leaverRig) brokerCredentials(t *testing.T, p *leaverPerson) {
 
 // personSignIn trades p's Google identity on the fixture's metadata machine through the real
 // token endpoint. The broker must record the sign-in and mint its launcher credential in one
-// transaction; otherwise the release snapshot below catches the missing row.
+// transaction; otherwise the release snapshot below catches the missing row. Every trade of p's
+// signs with the one box key the first made, as a machine's agent-secrets login keeps its key, so
+// a later trade renews the launcher credential the first minted rather than mint a second.
 func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
 	t.Helper()
-	p.signInKey = brokertest.NewSigningKey(t)
+	if p.signInKey == nil {
+		p.signInKey = brokertest.NewSigningKey(t)
+	}
 	machineToken, err := googleidentity.Token(t.Context(), brokertest.GoogleMachineAudience)
 	if err != nil {
 		t.Fatalf("read %s's metadata identity: %v", leaverMachineAccount, err)
