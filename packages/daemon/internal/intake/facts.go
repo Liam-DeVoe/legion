@@ -1144,10 +1144,14 @@ type CloseRoot struct {
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
 
+// CloseRootLead is the daemon's own words that a close's message opens with (Message), before the
+// architect's reason.
+const CloseRootLead = "Closed by its architect before its first phase: "
+
 // Message is what the close posts on the issue: that its architect closed it before its first
 // phase, and the reason it gave.
 func (f CloseRoot) Message() string {
-	return "Closed by its architect before its first phase: " + f.Reason
+	return CloseRootLead + f.Reason
 }
 
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when

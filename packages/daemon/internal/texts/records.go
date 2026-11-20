@@ -36,8 +36,10 @@ type RoleHead struct {
 // GitHub gave its run (failure, timed_out, cancelled, action_required and the rest) where the
 // settlement carried one, else failed or cancelled (dispatch://INFRA-4135 R1). A list of them is
 // the table of the checks that did not pass. A record names the checks GitHub skipped in a list
-// of their own (skipped), since a skipped check ran nothing on the head and is neither a pass nor
-// a failure, and counts the checks that passed beside both.
+// of their own, under the key skipped_ran_nothing: a skipped check ran nothing on the head, so it
+// is neither a pass nor a failure, and the key says that once, for the whole list
+// (dispatch://INFRA-4135 R1), so no field holds a fixed sentence. The record counts the checks
+// that passed beside both lists.
 type CheckConclusion struct {
 	Check      string `json:"check"`
 	Conclusion string `json:"conclusion"`

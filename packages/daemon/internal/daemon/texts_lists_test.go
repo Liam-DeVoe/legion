@@ -26,12 +26,13 @@ import (
 //   - The CI settlement, the review-stuck reason of a head GitHub will not merge, and the
 //     settlement wake of a role the settlement woke (workflow.SettlementWake) each name the 25
 //     checks that failed or were cancelled, each by GitHub's word for its run where the settlement
-//     carried one, name the 5 that GitHub skipped in a list of their own (dispatch://INFRA-4135's
-//     R1), and name `gh pr checks` with the pull request and its repository; the settlement and the
-//     wake name the phase. The head also carries 30 commit statuses (cybermonklabs/legion#4299), 3
-//     of them in state failure or error: each text names the 3 with their states and counts the
-//     other 27 with the 30 checks that passed, 57 in all. The head has no awaiting-children notice
-//     (#4017): that part lands with it.
+//     carried one, name the 5 that GitHub skipped in a list of their own under the key that says
+//     a skipped check ran nothing (dispatch://INFRA-4135's R1), and name `gh pr checks` with the
+//     pull request and its repository; the settlement and the wake name the phase. The head also
+//     carries 30 commit statuses (cybermonklabs/legion#4299), 3 of them in state failure or
+//     error: each text names the 3 with their states and counts the other 27 with the 30 checks
+//     that passed, 57 in all. The head has no awaiting-children notice (#4017): that part lands
+//     with it.
 //   - An update round ask, and an update-stalled notice of that round, name the image by a short
 //     digest and each of the 30 settings by its key, with no value.
 func TestEveryListNamesWhatNeedsAction(t *testing.T) {
@@ -178,7 +179,7 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 					t.Errorf("%s #%d names the commit status %q %s, want %s", settled.kind, r.n, context, got, want)
 				}
 			}
-			if skipped := list(values, "skipped"); !slices.Equal(skipped, checks.skipped) || len(skipped) != 5 {
+			if skipped := list(values, "skipped_ran_nothing"); !slices.Equal(skipped, checks.skipped) || len(skipped) != 5 {
 				t.Errorf("%s #%d names the checks %v skipped, want the 5 %v", settled.kind, r.n, skipped, checks.skipped)
 			}
 			if values["passed"] != "57" || checks.passed != 30 || checks.statusesPassed != 27 {

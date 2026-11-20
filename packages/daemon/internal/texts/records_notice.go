@@ -208,20 +208,29 @@ const (
 	RefusedStatus  = "status"
 )
 
+// ByDaemon is the author the words object of a message-refused notice names for a first line
+// that is the daemon's own text (MessageRefusedRecord.Begins).
+const ByDaemon = "daemon"
+
 // MessageRefusedRecord is the notice of a Dispatch write the daemon could not make (the daemon's
 // messagePostRefused and statusWriteRefused): what Dispatch refused (one of the Refused words) and
 // its answer. A refused message gives its length in characters and its first line. A refused
 // status write gives the status, whether the status is set, whether the reason posted beside it
-// is on the issue, and, where it is not, the reason's length and first line.
+// is on the issue, and, where it is not, the reason's length and first line. That first line
+// (Begins) can hold another author's words: a worker's backward move posts the daemon's sentence,
+// then the worker's own words. So it is a words field, which the words object names with its
+// author, the role whose words it carries or ByDaemon for the daemon's own line, and with the
+// time the daemon queued the write.
 type MessageRefusedRecord struct {
 	NoticeHead
-	Refused        string `json:"refused"`
-	DispatchAnswer string `json:"dispatch_answer"`
-	Length         int    `json:"length,omitempty"`
-	Begins         string `json:"begins,omitempty"`
-	Status         string `json:"status,omitempty"`
-	StatusSet      *bool  `json:"status_set,omitempty"`
-	ReasonPosted   *bool  `json:"reason_posted,omitempty"`
+	Refused        string               `json:"refused"`
+	DispatchAnswer string               `json:"dispatch_answer"`
+	Length         int                  `json:"length,omitempty"`
+	Begins         string               `json:"begins,omitempty" texts:"words"`
+	Status         string               `json:"status,omitempty"`
+	StatusSet      *bool                `json:"status_set,omitempty"`
+	ReasonPosted   *bool                `json:"reason_posted,omitempty"`
+	Words          map[string]WordsMeta `json:"words,omitempty"`
 }
 
 // GateDecision is a person's decision on a design-gate step that a notice reports: the version
@@ -520,8 +529,9 @@ const (
 // word), the pull request and the head, the head the reviewer approved where it is not the head,
 // the review that ends the round (EndsRound, which keeps APPROVE of head <sha>), the reason the
 // daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks and
-// the commit statuses of that head that did not pass, the checks of that head GitHub skipped, the
-// count of the checks and statuses that passed and the command that lists them.
+// the commit statuses of that head that did not pass, the checks of that head GitHub skipped under
+// the key that says a skipped check ran nothing on the head (skipped_ran_nothing), the count of
+// the checks and statuses that passed and the command that lists them.
 type ReviewStuckRecord struct {
 	NoticeHead
 	Role              claim.Role        `json:"role,omitempty"`
@@ -536,7 +546,7 @@ type ReviewStuckRecord struct {
 	SetAside          string            `json:"set_aside,omitempty"`
 	MergeState        string            `json:"merge_state,omitempty"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped,omitempty"`
+	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`

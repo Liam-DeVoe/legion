@@ -921,8 +921,9 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 	}
 	notice := messagePostRefused("LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, refusal)
 	if want := (texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: "LEGION-208"},
-		Refused: texts.RefusedMessage, DispatchAnswer: refusal.Error(), Length: 41, Begins: "READY #42 at head"}); notice != want {
-		t.Fatalf("the notice = %+v, want %+v: the issue, the message's length and its first line alone, and Dispatch's refusal", notice, want)
+		Refused: texts.RefusedMessage, DispatchAnswer: refusal.Error(), Length: 41, Begins: "READY #42 at head",
+		Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon}}}); !reflect.DeepEqual(notice, want) {
+		t.Fatalf("the notice = %+v, want %+v: the issue, the message's length and its first line alone, named as the daemon's words, and Dispatch's refusal", notice, want)
 	}
 }
 
@@ -943,7 +944,9 @@ func refusedWrites(notice record.Notice) (status, reason string) {
 // body past its own bounds on every attempt. The row finishes, and the status is written all the
 // same: it is what the issue's lifecycle stands on, and the daemon's own record already reads
 // done. The architect is told what Dispatch refused, that the status stands, and how the reason
-// began, since the reason is on no issue and nothing else would say so.
+// began, since the reason is on no issue and nothing else would say so. A close's reason is the
+// daemon's sentence and then the architect's words, so the words object names that first line as
+// the architect's, at the time the status row was queued.
 func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -985,6 +988,9 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 		notice.Begins != "Closed by its architect before its first phase: the human decided no change." || notice.Length != len([]rune(reason)) ||
 		!strings.Contains(notice.DispatchAnswer, refusal.Error()) {
 		t.Fatalf("the notice = %+v, want it naming the status it set, the reason not posted with its length and first line alone, and Dispatch's refusal", notice)
+	}
+	if quoted, named := notice.Words["begins"]; !named || quoted.By != string(claim.RoleArchitect) || quoted.At.IsZero() {
+		t.Fatalf("the notice's words object names begins as %+v (named %v), want it named as the architect's words, with the time the row was queued", quoted, named)
 	}
 }
 
@@ -3427,7 +3433,8 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 // store's outboxInOrder). Each finish logs its line. The status write's queues a message-refused
 // notice (texts.MessageRefusedRecord) naming the refused status write, Dispatch's answer, the
 // status and that it is not set; the message post's names the refused message, Dispatch's answer,
-// the message's length and its first line; and the claim release's tells nobody. The list gives
+// the message's length and its first line, which its words object names as the daemon's own line
+// with the time the post was queued; and the claim release's tells nobody. The list gives
 // that notice's reader, the architect, and the outbox routes it to the architect that owns its
 // issue: at the next drain LEGION-2's notice is published on its tree root's architect's role
 // topic, since LEGION-2 has no sub-architect, while the same write's notice for LEGION-9, which no
@@ -3437,6 +3444,8 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 // Dispatch older than the record lane serves no route of it yet.
 func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.T) {
 	unset := false
+	// queued is when each refused row was queued, the time the notice gives the line it quotes.
+	queued := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name    string
 		kind    record.OutboxKind
@@ -3457,7 +3466,8 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 		{name: "a message post", kind: record.OutboxKindDispatchMessage, payload: record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"},
 			route: "POST /api/v1/issues/LEGION-2/messages", meets: func(d *outboxDispatch, noRoute error) { d.postErr = noRoute },
 			logged: "outbox Dispatch message refused and dropped; its architect is told",
-			told:   &texts.MessageRefusedRecord{Refused: texts.RefusedMessage, Length: 41, Begins: "READY #42 at head"}},
+			told: &texts.MessageRefusedRecord{Refused: texts.RefusedMessage, Length: 41, Begins: "READY #42 at head",
+				Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon, At: queued}}}},
 		{name: "a claim release", kind: record.OutboxKindClaimRelease, payload: record.ClaimRelease{},
 			route: "GET /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.getErr = noRoute },
 			logged: claimRefusedLine},
@@ -3476,7 +3486,9 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 			started := now.Add(-time.Minute)
 			for _, issue := range []string{owned, unowned} {
-				enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, tc.payload, now))
+				row := mustOutboxRow(t, issue, tc.payload, now)
+				row.CreatedAt = queued
+				enqueueOutbox(t, pool, records, row)
 			}
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, owned, record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
 				Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",

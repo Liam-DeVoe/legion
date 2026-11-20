@@ -588,7 +588,8 @@ type Notice struct {
 	Relaunch *texts.RelaunchFacts `json:"relaunch,omitempty"`
 	// The head that conflicts with its base and why the daemon asked for its merge forward
 	// (checks-red), and a stuck review round (review-stuck) with the checks and the commit
-	// statuses of its head, the checks GitHub skipped among them.
+	// statuses of its head, the checks GitHub skipped among them under the key that says a
+	// skipped check ran nothing on the head.
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
 	Why               string                  `json:"why,omitempty"`
@@ -598,7 +599,7 @@ type Notice struct {
 	SetAside          string                  `json:"set_aside,omitempty"`
 	MergeState        string                  `json:"merge_state,omitempty"`
 	NotPassed         []texts.CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string                `json:"skipped,omitempty"`
+	Skipped           []string                `json:"skipped_ran_nothing,omitempty"`
 	NotPassedStatuses []texts.StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int                    `json:"passed,omitempty"`
 	ListPassed        string                  `json:"list_passed,omitempty"`

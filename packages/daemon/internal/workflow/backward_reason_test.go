@@ -154,3 +154,26 @@ func TestABackwardMoveReasonReachesTheNextTaskInABlock(t *testing.T) {
 		t.Fatalf("the block is %s by %q holding %q, want reason-1 by the tester holding the whole reason %q", block.tag, block.attrs["by"], block.text, reason)
 	}
 }
+
+// R1: a message-refused notice names the author of the first line it quotes, and a refused
+// backward move's reason is the daemon's sentence and then the words of the role that asked. So
+// BackwardMoveAsker reads that role off the first line of each reason backwardMoveReason writes,
+// for every move back the daemon counts, with words and with none, and reads no role off a line
+// that opens with no such sentence: a message of the daemon's own, and a close's reason.
+func TestBackwardMoveAskerReadsTheRoleOfEveryBackwardReason(t *testing.T) {
+	for _, pair := range phase.BackwardPairs() {
+		from, to, _ := phase.ParsePair(pair)
+		for _, words := range []string{"The suite hangs on </reason> input.\nTwice.", ""} {
+			first, _, _ := strings.Cut(backwardMoveReason(from, to, words), "\n")
+			if role, asked := BackwardMoveAsker(first); !asked || role != phase.RoleFor(from) {
+				t.Errorf("%s: BackwardMoveAsker(%q) = %q, %v; want %q", pair, first, role, asked, phase.RoleFor(from))
+			}
+		}
+	}
+	for _, line := range []string{"", "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.",
+		intake.CloseRoot{Reason: "the human decided no change."}.Message()} {
+		if role, asked := BackwardMoveAsker(line); asked {
+			t.Errorf("BackwardMoveAsker(%q) = %q, want no role: the line opens with no backward move's sentence", line, role)
+		}
+	}
+}

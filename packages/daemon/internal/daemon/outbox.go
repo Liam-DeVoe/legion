@@ -506,7 +506,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		follow, told, dropsFence = rule.refused(r, row, value, cause)
 	case record.MessagePost:
-		notice, err := refusedNoticeRow(row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
+		notice, err := refusedNoticeRow(row, messagePostRefused(row.Issue, value, cause), r.now().UTC())
 		if err != nil {
 			return err
 		}
@@ -611,11 +611,23 @@ const messageRefusedPreview = 200
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
 // what it carries. The record names what was refused, Dispatch's own refusal (bounded as a far
 // side's error text is, storetext.FarSideError), how long the message is in characters and its
-// first line (a READY packet opens with its own `READY #<n> at <sha>` line).
+// first line, with that line's author (quoteRefused).
 func messagePostRefused(issue string, payload record.MessagePost, cause error) texts.MessageRefusedRecord {
-	return texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
-		Refused: texts.RefusedMessage, DispatchAnswer: storetext.FarSideError(cause.Error()),
-		Length: utf8.RuneCountInString(payload.Body), Begins: refusedPreview(payload.Body)}
+	refused := texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
+		Refused: texts.RefusedMessage, DispatchAnswer: storetext.FarSideError(cause.Error())}
+	quoteRefused(&refused, payload.Body)
+	return refused
+}
+
+// quoteRefused sets on refused how long the refused body is in characters and its first line
+// (refusedPreview), and names that line in the notice's words object with its author
+// (refusedLineBy), so the card draws the line in a block of its own: it can carry a worker's
+// words. The line's time is the refused row's, which refusedNoticeRow gives it.
+func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
+	refused.Length, refused.Begins = utf8.RuneCountInString(body), refusedPreview(body)
+	if refused.Begins != "" {
+		refused.Words = map[string]texts.WordsMeta{"begins": {By: refusedLineBy(refused.Begins)}}
+	}
 }
 
 // refusedPreview is the first line of a body a notice quotes, cut to messageRefusedPreview.
@@ -627,14 +639,43 @@ func refusedPreview(body string) string {
 	return first
 }
 
+// refusedLineBy is the author of the first line of a body the outbox posts on an issue, the line a
+// refused post's notice quotes. A status write's reason is one of two texts, each the daemon's
+// sentence and then another author's words: a backward move's, whose words are those of the role
+// that asked (workflow.BackwardMoveAsker), and a close's, whose words are the architect's
+// (intake.CloseRootLead). Every other body the outbox posts is a message the workflow or the
+// supervision writes of its own facts, so its line is the daemon's (texts.ByDaemon).
+func refusedLineBy(line string) string {
+	if role, asked := workflow.BackwardMoveAsker(line); asked {
+		return string(role)
+	}
+	if strings.HasPrefix(line, intake.CloseRootLead) {
+		return string(claim.RoleArchitect)
+	}
+	return texts.ByDaemon
+}
+
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,
-// statusWriteRefused) on issue, due at at.
-func refusedNoticeRow(issue string, refused texts.MessageRefusedRecord, at time.Time) (record.OutboxRow, error) {
-	notice, err := record.NoticeOf(refused)
+// statusWriteRefused) of the refused row, on its issue, due at at, with the time of the line it
+// quotes (refusedQuotedAt).
+func refusedNoticeRow(refusedRow record.OutboxRow, refused texts.MessageRefusedRecord, at time.Time) (record.OutboxRow, error) {
+	notice, err := record.NoticeOf(refusedQuotedAt(refused, refusedRow.CreatedAt))
 	if err != nil {
 		return record.OutboxRow{}, err
 	}
-	return record.NewOutboxRow(issue, notice, at)
+	return record.NewOutboxRow(refusedRow.Issue, notice, at)
+}
+
+// refusedQuotedAt is refused with the time of the line it quotes (begins) in its words object:
+// when the daemon queued the refused row (record.OutboxRow.CreatedAt), which is when the line's
+// words reached the daemon, since a backward move queues its reason with the move and a close
+// with the close. A zero time names none.
+func refusedQuotedAt(refused texts.MessageRefusedRecord, queued time.Time) texts.MessageRefusedRecord {
+	if meta, quoted := refused.Words["begins"]; quoted && !queued.IsZero() {
+		meta.At = queued.UTC()
+		refused.Words = map[string]texts.WordsMeta{"begins": meta}
+	}
+	return refused
 }
 
 // statusWrites is which of a status row's two writes — the reason posted beside the status, and
@@ -674,18 +715,18 @@ func (e *statusWriteFailure) Unwrap() error { return e.err }
 // finishRefused reads off the failure). Each outcome leaves the architect something else to do
 // (its prompt says what). A reason refused beside a status that is set leaves the daemon's only
 // word on why the issue ended on no issue, so the notice gives how long that reason was and how
-// it began. A status Dispatch refused leaves the issue at the status it had while the daemon's own
-// record reads the one the row wrote, which only a person's move on the issue settles, and the
-// reason beside it may be posted already, which nobody should post a second time. A row that
-// carries no reason names none (reason_posted absent). Dispatch's answer is bounded as a far
-// side's error text is (storetext.FarSideError).
+// it began, with the author of that first line (quoteRefused). A status Dispatch refused leaves
+// the issue at the status it had while the daemon's own record reads the one the row wrote, which
+// only a person's move on the issue settles, and the reason beside it may be posted already, which
+// nobody should post a second time. A row that carries no reason names none (reason_posted
+// absent). Dispatch's answer is bounded as a far side's error text is (storetext.FarSideError).
 func statusWriteRefused(issue string, payload record.StatusWrite, cause error, wrote statusWrites) texts.MessageRefusedRecord {
 	refused := texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
 		Refused: texts.RefusedStatus, DispatchAnswer: storetext.FarSideError(cause.Error()), Status: payload.Status, StatusSet: &wrote.status}
 	if payload.Reason != "" {
 		refused.ReasonPosted = &wrote.reason
 		if !wrote.reason {
-			refused.Length, refused.Begins = utf8.RuneCountInString(payload.Reason), refusedPreview(payload.Reason)
+			quoteRefused(&refused, payload.Reason)
 		}
 	}
 	return refused
@@ -705,7 +746,7 @@ func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWri
 	if errors.As(cause, &failure) {
 		wrote = failure.wrote
 	}
-	notice, err := refusedNoticeRow(row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
+	notice, err := refusedNoticeRow(row, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
 	if err != nil {
 		return func(context.Context, pgx.Tx) error { return err }, nil, false
 	}

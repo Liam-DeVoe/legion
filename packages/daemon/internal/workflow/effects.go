@@ -270,7 +270,7 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string
 // it went to, the role that asked (the role running the phase left, which backward holds the
 // requester to) and that role's own words, or that it gave none.
 func backwardMoveReason(from, to phase.Phase, reason string) string {
-	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+	asked := backwardMoveAsked(from, to)
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
@@ -279,6 +279,27 @@ func backwardMoveReason(from, to phase.Phase, reason string) string {
 		return asked + ": " + reason
 	}
 	return asked + ": " + reason + "."
+}
+
+// backwardMoveAsked is the daemon's own sentence that a backward move's reason opens with
+// (backwardMoveReason): the move, and the role that asked for it.
+func backwardMoveAsked(from, to phase.Phase) string {
+	return fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+}
+
+// BackwardMoveAsker is the role whose own words a backward move's reason carries after the
+// daemon's sentence (backwardMoveReason), for a text that opens with that sentence, such as the
+// first line of the reason a refused post quotes; false for a text that opens with no such
+// sentence. It reads the sentence of each move back the daemon counts (phase.BackwardPairs), so it
+// reads what backwardMoveReason writes and nothing else.
+func BackwardMoveAsker(text string) (claim.Role, bool) {
+	for _, pair := range phase.BackwardPairs() {
+		from, to, _ := phase.ParsePair(pair)
+		if strings.HasPrefix(text, backwardMoveAsked(from, to)) {
+			return phase.RoleFor(from), true
+		}
+	}
+	return "", false
 }
 
 // backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch

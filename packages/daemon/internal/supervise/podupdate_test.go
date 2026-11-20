@@ -747,15 +747,17 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // go/architect-common.md), each in one passage about the update message. That passage names the
 // five steps in their order (dispatch://INFRA-4203 R2): push every commit to keep, let each
 // subagent and each background job finish or stop it and push what it made, put a scratch file
-// needed as evidence on Dispatch, answer, and end the turn. It names the ask's field of the second
-// step (background_work) and of the rule of the round's early end (every_answer_brings_it_forward).
-// It says the four things beside the steps: the round does not end early while a role is in a
-// turn or reports background work, a service started with a name is in no report and goes with
-// the pod, the pod goes when the round ends whatever runs in it, and work that finishes after the
-// answer is pushed and answered again with the same round. A role whose tool has no
-// ready_for_update is told to do the first three steps. It does not say that the round ends early
-// once every role answers and no role is in a turn, or that only the background jobs of the turn
-// in progress go with the pod.
+// needed as evidence on Dispatch, answer, and end the turn. It names the ask's field of the second,
+// the third and the fifth step (background_work, evidence, then), of the rule of the round's early
+// end (every_answer_brings_it_forward) and of the rule for work that finishes after the answer
+// (late_background_work). It says the four things beside the steps: the round does not end early
+// while a role is in a turn or reports background work, a service started with a name is in no
+// report and goes with the pod, the pod goes when the round ends whatever runs in it, and work
+// that finishes after the answer is pushed and answered again with the same round. It says what
+// the replacement does to the disk in each volume mode, and that goes_with_pod names what goes
+// with a pod that does not keep its volume. A role whose tool has no ready_for_update is told to
+// do the first three steps. It does not say that the round ends early once every role answers and
+// no role is in a turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
 	drift := []runtime.Drift{{
@@ -795,10 +797,11 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	if !ask.EndsAt.Equal(endsAt) || ask.EndsAt.Location() != time.UTC {
 		t.Errorf("the ask ends at %v, want %v in UTC", ask.EndsAt, endsAt.UTC())
 	}
-	if ask.PushTo != "legion/LEGION-209" || ask.BackgroundWork != "finish_or_stop_then_push" || ask.Answer != "ready_for_update" ||
+	if ask.PushTo != "legion/LEGION-209" || ask.BackgroundWork != "finish_or_stop_then_push" || ask.Evidence != "scratch_files_on_dispatch" ||
+		ask.Answer != "ready_for_update" || ask.Then != "end_turn" || ask.LateBackgroundWork != "push_and_answer_again" ||
 		ask.EveryAnswerBringsItForward != "when_no_turn_or_background_work" || !ask.NoAnswerDelaysIt || !ask.KeptByPushOnly ||
 		ask.Restart != "same_session" || !ask.NextTaskHeld {
-		t.Errorf("the ask states %+v, want the push to legion/LEGION-209, the background work finished or stopped and then pushed, the ready_for_update op, every answer bringing the end forward only when no turn or background work runs, no answer delaying it, only the push keeping work, the same session and the next task held", ask)
+		t.Errorf("the ask states %+v, want the push to legion/LEGION-209, the background work finished or stopped and then pushed, a scratch file needed as evidence put on Dispatch, the ready_for_update op, the turn ended, late background work pushed and answered again, every answer bringing the end forward only when no turn or background work runs, no answer delaying it, only the push keeping work, the same session and the next task held", ask)
 	}
 	if want := []string{"turn", "subagents", "background_jobs", "named_services", "unpushed_work", "test_database", "caches"}; !slices.Equal(ask.GoesWithPod, want) {
 		t.Errorf("the ask says %q goes with the pod, want %q", ask.GoesWithPod, want)
@@ -868,7 +871,13 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 			"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
 			"If your `legion` tool has no \"ready_for_update\" operation, do steps 1, 2 and 3, then end your turn.",
 			"Then commit and push what it made. The message's `background_work` names this step.",
+			"put it on Dispatch, because the pod's disk may not outlast the round. The message's `evidence` names this step.",
+			"Step 5: end your turn. The message's `then` names this step.",
+			"Then call `ready_for_update` again with the same round before you end that turn. The message's `late_background_work` names this rule.",
 			"Your plugin sends that report at the end of each turn. The message's `every_answer_brings_it_forward` states this rule.",
+			"Where the pod does not keep its volume, the replacement deletes that disk with the pod",
+			"Where the pod keeps its volume (a microVM pod under `keep_volume`), that disk stays with its Sandbox through the round, but a reset or a change of its disk shape deletes it",
+			"which the message's `goes_with_pod` names for a pod that does not keep its volume:",
 		} {
 			if !strings.Contains(passage, want) {
 				t.Errorf("%s does not say %q:\n%s", part, want, passage)

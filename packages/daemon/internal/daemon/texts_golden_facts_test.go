@@ -323,9 +323,11 @@ var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].
 
 // goldenSkippedKeys is where a sample of a head's CI names the checks GitHub skipped
 // (dispatch://INFRA-4135's R1): their count, and the first. main's text at 6d50ef31 names each
-// check by GitHub's word, a skipped one skipped; the record names the skipped checks in a list of
-// their own, apart from the checks that did not pass and from the count of those that passed.
-var goldenSkippedKeys = []string{"skipped#", "skipped[0]"}
+// check by GitHub's word, a skipped one skipped, and says once that a skipped check ran nothing on
+// this head; the record names the skipped checks in a list of their own, apart from the checks
+// that did not pass and from the count of those that passed, under the key that says that once
+// (skipped_ran_nothing).
+var goldenSkippedKeys = []string{"skipped_ran_nothing#", "skipped_ran_nothing[0]"}
 
 // goldenCutTurnNote is the cut-turn note of a task taken back, word for word as main's
 // interruptedTask wrote it (supervise/delivery.go and relaunch.go's relaunchSentence at b4a566cb,
@@ -391,6 +393,13 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"background_work"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"background_work": "finish_or_stop_then_push"}
+		}},
+	{kind: texts.UpdateAsk, what: "the rest of the role's steps in their order: put a scratch file needed as evidence on Dispatch before the answer, end the turn after it, " +
+		"and, where background work ends after the answer, push what it made and answer again with the same round",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-4203's R2, its steps 3 and 5 and its rule for late background work",
+		keys:   []string{"evidence", "then", "late_background_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"evidence": "scratch_files_on_dispatch", "then": "end_turn", "late_background_work": "push_and_answer_again"}
 		}},
 	{kind: texts.ReviewStuck, variants: []string{"undecided", "approved-other-code"}, what: "the phrase `APPROVE of head <sha>` in the reason of a round a review ends",
 		keptBy: "dispatch://INFRA-3498's R4",

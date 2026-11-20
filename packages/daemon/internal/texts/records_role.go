@@ -13,15 +13,17 @@ import (
 
 // CISettledRecord is the CI settlement on a pull request's head (workflow's tellChecks): the pull
 // request, the head, the issue's phase (which the urgency rule reads), each check that did not
-// pass with its conclusion, each check GitHub skipped, each commit status that did not pass with
-// its state, the count of the checks and statuses that passed, and the command that lists them.
+// pass with its conclusion, each check GitHub skipped under the key that says a skipped check ran
+// nothing on the head (skipped_ran_nothing, CheckConclusion), each commit status that did not
+// pass with its state, the count of the checks and statuses that passed, and the command that
+// lists them.
 type CISettledRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	Phase             phase.Phase       `json:"phase"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped,omitempty"`
+	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`
@@ -53,15 +55,16 @@ type GateMovedRecord struct {
 // ApprovedRoundStuckRecord is the message to the reviewer that the round it approved is stuck
 // because GitHub will not merge the head (workflow's tellStuckMergeState): the pull request, the
 // head, its merge state, each check of that head that did not pass, each check of that head GitHub
-// skipped, each commit status of that head that did not pass, the count of the checks and statuses
-// that passed, and the command that lists them.
+// skipped under the key that says a skipped check ran nothing on the head (skipped_ran_nothing),
+// each commit status of that head that did not pass, the count of the checks and statuses that
+// passed, and the command that lists them.
 type ApprovedRoundStuckRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	MergeState        string            `json:"merge_state"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped,omitempty"`
+	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`
@@ -179,23 +182,33 @@ func (r HookPromptRecord) Text() (string, error) {
 
 // The facts that every update round ask gives, which dispatch://INFRA-2981's R4 keeps: the
 // tool op that answers the round, what goes with the pod when the round ends, and where the
-// daemon starts the role's process again. Two more are dispatch://INFRA-4203's, which
-// dispatch://INFRA-3686's R8 keeps as fields: UpdateBackgroundStep is its R2's step 2, done
-// before the answer (let each subagent and each background job finish, or stop one that cannot
-// end before the round ends, then commit and push what it made), and UpdateEarlyEnd is when every
-// answer brings the round's end forward, its R1's rule: only once no role is in a turn or reports
-// background work.
+// daemon starts the role's process again. The rest are dispatch://INFRA-4203's, which
+// dispatch://INFRA-3686's R8 keeps as fields, each as short fixed words: its R2's five steps in
+// its order, push (the branch, push_to), UpdateBackgroundStep (let each subagent and each
+// background job finish, or stop one that cannot end before the round ends, then commit and push
+// what it made), UpdateEvidenceStep (put a scratch file needed as evidence on Dispatch),
+// UpdateAnswerOp (the answer) and UpdateThen (end the turn); its R2's rule for background work
+// that ends after the answer, UpdateLateBackgroundWork (push what it made and answer again with
+// the same round, before that turn ends); and UpdateEarlyEnd, when every answer brings the
+// round's end forward, its R1's rule: only once no role is in a turn or reports background work.
 const (
-	UpdateAnswerOp       = "ready_for_update"
-	UpdateRestartsIn     = "same_session"
-	UpdateBackgroundStep = "finish_or_stop_then_push"
-	UpdateEarlyEnd       = "when_no_turn_or_background_work"
+	UpdateAnswerOp           = "ready_for_update"
+	UpdateRestartsIn         = "same_session"
+	UpdateBackgroundStep     = "finish_or_stop_then_push"
+	UpdateEvidenceStep       = "scratch_files_on_dispatch"
+	UpdateThen               = "end_turn"
+	UpdateLateBackgroundWork = "push_and_answer_again"
+	UpdateEarlyEnd           = "when_no_turn_or_background_work"
 )
 
-// updateGoesWithPod is what goes with the pod when an update round ends: the turn in progress,
-// each subagent, each background job and each named service that still runs, each commit and
-// each file the role did not push, the pod's test database and its caches. The round's end waits
-// for no named service, since no activity report names one (dispatch://INFRA-4203).
+// updateGoesWithPod is what goes with the pod when an update round ends, for a pod whose volume
+// is not kept: the turn in progress, each subagent, each background job and each named service
+// that still runs, each commit and each file the role did not push, the pod's test database and
+// its caches. The round's end waits for no named service, since no activity report names one
+// (dispatch://INFRA-4203). The list is the same for every ask: the daemon queues the ask with no
+// read of the pod's volume, and whether the replacement keeps a kept volume is settled only when
+// the pod is replaced (a reset or a change of the disk's shape deletes it), so the readers'
+// prompts say what a kept volume keeps.
 var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_services", "unpushed_work", "test_database", "caches"}
 
 // UpdateAskRecord is an update round's ask to one role of the issue (supervise's UpdateTask):
@@ -204,11 +217,13 @@ var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_
 // moment the round ends. The facts that dispatch://INFRA-2981's R4 keeps: the branch to push to,
 // the op that answers, when every answer brings the end forward and that no answer delays it,
 // that only the role's own push keeps its work, what goes with the pod, where the process starts
-// again, and that the daemon holds the next task until it runs again. Between the push and the
-// answer is the step of the role's background work (background_work, dispatch://INFRA-4203 R2's
-// step 2), and every_answer_brings_it_forward says that every answer brings the end forward only
-// once no role is in a turn or reports background work (dispatch://INFRA-4203 R1 and R3).
-// NewUpdateAsk sets them all. The readers' prompts give the steps, and name these two fields there.
+// again, and that the daemon holds the next task until it runs again. The five steps of
+// dispatch://INFRA-4203's R2 come in its order, each a field: push_to, background_work, evidence,
+// answer and then; late_background_work after them is its R2's rule for background work that
+// ends after the answer; and every_answer_brings_it_forward says that every answer brings the end
+// forward only once no role is in a turn or reports background work (dispatch://INFRA-4203 R1
+// and R3). NewUpdateAsk sets them all. The readers' prompts give the steps, and say what each of
+// these fields names.
 type UpdateAskRecord struct {
 	RoleHead
 	Round                      string    `json:"round"`
@@ -219,7 +234,10 @@ type UpdateAskRecord struct {
 	EndsAt                     time.Time `json:"ends_at"`
 	PushTo                     string    `json:"push_to"`
 	BackgroundWork             string    `json:"background_work"`
+	Evidence                   string    `json:"evidence"`
 	Answer                     string    `json:"answer"`
+	Then                       string    `json:"then"`
+	LateBackgroundWork         string    `json:"late_background_work"`
 	EveryAnswerBringsItForward string    `json:"every_answer_brings_it_forward"`
 	NoAnswerDelaysIt           bool      `json:"no_answer_delays_it"`
 	KeptByPushOnly             bool      `json:"kept_by_push_only"`
@@ -241,7 +259,10 @@ func NewUpdateAsk(issue, round, pod string, images, settings []string, endsAt ti
 		EndsAt:                     endsAt,
 		PushTo:                     claim.IssueBranch(issue),
 		BackgroundWork:             UpdateBackgroundStep,
+		Evidence:                   UpdateEvidenceStep,
 		Answer:                     UpdateAnswerOp,
+		Then:                       UpdateThen,
+		LateBackgroundWork:         UpdateLateBackgroundWork,
 		EveryAnswerBringsItForward: UpdateEarlyEnd,
 		NoAnswerDelaysIt:           true,
 		KeptByPushOnly:             true,

@@ -489,7 +489,8 @@ func TestTheHelpersWriteTheReferencesInOneForm(t *testing.T) {
 	ends := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	ask := NewUpdateAsk("INFRA-3686", "round-7", "pod-a", []string{"5c2b01d9e8f7"}, []string{"runtime.kubernetes.image"}, ends)
 	if ask.Kind != UpdateAsk || ask.Issue != "INFRA-3686" || ask.PushTo != claim.IssueBranch("INFRA-3686") || ask.Answer != "ready_for_update" ||
-		ask.BackgroundWork != UpdateBackgroundStep || ask.EveryAnswerBringsItForward != UpdateEarlyEnd ||
+		ask.BackgroundWork != UpdateBackgroundStep || ask.Evidence != UpdateEvidenceStep || ask.Then != UpdateThen ||
+		ask.LateBackgroundWork != UpdateLateBackgroundWork || ask.EveryAnswerBringsItForward != UpdateEarlyEnd ||
 		!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld ||
 		ask.Restart != UpdateRestartsIn || len(ask.GoesWithPod) != 7 || !ask.EndsAt.Equal(ends) {
 		t.Errorf("NewUpdateAsk gives %+v", ask)
