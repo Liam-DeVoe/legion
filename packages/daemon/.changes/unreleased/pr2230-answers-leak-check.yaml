@@ -16,9 +16,9 @@ body: |-
   configuration home names one, and under Kubernetes when `LEGION_LEAK_CHECK_TAG` is unset or not
   of the shape `leak-check-v<n>`. A Kubernetes daemon also refuses to start, with the cause
   sentence a pod's start is refused with, when it has no GitHub App to read the check with, when
-  GitHub refuses the reading permissions of the read's token, and when the served check's `--help`
-  run fails. Any other failure of the read or the install, GitHub's trouble among them, no longer
-  stops the boot: the daemon starts, installs the check in the background, trying again after 5
+  that App has no installation on the check's owner, when GitHub refuses the reading permissions
+  of the read's token, and when the install of the served check fails, its `--help` run among
+  them. Any other failure of the read, GitHub's trouble among them, no longer stops the boot: the daemon starts, installs the check in the background, trying again after 5
   seconds and then at waits doubling to 30 seconds until the install lands, and logs each failed
   try with its cause. Until then every call of the tool is refused, gh never started, with the
   setup error naming the pin and the last try's cause.

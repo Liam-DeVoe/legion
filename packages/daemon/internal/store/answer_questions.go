@@ -292,37 +292,28 @@ func (s *Store) PassedQuestionsTx(ctx context.Context, tx pgx.Tx, project string
 	return passed, nil
 }
 
+// scanQuestions reads each row's questionColumns, and, where inserted is not nil, the column after
+// them into inserted.
 func scanQuestions(rows pgx.Rows, inserted *bool) ([]AnswerQuestion, error) {
 	defer rows.Close()
-	var extra []any
-	if inserted != nil {
-		extra = append(extra, inserted)
-	}
 	var found []AnswerQuestion
 	for rows.Next() {
-		q, err := scanQuestion(rows, extra...)
-		if err != nil {
+		var q AnswerQuestion
+		var token, role, state string
+		var handoff []byte
+		dest := []any{&q.ID, &q.Project, &q.Identity, &q.Session, &token, &q.Issue, &role, &q.Kind, &q.MayAskNothing, &handoff,
+			&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Deliveries, &q.ReceivedAt, &q.LastSeenAt, &q.UpdatedAt}
+		if inserted != nil {
+			dest = append(dest, inserted)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
+		q.Token, q.Role, q.State, q.Handoff = claim.Token(token), claim.Role(role), QuestionState(state), handoff
 		found = append(found, q)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return found, nil
-}
-
-// scanQuestion is the current row's questionColumns, with each column after them scanned into
-// extra.
-func scanQuestion(rows pgx.Rows, extra ...any) (AnswerQuestion, error) {
-	var q AnswerQuestion
-	var token, role, state string
-	var handoff []byte
-	dest := []any{&q.ID, &q.Project, &q.Identity, &q.Session, &token, &q.Issue, &role, &q.Kind, &q.MayAskNothing, &handoff,
-		&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Deliveries, &q.ReceivedAt, &q.LastSeenAt, &q.UpdatedAt}
-	if err := rows.Scan(append(dest, extra...)...); err != nil {
-		return AnswerQuestion{}, err
-	}
-	q.Token, q.Role, q.State, q.Handoff = claim.Token(token), claim.Role(role), QuestionState(state), handoff
-	return q, nil
 }

@@ -256,8 +256,9 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 // A cause no wait changes refuses a Kubernetes daemon's boot at once, the install left to no
 // background: the pin unset, or not of the published shape, which boot's read of it refuses and
 // the reader refuses too (leakguard.ErrTagShape); a daemon with no GitHub App to read the check
-// with; GitHub refusing the narrowing of the read's token (appauth.NarrowingRefused); and a
-// served check whose `--help` run fails (ghtool.InstallError). Each is refused in its own sentence.
+// with; GitHub refusing the narrowing of the read's token (appauth.NarrowingRefused); an App with
+// no installation on the check's owner (appauth.ErrNotInstalled); and a served check whose
+// `--help` run fails (ghtool.InstallError). Each is refused in its own sentence.
 func TestACauseNoWaitChangesRefusesTheBoot(t *testing.T) {
 	t.Run("no pin", func(t *testing.T) {
 		_, _, err := answersLeakCheck("kubernetes", environLookup([]string{"PATH=/usr/bin"}))
@@ -281,6 +282,10 @@ func TestACauseNoWaitChangesRefusesTheBoot(t *testing.T) {
 			}
 			mintedToken(w, "ghs_the_owners_own_token", permissions)
 		}})
+	elsewhere := provisioningStandIn(t, provisioningInstallation{id: "74", owner: "acme", granted: leakCheckGrant,
+		answer: func(w http.ResponseWriter, permissions map[string]string) {
+			mintedToken(w, "ghs_acmes_token", permissions)
+		}})
 	silent := servedCheckReader{body: leakguardtest.Tarball(t, map[string]leakguardtest.Member{
 		leakguardtest.CheckName: {Body: "#!/bin/sh\nexit 2\n", Mode: 0o755},
 	})}
@@ -296,6 +301,8 @@ func TestACauseNoWaitChangesRefusesTheBoot(t *testing.T) {
 			leakguard.RefusalPrefix + "the daemon runs with no GitHub App, so it cannot read " + leakguard.CheckSlug},
 		{"GitHub refuses the narrowing", leakCheckTag, leakCheckSource(narrowing.tokens, serveLeakCheckRepo(t).url),
 			leakguard.RefusalPrefix + "GitHub refused the daemon's implement App the reading permissions on theorem-labs"},
+		{"the App has no installation on the check's owner", leakCheckTag, leakCheckSource(elsewhere.tokens, serveLeakCheckRepo(t).url),
+			leakguard.RefusalPrefix},
 		{"the served check's --help fails", leakCheckTag, silent, leakguard.RefusalPrefix + "the served check"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

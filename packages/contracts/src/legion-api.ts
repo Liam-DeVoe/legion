@@ -651,7 +651,7 @@ const legionHeldOutboxRow = z.object({
   waitsOn: z.number().int().positive(),
 });
 
-/** `api.QuestionWrite` — one `gh` call that writes which the daemon's answer loop ran for a
+/** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` call that writes which the daemon's answer loop ran for a
  * question before it passed the question on (contract 183), a read never one: its seq among the
  * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
  * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's

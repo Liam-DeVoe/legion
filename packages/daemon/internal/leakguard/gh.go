@@ -93,9 +93,10 @@ func provenCheck(check, proven string) bool {
 	return strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), proven)
 }
 
-// whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
-// the check — the first call and the one that follows it with the buffer — report the one call.
-const whatGhCall = "the gh call"
+// WhatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
+// the check — the first call and the one that follows it with the buffer — report the one call,
+// and the gh tool's own setup failure names the call by it too (ghtool), so the two read alike.
+const WhatGhCall = "the gh call"
 
 // GhCall checks a gh call before it is made, in the shared check's gh-guard shape, and answers
 // the standard input it read and whether the shared check was the whole of it, which it is for
@@ -119,12 +120,12 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error) {
 	check, err := g.Resolve()
 	if err != nil {
-		return nil, false, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
+		return nil, false, &SetupFailure{What: WhatGhCall, Why: whyNoCheck, Err: err}
 	}
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, false, sharedNotRun(whatGhCall, err, printed)
+		return nil, false, sharedNotRun(WhatGhCall, err, printed)
 	}
 	var buffered []byte
 	if status == checkWantsStdin {
@@ -133,7 +134,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 			return buffered, false, err
 		}
 	}
-	if err := readStatus(whatGhCall, status, printed); err != nil {
+	if err := readStatus(WhatGhCall, status, printed); err != nil {
 		return buffered, false, err
 	}
 	if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
@@ -143,7 +144,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		// proven against, the check may read the call as a write, so the guard goes on whole.
 		return buffered, true, nil
 	}
-	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
+	public, err := g.scanThrough(ctx, WhatGhCall, req.Repo)
 	if err != nil {
 		return buffered, false, err
 	}
@@ -161,7 +162,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 	if files == nil {
 		if upload, found := ghUnreadUploadArg(req.Args); found {
 			return buffered, false, &SetupFailure{
-				What: whatGhCall,
+				What: WhatGhCall,
 				Why:  upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
@@ -179,7 +180,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		}
 		records = append(records, record)
 	}
-	return buffered, false, g.rules(ctx, whatGhCall, records)
+	return buffered, false, g.rules(ctx, WhatGhCall, records)
 }
 
 // jsonAlso is record and, where its text is a JSON document, a second record of the strings
@@ -434,7 +435,7 @@ func readGhFile(named GhFile) (string, error) {
 			err = path.Err
 		}
 		return &SetupFailure{
-			What: whatGhCall,
+			What: WhatGhCall,
 			Why:  "the file " + named.Option + " names, " + maskPath(named.Path) + ", " + why,
 			Err:  err,
 		}
@@ -473,11 +474,11 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]b
 		// to be longer without reading it.
 		read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
 		if err != nil {
-			return nil, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
+			return nil, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be read", Err: err}
 		}
 		if len(read) > maxGhFile {
 			return nil, 0, "", &SetupFailure{
-				What: whatGhCall,
+				What: WhatGhCall,
 				Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
 			}
 		}
@@ -485,19 +486,19 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]b
 	}
 	file, err := os.CreateTemp("", "leakguard-stdin-")
 	if err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	defer func() {
 		file.Close()
 		os.Remove(file.Name())
 	}()
 	if _, err := file.Write(buffered); err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	// The child's descriptor is a dup of this one and shares its offset, so the file is rewound
 	// here and not by whoever reads it.
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	// ExtraFiles' first entry is the child's descriptor 3, which is the one named here.
 	const buffer = 3
@@ -512,11 +513,11 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]b
 		},
 	})
 	if err != nil {
-		return buffered, 0, "", sharedNotRun(whatGhCall, err, printed)
+		return buffered, 0, "", sharedNotRun(WhatGhCall, err, printed)
 	}
 	if status == checkWantsStdin {
 		return buffered, 0, printed, &SetupFailure{
-			What: whatGhCall,
+			What: WhatGhCall,
 			Why:  "the shared public leak check asked for standard input again after it was given",
 			Err:  printedError(printed),
 		}

@@ -72,10 +72,6 @@ func (e *InstallError) Error() string { return e.sentence }
 
 func (e *InstallError) Unwrap() error { return e.err }
 
-// whatGhCall is the write a setup failure of the gh tool names, in the guard's own words for a gh
-// call (leakguard's GhCall), so the tool's own refusal reads as the guard's do.
-const whatGhCall = "the gh call"
-
 // LeakCheck is the shared public leak check a Kubernetes daemon's gh tool runs before every call
 // (Host.LeakCheck): the copy the daemon installs at its pin (InstallLeakCheck), which an answer's
 // call may come before. Until the install lands, Check refuses every call with the setup failure
@@ -118,7 +114,7 @@ func (c *LeakCheck) Check() (string, error) {
 		return c.installed, nil
 	}
 	return "", &leakguard.SetupFailure{
-		What: whatGhCall,
+		What: leakguard.WhatGhCall,
 		Why: fmt.Sprintf("the shared public leak check at %s, the pin %s names, is not installed yet, and the daemon tries the install again until it is",
 			c.tag, leakguard.TagVariable),
 		Err: c.failure,

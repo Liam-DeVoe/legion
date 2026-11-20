@@ -392,6 +392,7 @@ TS
     if LD_LIBRARY_PATH="$pg_root/lib" "$pg_root/bin/pg_ctl" -D "$work/pg-data" -l "$evidence/logs/postgres.log" -w -t 60 \
       -o "-p $port_pg -h 127.0.0.1 -k $work/pg-sock" start >/dev/null; then
       pg_pid=$(head -1 "$work/pg-data/postmaster.pid")
+      record_start "$pg_pid" || started_at[$pg_pid]=gone
       return 0
     fi
     note "Postgres did not start on port $port_pg (attempt $attempt); picking another"
@@ -1640,9 +1641,10 @@ register_asker ||
   fail "the listener gave a stand-in no consumer of its own: asker $(cat "$work/registration-$asker_session.json" 2>/dev/null); controller $(cat "$work/registration-$controller_session.json" 2>/dev/null)"
 note "the stand-ins registered with their own consumers: $(jq -c '{session_id, delivery, topics}' "$work/registration-$asker_session.json" "$work/registration-$controller_session.json" | tr '\n' ' ')"
 # In a process group of its own, as start_daemon's daemon is: cleanup's stop_tree stops it with
-# SIGSTOP first.
+# SIGSTOP first. Out of the driver's group a signal to that group no longer reaches it, so it ends
+# of itself once the driver has gone (lib/process-tree.sh's run_marks).
 set -m
-(while :; do
+(while kill -0 "$$" 2>/dev/null; do
   register_asker >/dev/null 2>&1 || true
   sleep 60
 done) </dev/null &

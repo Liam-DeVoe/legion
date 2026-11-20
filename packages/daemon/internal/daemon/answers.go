@@ -143,8 +143,8 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 // refused as the runtime refuses the start of such a daemon's pods.
 //
 // The boot tries the install once. A cause no wait changes refuses the boot (leakCheckPermanent).
-// Every other failure is waited out, as the boot waits out every failure of GitHub's it can
-// (run's boot rule): the check is answered not installed, so the gh tool refuses each call with
+// Every other failure is waited out, as the boot waits out GitHub's transient failures (run's boot
+// rule): the check is answered not installed, so the gh tool refuses each call with
 // the setup failure naming the pin and the last try's cause (ghtool.LeakCheck), and the install is
 // tried again in the background on appMintRetry's backoff, 5 s doubling to 30 s, each failed try
 // logged with its cause and the wait before the next, until one lands or ctx ends. stop ends that
@@ -203,7 +203,9 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, reader s
 // (installAnswersLeakCheck), has a cause no wait changes, which refuses a Kubernetes daemon's
 // boot: a tag not of the published shape (leakguard.ErrTagShape), which boot's read of the pin
 // refuses first (answersLeakCheck); GitHub refusing the narrowing of the read's token
-// (appauth.NarrowingRefused), which only the account's grant to the App changes; and a failure of
+// (appauth.NarrowingRefused), which only the account's grant to the App changes; an App with no
+// installation on the check's owner (appauth.ErrNotInstalled), an answer about the owner that the
+// boot's own App mint refuses at once too (mintAtBoot); and a failure of
 // the install of what was read (ghtool.InstallError), the `--help` run of a check that does not
 // answer among them, since the reader keeps a read that succeeded and serves the next try the same
 // body. Everything else is waited out: the transport failing, the read's bound passing, any HTTP
@@ -211,7 +213,8 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, reader s
 // them. Each is told by its type, never by its sentence (leakguard.Source.Get).
 func leakCheckPermanent(err error) bool {
 	var install *ghtool.InstallError
-	return errors.Is(err, leakguard.ErrTagShape) || appauth.NarrowingRefused(err) || errors.As(err, &install)
+	return errors.Is(err, leakguard.ErrTagShape) || appauth.NarrowingRefused(err) || errors.Is(err, appauth.ErrNotInstalled) ||
+		errors.As(err, &install)
 }
 
 // recordFacts reads an agent's issue from the daemon's record for the change note: the status
